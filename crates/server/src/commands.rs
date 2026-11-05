@@ -1,15 +1,16 @@
 //! The command surface: catalog and dispatch.
 //! See `docs/notes/server-commands.md`.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
 
 use protocol::{
     Args, CommandSpec, CommandTarget, CompletionSource, Event, LogLevel, REPLAY_TURN,
     ResponseEvent, ResponsePart, ToolAnswerEvent, ToolStream,
 };
 use serde_json::json;
-use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
@@ -61,6 +62,54 @@ impl ActiveGuard {
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Who asked for a command, as far as the server can tell.
+///
+/// # Invariant
+///
+/// One place answers "who": a log row about an act of the server's own takes its
+/// words from here, so the same act asked two ways is told apart in the record.
+/// A client names itself (`ClientInfo::label`) and says the session its shell was
+/// in; a stop that never crossed the wire has no client to name, and says which
+/// ask reached the process. See `docs/notes/server-commands.md`.
+#[derive(Debug, Clone)]
+pub enum Origin {
+    /// A client asked: its label, its peer, and the session it ran from, if any.
+    Client {
+        label: String,
+        peer: SocketAddr,
+        session: Option<String>,
+    },
+    /// No client asked: a signal reached this process, or the process it follows ended.
+    Signal { reason: String },
+}
+
+impl Origin {
+    /// The session the command was run from, when a shell ran it.
+    pub fn session(&self) -> Option<&str> {
+        match self {
+            Origin::Client { session, .. } => session.as_deref(),
+            Origin::Signal { .. } => None,
+        }
+    }
+
+    /// Who asked, in the words a log row keeps for it.
+    pub fn describe(&self) -> String {
+        match self {
+            Origin::Client {
+                label,
+                peer,
+                session,
+            } => match session.as_deref().map(str::trim) {
+                Some(session) if !session.is_empty() => {
+                    format!("{label} at {peer}, from session {session}")
+                }
+                _ => format!("{label} at {peer}"),
+            },
+            Origin::Signal { reason } => reason.clone(),
+        }
     }
 }
 
@@ -748,14 +797,15 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
     spec
 }
 
-/// Runs one command, as the session `caller` if the connection named one.
+/// Runs one command, on behalf of whoever `origin` names.
 ///
 /// # Invariant
 ///
-/// `caller` is the session the command was run *from*, which the client read off
-/// its own environment. It is not the `session` argument: that one is who the
-/// command acts on, and `subscribe` is the one command that needs both told apart.
-pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, caller: Option<&str>) -> Outcome {
+/// `origin` is not the `session` argument: that one is who the command acts on,
+/// while the origin is who asked. `subscribe` needs the session the command was
+/// run *from*, and `cancel` needs to be able to say who asked, which is the
+/// difference between a window's own goodbye and somebody else's.
+pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) -> Outcome {
     // One catalog decides existence, runner and required args, for every kind.
     let spec = match resolve(&d.catalog().await, name, args) {
         Ok(spec) => spec,
@@ -770,11 +820,11 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, caller: Option<&str
         "del_session" => del_session(d, args).await,
         "list_paths" => list_paths(d, args).await,
         "interrupt_session" => interrupt_session(d, args).await,
-        "cancel" => cancel(d).await,
+        "cancel" => cancel(d, origin).await,
         "get_messages" => get_messages(d, args).await,
         "events" => events(d, args).await,
-        "subscribe" => subscribe(d, args, caller).await,
-        "del_subscribe" => del_subscribe(d, args, caller).await,
+        "subscribe" => subscribe(d, args, origin.session()).await,
+        "del_subscribe" => del_subscribe(d, args, origin.session()).await,
         "trigger_event" => trigger_event(d, args).await,
         // Every tool is a command: the registry decides what exists.
         name if d.agent.tools.get(name).is_some() => {
@@ -1853,17 +1903,29 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
 ///
 /// Detached jobs keep running: they were started precisely so they would
 /// outlive this.
-/// A stop asked from outside the protocol -- a signal -- says what `cancel` says.
+/// A stop asked from outside the protocol -- a signal -- says what `cancel` says,
+/// and records the same way which ask it was.
 pub(crate) async fn stop(d: &Dispatch) {
     // A window that cancelled as it left has already asked; this is the echo.
     if d.shutting_down.load(Ordering::SeqCst) {
         return;
     }
-    let said = cancel(d).await;
+    let reason = crate::signal::reason()
+        .unwrap_or("a signal reached the server")
+        .to_string();
+    let said = cancel(d, &Origin::Signal { reason }).await;
     tracing::info!(answer = %said.message, "stopped as a signal asks");
 }
 
-async fn cancel(d: &Dispatch) -> Outcome {
+/// Stops every turn, records who asked, and leaves the work for the next start.
+///
+/// # Invariant
+///
+/// The record comes before the answer: it is how a window that did *not* ask
+/// learns the server is stopping, and its `payload.by` is the only place that
+/// says who asked. The status that follows from it states the fact, not the
+/// name -- see `docs/notes/server-commands.md`.
+async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
     // First: the listen loop keeps dispatching through the notice window; a turn
     // started there is not waited for.
     d.shutting_down.store(true, Ordering::SeqCst);
@@ -1874,6 +1936,17 @@ async fn cancel(d: &Dispatch) -> Outcome {
     }
     let detached = d.sessions.detached().count().await;
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
+    let by = origin.describe();
+    d.agent.log_event(
+        None,
+        protocol::SERVER_STOP,
+        &json!({
+            "by": by,
+            "sessions": running.len(),
+            "pending": pending,
+            "detached": detached,
+        }),
+    );
     // Wait before shutting down: the acknowledgement is published after this returns.
     let shutdown = d.shutdown.clone();
     tokio::spawn(async move {
@@ -1887,17 +1960,11 @@ async fn cancel(d: &Dispatch) -> Outcome {
         pending,
         detached
     );
-    // Said on the event stream too: the drain that follows reads as a
-    // disconnection, and every attached window needs this.
-    let notice = format!(
-        "the server is stopping: it keeps answering until the {} running turn(s) finish",
-        running.len()
+    tracing::warn!(
+        running = running.len(),
+        by = %by,
+        "the server is stopping: it keeps answering until its turns finish"
     );
-    tracing::warn!(running = running.len(), "{notice}");
-    d.bus.publish(Event::Log {
-        level: protocol::LogLevel::Warn,
-        message: notice,
-    });
     Outcome::ok(said)
 }
 

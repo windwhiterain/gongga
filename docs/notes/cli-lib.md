@@ -765,6 +765,24 @@ greeting now states `draining`, and the line says "stopping — the server keeps
 answering until its turns finish" while it is true. The two states are not the same
 fact, and a reader deciding whether to close a window needs the difference.
 
+The greeting alone was not enough: a window attached *before* the `cancel` learned
+nothing, because `draining` only ever travelled in a hello. So the row a `cancel`
+writes -- `events.kind = server_stop` -- is also the notice: it arrives on the same
+bus as everything else, sets `draining`, and the status line is refreshed from that
+state rather than from the sentence that happened to be the newest note. That is why
+the line survives the session updates that follow, and why it says the state and not
+the name: who asked is recorded in the row's payload, where a reader asks the log
+for it.
+
+## client_label
+
+What this program calls itself in its hello: its own file name and its pid, e.g.
+`gongga-tui/pid-1234` or `gongga-cli/pid-5678`. The program's name rather than the
+crate's, because one function serves the window, the one-shot command and the
+bundle's own `gongga`, and a record of who asked -- `server_stop`'s `payload.by` --
+is only readable if it says which of them it was. The pid is what the operator then
+looks up; the name is what makes the lookup worth doing.
+
 ## DialFailure::Fatal
 
 The key is wrong, the address is malformed. Retrying would only hide the reason

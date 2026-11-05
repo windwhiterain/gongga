@@ -75,8 +75,11 @@ if a turn ever fails to do that the process simply stays up, still answering --
 which is a state a reader can see, rather than an exit that hides it.
 
 The wait is inside the accept loop, not after it, and that is the whole point: a
-draining server still serves. `cancel` says so on the event stream as well as in its
-own result, and `ServerInfo::draining` says it to a window that dials mid-drain.
+draining server still serves. `cancel` records a `server_stop` row, and publishing
+it is what tells every attached window that the server is stopping -- and who asked.
+`ServerInfo::draining` says the same to a window that dials mid-drain, and it is read
+from `shutting_down` rather than from the socket's shutdown token, so the notice
+window before the token is cancelled counts as draining too.
 
 ## handle_connection (commands run elsewhere)
 

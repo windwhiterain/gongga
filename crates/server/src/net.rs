@@ -18,7 +18,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
 use crate::bus::EventBus;
-use crate::commands::{Dispatch, dispatch};
+use crate::commands::{Dispatch, Origin, dispatch};
 use crate::config::Config;
 
 const FRAME_QUEUE: usize = 512;
@@ -42,8 +42,8 @@ struct Queued {
     id: u64,
     name: String,
     args: Args,
-    /// The session this connection was started from, if it named one.
-    caller: Option<String>,
+    /// Who asked, kept for the queue: a recorded act has to name the asker.
+    origin: Origin,
     /// When the datagram was read: the wait a slow answer is told apart by.
     arrived: std::time::Instant,
 }
@@ -210,7 +210,9 @@ async fn handle_connection(
                 // Decided already: `--parent` at startup, or this handshake.
                 owner: crate::signal::owner(),
                 supervisor: crate::supervise::supervisor(),
-                draining: d.shutdown.is_cancelled(),
+                // From the first instant, not from when the socket is allowed to
+                // close: the notice window is part of the drain.
+                draining: d.shutting_down.load(Ordering::SeqCst) || d.shutdown.is_cancelled(),
             },
             // The one list: built-ins, client commands, and a script's.
             commands: d.catalog().await,
@@ -260,7 +262,7 @@ async fn handle_connection(
                                 id,
                                 name,
                                 args,
-                                caller: client.session.clone(),
+                                origin: origin_of(&client, peer),
                                 arrived: std::time::Instant::now(),
                             })
                             .is_err()
@@ -299,7 +301,7 @@ async fn handle_connection(
                                 id,
                                 name: name.to_string(),
                                 args,
-                                caller: client.session.clone(),
+                                origin: origin_of(&client, peer),
                                 arrived: std::time::Instant::now(),
                             })
                             .is_err()
@@ -334,6 +336,21 @@ async fn handle_connection(
     tracing::info!(%peer, conn_id, "client disconnected");
 }
 
+/// Who asked: the label the client gave, its peer, and the session it ran from.
+///
+/// # Invariant
+///
+/// Read once per command from the greeting's [`ClientInfo`], never guessed from a
+/// command's arguments: a command names the session it acts on, and the origin is
+/// the one it came from. See `docs/notes/server-commands.md`.
+fn origin_of(client: &ClientInfo, peer: SocketAddr) -> Origin {
+    Origin::Client {
+        label: client.label.clone(),
+        peer,
+        session: client.session.clone(),
+    }
+}
+
 /// Runs one connection's commands, one at a time and in the order they arrived.
 /// See `docs/notes/server-net.md`.
 async fn run_commands(
@@ -344,7 +361,7 @@ async fn run_commands(
     while let Some(command) = queued.recv().await {
         // Two numbers: wait behind earlier commands on this connection, then the run.
         let ran_at = std::time::Instant::now();
-        let outcome = dispatch(&d, &command.name, &command.args, command.caller.as_deref()).await;
+        let outcome = dispatch(&d, &command.name, &command.args, &command.origin).await;
         tracing::info!(
             command = %command.name,
             session = command.args.get("session").map(String::as_str).unwrap_or("-"),

@@ -32,7 +32,13 @@ pub struct ClientInfo {
     /// The build of the program dialing: see [`crate::BUILD`].
     #[serde(default)]
     pub build: String,
-    /// Free-form label shown by the server in logs, e.g. `cli/pid-1234`.
+    /// Free-form label shown by the server in logs, e.g. `gongga-tui/pid-1234`.
+    ///
+    /// # Invariant
+    ///
+    /// The program's own name, not the crate's: this is the half of "who asked"
+    /// that a log row keeps for a `cancel`, and it names a window differently from
+    /// a one-shot command and from the bundle's own `gongga`.
     pub label: String,
     /// The session whose shell started this client, when one did.
     ///
@@ -306,6 +312,17 @@ pub enum ResponsePart {
 /// Turns count from 1, so `0` tells a front-end this is a row asked for by name:
 /// the block it opens stands beside a live stream, never inside it.
 pub const REPLAY_TURN: u64 = 0;
+
+/// The log row a `cancel` writes before it stops anything, naming who asked.
+///
+/// # Invariant
+///
+/// The row is the record and its publication the notice: a window that did not
+/// ask learns the server is stopping from this row, and reads who asked from
+/// `payload.by`. Nothing else carries that answer -- the asker's own result goes
+/// to the asker's connection, and the status line states the fact, not the name.
+/// See `docs/notes/server-commands.md`.
+pub const SERVER_STOP: &str = "server_stop";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseEvent {

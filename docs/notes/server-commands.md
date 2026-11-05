@@ -424,6 +424,22 @@ Not quite yet: the acknowledgement announcing what is being cancelled is worth
 more than a fast exit, and the listen loop publishes it only after this handler
 returns. A quarter second is well inside one round trip.
 
+### Who asked
+
+`cancel` records the ask before it stops anything: an `events` row of kind
+`server_stop` whose `payload.by` names the asker and whose counts say what is being
+stopped. Publishing that row is the notice -- it is how a window that did *not* ask
+learns the server is stopping, and it is the only place that says who asked. The
+asker's own result answers the asker's connection; the status line that follows from
+the row states the fact, not the name.
+
+`Origin`, in this module, is the one place that answers "who". A command that
+crossed the wire is a client: the label it gave in its hello, the peer it dialled
+from, and the session the command was run from when a shell ran it -- which is also
+the only thing `subscribe` ever needed to know. A stop that never crossed the wire
+carries what reached the process instead: which console event, which signal, or the
+end of the process this server follows. See `docs/notes/server-signal.md`.
+
 ## subscribe
 
 Arms a pattern for the session it was run from. The command answers at once: it

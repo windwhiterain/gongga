@@ -17,6 +17,21 @@ static WAKE: std::sync::OnceLock<Arc<Notify>> = std::sync::OnceLock::new();
 /// The pid this server follows, once it follows one; 0 is nobody.
 static OWNER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Which ask reached this process first, in words a log row can keep.
+///
+/// # Invariant
+///
+/// The first ask is the one that stops the server, so the first one to set this
+/// is the truth. A second ask leaves at once and never reaches here. Recorded
+/// because "the server stopped" leaves a reader asking who asked, and a signal
+/// has no client to name. See `docs/notes/server-signal.md`.
+static REASON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// What asked this server to stop, once something did.
+pub fn reason() -> Option<&'static str> {
+    REASON.get().map(String::as_str)
+}
+
 /// The pid this server follows: the greeting carries it, so a client can say
 /// whether closing it would stop this server.
 pub fn owner() -> Option<u32> {
@@ -58,13 +73,17 @@ where
 {
     tokio::spawn(async move {
         wake.notified().await;
-        tracing::info!("asked to stop from outside the protocol");
+        tracing::info!(
+            reason = reason().unwrap_or("-"),
+            "asked to stop from outside the protocol"
+        );
         stop().await;
     })
 }
 
-/// What a handler may call: no lock, no block, and a nudge is remembered.
-fn nudge(wake: &Notify) {
+/// What a handler may call: no lock, no block, and the reason kept with the nudge.
+fn nudge(reason: &str, wake: &Notify) {
+    let _ = REASON.set(reason.to_string());
     wake.notify_one();
 }
 
@@ -88,9 +107,9 @@ fn follow_pid(pid: u32) {
 /// # Invariant
 /// The first ask cancels and writes the pending row; a second ask leaves at
 /// once, so a turn that ignores the cancel cannot own the console.
-fn asked(wake: &Notify) {
+fn asked(reason: &str, wake: &Notify) {
     if ASKS.fetch_add(1, Ordering::SeqCst) == 0 {
-        nudge(wake);
+        nudge(reason, wake);
     } else {
         std::process::exit(130);
     }
@@ -110,7 +129,10 @@ fn follows(pid: u32, wake: Arc<Notify>) {
         while exists(pid) {
             tokio::time::sleep(POLL).await;
         }
-        nudge(&wake);
+        nudge(
+            &format!("the process this server follows (pid {pid}) ended"),
+            &wake,
+        );
     });
 }
 
@@ -185,11 +207,28 @@ unsafe extern "system" fn handle(event: u32) -> i32 {
     );
     if stopping {
         if let Some(wake) = WAKE.get() {
-            asked(wake);
+            asked(&console_ask(event), wake);
         }
     }
     // Anything else keeps the default action.
     if stopping { 1 } else { 0 }
+}
+
+/// Which console event asked: the words a reader of the record can act on.
+#[cfg(windows)]
+fn console_ask(event: u32) -> String {
+    use windows_sys::Win32::System::Console::{
+        CTRL_BREAK_EVENT, CTRL_C_EVENT, CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT,
+    };
+    let words = match event {
+        CTRL_C_EVENT => "Ctrl-C in its console",
+        CTRL_BREAK_EVENT => "Ctrl-Break in its console",
+        CTRL_CLOSE_EVENT => "its console closing",
+        CTRL_LOGOFF_EVENT => "a logoff",
+        CTRL_SHUTDOWN_EVENT => "a shutdown",
+        _ => "a console event",
+    };
+    format!("{words} (a signal to the server)")
 }
 
 #[cfg(unix)]
@@ -207,11 +246,11 @@ fn install(wake: Arc<Notify>) -> bool {
     tokio::spawn(async move {
         let (mut interrupt, mut terminate) = (interrupt, terminate);
         loop {
-            tokio::select! {
-                _ = interrupt.recv() => {}
-                _ = terminate.recv() => {}
-            }
-            asked(&wake);
+            let asked_by = tokio::select! {
+                _ = interrupt.recv() => "SIGINT (a signal to the server)",
+                _ = terminate.recv() => "SIGTERM (a signal to the server)",
+            };
+            asked(asked_by, &wake);
         }
     });
     true

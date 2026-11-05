@@ -27,7 +27,8 @@ use anyhow::{Context, anyhow};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use protocol::{
     ChannelConfig, ClientInfo, ClientMessage, Event, LogLevel, ResponseEvent, ResponsePart,
-    ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, decode_server, encode_client,
+    SERVER_STOP, ServerMessage, SessionInfo, SessionStatus, ToolAnswerEvent, decode_server,
+    encode_client,
 };
 use tokio::net::UdpSocket;
 
@@ -979,6 +980,13 @@ impl Client {
                 let row = quota_row(&quota);
                 if self.quota.as_ref() != Some(&row) {
                     self.quota = Some(row);
+                    self.refresh(sink);
+                }
+            }
+            // The row `cancel` writes first: the notice, and who asked.
+            Event::Record { kind, .. } if kind == SERVER_STOP => {
+                if !self.draining {
+                    self.draining = true;
                     self.refresh(sink);
                 }
             }
@@ -2222,10 +2230,29 @@ fn client_info() -> ClientInfo {
     ClientInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         build: protocol::BUILD.to_string(),
-        label: format!("cli/pid-{}", std::process::id()),
+        label: client_label(),
         // Only this process knows whose shell it is: `subscribe` needs it.
         session: calling_session(),
     }
+}
+
+/// What this program calls itself on the wire: its own file name and its pid.
+///
+/// # Invariant
+///
+/// The program's name, not the crate's: a window, a one-shot command and the
+/// bundle's own `gongga` all dial through this one function, and a record of who
+/// asked is only readable if it says which of them it was. See
+/// `docs/notes/cli-lib.md`.
+fn client_label() -> String {
+    let program = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "cli".to_string());
+    format!("{program}/pid-{}", std::process::id())
 }
 
 /// The session whose shell started this process, if any.

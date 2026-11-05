@@ -21,6 +21,12 @@ so shells close and scripts stop on the existing path.
 A nudge with nobody waiting is remembered by `Notify`, so a signal that lands
 while the runtime is still starting is not lost.
 
+The nudge carries the words for the record: which console event, which signal, or
+that the process this server follows ended. `commands::stop` reaches `cancel`
+through `Origin::Signal`, so the `server_stop` row says `by the process this server
+follows (pid 54552) ended` and not just "a signal" -- a reader asking who stopped
+the server is answered from the log, and a signal has no client to name.
+
 ## A second ask is the user insisting
 
 After the first ask, `net::serve` waits for running turns with no deadline at all.
