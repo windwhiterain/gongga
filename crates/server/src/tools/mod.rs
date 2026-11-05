@@ -476,7 +476,7 @@ fn signature(schema: &Value) -> String {
     properties
         .iter()
         .map(|(name, spec)| {
-            let kind = spec["type"].as_str().unwrap_or("any");
+            let kind = kind_of(spec);
             let needed = if required.contains(&name.as_str()) {
                 "required"
             } else {
@@ -486,6 +486,25 @@ fn signature(schema: &Value) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// What a property accepts, in the words of its own schema.
+///
+/// # Invariant
+///
+/// A property that offers alternatives (`anyOf`) says so, because "any" would
+/// hide the choice the caller still has to make.
+pub(crate) fn kind_of(spec: &Value) -> String {
+    if let Some(kinds) = spec.get("anyOf").and_then(Value::as_array) {
+        let kinds: Vec<&str> = kinds
+            .iter()
+            .filter_map(|kind| kind["type"].as_str())
+            .collect();
+        if !kinds.is_empty() {
+            return kinds.join(" or ");
+        }
+    }
+    spec["type"].as_str().unwrap_or("any").to_string()
 }
 
 /// The strings of a JSON array, or the keys of an object, in document order.
@@ -734,6 +753,47 @@ const INBOX_POLL: Duration = Duration::from_millis(250);
 
 // ---------------------------------- bash ----------------------------------
 
+/// The command a call asks for, as the line the shell will read.
+///
+/// # Invariant
+///
+/// A list is quoted word by word, so each word reaches the shell as one word
+/// exactly as it was written: no splitting on spaces, no globbing, no expansion
+/// of `$` or `~`. A string is the line itself, and the shell reads it as a line.
+fn command_line(value: Option<&Value>) -> Result<String, String> {
+    match value {
+        Some(Value::String(text)) => {
+            if text.trim().is_empty() {
+                return Err("bash received an empty command".to_string());
+            }
+            Ok(text.clone())
+        }
+        Some(Value::Array(words)) => {
+            if words.is_empty() {
+                return Err("bash received an empty list of words".to_string());
+            }
+            let mut quoted = Vec::with_capacity(words.len());
+            for word in words {
+                let Some(word) = word.as_str() else {
+                    return Err(format!(
+                        "bash received a list whose entries must all be strings, and one \
+                         was {kind}",
+                        kind = json_type(word),
+                    ));
+                };
+                quoted.push(bash::shell_quote(word));
+            }
+            Ok(quoted.join(" "))
+        }
+        Some(other) => Err(format!(
+            "bash requires a `command` that is a string or a list of strings, and this one is \
+             {kind}",
+            kind = json_type(other),
+        )),
+        None => Err("bash requires a `command`".to_string()),
+    }
+}
+
 /// The name the tool on the session's remote is called by.
 const REMOTE_BASH: &str = "remote_bash";
 
@@ -813,8 +873,17 @@ impl Tool for BashTool {
                 "description": name_note
             },
             "command": {
-                "type": "string",
-                "description": "The command line to execute."
+                "description": "What to run: a command line, or a list of words -- the \
+                                 program and its arguments, one word each. A list needs no \
+                                 quoting: each word reaches the shell exactly as it is \
+                                 written, so an argument with a space in it needs no \
+                                 escaping. A command line is for what only a shell can do \
+                                 (pipes, redirects, `cd`), a list is for a program and \
+                                 its arguments.",
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "array", "items": {"type": "string"}}
+                ]
             },
             "description": {
                 "type": "string",
@@ -880,12 +949,10 @@ impl Tool for BashTool {
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             // `command`, not `cmd`: the schema bends to the model, and a missing one is caught first.
-            let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
-                return ToolOutcome::err("bash requires a string `command`");
+            let command = match command_line(args.get("command")) {
+                Ok(command) => command,
+                Err(message) => return ToolOutcome::err(message),
             };
-            if command.trim().is_empty() {
-                return ToolOutcome::err("bash received an empty command");
-            }
             // `target` names the machine; another peer's must not quietly run here. See
             // `docs/notes/server-tools-mod.md`.
             if self.machine == Machine::Remote
@@ -967,7 +1034,7 @@ impl Tool for BashTool {
                          `del_bash name_regex: \"^{name}$\"` discards it first"
                     ));
                 }
-                return match ctx.detached.start(&ctx.session, name, command, &cwd).await {
+                return match ctx.detached.start(&ctx.session, name, &command, &cwd).await {
                     Ok(job) => ToolOutcome::ok(format!(
                         "started detached bash `{}` (pid {}), running in {}. It outlives the \
                          shell, the session, `cancel` and even a server restart, so it is how \
@@ -997,7 +1064,7 @@ impl Tool for BashTool {
                 };
                 let mut shell = shell.lock().await;
                 let notify = background_notifier(ctx, name);
-                return match shell.run_background(command, Some(notify)).await {
+                return match shell.run_background(&command, Some(notify)).await {
                     Ok(job) => ToolOutcome::ok(format!(
                         "started background job {job} in shell {name}; \
                          run `check_bash` to collect its output, and this session is told \
@@ -1025,7 +1092,7 @@ impl Tool for BashTool {
             // Scoped so the future borrowing `shell` drops before the guard does.
             let started = std::time::Instant::now();
             let outcome = {
-                let execute = shell.run(command, timeout, Some(&tx));
+                let execute = shell.run(&command, timeout, Some(&tx));
                 tokio::pin!(execute);
                 let mut punctual = tokio::time::interval(INBOX_POLL);
                 loop {

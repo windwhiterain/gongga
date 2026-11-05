@@ -105,12 +105,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                     required: required.contains(&name.as_str()),
                     positional: is_positional,
                     kind: None,
-                    value_hint: Some(
-                        spec.get("type")
-                            .and_then(Value::as_str)
-                            .unwrap_or("value")
-                            .to_string(),
-                    ),
+                    value_hint: Some(crate::tools::kind_of(spec)),
                     completions: protocol::CompletionSource::None,
                     sticky: false,
                 });
@@ -180,10 +175,20 @@ fn coerce(tool: &dyn crate::tools::Tool, args: &Args) -> Value {
         .unwrap_or_default();
     let mut out = json!({});
     for (name, value) in args.iter() {
-        let kind = properties
-            .get(name)
-            .and_then(|p| p.get("type"))
-            .and_then(Value::as_str);
+        let spec = properties.get(name);
+        let kind = spec.and_then(|p| p.get("type")).and_then(Value::as_str);
+        // A property that offers a list takes one written as JSON, so an operator
+        // reaches the same shape the model does.
+        if kind.is_none()
+            && let Some(words) = spec
+                .and_then(|p| p.get("anyOf"))
+                .and_then(Value::as_array)
+                .filter(|kinds| kinds.iter().any(|kind| kind["type"] == "array"))
+                .and_then(|_| serde_json::from_str::<Vec<String>>(value).ok())
+        {
+            out[name] = json!(words);
+            continue;
+        }
         out[name] = match kind {
             Some("boolean") => match value.parse::<bool>() {
                 Ok(parsed) => json!(parsed),

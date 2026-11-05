@@ -1852,10 +1852,10 @@ fn call_fields(tool: &str, value: &serde_json::Value) -> Vec<protocol::Field> {
     // SPEC's `toolcall{tool_name, ...}`: the name rides on the head.
     let mut fields = Vec::new();
     // The detail first, so opening the item leads with what was run.
-    if let Some(command) = value.get("command").and_then(|v| v.as_str()) {
+    if let Some(command) = value.get("command") {
         fields.push(protocol::Field {
             label: String::new(),
-            value: command.to_string(),
+            value: command_text(command),
             summary: false,
         });
     }
@@ -1888,6 +1888,27 @@ fn call_fields(tool: &str, value: &serde_json::Value) -> Vec<protocol::Field> {
         });
     }
     fields
+}
+
+/// A `command` argument as one line of text, whichever shape it came in.
+///
+/// # Invariant
+///
+/// A list of words is shown as the words it is, so the row reads as the command
+/// that ran and not as JSON the reader has to decode.
+fn command_text(command: &serde_json::Value) -> String {
+    match command {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(words) => words
+            .iter()
+            .map(|word| match word {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            })
+            .collect::<Vec<String>>()
+            .join(" "),
+        other => other.to_string(),
+    }
 }
 
 /// The arguments SPEC's `toolcall` summarises this tool by, in its order.

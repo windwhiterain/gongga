@@ -138,7 +138,21 @@ a string comparison.
 The argument is `command`, not `cmd`: a model reaching for the word it already
 knows is right far more often than it is wrong, and the schema should be the
 thing that bends. A missing one is rejected by `argument_error` first, in the
-schema's own words; what is left here is a `command` that is not a string.
+schema's own words; what is left here is a `command` that is neither a string nor a
+list of strings.
+
+## command_line
+
+A `command` is either a command line or a list of words, and the list is what a
+model writes when the arguments carry spaces, quotes or `$` it does not want the
+shell to touch. Each word is quoted, so it reaches the shell as one word exactly
+as written: no splitting, no globbing, no expansion. The cost is that the list
+cannot do what only a shell can do (a pipe, a redirect, `cd`), which is why the
+string form stays.
+
+One reading of the two forms, in `command_line`: the model is not asked to
+choose a different tool, and the tool is not asked to guess which shape it was
+given.
 
 ## BashTool::run (the `description` argument)
 
