@@ -19,10 +19,12 @@ With no `name`: one row per skill this session can open -- what to call it, the 
 saying what it is for, the `SKILL.md` to read, and which root it came from (`project` for \
 this checkout, `harness` for the home, `general` for the machine, in that precedence).
 
-With `name`: that entry, started with your `args` and nothing between them -- no shell, \
-so a word holding a space, a quote or a `$` arrives as it is. How it starts (a shell, a \
-Python, PowerShell, or the file itself) is read off its extension and its `#!` line: give \
-the script's arguments, never its interpreter. The entry's own output comes back and its \
+With `name`: that skill's entry, started with your `args` and nothing between them -- no \
+shell, so a word holding a space, a quote or a `$` arrives as it is. A skill that is a \
+Python package publishes *functions*: the first word of `args` names which one, and the \
+rest bind to its parameters in order (`--name value` spells one out). A script entry's \
+program is read off its extension and its `#!` line: give the script's arguments, never \
+its interpreter. The entry's own output comes back and its \
 exit code is this call's `ok`, so a non-zero one is the skill failing, not this tool. A \
 skill that is a body with no entry refuses, naming the `SKILL.md` to read instead, and a \
 name installed in two roots refuses rather than picking one.

@@ -55,10 +55,17 @@ provides no shell, so a word holding a space, a quote or a `$` arrives as it is.
 ## The package form
 
 A skill may be a Python package instead of a script: the directory holds `__init__.py`, and
-what to run is *discovered* rather than declared. `__all__`'s first callable, else a `main`
-attribute, takes the argv list and answers `None`, a string, or an exit code. There is no
-`metadata.entry` to keep in step with a file name, no interpreter table to consult (it is
-Python), and no path spelling to get wrong -- on every platform the same thing happens.
+what to run is *discovered* rather than declared. Its public API is its **functions** --
+`__all__` when the package states one, otherwise the module's own callables that do not
+start with `_` -- and a call names one: the first word after the skill. The rest bind to
+that function's parameters in declaration order, or by name with `--name value`, and an
+annotation of `int`, `float` or `bool` converts the word. What the function answers is the
+answer: `None`, a string, an exit code, or a structure printed as JSON.
+
+There is no `metadata.entry` to keep in step with a file name, no interpreter table to
+consult (it is Python), and no path spelling to get wrong -- on every platform the same
+thing happens. A function that cannot be filled is refused with its signature rather than a
+traceback, so a wrong call reads like a diagnosis.
 
 `python/gongga_skill.py` is that contract, and it is one file with two readers: the harness
 carries it with `include_str!` and runs it as `python -c <source> <dir> <argv...>`, and a

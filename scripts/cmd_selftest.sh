@@ -228,26 +228,34 @@ description: A skill that is a Python package, not a script.
 ---
 MD
 cat > "$home/skills/echo-pkg/__init__.py" <<'PY'
-__all__ = ["main"]
+__all__ = ["echo", "code"]
 
 
-def main(argv):
-    return "argv: " + " | ".join(argv) + "\n"
+def echo(*words):
+    return "argv: " + " | ".join(words) + "\n"
+
+
+def code(fail: bool = False):
+    return 2 if fail else None
 PY
-packed=$("${cli[@]}" skill main --name echo-pkg --args '["a b","c"]' 2>&1)
+packed=$("${cli[@]}" skill main --name echo-pkg --args '["echo","a b","c"]' 2>&1)
 [[ "$packed" == *"argv: a b | c"* ]]
-ok "a package skill runs the callable its __all__ publishes" $?
+ok "a package skill runs the function its API publishes" $?
 say "$packed"
 
-here=$(env -u GONGGA_SESSION "${cli[@]}" skill run echo-pkg x 2>&1)
+here=$(env -u GONGGA_SESSION "${cli[@]}" skill run echo-pkg echo x 2>&1)
 [[ "$here" == *"argv: x"* ]]
 ok "and the command layer runs the same package on this disk" $?
+
+refused=$(env -u GONGGA_SESSION "${cli[@]}" skill run echo-pkg nope 2>&1)
+[[ "$refused" == *"publishes: echo, code"* ]]
+ok "a function the package does not publish is refused with the list" $?
 
 inproc=$(python -c "
 import sys
 sys.path.insert(0, r'$(cygpath -m "$root")/crates/skill/python')
 import gongga_skill
-print(gongga_skill.run(r'$(cygpath -m "$home")/skills/echo-pkg', ['in', 'process']), end='')
+print(gongga_skill.run(r'$(cygpath -m "$home")/skills/echo-pkg', 'echo', ['in', 'process']), end='')
 " 2>&1)
 [[ "$inproc" == *"argv: in | process"* ]]
 ok "the contract is importable: no process, no command line" $?
