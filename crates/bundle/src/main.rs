@@ -96,9 +96,9 @@ mod payload {
 /// # Invariant
 ///
 /// The word wins over the server's own command list, which this file cannot see
-/// before it has a server to ask. `cli`, `tui` and `server` are therefore reserved
-/// here: a script that registered a command by one of those names would be
-/// unreachable through this file, and reachable through `gongga-cli`.
+/// before it has a server to ask. `tui` and `server` are therefore reserved here:
+/// a script that registered a command by one of those names would be unreachable
+/// through this file.
 fn wanted_program() -> (String, usize) {
     if let Some(name) = by_file_name() {
         return (name, 0);

@@ -106,7 +106,7 @@ pub fn file_name(name: &str) -> String {
 /// Asked, not killed: a server that receives `cancel` keeps its turn as pending
 /// work (`commands.rs`). A window or a command in flight is never touched, so a
 /// build whose clients are still up keeps its directory until they exit. `ours`
-/// is the command layer that asks. `keeps_servers` leaves the port alone;
+/// is the payload of the build asking. `keeps_servers` leaves the port alone;
 /// `force` skips the ask. See `bundle-main.md`.
 pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool, force: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -175,14 +175,17 @@ fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process) -> bool {
     let Some(key) = key else {
         return false;
     };
-    let program = ours.join(file_name("gongga-cli"));
-    if !program.is_file() {
+    // The home of the build asking, not the one being retired: that is where the
+    // command line lives.
+    let Some(home) = ours.parent().and_then(|payload| payload.parent()) else {
         return false;
-    }
+    };
+    let Some(mut cancel) = command_line(home) else {
+        return false;
+    };
     let Some(port) = server.port else {
         return false;
     };
-    let mut cancel = std::process::Command::new(&program);
     cancel
         .arg("--server")
         .arg(format!("127.0.0.1:{port}"))
@@ -203,6 +206,36 @@ fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process) -> bool {
     }
     // `cancel` answers before the server stops; give it the moment it took.
     wait_until_gone(server.pid)
+}
+
+/// The command line this home answers with, ready for `cancel` and its arguments.
+///
+/// # Invariant
+///
+/// Asked by the name a shell types, never by a copy in this payload: the command
+/// layer is this home's Python, which a server writes into `bin` on every start
+/// (`docs/notes/bundle-main.md`). Carrying one would ask with a build the operator
+/// may have replaced, and a head that knows where the layer lives would have to
+/// learn it again the next time the layer moves.
+fn command_line(home: &Path) -> Option<std::process::Command> {
+    let bin = home.join("bin");
+    // A home whose server predates the move left a program here; it answers too.
+    let native = bin.join(file_name("gongga-cli"));
+    if native.is_file() {
+        return Some(std::process::Command::new(native));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // `CreateProcess` will not run a `.cmd`; `cmd` will, given one line.
+        let shim = bin.join("gongga-cli.cmd");
+        if shim.is_file() {
+            let mut command = std::process::Command::new("cmd");
+            command.arg("/C").raw_arg(format!("\"{}\"", shim.display()));
+            return Some(command);
+        }
+    }
+    None
 }
 
 /// Whether `pid` went away within the moment a stop is allowed to take.

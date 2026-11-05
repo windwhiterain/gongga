@@ -31,6 +31,9 @@ fn main() {
         println!("cargo:rerun-if-changed={}", ref_file.display());
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo always sets OUT_DIR"));
+    // This script writes here, so it makes the directory: a copy into a missing
+    // one fails the build.
+    std::fs::create_dir_all(&out).expect("creating OUT_DIR");
     let mut generated = String::new();
     if std::env::var_os("CARGO_FEATURE_PAYLOAD").is_some() {
         generated.push_str("pub const EMBEDDED: &[(&str, &[u8])] = &[\n");
@@ -87,14 +90,7 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         .join("../../target/bundle-payload");
     let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()));
     cmd.args(["build", "--profile", profile])
-        .args([
-            "-p",
-            "gongga-cli",
-            "-p",
-            "gongga-server",
-            "-p",
-            "gongga-tui",
-        ])
+        .args(["-p", "gongga-server", "-p", "gongga-tui"])
         .current_dir(Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../.."))
         .env("CARGO_TARGET_DIR", &target)
         // The payload is built for this compile: inheriting the feature would
@@ -110,8 +106,9 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         String::from_utf8_lossy(&output.stderr)
     );
     let suffix = if cfg!(windows) { ".exe" } else { "" };
-    // The server package's other binary: a peer is unusable without it.
-    ["gongga-cli", "gongga-server", "gongga-tui", "gongga-runner"]
+    // No command line: it is this home's Python. The runner rides along because a
+    // peer's shells need it.
+    ["gongga-server", "gongga-tui", "gongga-runner"]
         .into_iter()
         .map(|name| {
             (
