@@ -1037,7 +1037,11 @@ impl Log {
     /// it -- so a block arriving under a reused name is that session's first and
     /// starts at row zero. See `docs/notes/tui-log.md`.
     pub fn forget(&mut self, window: &str) {
-        if self.prepend.as_ref().is_some_and(|(name, _)| name == window) {
+        if self
+            .prepend
+            .as_ref()
+            .is_some_and(|(name, _)| name == window)
+        {
             self.prepend = None;
         }
         // A fill that empties a window opens a page too: its first block is where a
@@ -1116,7 +1120,10 @@ impl Log {
     /// a block cannot stand for itself -- a journal missing a body is worse than an
     /// order a restart would get wrong. See `docs/notes/tui-cache.md`.
     pub fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
-        let prepending = self.prepend.as_ref().is_some_and(|(name, _)| name == window);
+        let prepending = self
+            .prepend
+            .as_ref()
+            .is_some_and(|(name, _)| name == window);
         if prepending {
             self.prepend = None;
         }
@@ -1139,9 +1146,7 @@ impl Log {
         // A page whose blocks are gone names nothing: the boundary would stand in
         // front of a block this window no longer draws.
         let drawn_ids: Vec<u64> = blocks.iter().map(|&at| self.entries[at].id).collect();
-        ledger
-            .pages
-            .retain(|(id, _)| drawn_ids.contains(id));
+        ledger.pages.retain(|(id, _)| drawn_ids.contains(id));
         let boundaries: Vec<(u64, i64)> = ledger.pages.clone();
         let mut records = Vec::with_capacity(blocks.len() + boundaries.len() + 1);
         let mut written: Vec<Option<usize>> = vec![None; blocks.len()];
@@ -1157,7 +1162,10 @@ impl Log {
             written[place] = Some(records.len());
             records.push(entry.seal_record());
         }
-        records.push(Record::Stamp { created, seq: drawn });
+        records.push(Record::Stamp {
+            created,
+            seq: drawn,
+        });
         let Some(offsets) = self.cache.rewrite(window, &records) else {
             return;
         };
@@ -1356,7 +1364,10 @@ impl Log {
         };
         let block_size = self.block_size;
         let Log {
-            entries, views, hot, ..
+            entries,
+            views,
+            hot,
+            ..
         } = self;
         let ledger = views.entry(window.clone()).or_default();
         let pos = match above {
