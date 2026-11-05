@@ -136,8 +136,7 @@ fn the_space_a_reserve_holds_is_actually_taken() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The reserve this process states is the one a tool failure reads, and a test's
-/// own file is not carried into the next test.
+/// One reserve per process, and a test's own file is not carried forward.
 #[test]
 fn the_installed_reserve_is_one_per_process_and_can_be_taken_away() {
     let dir = scratch("install");

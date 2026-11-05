@@ -23,8 +23,7 @@ use crate::store::Failure;
 pub struct Kind {
     /// The session, inside the harness's reserved `@` namespace.
     pub session: &'static str,
-    /// The skill the report references, so its words are an index entry in the
-    /// prompt's prefix instead of text riding the transcript.
+    /// The skill the report references: its words ride the prompt's prefix.
     pub skill: &'static str,
 }
 
@@ -77,16 +76,13 @@ const DISK_EVENT_ATTEMPTS: &str = "disk.attempts";
 /// has written past it.
 const DISK_WAKE_ROW: &str = "disk.wake";
 
-/// Hands every unreported failure to the error monitor, every unread disk event
-/// to the disk monitor, and puts the device's reserve back when a cleanup is done.
+/// Hands every unwatched trigger to its monitor, and arms the reserve again.
 ///
 /// # Invariant
 ///
-/// The store is the truth, not the bus: a turn that ended while this process was
-/// not running is in `sessions.status`, and an event published then was written to
-/// the log anyway. Called at start-up and on the tick that already wakes inboxes,
-/// so the answer does not depend on which of the two happened first. See
-/// `docs/notes/server-monitor.md`.
+/// The store is the truth, not the bus: a turn that ended while this process was not
+/// running is in `sessions.status`, and its event in the log. Called at start-up and
+/// on the tick that wakes inboxes, so neither order loses a report.
 pub async fn sweep(d: &Arc<Dispatch>, home: &Path) {
     if d.shutting_down.load(std::sync::atomic::Ordering::SeqCst) || d.shutdown.is_cancelled() {
         return;
@@ -153,12 +149,9 @@ async fn report_failure(d: &Arc<Dispatch>, home: &Path, failure: &Failure, self_
 ///
 /// # Invariant
 ///
-/// One wake per event row, and the row is the whole memory: a spent reserve that
-/// two servers raced over is one row, and a row is handed over once even across a
-/// restart. A monitor that failed is given the same report on the next usable
-/// model, so a disk whose first choice of model is refused is still cleaned -- and
-/// its own failure is the error kind's business as well, because a monitor that
-/// keeps failing is a harness question and not a disk.
+/// One wake per event row, and the row is the whole memory: two servers racing over
+/// one reserve write one row. A monitor that failed gets the same report on the next
+/// model, so a refused first choice is still cleaned.
 async fn sweep_disk(d: &Arc<Dispatch>, home: &Path) {
     let cursor = d.store.monitor_value(DISK_EVENT_CURSOR).unwrap_or(0);
     let attempts = d
@@ -415,8 +408,7 @@ fn report(
     Ok(out)
 }
 
-/// What the disk report says: the room that was spent, and the volumes as they
-/// stood when the server needed to say something.
+/// What the disk report says: the room spent, and the volumes as they stood.
 fn disk_report(home: &Path, payload: &str) -> String {
     let facts: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
     let text = |key: &str| -> String {

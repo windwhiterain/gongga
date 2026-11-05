@@ -5,18 +5,16 @@
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
-/// The reserve file's name: one per device, so two servers on one machine share
-/// one claim rather than each keeping a copy.
+/// The reserve file's name: one per device, so two servers share one claim.
 pub const FILE: &str = "gongga-disk-reserve";
 
-/// The file name for a machine that states none. A machine-wide directory, never a
-/// home: the whole point is that two servers with different homes spend the same
-/// space.
+/// Where the reserve stands when the machine states nothing.
 ///
 /// # Invariant
 ///
-/// `GONGGA_DISK_RESERVE` states the whole path, directory included, so a test can
-/// spend a file of its own instead of the one this machine's servers share.
+/// A machine-wide directory, never a home: two servers with different homes spend
+/// one space. `GONGGA_DISK_RESERVE` states the whole path, so a test spends a file
+/// of its own instead of this machine's.
 pub fn default_path() -> PathBuf {
     if let Some(stated) = std::env::var_os("GONGGA_DISK_RESERVE")
         && !stated.is_empty()
@@ -167,12 +165,10 @@ impl Reserve {
 
     /// # Invariant
     ///
-    /// An exclusive open, not a delete. Measured: two callers can open one file and
-    /// both report a successful `DeleteFileW` -- the disposition is applied to a
-    /// handle that was already opened, so the name is not what is decided. A handle
-    /// with no sharing is: the first caller gets it, everybody else gets a sharing
-    /// violation, and `FILE_FLAG_DELETE_ON_CLOSE` makes the file go away with the
-    /// handle that won it.
+    /// An exclusive open, not a delete: measured, two callers can both report a
+    /// successful `DeleteFileW` of one file. A handle with no sharing is decided: one
+    /// caller gets it, the rest get a sharing violation, and the file goes away with
+    /// the winner's handle. See `docs/notes/server-disk.md`.
     #[cfg(windows)]
     fn claim_windows(&self) -> Claim {
         use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
@@ -269,14 +265,11 @@ pub fn uninstall() {
 ///
 /// # Invariant
 ///
-/// Two readings of "the disk is full", and either is enough: the failure says so,
-/// or a volume this server could write to has less room left than the reserve this
-/// machine set aside. The second exists because the first is lost often -- through
-/// a pipe, a swallowed stderr, a localized message -- and a tool that fails for an
-/// unstated reason on a full disk is the case that matters.
+/// Two readings of "the disk is full", and either is enough: the failure says so, or
+/// a volume has less room left than the reserve. The second exists because the first
+/// is lost often -- a pipe, a swallowed stderr, a localized message.
 ///
-/// Only the winner of the claim writes anything: one disk-full episode is one row,
-/// and one row wakes one monitor, no matter how many servers noticed.
+/// Only the winner of the claim writes anything: one episode, one row, one wake.
 pub fn note_tool_failure(
     store: &crate::store::Store,
     session: &str,
@@ -423,8 +416,7 @@ fn fixed_volumes() -> Vec<Volume> {
     out
 }
 
-/// Outside Windows a mount table is a dependency this does not need: the home's
-/// own volume is the one this server cannot do without.
+/// Outside Windows: the home's own volume, and no mount table to read.
 #[cfg(not(windows))]
 fn fixed_volumes() -> Vec<Volume> {
     Vec::new()
@@ -433,8 +425,7 @@ fn fixed_volumes() -> Vec<Volume> {
 /// The volume a path stands on, by the name that identifies it.
 #[cfg(windows)]
 fn volume_of(path: &Path) -> Option<Volume> {
-    // A path's volume is its drive letter here: no `GetVolumePathName`, so a
-    // mounted directory is read as its host drive, which is where the room is.
+    // Its drive letter: a mounted directory reads as its host, where the room is.
     let text = path.to_string_lossy();
     let letter = text.chars().next().filter(char::is_ascii_alphabetic)?;
     let label = format!("{}:", letter.to_ascii_uppercase());

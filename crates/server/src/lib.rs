@@ -218,8 +218,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
-    // The device's last room, armed before any tool can fail: a disk that fills up
-    // during this run has somewhere to report it. See `docs/notes/server-disk.md`.
+    // Armed before any tool can fail, so a disk that fills up can say so.
     disk::install(cfg.disk_reserve.clone(), cfg.home.clone());
     if cfg.disk_reserve.bytes() == 0 {
         tracing::info!("no disk reserve: this home holds nothing back for a full disk");
