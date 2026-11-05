@@ -213,13 +213,8 @@ impl Panes {
     }
 
     /// The windows whose operator asked for a page above what they had.
-    pub fn wants(&self) -> Vec<String> {
-        self.wants.iter().cloned().collect()
-    }
-
-    /// The request of a window has been answered, or never will be.
-    pub fn resolve_want(&mut self, window: &str) {
-        self.wants.remove(window);
+    pub fn take_wants(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.wants).into_iter().collect()
     }
 
     /// Throws away a window's unaccounted tail before a refill.

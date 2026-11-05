@@ -141,6 +141,14 @@ pub enum UiEvent {
     Operate(link::protocol::Operation),
     /// Alt+Q: leave.
     Quit,
+    /// The operator asked to read above what these windows hold.
+    ///
+    /// # Invariant
+    ///
+    /// Named, never searched for: the request is what the key or the wheel said at
+    /// the moment it was pressed, so the loop that answers it holds the pages owed
+    /// and the next frame cannot add to them behind its back.
+    Older(Vec<String>),
     /// Nothing to submit: the completion asked for something only the connection
     /// can answer.
     ///
@@ -285,6 +293,11 @@ impl Screen {
             return;
         };
         self.panes.scroll_by(&target, rows);
+    }
+
+    /// The windows whose operator asked to read above what they had.
+    pub fn take_wants(&mut self) -> Vec<String> {
+        self.panes.take_wants()
     }
 
     /// Shift+Down: back to the newest line, which is where a window starts.
@@ -798,13 +811,13 @@ impl Tui {
     }
 
     /// The windows whose operator asked to read above what they had.
-    pub fn wants(&self) -> Vec<String> {
-        self.screen.panes.wants()
-    }
-
-    /// The request of a window has been answered, or never will be.
-    pub fn resolve_want(&mut self, name: &str) {
-        self.screen.panes.resolve_want(name);
+    ///
+    /// # Invariant
+    ///
+    /// Taken, not read: each request is one page, so the one who answers it holds
+    /// it from here on and the window does not keep asking on its behalf.
+    pub fn take_wants(&mut self) -> Vec<String> {
+        self.screen.take_wants()
     }
 
     /// The rows a window's pane could draw last frame: what one page is.
@@ -902,6 +915,12 @@ impl Tui {
             // knows how to send one.
             if let Some(operation) = self.clicked.take() {
                 return Some(UiEvent::Operate(operation));
+            }
+            // Taken, not read: a request is answered once, and reading it here
+            // again would be a window that asks for the same page for ever.
+            let owed = self.screen.take_wants();
+            if !owed.is_empty() {
+                return Some(UiEvent::Older(owed));
             }
             if self.draw().is_err() {
                 return None;

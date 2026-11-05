@@ -210,26 +210,33 @@ async fn answer_transcripts(client: &mut link::Client, link: Option<&link::Link>
 /// # Invariant
 ///
 /// The keystroke is the request: a page is fetched because someone asked to read
-/// above the rows they had, and the request is dropped when the pane holds nothing
-/// older. One page, shaped by the pane -- there is no budget for this.
-async fn answer_older(client: &mut link::Client, link: Option<&link::Link>, ui: &mut Tui) {
+/// above the rows they had, so a window sitting at its oldest row is not refilled
+/// over and over. `owed` is what the window asked for and has not been sent yet:
+/// a page is asked once, and kept only while an answer is already on its way.
+async fn answer_older(
+    client: &mut link::Client,
+    link: Option<&link::Link>,
+    ui: &mut Tui,
+    owed: &mut Vec<String>,
+) {
     let Some(open) = link else {
         return;
     };
-    for name in ui.wants() {
+    for name in std::mem::take(owed) {
         // The transcript's own first row: there is nothing above it to read.
         if ui.floor_of(&name).is_some_and(|floor| floor <= 1) {
-            ui.resolve_want(&name);
             continue;
         }
-        // A fill of this window is in flight: the next step asks again, because a
-        // scroll is a request for a page and not for the frame that followed it.
-        let Some(message) = client.ask_older(&name, ui.room_of(&name)) else {
-            continue;
-        };
-        ui.resolve_want(&name);
-        if open.send(message).await.is_err() {
-            break;
+        // One page, shaped by the pane. A fill of this window already on its way
+        // answers this one too, so the request waits for it rather than for ever.
+        match client.ask_older(&name, ui.room_of(&name)) {
+            Some(message) => {
+                if open.send(message).await.is_err() {
+                    break;
+                }
+            }
+            None if client.waiting(&name) => owed.push(name),
+            None => {}
         }
     }
 }
@@ -610,6 +617,8 @@ pub async fn interactive(args: &link::Args) -> anyhow::Result<()> {
     let mut drawn_listings: u64 = 0;
     // What the window keeps for commands the server has not answered yet.
     let mut pending: Vec<(u64, crate::state::Follow)> = Vec::new();
+    // The pages of the past windows asked to read and the loop has not sent yet.
+    let mut owed: Vec<String> = Vec::new();
     let result = loop {
         // Every arm keeps the keyboard branch, so no state stops it answering keys.
         let step = if let Some(open) = link.as_mut() {
@@ -634,6 +643,8 @@ pub async fn interactive(args: &link::Args) -> anyhow::Result<()> {
             // Not input: the key changed nothing to submit. The drain below is
             // what the completion was waiting for.
             Step::Input(Some(UiEvent::Recomplete)) => {}
+            // A scroll past the oldest row a window holds: a page above it.
+            Step::Input(Some(UiEvent::Older(names))) => owed.extend(names),
             Step::Input(Some(UiEvent::Quit)) => break Ok(()),
             // A gesture of the window's own: an operation, not a line.
             Step::Input(Some(UiEvent::Operate(operation))) => {
@@ -788,7 +799,7 @@ pub async fn interactive(args: &link::Args) -> anyhow::Result<()> {
         // Same place, same reason: what a frame drew decides what is fetched.
         answer_transcripts(&mut client, link.as_ref(), &mut ui).await;
         // And what the operator asked to read above: a page of the past.
-        answer_older(&mut client, link.as_ref(), &mut ui).await;
+        answer_older(&mut client, link.as_ref(), &mut ui, &mut owed).await;
     };
 
     // SPEC's stop, for the server the bar drew as own, and nothing for one that is

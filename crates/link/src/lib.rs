@@ -1773,6 +1773,16 @@ impl Client {
         self.begin_fill(name, range, first, false, false)
     }
 
+    /// Whether a refill of this window is already on its way.
+    ///
+    /// # Invariant
+    ///
+    /// Asked by a caller whose request was refused for that reason alone: a fill
+    /// answers the page it was asked for, and the caller's own request waits for it.
+    pub fn waiting(&self, name: &str) -> bool {
+        self.sync.get(name).is_some_and(|sync| sync.fill.is_some())
+    }
+
     /// Asks the server for the page of rows just above the oldest one the window
     /// holds, sized by what a pane can draw.
     ///
@@ -2725,7 +2735,7 @@ impl Greeting {
 ///
 /// # Invariant
 ///
-/// No state is read: `cli.toml` is the window's, and a one-shot command names
+/// No state is read: `tui.toml` is the window's, and a one-shot command names
 /// every argument it means. The home is here for one reason -- where `skills/`
 /// is read from -- and never for anything this process would write.
 pub fn build_client(args: &Args) -> Client {
