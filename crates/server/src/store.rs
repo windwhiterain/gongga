@@ -1499,7 +1499,6 @@ impl Store {
         )?;
         if origin_was_null {
             // SPEC: the first true user message is asked for a plan, one row behind it.
-            // `harness` keeps it out of operator-text readers such as `user_texts`.
             Self::append_message_conn(
                 tx,
                 session_id,
