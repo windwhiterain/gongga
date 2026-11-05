@@ -1,6 +1,4 @@
-//! Which order to emit a set in, so the prefix cache still holds most of it.
-//!
-//! See `docs/notes/server-prefix-cache.md`.
+//! Which order to emit, so the cache holds most of it: `docs/reference/cache-planning.md`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard, OnceLock};

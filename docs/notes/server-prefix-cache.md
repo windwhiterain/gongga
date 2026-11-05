@@ -2,6 +2,10 @@
 
 ## module doc
 
+The design is not this file's invention: it is the author's own write-up, quoted in
+`docs/reference/cache-planning.md`, where a harness simulates a cache tree at its level,
+a node is a piece of memory, and the cheapest node's order becomes the system prompt.
+
 A provider caches the prefix of every request it served, and bills the part it can
 reuse at a fraction of a fresh token. The cache is keyed by the bytes, so the only
 thing that matters about an ordering is *how far from the front it still matches
