@@ -10,6 +10,9 @@ pub const HEADER_LEN: usize = 26;
 /// Default maximum datagram size; 1200 keeps a full frame under the Internet safe MTU.
 pub const DEFAULT_MTU: usize = 1200;
 
+/// Loopback MTU: fewer frame headers, still far under UDP's 65507 limit.
+pub const LOOPBACK_MTU: usize = 8192;
+
 /// Payload budget for a single fragment.
 pub const fn payload_capacity(mtu: usize) -> usize {
     mtu.saturating_sub(HEADER_LEN)

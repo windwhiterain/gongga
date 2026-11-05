@@ -173,6 +173,15 @@ fn peer_path(home: &str, named: &str) -> String {
     format!("{}/{}", home.trim_end_matches('/'), named)
 }
 
+/// The skill that teaches how a session on a peer is put together.
+///
+/// # Invariant
+///
+/// Seeded into the index of every session whose directory is on a peer, because the
+/// tool instructions deliberately say nothing about the two machines: a model that is
+/// never told reads `remote_bash` as a second `bash`. See `docs/notes/server-meta.md`.
+pub const REMOTE_SKILL: &str = "remote";
+
 /// The file a directory keeps its standing rules in.
 ///
 /// # Invariant
@@ -195,6 +204,12 @@ pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root>
     let first = format!("@{}({})", Reference::File.name(), RULES);
     let mut queue: Vec<String> = vec![first.clone()];
     let mut seen: Vec<String> = vec![first];
+    // The shape of a session on a peer, told to it without being asked.
+    if source.machine() == crate::session::Machine::Remote {
+        let skill = format!("{}{}", Reference::Skill.prefix(), REMOTE_SKILL);
+        seen.push(skill.clone());
+        queue.push(skill);
+    }
     let mut out: Vec<Root> = Vec::new();
     for text in texts {
         for mention in mentions(text) {

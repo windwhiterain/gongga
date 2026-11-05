@@ -86,6 +86,27 @@ Two consequences, both accepted:
   `cd` are unaffected; a model that `cd`s and then names `src/x.rs` means `home/src/x.rs`,
   so it should write the full path.
 
+## A session on a peer is handed the `remote` skill
+
+`roots` seeds two references no message named: `AGENTS.md`, which is the rules of where
+the session stands, and — when the session's directory is on a peer — `@skill:remote`.
+The second is there because the tool instructions deliberately say nothing about the two
+machines (a description states what its tool is, and how two machines relate is prose).
+A model that is never told reads `remote_bash` as a second `bash`, which is what it did
+before this: one turn spent on a tool that could only refuse, and then a search for the
+same thing under another name.
+
+The seeding is by machine, not by message: `Source::machine` is `Remote` for a session
+placed on a peer and for one whose peer is unreachable, and the skill's body is read from
+this machine's own home either way. A session on this machine gets nothing — its index
+does not grow by a skill it has no use for.
+
+Measured on a real server, three cases: a local session's request carries no
+`@skill:remote`; a session created with `--remote` carries it, body and all, in its first
+request; and a session created here and then moved carries it from the first request
+after the move (the request before it does not), together with the card that names the
+peer.
+
 ## `roots` is the walk
 
 `roots` is the walk: breadth first, first seen, once each. A file that names itself, or

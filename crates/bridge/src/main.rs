@@ -641,7 +641,8 @@ async fn dial(
         )
     })?;
     let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-    let channel = protocol::connect(socket, addr, ChannelConfig::default()).await?;
+    let channel =
+        protocol::connect(socket, addr, ChannelConfig::default().tune_for_peer(addr)).await?;
     let (sink, mut stream) = channel.split();
     let hello = ClientMessage::Hello {
         client: ClientInfo {

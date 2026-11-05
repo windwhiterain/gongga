@@ -149,15 +149,17 @@ are laid out in this order, so a name that moves takes the operator's pane with 
 That cost is accepted now: the session being worked on is the one to find, so the row
 that finished a turn moves to the end of the list, where the next one will be.
 
-A home written before the column existed is backfilled once, in `migrate`
-(`backfill_ended_at`): a session's `ended_at` becomes the time of its transcript's
-last row, which is written by its last turn. It runs only while every row still
-answers `NULL`, so it cannot restamp a home that has already ended a turn, and a
-session with no rows keeps `NULL` -- it never ended one, and `created_at` is what
-the order says for it. Without this, every session whose last turn ended before
-the upgrade sorted by creation time, which read as "the list is still ordered by
-when sessions were made". `updated_at` was the other candidate and is worse: it
-also moves when a model is chosen, and it is written after the last row.
+A session with a transcript and no stamp is repaired at start, in `migrate`
+(`backfill_ended_at`): its `ended_at` becomes the time of its last row, which is
+written by its last turn. That condition is the whole of it -- a session with no
+rows never ended a turn and keeps `NULL`, and the order says `created_at` for it --
+so the repair is safe to run every start, and it is what makes an older build's
+home right again after this one has stamped only the turns that ended since. The
+first shape of this checked "no row is stamped yet", which was wrong on the home
+that mattered: it had a handful of stamped rows and twenty-six old ones, so the
+repair skipped itself and the list still read as "ordered by when sessions were
+made". `updated_at` was the other candidate and is worse: it also moves when a
+model is chosen, and it is written after the last row.
 
 ## Store::get_session
 

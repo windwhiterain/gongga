@@ -323,25 +323,18 @@ fn add_column_if_missing(
 ///
 /// # Invariant
 ///
-/// Once, and only while every row still answers `NULL`: the last row of a
-/// transcript is written by the last turn, so its time is when that turn ended,
-/// and a session with no rows never ended one. `updated_at` would have been
-/// cheaper and wrong: a model being chosen moves it. See
-/// `docs/notes/server-store.md`.
+/// Only a session that has rows and no stamp: the last row of a transcript is
+/// written by the last turn, so its time is when that turn ended, while a
+/// session with no rows never ended one and keeps `NULL`. Safe at every start,
+/// which is what makes a home an older build wrote right again.
+/// See `docs/notes/server-store.md`.
 fn backfill_ended_at(conn: &Connection) -> rusqlite::Result<()> {
-    let pending: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sessions WHERE ended_at IS NOT NULL",
-        [],
-        |r| r.get(0),
-    )?;
-    if pending > 0 {
-        return Ok(());
-    }
     conn.execute(
         "UPDATE sessions
             SET ended_at = (SELECT MAX(m.created_at) FROM messages m
                              WHERE m.session_id = sessions.id)
-          WHERE ended_at IS NULL",
+          WHERE ended_at IS NULL
+            AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id)",
         [],
     )?;
     Ok(())
@@ -417,13 +410,15 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "cache_keepalive",
             "ALTER TABLE sessions ADD COLUMN cache_keepalive INTEGER NOT NULL DEFAULT 0",
         ),
-        (
-            "ended_at",
-            "ALTER TABLE sessions ADD COLUMN ended_at INTEGER",
-        ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
+    add_column_if_missing(
+        conn,
+        "sessions",
+        "ended_at",
+        "ALTER TABLE sessions ADD COLUMN ended_at INTEGER",
+    )?;
     backfill_ended_at(conn)?;
     settle_handover(conn)?;
     // An old row needs a name before it can be listed or deleted.
