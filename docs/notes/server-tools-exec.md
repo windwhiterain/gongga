@@ -50,3 +50,16 @@ them afterwards is the program's own business.
 Refused. An argument ends at a NUL for every program there is, so a word
 holding one can only arrive as a different word -- silently. The call is
 refused instead, and the refusal says why.
+
+## A wait that is cut
+
+A message, or a cancelled turn, ends the wait in `ToolRegistry::run` for every
+tool alike. `exec` is the tool for which that is a stopping, not a pausing: a
+program started here has no shell to be left running in, so the future is dropped
+and the program with it -- `kill_on_drop` on this machine, the connection's close
+on the peer. The call answers with that, and with the two facts a cut leaves
+unknown: what it printed after that point, and its exit status.
+
+`bash` can do better, and does: a command in a shell outlives the call that
+started it. The difference is the shell, not the tool, which is why it is
+described once in the `exec` and `bash` notes rather than guessed per tool.

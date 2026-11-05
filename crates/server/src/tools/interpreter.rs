@@ -131,17 +131,17 @@ impl Interpreter {
     }
 
     /// Waits until nothing is running here, or until `wait` passes.
-    pub async fn wait_idle(&self, wait: Duration, cancel: &tokio_util::sync::CancellationToken) {
+    ///
+    /// Only a clock: the call around this is `Tools::run`'s, which ends the wait
+    /// when somebody speaks or the turn stops.
+    pub async fn wait_idle(&self, wait: Duration) {
         let deadline = std::time::Instant::now() + wait;
         while self.jobs() > 0 {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             if left.is_zero() {
                 return;
             }
-            tokio::select! {
-                _ = tokio::time::sleep(left.min(Duration::from_millis(100))) => {}
-                _ = cancel.cancelled() => return,
-            }
+            tokio::time::sleep(left.min(Duration::from_millis(100))).await;
         }
     }
 }

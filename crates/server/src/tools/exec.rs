@@ -7,14 +7,16 @@
 //! program as itself. Nothing here interprets anything, so nothing here can be
 //! made to.
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use crate::session::Machine;
 use crate::tools::exec_remote;
-use crate::tools::{Tool, ToolContext, ToolOutcome};
+use crate::tools::{Cut, Tool, ToolContext, ToolOutcome};
 
 /// What `exec` says it is: one program, its arguments, no shell.
 const EXEC_DESCRIPTION: &str = "Run one program with its arguments, without a shell. \
@@ -176,6 +178,38 @@ impl Tool for ExecTool {
                 }
                 Err(why) => ToolOutcome::err(why),
             }
+        })
+    }
+
+    /// A program run this way has no shell to be left in.
+    ///
+    /// # Invariant
+    ///
+    /// The wait is dropped with the call, and the program with the wait: a local one
+    /// is spawned `kill_on_drop`, and a peer's ends when its connection closes. What
+    /// is left to say is that the run was stopped rather than finished, and its exit
+    /// status is unknown. See `docs/notes/server-tools-exec.md`.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            // Named if the call's words could be read at all; a cut is not the place
+            // to complain about arguments the call already passed.
+            let program = match command_of(args, ctx) {
+                Ok(command) => format!("`{}`", command.program),
+                Err(_) => "the program".to_string(),
+            };
+            ToolOutcome::err(format!(
+                "{program} was stopped: {why}. A program started with `{}` has no shell to be \
+                 left running in, so it ends with the call -- what it printed after this point \
+                 is lost, and its exit status is unknown.",
+                self.name(),
+                why = why.because()
+            ))
         })
     }
 }

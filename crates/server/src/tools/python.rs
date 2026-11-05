@@ -6,7 +6,9 @@
 //! far side reads one JSON request per line and answers with one JSON line, so
 //! the protocol never depends on prompts, markers or shell quoting.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +19,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::session::Machine;
-use crate::tools::{Tool, ToolContext, ToolOutcome};
+use crate::tools::{Cut, Tool, ToolContext, ToolOutcome};
 
 const DEFAULT_NAME: &str = "default";
 
@@ -609,6 +611,51 @@ impl Tool for PythonTool {
             }
         })
     }
+
+    /// The interpreter ends with the call whose reply nobody is left to read.
+    ///
+    /// # Invariant
+    ///
+    /// A foreground call reads its own reply line under the interpreter's lock, so a
+    /// call that returns without reading it would hand that line to the next caller
+    /// as if it were the answer to a different question. Ending the interpreter is
+    /// the only way to keep "one name, one interpreter" true; the next call under
+    /// that name starts a fresh namespace. See `docs/notes/server-tools-python.md`.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = args["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(DEFAULT_NAME)
+                .to_string();
+            let handle = ctx.pythons.lock().await.get(&name).cloned();
+            if let Some(handle) = handle {
+                handle.kill().await;
+                let mut pythons = ctx.pythons.lock().await;
+                if pythons
+                    .get(&name)
+                    .is_some_and(|current| Arc::ptr_eq(current, &handle))
+                {
+                    pythons.remove(&name);
+                }
+            }
+            ToolOutcome::err(format!(
+                "the call in interpreter {name:?} was stopped: {why}. An interpreter reads one \
+                 call's reply at a time, and nobody was left to read this one, so {name:?} was \
+                 ended -- what it was running is gone and its output with it. The next `{}` \
+                 call to that name starts with a fresh namespace.",
+                self.name(),
+                why = why.because()
+            ))
+        })
+    }
 }
 
 /// The collector for interpreters: `check_bash`'s shape, for `python`.
@@ -667,7 +714,8 @@ impl Tool for CheckPythonTool {
                 .unwrap_or(Duration::ZERO)
                 .min(Duration::from_secs(600));
             if !wait.is_zero() {
-                handle.wait_idle(wait, &ctx.cancel).await;
+                // Only a clock: a message or a cancel ends this from `waited`.
+                handle.wait_idle(wait).await;
             }
             let text = handle.take_pending();
             let jobs = handle.jobs();
@@ -681,6 +729,28 @@ impl Tool for CheckPythonTool {
             }
             ToolOutcome::ok(format!(
                 "{text}\n[{where_it_is}: {jobs} call(s) still running]"
+            ))
+        })
+    }
+
+    /// A read never stopped anything: the calls it was waiting for are still there.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = args["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(DEFAULT_NAME);
+            ToolOutcome::err(format!(
+                "check_python stopped waiting for {name}: {}. The calls it was waiting for are \
+                 still running, and `check_python` reads what they print.",
+                why.because()
             ))
         })
     }
