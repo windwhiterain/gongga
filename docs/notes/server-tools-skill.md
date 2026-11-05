@@ -69,9 +69,11 @@ to open the body, and the body is what costs context. A row is `name`, `descript
 and `bucket` -- the four things needed to decide *and* to open, since `path` is the
 `SKILL.md` `@skill:` hands out.
 
-The rows are ordered by the prefix-cache plan for the session's owner, so a table that has
-not changed is not re-paid for by a new session in the same directory. That is an ordering
-of the same rows, never a filter: a skill that is installed appears, whatever the plan says.
+The order is the walk's: project, then the home, then the machine, and whatever order each
+root's directory listing gives. It is not the prefix-cache plan -- `plan` answers what goes
+into the first turn's meta index and in what order, which is content paid once and reused by
+every later step. A tool result may be asked for at any step or never, and a listing a person
+reads has no cache to hit, so planning it would buy what the walk already gives.
 
 `skill ls` in the command layer prints those four columns, asking this tool when the shell
 names a session (`GONGGA_SESSION`) and walking the roots itself when it does not: a shell

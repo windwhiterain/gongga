@@ -29,7 +29,6 @@ pub async fn run(
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let model = handle.tuning().model.unwrap_or_default();
     let ctx = crate::tools::ToolContext {
         session: session.to_string(),
         call_id: format!("cmd-{}", uuid::Uuid::new_v4().simple()),
@@ -49,8 +48,6 @@ pub async fn run(
             refusal: String::new(),
         },
         inbox: handle.inbox_signal(),
-        rates: agent.rates(&model),
-        model,
         closing: handle.closing_signal(),
     };
     let outcome = agent.tools.run(tool, args, &ctx).await;

@@ -219,11 +219,12 @@ never held is a miss rather than an error; the first request after that failure 
 what actually went out. Making that exact would mean dropping unconfirmed nodes, which is
 worth doing when something else needs the distinction.
 
-The skill table's ordering (`tools/skill`) is planned the same way but has no
-confirm: it is a tool result inside the transcript, so it is not a prefix the provider
-holds for the *next* request's sake. Its nodes now expire with their tier and the table
-falls back to the caller's order -- no behaviour change, because the row was already
-written and replayed verbatim.
+The skill table was once planned the same way and no longer is. `plan` answers a
+different question: *what content goes into the first turn's meta index, in what order*.
+That injection is paid once and reused by every later step of the conversation, which is
+why its order is worth a cost model. A `skill` call is a tool result the agent may make
+at any time, or never; a listing a person reads has no cache to hit at all. Sorting the
+table by a plan bought nothing the walk's own order does not, so the rows are the walk.
 
 `expire` runs first, before anything reads a node index. A stale node takes its whole
 subtree with it, because a provider's cache is a prefix -- if the front of a chain is

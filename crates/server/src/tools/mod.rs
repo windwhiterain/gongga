@@ -77,10 +77,6 @@ pub struct ToolContext {
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
     pub inbox: crate::session::InboxSignal,
-    /// The model this turn runs on, for the token ratio.
-    pub model: String,
-    /// What a plan for that model is priced at, from the roster and this machine.
-    pub rates: crate::prefix_cache::Rates,
     /// Set when shells end because the server is going: nothing that stops then finished.
     pub closing: Arc<std::sync::atomic::AtomicBool>,
 }

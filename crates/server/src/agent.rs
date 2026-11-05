@@ -1285,8 +1285,6 @@ impl Agent {
             cwd: session.cwd(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
-            rates: self.rates(&model),
-            model: model.clone(),
             closing: session.closing_signal(),
         };
         let run_started = std::time::Instant::now();
