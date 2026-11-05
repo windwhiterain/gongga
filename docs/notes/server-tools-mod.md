@@ -154,6 +154,13 @@ One reading of the two forms, in `command_line`: the model is not asked to
 choose a different tool, and the tool is not asked to guess which shape it was
 given.
 
+## A word holding a NUL
+
+Refused, because it cannot arrive as the word that was sent: an argument ends at a
+NUL for every program there is, and the shell drops the byte when it reads the
+line. The agent would get a word it never wrote -- a different word, silently --
+so the call is refused instead, and the refusal says why.
+
 ## BashTool::run (the `description` argument)
 
 Two readers, one string: the call's row (SPEC's `toolcall{tool_name·description}`)

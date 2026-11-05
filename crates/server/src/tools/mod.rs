@@ -781,6 +781,15 @@ fn command_line(value: Option<&Value>) -> Result<String, String> {
                         kind = json_type(word),
                     ));
                 };
+                // A NUL ends an argument for every program there is, so a word
+                // holding one arrives as a different word. Refuse it.
+                if word.contains('\0') {
+                    return Err(
+                        "bash received a word holding a NUL byte, which no program could \
+                         receive: an argument ends at a NUL, so it would arrive truncated"
+                            .to_string(),
+                    );
+                }
                 quoted.push(bash::shell_quote(word));
             }
             Ok(quoted.join(" "))
