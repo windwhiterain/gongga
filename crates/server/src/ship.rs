@@ -104,8 +104,28 @@ enum RetiredRoot {
     Machine,
 }
 
+/// The repository a home named in its own config, kept until the first lookup.
+static NAMED: OnceLock<Option<String>> = OnceLock::new();
+
+/// Tells the lookup which repository this home installs from.
+///
+/// # Invariant
+///
+/// Called before the first [`link`]: the resolve is memoized for the process, so a
+/// URL arriving after it would be a second content for one server. `lib.rs` calls
+/// this straight after the config is read and before anything resolves.
+pub fn remember_url(url: Option<String>) {
+    let _ = NAMED.set(url);
+}
+
 /// The manifest this build carries. A manifest that does not parse is a build bug,
 /// not a runtime condition.
+///
+/// # Invariant
+///
+/// Three answers, most specific first: `GONGGA_SHIP_URL` (one run, one shell, what a
+/// script and a test speak), then `[ship] url` in this home's config (a machine
+/// developing the content points it at its own checkout), then the compiled one.
 pub fn link() -> &'static Link {
     static LINK: OnceLock<Link> = OnceLock::new();
     LINK.get_or_init(|| {
@@ -113,7 +133,9 @@ pub fn link() -> &'static Link {
             Ok(m) => m.ship,
             Err(e) => panic!("crates/server/ship.toml does not parse: {e}"),
         };
-        // Same shape as the roster's `GONGGA_PROVIDERS_CATALOG`: the one remote.
+        if let Some(url) = NAMED.get().and_then(|url| url.clone()) {
+            link.url = url;
+        }
         if let Some(url) = std::env::var_os("GONGGA_SHIP_URL") {
             link.url = url.to_string_lossy().into_owned();
         }

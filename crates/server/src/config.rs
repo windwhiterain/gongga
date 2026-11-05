@@ -93,6 +93,9 @@ pub struct Config {
     /// Room left below which this server says the disk is out of room. See
     /// `docs/notes/server-disk.md`.
     pub disk_low: u64,
+    /// `[ship] url`: where this home's content comes from, when it is not the
+    /// compiled one. A local path is what a machine developing the content uses.
+    pub ship_url: Option<String>,
 }
 
 /// The model the server talks to by default: which provider serves it, and how.
@@ -298,6 +301,7 @@ struct FileConfig {
     #[serde(alias = "targets")]
     remotes: Option<std::collections::BTreeMap<String, crate::remotes::FileRemote>>,
     scripts: Option<FileScripts>,
+    ship: Option<FileShip>,
     agent: Option<FileAgent>,
     transport: Option<FileTransport>,
 }
@@ -310,6 +314,14 @@ struct FileServer {
     /// Room left below which the disk counts as out of room, in MiB; `0` turns the
     /// reading off.
     disk_low_mb: Option<u64>,
+}
+
+/// `[ship]`: the content this home installs, and where it is fetched from.
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct FileShip {
+    /// A URL, or a path a machine keeps its own content in. Nothing here names a
+    /// commit: which one is installed is still the protocol's question.
+    url: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -688,6 +700,13 @@ impl Config {
             .unwrap_or(DEFAULT_DISK_LOW_MB)
             .saturating_mul(1024 * 1024);
 
+        // An empty line is the compiled URL, not a repository called nothing.
+        let ship_url = file
+            .ship
+            .and_then(|s| s.url)
+            .map(|url| url.trim().to_string())
+            .filter(|url| !url.is_empty());
+
         Ok(Self {
             config_path: std::path::absolute(&config_path).unwrap_or(config_path),
             home,
@@ -702,6 +721,7 @@ impl Config {
             agent,
             transport,
             disk_low,
+            ship_url,
         })
     }
 }

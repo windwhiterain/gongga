@@ -22,9 +22,37 @@ different layout. A wording fix, a new skill or a retired path is content, and c
 never needs a new build.
 
 A manifest that does not parse is a build bug, so `link()` panics instead of degrading
-into a server that installs nothing. `GONGGA_SHIP_URL` overrides the URL alone, which
-is how a test drives a throwaway repository and how a person develops against a local
-checkout.
+into a server that installs nothing.
+
+## which repository, and whose answer it is
+
+Three answers, most specific first, and one of them is a fact about a home rather than
+about a build:
+
+| written where | who it is for | how it is spelled |
+| --- | --- | --- |
+| the environment | one run: a test, a shell, a throwaway repository | `GONGGA_SHIP_URL` |
+| this home's config | a machine developing the content | `[ship] url = "C:/work/gongga-ship"` |
+| this build | everybody else | `[ship] url` in `crates/server/ship.toml` |
+
+The middle one is what a developer needs and the environment cannot give: the URL
+belongs to the *home*, so a window started tomorrow installs from the same place, and
+two homes on one machine may install from two checkouts. `adopt` follows the change --
+it re-points the home's `origin` -- so switching a home between the published content
+and a local checkout is a restart, and switching back is the same edit removed.
+
+A local path costs nothing to fetch and needs no push: the working tree a person edits
+*is* the remote. What it does not change is which commit is installed: the protocol
+still decides that, and a local `main` that has not moved still installs what it said
+yesterday. In practice a development loop advances `main` in the local content
+repository (`git -C ship merge --ff-only local`) and the next start installs it --
+one local fetch, no network.
+
+One home per process, and one URL: the resolve is memoized (`CONTENT`), so the first
+answer is the server's answer. `remember_url` is therefore called from `lib.rs`
+immediately after the config is read, before `prepare` can resolve anything -- a URL
+arriving later would be a second content for one server, which is the shape of bug
+that shows up as "some sessions read the new skill and some the old".
 
 ## Roots, machine_root, checkout
 
