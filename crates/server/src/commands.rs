@@ -2348,17 +2348,26 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
             continue;
         };
-        // A notice about work the last run took names nothing readable: stale.
-        // `announce_owed` says what that run still owed.
+        // A `job` row speaks through `announce_owed`; a shell's buffer is gone.
         let mut kept = Vec::with_capacity(tasks.len());
         let mut dropped = 0;
+        let mut lost: Vec<String> = Vec::new();
         for task in tasks {
-            if matches!(task.payload["notice"].as_str(), Some("background" | "job")) {
-                let _ = d.store.delete_pending_task(task.id);
-                dropped += 1;
-                continue;
+            match task.payload["notice"].as_str() {
+                Some("background") => {
+                    let said = task.payload["message"].as_str().unwrap_or("").trim();
+                    if !said.is_empty() {
+                        lost.push(said.to_string());
+                    }
+                }
+                Some("job") => {}
+                _ => {
+                    kept.push(task);
+                    continue;
+                }
             }
-            kept.push(task);
+            let _ = d.store.delete_pending_task(task.id);
+            dropped += 1;
         }
         if dropped > 0 {
             tracing::info!(
@@ -2367,13 +2376,18 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             );
         }
         // Said as a message, not a notice: this one has to wake the session.
-        if dropped > 0 {
-            let message = format!(
-                "{dropped} piece(s) of work you were told would report did not outlive the \
-                 server that was running them: they were jobs of that run, so what they \
-                 printed went with it. Nothing of theirs is left to read -- run them again \
-                 if it mattered."
+        if !lost.is_empty() {
+            let mut message = String::from(
+                "Work you were told would report did not outlive the server that was running \
+                 it, so what it printed went with that process and there is nothing left to \
+                 read. These are the notices you can no longer act on:\n\n",
             );
+            for said in &lost {
+                message.push_str("-- ");
+                message.push_str(said);
+                message.push_str("\n\n");
+            }
+            message.push_str("Run them again if it mattered.");
             let payload = json!({"session": name, "message": message});
             match d.store.add_pending_task(&name, "inject", &payload) {
                 // In `kept`: what owes a turn has to be a task this pass knows about.
