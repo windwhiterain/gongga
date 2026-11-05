@@ -26,6 +26,7 @@ mod probe;
 mod process;
 mod prompts;
 mod providers;
+mod pylib;
 mod quota;
 pub mod remote;
 pub mod remotes;
@@ -264,6 +265,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
     let bus = EventBus::new(4096);
 
+    // Where a session's Python imports the skill contract and the client.
+    let skill_lib = match pylib::install(&cfg.home) {
+        Ok(dir) => Some(dir),
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot install gongga_skill.py; a package skill's Python will not find it");
+            None
+        }
+    };
+
     // A provider's own picture is kept beside the home, not in the transcript.
     blobs::install(&cfg.home.join("blobs"));
     // Capped output has to go somewhere the model can read it back.
@@ -294,7 +304,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         default_context: cfg.model.context,
         tools: Arc::new(
             ToolRegistry::with_builtins(cfg.bash.timeout, cfg.bash.max_output_chars)
-                .with_python(cfg.python.clone())
+                .with_python(cfg.python.clone(), skill_lib.clone())
                 .with_skills(
                     tools::skill::programs(&cfg),
                     cfg.bash.timeout,

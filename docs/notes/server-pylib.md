@@ -1,0 +1,22 @@
+# `crates/server/src/pylib.rs`
+
+## module doc
+
+The harness's Python surface is two files, and both are installed under `<home>/lib` at
+startup: `gongga_skill.py` (the contract a package skill is run through) and `gongga.py` (a
+client for this server). They are installed rather than shipped in the binary's directory
+because a home is the thing that moves -- `--home`, a bundle's payload, a test's temporary
+directory -- and a path a caller has to guess is the thing this repository keeps failing at.
+
+## One file, several readers
+
+`gongga_skill.py` is carried by `include_str!` in two crates: the skill crate uses it as the
+`-c` driver of a package skill, and this installer writes the same bytes where a session's
+Python can import it. That is one file with two readers, not two files that agree -- the
+build fails if the path is wrong, which is exactly what happened when the module moved and
+one `include_str!` still pointed at the old directory.
+
+## Written only when it differs
+
+A restart rewrites nothing that is already right: a caller may be reading the file, and a
+mtime that changes for no reason makes every "did the installer run" question unanswerable.

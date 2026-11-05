@@ -23,6 +23,11 @@ const DEFAULT_NAME: &str = "default";
 
 pub(crate) const DRIVER: &str = r#"
 import ast, builtins, contextlib, io, json, os, stat, sys, tempfile, traceback
+# `import gongga_skill` works here: the skill contract is installed beside the home,
+# and this is the one place a session's Python learns where.
+_skill_lib = os.environ.get("GONGGA_SKILL_LIB")
+if _skill_lib and _skill_lib not in sys.path:
+    sys.path.insert(0, _skill_lib)
 _ns = {"__name__": "__main__", "__builtins__": builtins}
 
 def _atomic_write(path, data):
@@ -137,7 +142,13 @@ pub struct PythonRepl {
 }
 
 impl PythonRepl {
-    pub fn spawn(program: Option<&Path>, args: &[String], cwd: &Path) -> anyhow::Result<Self> {
+    /// Starts one interpreter; `lib` is a directory this name may import from.
+    pub fn spawn(
+        program: Option<&Path>,
+        args: &[String],
+        cwd: &Path,
+        lib: Option<&Path>,
+    ) -> anyhow::Result<Self> {
         let program = match program {
             Some(path) => path.to_path_buf(),
             None => detect()?,
@@ -153,6 +164,10 @@ impl PythonRepl {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
+        // The driver puts this on `sys.path`, so `import gongga_skill` works.
+        if let Some(lib) = lib {
+            command.env("GONGGA_SKILL_LIB", lib);
+        }
         let mut child = command
             .spawn()
             .map_err(|e| anyhow::anyhow!("spawning {}: {e}", program.display()))?;
@@ -371,6 +386,7 @@ impl PythonTool {
                 self.program.as_deref(),
                 &self.args,
                 cwd,
+                self.lib.as_deref(),
             )?)),
             Machine::Remote => {
                 let endpoint = ctx
@@ -399,6 +415,8 @@ pub struct PythonTool {
     pub args: Vec<String>,
     pub timeout: Duration,
     pub max_output_chars: usize,
+    /// Where `gongga_skill.py` sits, so this interpreter can import it.
+    pub lib: Option<PathBuf>,
 }
 
 impl Tool for PythonTool {
@@ -826,7 +844,7 @@ async fn one_shot(
     request: Value,
     timeout: Duration,
 ) -> anyhow::Result<Reply> {
-    let mut repl = PythonRepl::spawn(program, args, cwd)?;
+    let mut repl = PythonRepl::spawn(program, args, cwd, None)?;
     let reply = repl.run_request(&request, timeout).await;
     repl.kill().await;
     reply

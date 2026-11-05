@@ -56,7 +56,7 @@ impl Runner {
 /// One file, two readers: this crate runs it as the process form
 /// (`python -c <source> <dir> <argv...>`), and a Python caller imports it. It is the
 /// contract for "what a package skill runs", so nothing here re-states it.
-const PACKAGE_RUNNER: &str = include_str!("../python/gongga_skill.py");
+pub const PACKAGE_RUNNER: &str = include_str!("../../../python/gongga_skill.py");
 
 /// The file that makes a skill directory a package.
 const PACKAGE: &str = "__init__.py";

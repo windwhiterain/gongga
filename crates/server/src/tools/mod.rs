@@ -292,8 +292,12 @@ impl ToolRegistry {
         }
     }
 
-    /// Adds the persistent Python tool with the configuration the server resolved.
-    pub fn with_python(mut self, python: crate::config::PythonConfig) -> Self {
+    /// Adds the Python tools; `lib` is where `gongga_skill.py` sits.
+    pub fn with_python(
+        mut self,
+        python: crate::config::PythonConfig,
+        lib: Option<std::path::PathBuf>,
+    ) -> Self {
         let files = python.clone();
         // One implementation, two names: here, and on the session's peer.
         for machine in [Machine::Local, Machine::Remote] {
@@ -303,6 +307,7 @@ impl ToolRegistry {
                 args: python.args.clone(),
                 timeout: python.timeout,
                 max_output_chars: python.max_output_chars,
+                lib: lib.clone(),
             }));
         }
         self.tools.push(Box::new(python::ReadFileTool {

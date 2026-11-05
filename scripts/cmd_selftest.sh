@@ -250,12 +250,35 @@ ok "a function the package does not publish is refused with the list" $?
 
 inproc=$(python -c "
 import sys
-sys.path.insert(0, r'$(cygpath -m "$root")/crates/skill/python')
+sys.path.insert(0, r'$(cygpath -m "$root")/python')
 import gongga_skill
 print(gongga_skill.run(r'$(cygpath -m "$home")/skills/echo-pkg', 'echo', ['in', 'process']), end='')
 " 2>&1)
 [[ "$inproc" == *"argv: in | process"* ]]
 ok "the contract is importable: no process, no command line" $?
+
+# The Python client: one function per command the server publishes, no process and
+# no command line. It is installed beside the home like the skill contract.
+client=$(GONGGA_SERVER="127.0.0.1:$port" GONGGA_HOME="$home" python -c "
+import sys; sys.path.insert(0, r'$(cygpath -m "$home")/lib')
+import gongga
+s = gongga.connect()
+s.set_session(name='from-python', model='fake/flash-fake')
+s.pump()
+print('pid', s.pid > 0, '| sessions', 'from-python' in [x['name'] for x in s.sessions])
+try:
+    s.no_such_command()
+except AttributeError:
+    print('typo', True)
+try:
+    s.del_session(name='ghost')
+except gongga.GonggaError as refused:
+    print('refusal', str(refused))
+" 2>&1)
+{ [[ "$client" == *"pid True"* ]] && [[ "$client" == *"sessions True"* ]] && \
+  [[ "$client" == *"typo True"* ]] && [[ "$client" == *'refusal no session named "ghost"'* ]]; } && rc=0 || rc=1
+ok "import gongga: a command per function, a typo caught here, a refusal raised" $rc
+say "$client"
 
 # `index_skill` is gone: the same table is `skill` with no name, and `skill ls` asks
 # the server for it when the shell names a session.
