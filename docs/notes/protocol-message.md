@@ -51,10 +51,58 @@ whatever it is sent, which is what an absent `PerModel` key says.
 `#[serde(default)]`, so a greeting from a build without the table reads as a roster
 that publishes none.
 
+## ServerMessage::Event — the stream's cursor
+
+Every event the bus publishes is numbered: one counter for the whole server, one
+step per event, handed out where it is published and never changed. `seq` is that
+number, and it is the answer to "which of these did a client miss" without anybody
+having to guess — an event numbered above the one after the last it applied is a
+hole, and nothing in this build invents the events inside it.
+
+`None` is an event that is only *this connection's* answer: a command's own rows
+and its `cmd_result`. Those are not part of the stream everybody else sees, so they
+have no place in it; a client that treated them as news could not tell a repeat
+from a gap.
+
+The number restarts with the process, so it is only comparable with events from the
+same `ServerInfo::pid` — which is why a greeting states the position its stream
+starts from (`Hello::cursor`) rather than leaving it to be inferred.
+
+## Event::Session, Event::SessionGone, Event::Transcript
+
+A session changes as one row, and a deletion as one name. The whole table is sent
+once, by the greeting, because that is the one moment a client has none; after that
+it applies these two.
+
+`Event::Transcript` is the other half of the same idea: every stored row is followed
+by where the transcript now ends, so a client's own record of what it drew can be
+compared with the server's without either side shipping the transcript. It is a
+number about a *session*, never a line of one: no window draws it.
+
+`seq` can go backwards. A failed step's rows are truncated, and the watermark says
+so; a window that drew them is then stale in the other direction, which is why the
+comparison is "different", not "behind".
+
+## SessionInfo — transcript
+
+`transcript` is the seq of the session's last stored row, read from the transcript
+rather than counted, and it is what a greeting's session list is *for*: a client
+compares it with its own journal's stamp. Equal is in sync; behind is a gap that
+will be fetched when that window is next drawn.
+
+`created_at` sits beside it because a name the server hands out again is a different
+session whose rows start over: `seq` alone compares two unrelated transcripts
+happily, and `(created_at, seq)` does not.
+
 ## ResponsePart
 
 The SPEC models a response as `{session, reasoning, toolcall, output}`; the
 session name identifies the turn and the other three are interleaved deltas.
+
+`Input` is the operator's own words, replayed. It is never live — a message this
+client sent was drawn from its own echo — and it exists because a transcript read
+back has to put that message in the window exactly as the echo that wrote it did.
+Without it a refill would show the answer to a question nobody can see.
 
 `Activity` is a fourth: a tool the *provider* ran on its own side -- a web
 search, a web fetch, an image generation -- plus the sources it cited. It is not
@@ -295,9 +343,11 @@ directory and a front-end completing a value has to read the same one.
 ## Event::Models
 
 The roster a client completes from, republished when the file changes. The whole table
-travels, never a difference: `providers.toml` is one file a person edits, and a reader
-applying deltas would have to know what it missed while it was away -- there is no such
-state on the wire.
+travels, never a difference, and that is now the exception rather than the rule: a
+*conversation* has a stamp and a store to fetch the rest from, while this roster is one
+file a person edits, with neither -- so a reader applying differences would have to know
+what it missed while it was away, and nothing on the wire says. It changes by hand,
+rarely, and a greeting carries it anyway.
 
 It is sent after the greeting, which already carries the same list, for the window that
 stays connected while the file is edited. Nothing else in the client changes: the

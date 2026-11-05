@@ -11,13 +11,10 @@ use tokio::sync::broadcast;
 ///
 /// # Invariant
 ///
-/// A client that falls behind gets `RecvError::Lagged`. It never slows the
-/// server's throughput, and the TUI shows that it skipped frames.
-///
-/// Every event carries the stream's own cursor, handed out here and nowhere
-/// else: one counter for the whole server, one step per published event. That
-/// number is what makes "which of these did a client miss" a comparison instead
-/// of a guess -- see [`EventBus::as_of`] and [`EventBus::step`].
+/// A client that falls behind gets `RecvError::Lagged`: it never slows the server's
+/// throughput. Every event carries the stream's cursor, handed out here and nowhere
+/// else, which is what makes "what did a client miss" a comparison. See
+/// [`EventBus::as_of`] and [`EventBus::step`].
 #[derive(Clone)]
 pub struct EventBus {
     tx: broadcast::Sender<Delta>,
@@ -39,19 +36,15 @@ impl EventBus {
         self.step(|_| ((), Some(event)));
     }
 
-    /// One step of the stream: `act` runs with the stream stopped, is told the
-    /// number its event would get, and whatever it hands back is published.
+    /// One step of the stream: `act` runs with the stream stopped and is told the
+    /// number its event would get.
     ///
     /// # Invariant
     ///
-    /// The only way to change what a snapshot can see *and* publish what
-    /// explains it in one move. An open answer being written and the chunk that
-    /// carries it are updated inside one step, so a snapshot taken afterwards
-    /// has text and cursor together -- which is what lets a lazily fetched
-    /// transcript join a live stream with neither a gap nor a repeated chunk.
-    ///
-    /// `act` must not reach the bus or any other lock the snapshot path takes:
-    /// it runs under the gate, and a second lock would wait for itself.
+    /// The only way to change what a snapshot can see *and* publish what explains it
+    /// in one move: an answer being written and the chunk that carries it land
+    /// together, so a snapshot afterwards has text and cursor together. `act` must not
+    /// reach the bus, nor a lock the snapshot path takes, or it waits for itself.
     pub fn step<T>(&self, act: impl FnOnce(u64) -> (T, Option<Event>)) -> (u64, T) {
         let mut inner = self.seq.lock().unwrap_or_else(|e| e.into_inner());
         let next = *inner + 1;

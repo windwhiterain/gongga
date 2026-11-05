@@ -56,14 +56,13 @@ pub enum Record {
     /// with: `created` is the session's, so a name the server handed out again is
     /// not mistaken for the transcript this one drew. See `docs/notes/tui-cache.md`.
     Stamp { created: i64, seq: i64 },
-    /// Everything recorded above this, from the last `Stamp`, is thrown away: the
-    /// server is about to send the window's tail again.
+    /// Everything above the last `Stamp` is thrown away: the server resends it.
     ///
     /// # Invariant
     ///
-    /// Written before the refill's blocks and read by the replay that rebuilds
-    /// the window, so a restart in the middle of a refill neither loses the rows
-    /// below the stamp nor keeps the half-written block it replaced.
+    /// Written before the refill's blocks, and read by the replay that rebuilds the
+    /// window: a restart mid-refill neither loses the rows below the stamp nor keeps
+    /// the half-written block it replaced.
     Rewind,
     /// A block as it stands: created, relabelled, described, opened or closed.
     Seal {

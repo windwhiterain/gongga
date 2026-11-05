@@ -35,6 +35,18 @@ started from it; four things it did not have to care about cost an hour each:
 - **`ack` is the peer's last sequence**, not zero. The handshake tolerates zero; a command
   after it does not.
 
+## `_event` — three envelopes, not two
+
+An event carries one more layer than the section below describes: the server now
+sends `{"t": "event", "v": {"seq": n, "event": {...}}}`, where `seq` is the
+server's stream cursor and is absent on an event that is only this connection's
+answer. `_event` answers the inner event and the number; a program that wants to
+know whether it missed anything compares numbers, and one that does not could not
+care.
+
+The session list is a delta now too: `session` upserts one row and `session_gone`
+drops a name, so `server.sessions` is maintained rather than replaced.
+
 ## call(command, /, **arguments)
 
 Positional-only, because commands have arguments called `name` (`set_session` has one, and

@@ -1845,8 +1845,7 @@ impl Log {
         let live = self.take_window(window);
         self.drop_window(window);
         let mut ids: HashMap<u64, usize> = HashMap::new();
-        // Where a `Rewind` in this stretch cuts: the newest stamp at or before
-        // the first record read, moved forward as the walk meets later ones.
+        // Where a `Rewind` here cuts: the newest stamp at or before the first record.
         let mut cut = self.cache.stamp_at(window, start).map(|(at, _, _)| at);
         for (at, record) in self.cache.forward(window, start) {
             self.apply(window, at, &record, &mut ids, &mut cut);
@@ -1962,13 +1961,9 @@ impl Log {
                     ids.insert(*id, place);
                 }
             },
-            // A stamp is a position in the file, not a block: what it says is
-            // read from the journal itself, so a replay only has to keep going.
-            // A stamp is a position in the file, not a block: it says where a
-            // later `Rewind` cuts, and nothing is drawn from it.
+            // Not a block: it says where a later `Rewind` cuts.
             Record::Stamp { .. } => *cut = Some(at),
-            // What the journal says to throw away, thrown away again on the way
-            // forward: the records above it are the refill's blocks.
+            // Thrown away again on the way forward: what is above it is the refill.
             Record::Rewind => {
                 let window = window.to_string();
                 self.cut_tail(&window, *cut);

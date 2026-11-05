@@ -180,11 +180,7 @@ async fn answer_transcripts(client: &mut cli::Client, link: Option<&cli::Link>, 
     let Some(open) = link else {
         return;
     };
-    let behind: Vec<String> = client
-        .behind()
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
+    let behind: Vec<String> = client.behind().into_iter().map(|(name, _)| name).collect();
     for name in behind {
         if !ui.drawn().iter().any(|drawn| *drawn == name) {
             continue;

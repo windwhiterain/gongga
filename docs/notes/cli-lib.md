@@ -384,10 +384,54 @@ anything.
 
 ## Client::handle — the greeting
 
-A greeting *is* the recovery. There is no separate resync path: the same message
-that starts a session also hands back the catalog and the session list, so a
-client that redials after a restart comes up knowing exactly what a fresh one
-does. That is the whole reason reconnecting is cheap.
+A greeting is the *verdict*, not the recovery. It hands back the catalog, the
+session list and — for every session — where that session's transcript now ends
+(`SessionInfo::transcript`). What it does not hand back is the transcript itself:
+a client compares those stamps with what its own journal says it drew, and the
+windows that come out behind are fetched when they are next drawn.
+
+That is the whole reason reconnecting is cheap in the case that used to be
+expensive: a server with forty sessions sends forty numbers, and the one window
+the operator is reading costs one fetch.
+
+## Client's sync state
+
+`Client` keeps, per session, two numbers and a small amount of bookkeeping: what
+the server says the transcript ends at, what the front-end declared its journal
+holds, and the refill in flight, if any. `declare_drawn` is the front-end's half
+(the journal is its fact, not this layer's), `behind`/`behind_one` is the
+comparison, and `ask_transcript` is the question — `get_messages --replay true
+--range <from>:`, never echoed, because it is the window's own line and not the
+operator's.
+
+Three states, because "I have nothing" is not "I am behind":
+
+| declaration | means | what happens |
+| --- | --- | --- |
+| nothing | no journal at all | nothing owed; the window starts from what arrives now |
+| `At { created, seq }` | this is what my record ends at | compared with the server's stamp |
+| `Lost` | the stream skipped events | the window holds what cannot be trusted: one whole read replaces it |
+
+A `created_at` that moved means a name was reused, so the journal's number
+belongs to another session and the declaration is dropped.
+
+## A refill's answer
+
+`get_messages --replay true` answers with the events a window drew — the same
+`response`/`tool_call`/`tool_answer` shapes, `Input` for the operator's own
+messages, and the parts still streaming under the turn they belong to — preceded
+by nothing and followed by a `cmd_result` carrying `last_seq` and `as_of`.
+
+`as_of` is the stream position the answer is a picture of, taken inside the same
+gate the bus publishes through. That is what makes the join exact: an event
+buffered while the answer was on its way is either already inside it
+(`seq <= as_of`, dropped) or news (`seq > as_of`, applied after). Without the
+number a refill either repeats the tail of an answer or loses it.
+
+The first event of the answer is what makes room: `Sink::forget` for a whole
+read, `Sink::rewind` for a tail — the half-written block no stored row accounts
+for. A refused refill is recorded and not retried until the next link, so a
+window cannot spin at frame rate asking for something the server refuses.
 
 ## Client::handle_event
 

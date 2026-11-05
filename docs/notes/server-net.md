@@ -13,6 +13,20 @@ the last of those off to the side, so that neither of the other two waits for it
 Command echoes and results are RPC on their requesting connection. The event bus
 is reserved for genuinely shared response, tool, status, and log events.
 
+## The greeting's cursor, and the bus gate
+
+A greeting states the stream position this connection starts from, so a client
+knows the first number it should see. Every event after it is numbered above, and
+a number that is not the one after the last is a hole.
+
+A lazily fetched transcript is read inside `EventBus::as_of`: the rows, the parts
+still streaming and the number are all taken with publishing stopped, so the answer
+is a picture of one instant rather than of two. The same gate is what
+`EventBus::step` uses to keep an open answer's text and its stream number together.
+
+`as_of` runs its closure under the gate, so it must not publish — and what it reads
+must not hold a lock a publisher takes, or the two would wait for each other.
+
 ## Peer
 
 `conn_id` makes release safe: if a client reconnects from the same address before

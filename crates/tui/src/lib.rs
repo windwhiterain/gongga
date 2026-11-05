@@ -766,8 +766,7 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// The windows a frame drew last: what a lazy fetch may spend on. A window
-    /// nobody draws costs nothing, which is the point of asking here.
+    /// The windows a frame drew last: a window nobody draws costs nothing.
     pub fn drawn(&self) -> &[String] {
         self.screen.panes.drawn()
     }

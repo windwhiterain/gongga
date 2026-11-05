@@ -76,6 +76,20 @@ gives up instead of writing to a session that no longer exists.
 
 `interrupt_session` leaves this false, because there "stop" means "drop it".
 
+## SessionHandle::open — the part still being written
+
+The text of an item the model is still streaming, kept per part and dropped the
+moment its row is written. It exists for one reader: a window that reconnected
+mid-answer. The transcript has no row for what has not finished, and the draft on
+disk is flushed every quarter second, so without this the tail of the answer would
+be lost for good.
+
+Every update happens inside `EventBus::step`, which is what makes a snapshot exact
+with respect to the stream's cursor: the text and the chunk that carries it land in
+one step, so a reader that takes the text afterwards also knows every chunk it
+already contains. `open_clear` at the end of a turn is the backstop: no part
+outlives the turn that wrote it.
+
 ## SessionHandle::close_shells
 
 A persistent shell is a child process that never exits by itself, so leaving one

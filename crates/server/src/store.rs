@@ -1716,9 +1716,7 @@ impl Store {
         }
     }
 
-    /// Delivers current injected messages and removes their inbox rows in one transaction.
-    /// Answers how many it delivered, how long the oldest waited, and the seq of
-    /// the last row it wrote -- the watermark the caller announces.
+    /// Delivers the inbox in one transaction: how many, the longest wait, the last seq.
     pub fn deliver_pending(
         &self,
         session_id: i64,

@@ -499,15 +499,10 @@ struct SessionInner {
     ///
     /// # Invariant
     ///
-    /// What a refill sends besides the stored rows, and the only copy of the
-    /// text between the last stored row and now: the drafts on disk are flushed
-    /// every quarter second, so a window that reconnected mid-answer would
-    /// otherwise lose that tail for good.
-    ///
-    /// Every update happens inside the event bus's own step (see
-    /// [`crate::bus::EventBus::step`]), which is what makes a snapshot of this
-    /// exact with respect to the stream's cursor: text and number are read
-    /// together or not at all.
+    /// What a refill sends besides the stored rows, and the only copy of the text
+    /// after the last row: the drafts on disk lag by a quarter second, so a window
+    /// that reconnected mid-answer would otherwise lose that tail. Every update lands
+    /// inside [`crate::bus::EventBus::step`], so text and cursor are read together.
     open: Mutex<Vec<OpenPart>>,
     /// A move asked for while a turn held the session, waiting for that turn to end.
     ///

@@ -68,14 +68,10 @@ pub enum ServerMessage {
         ///
         /// # Invariant
         ///
-        /// A greeting is the one place the whole table is sent, because it is
-        /// the one moment a client has none. Every later change arrives as one
-        /// [`Event::Session`], so a client never has to work out which rows a
-        /// republished table would have added or taken away.
-        ///
-        /// Each row's [`SessionInfo::transcript`] is what the client compares
-        /// its own journal against: equal means nothing was missed, behind means
-        /// there is a gap to fetch when that window is next read.
+        /// A greeting is the one place the whole table is sent, because it is the one
+        /// moment a client has none; every later change is one [`Event::Session`]. Each
+        /// row's [`SessionInfo::transcript`] is what a client's own record is compared
+        /// with, and a difference means a gap to fetch when that window is read.
         sessions: Vec<SessionInfo>,
         /// The models a request could run on here, and what each of them takes.
         #[serde(default)]
@@ -93,16 +89,14 @@ pub enum ServerMessage {
     },
     /// The key was wrong. The connection is closed right after this.
     Denied { reason: String },
-    /// A single streamed observable, and where it sits in the stream.
+    /// One streamed observable, and where it sits in the stream.
     ///
     /// # Invariant
     ///
-    /// `seq` is the stream's own cursor: one counter for the whole server, one
-    /// step per event the bus published, so a client that received every one of
-    /// them has a number, and a client that skipped one sees the jump. `None` is
-    /// an event that is only this connection's answer -- a command's rows or its
-    /// result -- and so has no position in the stream everybody else sees. See
-    /// `docs/notes/protocol-message.md`.
+    /// `seq` is the stream's cursor: one counter, one step per published event, so a
+    /// client that skipped one sees the jump. `None` is an event that is only this
+    /// connection's answer -- a command's rows or its result -- and so has no place in
+    /// the stream everybody else sees. See `docs/notes/protocol-message.md`.
     Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<u64>,
@@ -206,16 +200,14 @@ pub enum Event {
     Session { session: SessionInfo },
     /// A session is gone: a window named after it is emptied.
     SessionGone { name: String },
-    /// How far one session's transcript has grown: every row up to `seq` is now
-    /// written down, and the events that drew it have already been published.
+    /// Where one session's transcript ends: every row up to `seq` is written down.
     ///
     /// # Invariant
     ///
-    /// The watermark a client keeps, not a fact about a window. A client that has
-    /// drawn every event up to this one has drawn every row up to `seq`, which is
-    /// what makes "am I behind" a comparison of two numbers rather than a scan.
-    /// `seq` can go backwards: a failed step's rows are truncated, and a window
-    /// that drew them is then stale in the other direction.
+    /// The watermark a client keeps, not a fact about a window: one that drew every
+    /// event up to this has drawn every row up to `seq`. It can go backwards -- a
+    /// failed step's rows are truncated -- so "different" is the comparison, not
+    /// "behind".
     Transcript { session: String, seq: i64 },
     /// The models a request could run on here changed.
     ///

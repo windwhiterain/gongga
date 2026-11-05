@@ -189,8 +189,7 @@ async fn handle_connection(
     };
 
     let mut bus_rx = bus.subscribe();
-    // Where this connection's stream begins: everything the bus publishes from
-    // now on is numbered above it, so a client can tell what it may have missed.
+    // Where this connection's stream begins: what is published later is numbered above.
     let cursor = bus.position();
     // Commands run elsewhere: one must not hold up the events owed here.
     // See `docs/notes/server-net.md`.

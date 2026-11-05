@@ -125,9 +125,7 @@ impl Agent {
                 (TurnOutcome::Failed, 0)
             }
         };
-        // No part outlives the turn that wrote it: what is left here is text
-        // whose row was never written, and a refill would send it as if it were
-        // still arriving.
+        // No part outlives its turn: what is left is text whose row was never written.
         session.open_clear();
         // The turn's own words ride the row: a subscriber reads them there.
         let answer = self
@@ -1534,9 +1532,7 @@ impl Agent {
                     )),
                     // A call's text is its arguments; an activity is progress;
                     // the operator's words are not the model's to store.
-                    ResponsePart::ToolCall
-                    | ResponsePart::Activity
-                    | ResponsePart::Input => None,
+                    ResponsePart::ToolCall | ResponsePart::Activity | ResponsePart::Input => None,
                 };
                 if let Some((kind, payload)) = stored {
                     self.announce_row(name, self.store.append_message(id, kind, &payload));

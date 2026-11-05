@@ -1038,8 +1038,7 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
         // inject, never spawn a competing turn.
         match d.store.begin_turn(session.id(), name, &message) {
             Ok((task, seq)) => {
-                // The operator's line is a row like any other: the windows draw it
-                // from their own echo, and the watermark says they have it.
+                // A row like any other: windows draw it from their own echo.
                 d.agent.announce_row(name, Ok(seq));
                 spawn_turn(
                     d,
@@ -1575,25 +1574,22 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
 ///
 /// # Invariant
 ///
-/// A snapshot, and its own stream position: the rows, the parts still streaming
-/// and the number are all read inside the bus's gate, so a client can say which
-/// of the events it is receiving are already inside this answer (`seq <= as_of`)
-/// and which are news. That comparison is the whole join -- without the number
-/// a refill either repeats the tail of the answer or loses it.
+/// A snapshot with its own stream position: rows, streaming parts and number are read
+/// inside the bus's gate, so a client can tell which events it receives are already
+/// here (`seq <= as_of`) and which are news. Without the number a refill repeats or
+/// loses the tail of an answer.
 ///
-/// Two shapes differ from a read for a person: only rows a window draws are
-/// sent (a notice is the server's own line, not part of the conversation), and
-/// the operator's own messages come back as [`ResponsePart::Input`], which is
-/// what the echo that wrote them drew.
+/// # Invariant
+///
+/// Only what a window draws: a notice is the server's own line and is skipped, and the
+/// operator's messages come back as [`ResponsePart::Input`].
 fn replay_transcript(
     d: &Dispatch,
     name: &str,
     session: &crate::session::SessionHandle,
     args: &Args,
 ) -> Outcome {
-    // Everything this snapshot claims is read inside the gate, the end of the
-    // transcript included: a row written after the gate closed has an event
-    // numbered above `as_of`, and a row written before it is in the answer.
+    // Read inside the gate, the end included: a later row's event is numbered above.
     let (as_of, read) = d.bus.as_of(|| {
         let last = d.store.last_seq(session.id())?;
         let window = match args.get("range") {
@@ -1605,7 +1601,9 @@ fn replay_transcript(
             // rather than reported as a store failure.
             Some(raw) => parse_seq_slice(raw, last).map_err(anyhow::Error::msg)?,
         };
-        let rows = d.store.messages_between(session.id(), window.first, window.last)?;
+        let rows = d
+            .store
+            .messages_between(session.id(), window.first, window.last)?;
         Ok::<_, anyhow::Error>((rows, session.open_parts(), window.first))
     });
     let (read, open, first) = match read {
@@ -1617,8 +1615,7 @@ fn replay_transcript(
         .iter()
         .filter_map(|row| row_event(name, row, true))
         .collect();
-    // What has been published and not yet stored: a part mid-answer, which a
-    // client that reconnected has nothing else to draw from.
+    // Published and not yet stored: what a window that reconnected has no other copy of.
     for part in &open {
         if part.text.trim().is_empty() {
             continue;
@@ -2006,9 +2003,7 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
         "reasoning" => ResponsePart::Reasoning,
         "builtin_call" => ResponsePart::Activity,
         "text" => ResponsePart::Output,
-        // A notice and the prompt in force are the harness, not the model.
-        // A reader gets them as a log line; a window being refilled draws only
-        // what it drew live, which was nothing.
+        // The harness's own rows: a reader gets a log line, a refilled window nothing.
         _ => {
             return (!drawn).then(|| Event::Log {
                 level: LogLevel::Info,
@@ -2376,13 +2371,9 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
 ///
 /// # Invariant
 ///
-/// A delta, never the table: a client holds the sessions it was greeted with and
-/// these rows are applied to it, so a change costs one row and a reader does not
-/// have to work out which names a republished table would have taken away. The
-/// names that left are published too, because a client cannot tell "gone" from
-/// "unchanged" -- that is the whole difference between a delta and a snapshot.
-///
-/// A rename is therefore two rows: the old name gone, the new one stated.
+/// A delta, never the table: a change costs one row, and the names that left are
+/// published too, because a client cannot tell "gone" from "unchanged". A rename is
+/// therefore two rows: the old name gone, the new one stated.
 pub fn publish_sessions(d: &Dispatch) {
     let Ok(rows) = d.sessions.list() else {
         return;
@@ -2465,8 +2456,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         created_at: row.created_at,
         updated_at: row.updated_at,
         messages: row.messages,
-        // Read from the transcript itself, not from a count on the row: this is
-        // the number a client compares its journal against, and a derived one
+        // Read from the transcript, not from a count on the row: a derived number
         // would be a second answer to the same question.
         transcript: d.store.last_seq(row.id).unwrap_or(0),
         cwd,

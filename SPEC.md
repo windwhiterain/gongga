@@ -20,6 +20,26 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 ## Server Client Connection
 - UDP.
 - key.
+- the server sends deltas only: a session change is that one row, a message is
+  the part that grew, and nothing re-sends a table a client already has. The whole
+  session list travels once, in the greeting, because that is the one moment a
+  client has none.
+- every event on the stream carries its position (one counter, one step per
+  published event), so "what did this client miss" is a comparison and never a
+  guess. A command's own answer has no position: it belongs to its connection.
+
+### Invariant: a window is behind, and asks for the rest itself
+The greeting is the verdict, not the recovery. For each session it states where
+that session's transcript now ends; a client compares that with what its own
+record says it drew, and the windows that come out behind are re-read when they
+are next drawn -- a session nobody is reading costs nothing.
+
+A re-read is `get_messages --replay true`, and its answer is a picture of one
+instant: the stored rows as the events that drew them, the operator's own
+messages as their own lines, the parts still streaming, and the stream position
+the picture was taken at. That position is what joins the answer to the events
+arriving beside it: everything at or below it is already in the answer, and
+everything above it is news.
 
 ## LLM API
 standard OpenAI Response API/Anthropic API.
@@ -165,7 +185,11 @@ all named argument's name can be ommited via argument order.
     and refuses, naming the `SKILL.md` to read instead. Published by the tool of the same
     name, which is the one registration both surfaces come from.
 - server_script: that registered by external python scripts
-  - `get_messages [--range <begin:end>] --session <session>(sticky)`: return the items in closed range <begin:end> (negative number count from end, missing number means boundary).
+  - `get_messages [--range <begin:end>] --session <session>(sticky) [--replay <bool>]`: return the items in closed range <begin:end> (negative number count from end, missing number means boundary).
+    - `--replay true` answers as a window draws: only the rows a window shows, the
+      operator's messages as their own lines, and the parts still streaming under
+      the turn they belong to. The result states `last_seq` and `as_of`; `as_of` is
+      the stream position the answer is a picture of.
   - `clone_session --session <session> --name <name>`
 - command layer, without a server:
   - `skill ls` | `skill run <name>` | `skill <name> [args...]`: the same entry, run on
