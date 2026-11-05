@@ -176,6 +176,13 @@ read returned, and its result line belong next to the transcript they came from.
 command line keeps the commands that named nobody, which is what it is for -- a ticker
 of what the operator asked the *client*.
 
+Which argument names that session is the catalog's answer, never the argument's
+spelling: `send_message --name` and `get_messages --session` bind different names to one
+kind, and `Client::session_named` is the one place that reads it. Reading the literal key
+`session` put every `--name` command -- a message the operator sent, a session being
+created -- in the command row, where its answer said what it did to a session whose own
+view never showed that it was asked.
+
 The result event carries only the command's id, so the window is decided when the echo
 arrives and remembered until the answer does (`Client::results`). A link that dies
 mid-command forgets the map: an answer that will never arrive has nowhere to go.
