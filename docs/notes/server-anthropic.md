@@ -66,8 +66,8 @@ holds per face rather than per row: the Responses face still copies.
 
 A breakpoint marks the end of what a provider may reuse. Two are sent:
 
-1. **the system text** (prose + index), which every session of a directory sends
-   identically;
+1. **the system text** (the prose only), which every session of every directory sends
+   identically -- the index travels as a message, so it cannot change the system text;
 2. **the message before the newest one**, which the body holds back until another
    arrives. The newest message is never marked: it has never been sent, and a breakpoint
    behind it caches a prefix nothing can reuse.

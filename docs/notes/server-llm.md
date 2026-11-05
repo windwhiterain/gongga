@@ -333,6 +333,16 @@ the record and never used to price anything. See
 
 ## cache directives on the wire
 
+The head is the prose, the tool schemas, then two messages before the transcript: the
+**index** and the start card. The index is a message and not part of the system text,
+because a provider serves an unchanged prefix and drops everything after a changed byte --
+a per-session index inside the system prompt would make every session's prose and tool
+schemas new. Measured on the provider that made this necessary: with the index in the
+system text a sibling read 189 cached of 20,158, and with it in a message, 189 again, so
+on that endpoint the split buys nothing; what it does buy is a system prompt that no
+session ever changes, which is the part a prefix cache can serve at all. See
+`docs/reference/prefix-cache.md` for the boundary measurement.
+
 A provider is spoken in one face per request, and the roster says which:
 `[[provider]] api` names an endpoint the provider declares, `[model] api` overrides it
 for one home, and a name the provider does not offer falls back to the built-in order

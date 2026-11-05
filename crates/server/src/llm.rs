@@ -458,15 +458,9 @@ impl LlmClient {
         effort: Option<&str>,
         cache_tier: Option<&str>,
     ) -> Vec<u8> {
-        // The index joins the prose: both change only when a file does. The card is
-        // stamped once, so the two lifetimes differ.
-        let mut instructions = instructions.to_string();
-        if let Some(index) = index.filter(|index| !index.is_empty()) {
-            if !instructions.is_empty() {
-                instructions.push_str("\n\n");
-            }
-            instructions.push_str(index);
-        }
+        // The index travels as a message, never in the system text.
+        // See `docs/reference/prefix-cache.md`.
+        let index = index.filter(|index| !index.is_empty());
         if self.face == Face::Anthropic {
             let offered: Vec<Value> = tools
                 .iter()
@@ -475,10 +469,11 @@ impl LlmClient {
             return crate::anthropic::head(
                 &self.model_name,
                 self.max_output_tokens,
-                &instructions,
+                instructions,
                 &offered,
                 effort,
                 self.temperature,
+                index,
                 card,
             );
         }
@@ -543,8 +538,17 @@ impl LlmClient {
         let mut head = body.to_string();
         head.pop();
         head.push_str(",\"input\":[");
-        // SPEC's card: one message after the system prompt and before the first user
-        // message, so it goes in first.
+        // Index first, then the card: the index is what a directory shares.
+        if let Some(index) = index {
+            head.push_str(
+                &json!({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": index}],
+                })
+                .to_string(),
+            );
+            head.push(',');
+        }
         if let Some(card) = card.filter(|card| !card.is_empty()) {
             head.push_str(
                 &json!({

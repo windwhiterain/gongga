@@ -20,10 +20,11 @@ pub const PATH: &str = "/v1/messages";
 ///
 /// # Invariant
 ///
-/// Two cache breakpoints and no more: the system text, which every request of a
-/// directory sends byte for byte, and the message before the newest one, which is the
-/// transcript a turn extends. The newest message is not marked: it has never been sent,
-/// and a breakpoint behind it would cache a prefix nothing can reuse.
+/// Two breakpoints and no more: the system text, which every request of a directory
+/// sends byte for byte, and the message before the newest one, which a turn extends.
+///
+/// The index is a message and the prose is the system prompt: an index inside the system
+/// text would change the whole head with the first message.
 pub fn head(
     model: &str,
     max_tokens: u32,
@@ -31,6 +32,7 @@ pub fn head(
     tools: &[Value],
     effort: Option<&str>,
     temperature: Option<f32>,
+    index: Option<&str>,
     card: Option<&str>,
 ) -> Vec<u8> {
     let mut body = json!({
@@ -58,6 +60,12 @@ pub fn head(
     let mut head = body.to_string();
     head.pop();
     head.push_str(",\"messages\":[");
+    if let Some(index) = index.filter(|index| !index.is_empty()) {
+        head.push_str(
+            &json!({"role": "user", "content": [{"type": "text", "text": index}]}).to_string(),
+        );
+        head.push(',');
+    }
     if let Some(card) = card.filter(|card| !card.is_empty()) {
         head.push_str(
             &json!({"role": "user", "content": [{"type": "text", "text": card}]}).to_string(),
