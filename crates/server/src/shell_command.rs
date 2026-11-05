@@ -14,7 +14,8 @@ const SERVER: &str = "gongga-server";
 /// The POSIX name: bash runs this file by its `#!`, which a `.cmd` cannot be.
 const SH: &str = "#!/bin/sh\n\
 # gongga-cli: the harness's command line, in Python. The server writes this file.\n\
-home=${GONGGA_HOME:-$HOME/.gongga}\n\
+here=$(dirname \"$0\")\n\
+home=${GONGGA_HOME:-$(cd \"$here/..\" && pwd)}\n\
 for candidate in python3 python py; do\n\
   if command -v \"$candidate\" >/dev/null 2>&1; then\n\
     exec \"$candidate\" \"$home/lib/gongga_cli.py\" \"$@\"\n\
@@ -25,7 +26,7 @@ exit 3\n";
 
 /// The native name: `CreateProcess` knows nothing of `#!`.
 const CMD: &str = "@echo off\r\n\
-if \"%GONGGA_HOME%\"==\"\" set GONGGA_HOME=%USERPROFILE%\\.gongga\r\n\
+if \"%GONGGA_HOME%\"==\"\" set GONGGA_HOME=%~dp0..\r\n\
 python \"%GONGGA_HOME%\\lib\\gongga_cli.py\" %*\r\n\
 exit /b %ERRORLEVEL%\r\n";
 
