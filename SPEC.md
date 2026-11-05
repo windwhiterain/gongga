@@ -329,7 +329,8 @@ do whatever user can do to the server.
 
 ## Skill: Subagent
 - create a new session under caller session's name.
-- subscribe new session's turn end event.
+- subscribe new session's turn end event, with the command that sends the news back to
+  the caller (`send_message` to `$GONGGA_SESSION`); a match runs nothing else.
 - send_message to new session.
 - optionaly wait.
 
