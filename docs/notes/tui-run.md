@@ -38,6 +38,13 @@ over was not harmless: on Windows Git Bash rewrites a leading `/word` into a
 `C:/.../` path before it is even an argument, and the whole line then became a
 chat message to the agent.
 
+## give_back
+
+The window half of `Client::unconfirmed`: the lines a dead link left unanswered go
+back into the prompt, newest last, so pressing Enter sends the same words again. A
+draft in the prompt is not replaced -- it is the operator's next line, and the
+command row already named what was lost while the input history still has it.
+
 ## Dialing
 
 A dial kept alive between loop iterations.

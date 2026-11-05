@@ -549,6 +549,14 @@ pub struct Client {
     calls: HashSet<String>,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
+    /// Command lines sent and not answered yet, oldest first, by command id.
+    ///
+    /// # Invariant
+    ///
+    /// The words are the operator's until the server answers them: a line leaves
+    /// this list on its `cmd_result`, and a link that ends first gives it back
+    /// through `set_offline`. See `docs/notes/cli-lib.md`.
+    unconfirmed: Vec<(u64, String)>,
     /// A `set_session` awaiting acknowledgement: the pairs an accepted one
     /// writes back, so a refusal writes nothing.
     follows: Vec<(u64, Vec<(String, String)>)>,
@@ -712,6 +720,7 @@ impl Client {
             box_edge,
             shown,
             results: HashMap::new(),
+            unconfirmed: Vec::new(),
             follows: Vec::new(),
             calls: HashSet::new(),
             sessions: Vec::new(),
@@ -894,6 +903,7 @@ impl Client {
                 data,
                 ..
             } => {
+                self.unconfirmed.retain(|(other, _)| *other != id);
                 if let Some(remote) = self.quiet.remove(&id) {
                     match (ok, data.as_ref()) {
                         (true, Some(named)) => self.fill_listing(named),
@@ -1122,11 +1132,27 @@ impl Client {
     }
 
     /// Records that there is no link, and how many dials have failed since.
-    pub fn set_offline(&mut self, attempts: u32, sink: &mut dyn Sink) {
+    ///
+    /// # Invariant
+    ///
+    /// Answers with the lines that had no answer, so the front-end can give them
+    /// back: a command whose link ended first is not a command the server refused.
+    /// The report is a row rather than a note, because a note is wiped by the next
+    /// dial's status -- "no answer" must stay readable after the window stopped
+    /// looking. See `docs/notes/cli-lib.md`.
+    pub fn set_offline(&mut self, attempts: u32, sink: &mut dyn Sink) -> Vec<String> {
         self.connected = false;
         self.results.clear();
         self.attempts = attempts;
         self.refresh(sink);
+        let lines: Vec<String> = std::mem::take(&mut self.unconfirmed)
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect();
+        if !lines.is_empty() {
+            self.row(sink, LineKind::Error, &unanswered(&lines));
+        }
+        lines
     }
 
     /// Runs one command from argv already split into tokens; no grammar here.
@@ -1357,11 +1383,26 @@ impl Client {
                 self.follows.push((id, pairs));
             }
         }
+        // The words stay the operator's until the server answers them: this is
+        // what a link that ends first gives back.
+        let typed = match &echo {
+            Echo::Command => format!("/{}", tokens.join(" ")),
+            Echo::Message(text) => (*text).to_string(),
+        };
+        self.unconfirmed.push((id, typed));
         Submission::Send(ClientMessage::Command {
             id,
             name: head,
             args,
         })
+    }
+
+    /// Forgets a command that never left this process: nothing was sent, so there
+    /// is nothing the server could answer.
+    pub fn never_sent(&mut self, msg: &ClientMessage) {
+        if let ClientMessage::Command { id, .. } = msg {
+            self.unconfirmed.retain(|(other, _)| other != id);
+        }
     }
 
     /// `connect_server`: the address a later command dials, written down now.
@@ -1897,6 +1938,21 @@ pub fn main(args: Args) -> anyhow::Result<()> {
             Some(Sub::Cmd(command)) => run(&args, command).await,
         }
     })
+}
+
+/// What a command row says about lines the server never answered.
+///
+/// # Invariant
+///
+/// "No answer" and not "not stored": the datagram may have arrived before the
+/// link died, and the client cannot tell. It says what it knows, and the operator
+/// decides whether to send the line again.
+fn unanswered(lines: &[String]) -> String {
+    match lines {
+        [only] => format!("no answer for {only} -- the server never said it had it"),
+        [_, _, ..] => format!("no answer for {} lines: {}", lines.len(), lines.join(" | ")),
+        [] => String::new(),
+    }
 }
 
 /// An address a client is asked to dial: `--ip` (localhost by default), `--port`.

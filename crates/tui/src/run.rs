@@ -236,6 +236,24 @@ async fn dial_now(conn: cli::Connection) -> Result<(Link, Greeting), DialFailure
     cli::dial(endpoint).await
 }
 
+/// Gives the operator back the lines no server answered.
+///
+/// # Invariant
+///
+/// A line leaves the input when it is sent and comes back when the link ends
+/// first: the words are the operator's until the server says it has them. A draft
+/// in the input is not replaced -- the command row names what was lost, and the
+/// history keeps it. See `docs/notes/tui-run.md`.
+fn give_back(ui: &mut Tui, lines: Vec<String>) {
+    let Some(newest) = lines.last() else {
+        return;
+    };
+    // A draft is the operator's next line, not the one that was lost.
+    if ui.screen().input.text().trim().is_empty() {
+        ui.restore_input(newest);
+    }
+}
+
 /// The interactive front-end: the window outlives the link. See `docs/notes/tui-run.md`.
 pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
     // The command an agent's shell types, installed before any shell exists.
@@ -246,7 +264,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
 
     let mut client = cli::build_client(args);
     let mut ui = Tui::new(client.completer(), &client_home, &endpoint)?;
-    client.set_offline(0, &mut TuiSink(&mut ui));
+    // Nothing has been sent yet: a fresh client owes nobody a line.
+    let _ = client.set_offline(0, &mut TuiSink(&mut ui));
 
     let mut link: Option<cli::Link> = None;
     let mut dialing: Option<Dialing> = None;
@@ -329,7 +348,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                     backoff = RECONNECT_MIN;
                     attempts = 0;
                     next_try = tokio::time::Instant::now();
-                    client.set_offline(0, &mut TuiSink(&mut ui));
+                    let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
+                    give_back(&mut ui, unanswered);
                 }
                 match outcome {
                     cli::Submission::Local | cli::Submission::Rejected => {}
@@ -341,26 +361,24 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                             // The command names a session: that session's
                             // window is drawn.
                             client.show_named_session(&msg, &mut TuiSink(&mut ui));
-                            if let Err(e) = open.send(msg).await {
-                                // Its end went unnoticed, so the line may not have
-                                // arrived: report it rather than re-queue it.
-                                TuiSink(&mut ui).say(
-                                    LineKind::Error,
-                                    &format!(
-                                        "connection dropped while sending ({e}); \
-                                             that line may not have arrived"
-                                    ),
-                                );
+                            if open.send(msg).await.is_err() {
+                                // Its end went unnoticed: nothing was sent, and the
+                                // line goes back like any other unanswered one.
                                 link = None;
                                 ui.set_server(None);
                                 backoff = RECONNECT_MIN;
                                 attempts = 0;
                                 next_try = tokio::time::Instant::now();
-                                client.set_offline(0, &mut TuiSink(&mut ui));
+                                let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
+                                give_back(&mut ui, unanswered);
                             }
                         }
-                        // Raced with the link going down: nothing was sent, so it goes back.
-                        None => ui.restore_input(&line),
+                        // Raced with the link going down: nothing was sent, so it goes
+                        // back, and the client stops holding it against the server.
+                        None => {
+                            client.never_sent(&msg);
+                            ui.restore_input(&line);
+                        }
                     },
                 }
             }
@@ -386,8 +404,9 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                 backoff = RECONNECT_MIN;
                 attempts = 0;
                 next_try = tokio::time::Instant::now();
-                client.set_offline(0, &mut TuiSink(&mut ui));
+                let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
                 TuiSink(&mut ui).say(LineKind::System, "server connection lost — reconnecting");
+                give_back(&mut ui, unanswered);
             }
             Step::Dial => {
                 attempts += 1;
@@ -406,7 +425,8 @@ pub async fn interactive(args: &cli::Args) -> anyhow::Result<()> {
                     }
                     Err(failure) if failure.is_fatal() => break Err(failure.into_error()),
                     Err(failure) => {
-                        client.set_offline(attempts, &mut TuiSink(&mut ui));
+                        let unanswered = client.set_offline(attempts, &mut TuiSink(&mut ui));
+                        give_back(&mut ui, unanswered);
                         // A spawned server is coming up: a fresh home has no key
                         // until it writes one, so that is not news yet.
                         if spawned.is_none() {

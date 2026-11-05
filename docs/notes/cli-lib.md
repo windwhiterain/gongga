@@ -305,6 +305,26 @@ ever reached the server produces no event at all.
 Distinct from a rejection: the line is valid, its turn had simply not come, so
 the front-end puts it back in the prompt instead of treating it as a mistake.
 
+## Client::unconfirmed -- a line the server never answered
+
+A line leaves the input when it is sent, and until its `cmd_result` arrives the
+words are still the operator's: `submit_tokens` records `(id, typed line)`, the
+`cmd_result` arm drops it, and a link that ends first hands it back. Without that,
+a message typed while the server was leaving looked sent -- echoed, no answer, gone
+-- and nothing in the window said which line it was.
+
+`set_offline` is where they come back: it reports them on the command row
+(`no answer for /events -- the server never said it had it`) and returns them so the
+front-end can put the newest into the prompt. A row, not a note: the next dial
+writes the status, and a report that a retry erases is no report.
+
+Not replayed on reconnect, on purpose. The server cannot tell a command it never
+read from one it read and answered into a dead socket, so a replay would double a
+`send_message` whose *answer* was lost. The same words cost one Enter.
+
+The report says "no answer", never "not stored": the datagram may well have arrived
+before the link died, and the operator is the one who decides to send it again.
+
 ## Client::connected
 
 Everything else the client knows about the server -- the catalog, the sessions,
