@@ -198,7 +198,8 @@ async fn answer_transcripts(client: &mut link::Client, link: Option<&link::Link>
         let Some(message) = client.ask_transcript(&name, ui.room_of(&name)) else {
             continue;
         };
-        if open.send(message).await.is_err() {
+        if open.send(message.clone()).await.is_err() {
+            client.never_sent(&message);
             break;
         }
     }
@@ -230,7 +231,8 @@ async fn answer_older(
         // One page, shaped by the pane. A fill already on its way answers it too.
         match client.ask_older(&name, ui.room_of(&name)) {
             Some(message) => {
-                if open.send(message).await.is_err() {
+                if open.send(message.clone()).await.is_err() {
+                    client.never_sent(&message);
                     break;
                 }
             }

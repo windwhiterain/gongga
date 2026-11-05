@@ -1011,6 +1011,11 @@ impl Client {
                 // A greeting *is* the recovery: it carries the catalog and
                 // sessions, so a redial comes up like a fresh client.
                 self.connected = true;
+                // A greeting opens a stream: a fill left set would never settle.
+                for sync in self.sync.values_mut() {
+                    sync.fill = None;
+                    sync.blocked = false;
+                }
                 self.attempts = 0;
                 self.draining = server.draining;
                 // Where this link's stream starts.
@@ -2011,6 +2016,12 @@ impl Client {
     pub fn never_sent(&mut self, msg: &ClientMessage) {
         if let ClientMessage::Command { id, .. } = msg {
             self.unconfirmed.retain(|(other, _)| other != id);
+            // A refill never sent is not in flight: left set, it never settles.
+            for sync in self.sync.values_mut() {
+                if sync.fill.as_ref().is_some_and(|fill| fill.id == *id) {
+                    sync.fill = None;
+                }
+            }
         }
     }
 
