@@ -2030,13 +2030,14 @@ impl Store {
         tool: &str,
         description: Option<&str>,
         mode: &str,
+        started_at: i64,
     ) -> anyhow::Result<i64> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO tool_jobs (session, call_id, tool, description, mode, status, started_at)
              VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6)",
-            params![session, call_id, tool, description, mode, now_millis()],
+            params![session, call_id, tool, description, mode, started_at],
         )?;
         let id = tx.last_insert_rowid();
         tx.commit()?;
@@ -2081,7 +2082,7 @@ impl Store {
     pub fn job(&self, id: i64) -> anyhow::Result<Option<JobRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, tool, description, mode, status, output, collected,
+            "SELECT id, session, tool, description, status, output, collected,
                     started_at, finished_at
              FROM tool_jobs WHERE id = ?1",
         )?;
@@ -2105,7 +2106,7 @@ impl Store {
     pub fn owed_jobs(&self) -> anyhow::Result<Vec<JobRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, tool, description, mode, status, output, collected,
+            "SELECT id, session, tool, description, status, output, collected,
                     started_at, finished_at
              FROM tool_jobs
              WHERE status = 'running' OR (status IN ('ok', 'error') AND collected = 0)
@@ -2338,7 +2339,6 @@ pub struct JobRow {
     pub session: String,
     pub tool: String,
     pub description: Option<String>,
-    pub mode: String,
     pub status: String,
     pub output: Option<String>,
     pub collected: bool,
@@ -2352,12 +2352,11 @@ fn job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
         session: row.get(1)?,
         tool: row.get(2)?,
         description: row.get(3)?,
-        mode: row.get(4)?,
-        status: row.get(5)?,
-        output: row.get(6)?,
-        collected: row.get::<_, i64>(7)? != 0,
-        started_at: row.get(8)?,
-        finished_at: row.get(9)?,
+        status: row.get(4)?,
+        output: row.get(5)?,
+        collected: row.get::<_, i64>(6)? != 0,
+        started_at: row.get(7)?,
+        finished_at: row.get(8)?,
     })
 }
 

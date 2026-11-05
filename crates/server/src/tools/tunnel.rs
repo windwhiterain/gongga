@@ -204,6 +204,7 @@ pub async fn spawn(
         &name,
         description.as_deref(),
         mode.as_str(),
+        crate::store::now_millis(),
     ) {
         Ok(id) => id,
         Err(e) => {
@@ -278,10 +279,12 @@ pub(crate) async fn report(
     let speaking = !matches!(ctx.store.get_session(&ctx.session), Ok(None))
         && !ctx.closing.load(std::sync::atomic::Ordering::SeqCst);
     let (message, kind) = match mode {
+        // What the job is, not what the caller said: a call that outlived its clock
+        // is as much this job as one that asked to be.
         Mode::Background => (
             format!(
-                "Job {id} you started with `background` on `{name}` has {what} after {spent}. \
-                 `check_job` with `job_id: {id}` collects what it printed."
+                "Job {id} on `{name}` has {what} after {spent}. `check_job` with \
+                 `job_id: {id}` collects what it printed."
             ),
             "job",
         ),
@@ -357,9 +360,9 @@ pub fn announce_owed(store: &Store) -> usize {
             }
             _ => (
                 format!(
-                    "Job {} (`{}`{named}) you started `{}` ended before the server stopped and \
-                     its answer was never collected. `check_job` with `job_id: {}` still reads it.",
-                    row.id, row.tool, row.mode, row.id
+                    "Job {} (`{}`{named}) ended before the server stopped and its answer was \
+                     never collected. `check_job` with `job_id: {}` still reads it.",
+                    row.id, row.tool, row.id
                 ),
                 "job",
             ),

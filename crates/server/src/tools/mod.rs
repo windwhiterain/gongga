@@ -700,12 +700,17 @@ async fn promote(
     token: CancellationToken,
     started: std::time::Instant,
 ) -> ToolOutcome {
+    // The row starts when the work did, not when the clock gave up on it: one job
+    // must not read as two different ages.
+    let began =
+        crate::store::now_millis() - i64::try_from(started.elapsed().as_millis()).unwrap_or(0);
     let id = match ctx.store.add_job(
         &ctx.session,
         &ctx.call_id,
         tool,
         description,
         tunnel::Mode::Background.as_str(),
+        began,
     ) {
         Ok(id) => id,
         Err(e) => {
