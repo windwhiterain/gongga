@@ -25,6 +25,14 @@ pub struct ExecTool {
 }
 
 impl Tool for ExecTool {
+    /// A program with its words runs anywhere: a worker of its own can own it.
+    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
+        match self.machine {
+            Machine::Local => crate::tools::tunnel::Carried::Worker,
+            Machine::Remote => crate::tools::tunnel::Carried::Here,
+        }
+    }
+
     fn name(&self) -> &'static str {
         match self.machine {
             Machine::Local => "exec",

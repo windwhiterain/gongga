@@ -2366,6 +2366,28 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
                 "dropped notices about work the last run took with it"
             );
         }
+        // Said as a message, not a notice: this one has to wake the session.
+        if dropped > 0 {
+            let message = format!(
+                "{dropped} piece(s) of work you were told would report did not outlive the \
+                 server that was running them: they were jobs of that run, so what they \
+                 printed went with it. Nothing of theirs is left to read -- run them again \
+                 if it mattered."
+            );
+            let payload = json!({"session": name, "message": message});
+            match d.store.add_pending_task(&name, "inject", &payload) {
+                // In `kept`: what owes a turn has to be a task this pass knows about.
+                Ok(id) => kept.push(crate::store::PendingTask {
+                    id,
+                    session: name.clone(),
+                    kind: "inject".to_string(),
+                    payload,
+                }),
+                Err(e) => {
+                    tracing::warn!(session = %name, error = %e, "could not say what was lost");
+                }
+            }
+        }
         let owed = owes_a_turn(&kept);
         let owned = kept
             .iter()

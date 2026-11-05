@@ -1,12 +1,18 @@
 # bundle/main.rs
 
-## One file, four programs
+## One file, three programs
 
 `crates/bundle` is not a fourth thing to install: it is the head of a
 distribution. `scripts/bundle.sh` builds the programs, appends them to this stub,
 and the result is one file a person can copy, name `gongga`, and run.
 
-    gongga = head (no dependencies) + gongga-cli + gongga-server + gongga-tui + gongga-runner
+    gongga = head (no dependencies) + gongga-server + gongga-tui + gongga-runner
+
+The command line is not one of them any more: it is `python/gongga_cli.py`, which
+a server writes into `<home>/lib` and names in `<home>/bin` (`server-shell-command.md`).
+A head that carried a copy would be asking with a build the operator may have
+replaced -- and the layer moved once already, which is exactly why the head does
+not know where it lives.
 
 `gongga-runner` rides along because a remote session's shells need it on the
 *other* machine, and this file is the thing that gets installed there: `ssh peer
@@ -21,16 +27,15 @@ has nothing.
 
 Two answers, in this order:
 
-1. **the file name**, byte for byte like `<home>/bin/gongga-cli` decides the
-   command layer (`tui-program.md`): a copy named `gongga-server.exe` is the
-   server. The name wins because a link cannot carry an argument;
-2. **a leading word**: `cli`, `tui` (or `window`), `server`, `runner`. It is taken
-   off before the program sees it, so each is reachable from one file:
+1. **the file name**, byte for byte like `<home>/bin/gongga-tui` decides the
+   program (`tui-program.md`): a copy named `gongga-server.exe` is the server. The
+   name wins because a link cannot carry an argument;
+2. **a leading word**: `tui` (or `window`), `server`, `runner`. It is taken off
+   before the program sees it, so each is reachable from one file:
 
 ```
-./gongga              the catalog, from a running server
-./gongga cli ...      the command layer, said out loud
-./gongga tui          the window
+./gongga              the window
+./gongga tui          the window, said out loud
 ./gongga server ...   the server program, with none of the layer around it
 ./gongga runner       the peer-side program of a remote session, on stdin and stdout
 ```
@@ -40,7 +45,7 @@ runs. It is a word here rather than a second installed name because the
 distribution installs one file, and a remote's `runner` can still name any other
 spelling the peer has (`.agents/notes/2026-11-01-remote-is-a-shell-endpoint.md`).
 
-Anything else is the command layer, which is what a bare `./gongga` is.
+Anything else is the window, which is what a bare `./gongga` is.
 
 `serve` is not one of those words: it is the *command layer's* command for
 handing a console to a server, and it goes through the config, the pinned
@@ -49,8 +54,8 @@ difference is worth knowing; the flags are not, so `--port <p>` is accepted by
 both and rewritten to `--bind 127.0.0.1:<p>` for the server.
 
 The words are reserved by this file, which decides before it has a server to ask
-for a catalog. A script that registered a command named `cli`, `tui` or `server`
-would be reachable through `gongga-cli` and not through the bundle.
+for a catalog. A script that registered a command named `tui`, `window`, `server`
+or `runner` would be unreachable through this file.
 
 Each program answers `--help` with the words typed (`GONGGA_NAME`), so
 `gongga server --help` says `Usage: gongga server [OPTIONS]`.
@@ -68,7 +73,7 @@ console, one exit code (`link-server.md`).
 ## payload (the feature)
 
 The programs are embedded at *compile* time: `build.rs` runs `cargo build -p
-gongga-cli -p gongga-server` in a target directory of its own and writes an
+gongga-server -p gongga-tui` in a target directory of its own and writes an
 `include_bytes!` table. So the file `cargo build` produces is the whole
 distribution, and so is the file `cargo install` installs:
 
@@ -101,9 +106,9 @@ could only say it carried nothing.
 
 ## payload::extract
 
-Every program lands anyway, not only the one asked for: `gongga-cli serve` looks
-for `gongga-server` beside itself and in `<home>/bin`, so extracting one alone
-would hand it a server it cannot find.
+Every program lands anyway, not only the one asked for: a window started from a
+payload looks for `gongga-server` beside itself and in `<home>/bin`, so extracting
+one alone would hand it a server it cannot find.
 
 A file that already holds these bytes is left alone, and that is not an
 optimisation: the head may be started while the program it carries is running,
@@ -120,9 +125,9 @@ rename over one with "access denied" for a few tens of milliseconds.
 A build this one replaces is asked to stop, then removed: a server through its own
 `cancel`, so its turn stays pending work for the next start.
 
-Nothing else is touched. `gongga-tui` is a window somebody is typing in and
-`gongga-cli` may be a command halfway through, so neither is killed to free a
-directory -- the directory simply stays, and the next install retires it once those
+Nothing else is touched. `gongga-tui` is a window somebody is typing in and a
+command line of an older build may be halfway through, so neither is killed to free
+a directory -- the directory simply stays, and the next install retires it once those
 processes have exited. Killing the client was the first shape of this and it made
 every upgrade close the reader's window.
 
@@ -150,9 +155,8 @@ to the first is an overlay, not a bigger binary.
 ## Using it
 
 ```sh
-./gongga --version        # this is gongga-cli, and here is the build
-./gongga serve 9700
-./gongga                  # the catalog, from that server
+./gongga --version        # the build, as the window reports it
+./gongga server --port 9700
 ./gongga tui              # the window
 ./gongga tui --force      # the window, replacing a build whose cancel is stuck
 ```
@@ -202,13 +206,13 @@ so it is opt-in and one alias away.
 
 `cancel` asks the old server to drain its turns. A build that predates the tunnel
 ceiling can hold a turn forever, so the drain never ends, the server keeps the
-port, and the launcher's `gongga-cli cancel` waits for it with no timeout. The
+port, and the command line asking for the cancel waits for it with no timeout. The
 result is a new build that has placed its payload but never opens a window.
 
 `--force` is the operator's way out of that loop. The head reads the flag before
 it calls `retire`; the program parses argv only afterwards, so write the flag
 *after* the program word (`gongga tui --force`, not `gongga --force tui`). It is a
-global flag in `link::Args`, so `gongga-cli` accepts it too, and
+global flag in `link::Args`, so the command line accepts it too, and
 `check_flag_order` still requires it before a command name.
 
 What it costs: a killed server does not turn its running turns into pending work
@@ -225,8 +229,12 @@ step: find the port's owning pid and stop that pid by hand.
 
 ## The cancel the upgrade sends does not flash a window
 
-`ask_to_cancel` starts `gongga-cli ... cancel` to stop the server of a retired
-build. The bundle is the head of a distribution and may be running with no console
+`ask_to_cancel` starts this home's command line -- `<home>/bin/gongga-cli`, or the
+`.cmd` beside it on Windows, run through `cmd` -- to stop the server of a retired
+build. It asks the name a shell would type rather than a copy in the payload: the
+layer is this home's Python, and a head carrying one would be asking with a build
+the operator may have replaced.
+The bundle is the head of a distribution and may be running with no console
 of its own -- in a service, in a script, over ssh -- so the `cancel` would be
 given a new visible console on the user's desktop. It carries `CREATE_NO_WINDOW`
 like every other command this file starts. The bundle depends on nothing, so it

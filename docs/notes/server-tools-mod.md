@@ -236,6 +236,14 @@ same reason.
 `check_job` can say exactly, and answering with a failure would read as "the call was
 wrong" rather than "the work is gone".
 
+## detached, and what cannot be
+
+`detached` means a process of its own, so the dispatch answers three ways: `Process` lets
+`bash` do what it already does, `Worker` hands the call to `worker.rs`, and `Here` refuses
+it. The refusal is the point of having a third answer: `del_bash` in a process with no
+shells would answer "done" and do nothing, and a silent no-op is worse than a word the
+caller did not expect.
+
 ## DelJobTool
 
 The other end of the same row. It deletes first and stops second, and the order is the

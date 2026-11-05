@@ -52,12 +52,15 @@ thing only: who reads the answer. `background` leaves it in the job's row for
 that says both has asked for two answers, so it is refused with one sentence, once,
 here -- `bash` used to say it itself.
 
-What carries a `detached` call differs, and only in one way: a tool whose work *is* a
-process keeps the registry that outlives the server (`Carried::Process`, which is local
-`bash` and nothing else), and every other tool runs its call as a job of this server
-(`Carried::Call`). `background` has the matching question, `Tool::handles_background`:
-`bash` and `python` answer it themselves through their shell's and their interpreter's
-own collector, and every other tool's background is a job of this server.
+What carries a `detached` call is the question SPEC made concrete: a detached job lives
+across a server restart, so it has to be a process. `Carried::Process` is local `bash`,
+which starts one; `Carried::Worker` is a one-shot call run by the server's own binary in a
+worker process (`worker.rs`), which outlives the server and writes its answer to a file;
+`Carried::Here` is every tool that acts on what this server holds, and it is refused --
+work with nothing of its own to run in is not detached work. `background` has the matching
+question, `Tool::handles_background`: `bash` and `python` answer it themselves through
+their shell's and their interpreter's own collector, and every other tool's background is
+a job of this server.
 
 ## tunnel::foreign
 
