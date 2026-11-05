@@ -739,16 +739,6 @@ name = "gongga-bundle"
 version = "0.2.0"
 
 [[package]]
-name = "gongga-cli"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "dirs",
- "gongga-console",
- "gongga-link",
-]
-
-[[package]]
 name = "gongga-console"
 version = "0.2.0"
 

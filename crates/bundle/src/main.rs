@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// The program to run when the name this file was started under says nothing.
-const DEFAULT: &str = "gongga-cli";
+const DEFAULT: &str = "gongga-tui";
 
 fn main() -> ExitCode {
     match run() {
@@ -118,8 +118,7 @@ fn wanted_program() -> (String, usize) {
 
 /// The words this file answers to: `serve` is the layer's own, `runner` is what
 /// a peer's `ssh` runs.
-const WORDS: [(&str, &str); 5] = [
-    ("cli", "gongga-cli"),
+const WORDS: [(&str, &str); 4] = [
     ("tui", "gongga-tui"),
     ("window", "gongga-tui"),
     ("server", "gongga-server"),

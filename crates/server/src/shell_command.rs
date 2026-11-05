@@ -11,8 +11,26 @@ const CLI: &str = "gongga-cli";
 /// The server's own name, the program this one is.
 const SERVER: &str = "gongga-server";
 
-/// A variable naming the command layer when it is somewhere unusual.
-const CLI_BIN: &str = "GONGGA_CLI_BIN";
+/// The POSIX name: bash runs this file by its `#!`, which a `.cmd` cannot be.
+const SH: &str = "#!/bin/sh\n\
+# gongga-cli: the harness's command line, in Python. The server writes this file.\n\
+home=${GONGGA_HOME:-$HOME/.gongga}\n\
+for candidate in python3 python py; do\n\
+  if command -v \"$candidate\" >/dev/null 2>&1; then\n\
+    exec \"$candidate\" \"$home/lib/gongga_cli.py\" \"$@\"\n\
+  fi\n\
+done\n\
+echo \"gongga-cli: no Python on this machine's PATH\" >&2\n\
+exit 3\n";
+
+/// The native name: `CreateProcess` knows nothing of `#!`.
+const CMD: &str = "@echo off\r\n\
+if \"%GONGGA_HOME%\"==\"\" set GONGGA_HOME=%USERPROFILE%\\.gongga\r\n\
+python \"%GONGGA_HOME%\\lib\\gongga_cli.py\" %*\r\n\
+exit /b %ERRORLEVEL%\r\n";
+
+/// The two names a shell may start the command line by, and what each holds.
+const SHIM: [(&str, &str); 2] = [(CLI, SH), ("gongga-cli.cmd", CMD)];
 
 /// Puts this server and its command layer in this home's `bin`, and says where
 /// the command landed.
@@ -27,18 +45,17 @@ const CLI_BIN: &str = "GONGGA_CLI_BIN";
 pub fn ensure_pair(home: &Path) -> Option<PathBuf> {
     let bin = home.join("bin");
     std::fs::create_dir_all(&bin).ok()?;
-    let mut command = None;
-    // The server first: a command refreshed without one beside it would be a
-    // command whose server cannot be found.
-    for (name, source) in [(SERVER, server_source()), (CLI, command_source())] {
-        let Some(source) = source else { continue };
-        if let Some(placed) = place(&bin, name, &source) {
-            if name == CLI {
-                command = Some(placed);
-            }
-        }
+    // The server first: a command refreshed without one beside it would be a command
+    // whose server cannot be found.
+    if let Some(source) = server_source() {
+        place(&bin, SERVER, &source);
     }
-    command
+    // The command line is this home's Python, so what a shell needs is a name that
+    // starts it -- written here, not copied from a build.
+    for (name, body) in SHIM {
+        let _ = write(&bin, name, body);
+    }
+    Some(bin.join(CLI))
 }
 
 /// The server running now: the program that is asking.
@@ -46,17 +63,27 @@ fn server_source() -> Option<PathBuf> {
     std::env::current_exe().ok().filter(|me| me.is_file())
 }
 
-/// The command layer: the one named for it, else the sibling of this server.
-fn command_source() -> Option<PathBuf> {
-    let named = std::env::var_os(CLI_BIN).map(PathBuf::from);
-    named
-        .into_iter()
-        .chain(
-            std::env::current_exe()
-                .ok()
-                .and_then(|me| me.parent().map(|dir| dir.join(file_name(CLI)))),
-        )
-        .find(|candidate| candidate.is_file())
+/// One shim in `bin`, rewritten only when its bytes differ.
+///
+/// # Invariant
+///
+/// Beside and renamed in, like a program: a shell reading the name sees one version of
+/// it, and the content is the only thing that can be out of date.
+fn write(bin: &Path, name: &str, body: &str) -> std::io::Result<()> {
+    let installed = bin.join(name);
+    if std::fs::read(&installed).ok().as_deref() == Some(body.as_bytes()) {
+        return Ok(());
+    }
+    let temp = bin.join(format!(".{name}.{}", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    std::fs::write(&temp, body)?;
+    // `sh` needs the bit; Windows has none to set.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::rename(&temp, &installed)
 }
 
 /// One program in this home's `bin`, linked when it is not already this build.
@@ -94,18 +121,6 @@ fn same_build(installed: &Path, source: &Path) -> bool {
             .ok()
             .zip(there.modified().ok())
             .is_some_and(|(a, b)| a == b)
-}
-
-/// Says, once, that no command layer could be found and where it looked.
-pub fn warn_missing_command(home: &Path) {
-    let sibling = std::env::current_exe()
-        .ok()
-        .and_then(|me| me.parent().map(|dir| dir.join(file_name(CLI))));
-    tracing::warn!(
-        looked_in = ?[std::env::var_os(CLI_BIN).map(PathBuf::from), sibling],
-        "no {CLI} in {}/bin: a shell this server starts cannot drive it",
-        home.display()
-    );
 }
 
 /// The file name a program is started by on this platform.

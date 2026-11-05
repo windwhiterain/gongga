@@ -240,6 +240,24 @@ def catalog(client):
     return 0
 
 
+def _spells_the_server(words):
+    """Whether these words are the *server's* `skill`, not this disk's.
+
+    # Invariant
+
+    `--name` and `--args` are the server command's own spelling (a session, then the
+    skill, then its words as JSON), so their presence decides; everything else is the
+    local form, `ls` / `run <name>` / `<name> <args...>`.
+    """
+    return any(
+        word == "--name"
+        or word.startswith("--name=")
+        or word == "--args"
+        or word.startswith("--args=")
+        for word in words
+    )
+
+
 def table(reply):
     """The skills a server's `skill` answered with, one tab-separated row each."""
     try:
@@ -443,7 +461,7 @@ def main(argv):
     # reads this disk.
     if name == "serve":
         return serve(words)
-    if name == "skill":
+    if name == "skill" and not _spells_the_server(words):
         return skill(words)
     client = dial()
     if client is None:

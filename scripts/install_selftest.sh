@@ -26,7 +26,7 @@ ok() { # name, condition-result
 }
 
 [[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
-  echo "build first: cargo build -p gongga-server -p gongga-cli" >&2; exit 1; }
+  echo "build first: cargo build -p gongga-server" >&2; exit 1; }
 [[ -d "$root/ship/.git" || -f "$root/ship/.git" ]] || {
   echo "no content repository at $root/ship: git submodule update --init" >&2; exit 1; }
 
@@ -80,7 +80,7 @@ start() {
   say "$report"
 }
 stop() {
-  "$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port" cancel >/dev/null 2>&1
+  "$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" cancel >/dev/null 2>&1
   for _ in $(seq 1 100); do alive "$sup$server_pid" || break; sleep 0.2; done
   for pid in $server_pid $sup; do alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
   server_pid=""; sup=""
