@@ -31,7 +31,9 @@ its last frame there, and the first `draw` will not paint over it: ratatui diffs
 against its own empty buffer, so a cell holding a space is never written.
 
 Hence the explicit `terminal.clear()` before the first frame. It is one sequence
-on every start, and the only thing that makes a start look like a start.
+on every start, and the only thing that makes a start look like a start. The first frame is the
+embedded cover in `docs/notes/tui-cover.md`; the first input dismisses it before any hidden window
+control can act.
 
 ## Tui::draw — the caret, and why the frame is applied by hand
 

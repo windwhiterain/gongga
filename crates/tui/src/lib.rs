@@ -9,6 +9,7 @@
 mod cache;
 mod clipboard;
 mod command;
+mod cover;
 mod fold;
 mod input;
 mod log;
@@ -236,6 +237,8 @@ impl Server {
 
 /// Everything the renderer reads, separate from the terminal it draws to.
 pub struct Screen {
+    /// Present until the first input; taking it releases the decoded pixels.
+    cover: Option<cover::Cover>,
     /// The windows the events area is split into: a frame may not walk their logs.
     pub panes: Panes,
     pub completion: Option<Completion>,
@@ -252,6 +255,11 @@ pub struct Screen {
 }
 
 impl Screen {
+    /// Ends the cover and says whether it was showing.
+    fn dismiss_cover(&mut self) -> bool {
+        self.cover.take().is_some()
+    }
+
     /// A note about this front-end, on the status line.
     ///
     /// # Invariant
@@ -519,6 +527,8 @@ impl Screen {
 
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
+    /// What the backend was last told, so only the cover transition changes it.
+    cursor_hidden: bool,
     screen: Screen,
     completer: SharedCompleter,
     history: Vec<String>,
@@ -562,6 +572,7 @@ impl Tui {
         client_home: &Path,
         endpoint: &str,
     ) -> anyhow::Result<Self> {
+        let cover = cover::Cover::new().context("decoding the embedded cover")?;
         enable_raw_mode().context("enabling raw mode")?;
         let initialized = (|| {
             let mut out = stdout();
@@ -586,9 +597,11 @@ impl Tui {
                 return Err(error);
             }
         };
-        Ok(Self {
+        let mut window = Self {
             terminal,
+            cursor_hidden: false,
             screen: Screen {
+                cover: Some(cover),
                 panes: Panes::with_cache(client_home, endpoint),
                 completion: None,
                 input: InputLine::default(),
@@ -614,7 +627,10 @@ impl Tui {
             pending: Vec::new(),
             settled: None,
             stashed: None,
-        })
+        };
+        // Dialing can win the first select, so the cover cannot wait for next_event.
+        window.draw()?;
+        Ok(window)
     }
 
     pub fn screen(&self) -> &Screen {
@@ -848,7 +864,14 @@ impl Tui {
         let seen = (self.screen.input.text().len(), self.screen.input.cursor());
         let typed = self.input_seen != Some(seen);
         self.input_seen = Some(seen);
-        let frame = guarded(|| present(&mut self.terminal, &mut self.screen, typed));
+        let frame = guarded(|| {
+            present(
+                &mut self.terminal,
+                &mut self.screen,
+                &mut self.cursor_hidden,
+                typed,
+            )
+        });
         match frame {
             Ok(Ok(area)) => self.input_area = area,
             Ok(Err(error)) => return Err(error),
@@ -907,12 +930,30 @@ impl Tui {
                     if !Self::actionable(&key) {
                         continue;
                     }
+                    // The cover consumes one gesture, except the window's quit shortcut.
+                    if self.screen.dismiss_cover() {
+                        self.dirty = true;
+                        if let Some(action) = Self::shortcut(&key) {
+                            return Some(action);
+                        }
+                        continue;
+                    }
                     // Held until the pause that says whether this was a paste.
                     self.pending.push(key);
                 }
-                Ok(TermEvent::Mouse(mouse)) => self.handle_mouse(mouse),
+                Ok(TermEvent::Mouse(mouse)) => {
+                    // A click must not operate the window hidden under the cover.
+                    if self.screen.dismiss_cover() {
+                        self.dirty = true;
+                        continue;
+                    }
+                    self.handle_mouse(mouse);
+                }
                 // One string, so a pasted block stays a block: see `paste`.
-                Ok(TermEvent::Paste(text)) => self.paste(&text),
+                Ok(TermEvent::Paste(text)) => {
+                    self.screen.dismiss_cover();
+                    self.paste(&text);
+                }
                 Ok(TermEvent::Resize(..)) => self.dirty = true,
                 _ => {}
             }
@@ -1627,31 +1668,49 @@ impl Drop for Tui {
 fn present<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     screen: &mut Screen,
+    cursor_hidden: &mut bool,
     typed: bool,
 ) -> anyhow::Result<Rect>
 where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     terminal.autoresize()?;
+    let showing_cover = screen.cover.is_some();
     let input = {
         // The renderer writes the scroll bound back, hence `&mut`.
         let mut frame = terminal.get_frame();
-        render::draw(&mut frame, screen)
+        if let Some(cover) = screen.cover.as_ref() {
+            cover.draw(&mut frame);
+            Rect::default()
+        } else {
+            render::draw(&mut frame, screen)
+        }
     };
     terminal.flush()?;
     terminal.swap_buffers();
-    // After typing, what the row drew blank is said again: an IME writes into
-    // the console, which the diff cannot see.
-    if typed {
-        for (y, x) in render::input_ends(screen, input) {
-            terminal.set_cursor_position((x, y))?;
-            ratatui::backend::Backend::clear_region(
-                terminal.backend_mut(),
-                ClearType::UntilNewLine,
-            )?;
+    if showing_cover {
+        if !*cursor_hidden {
+            terminal.hide_cursor()?;
+            *cursor_hidden = true;
         }
+    } else {
+        // After typing, what the row drew blank is said again: an IME writes into
+        // the console, which the diff cannot see.
+        if typed {
+            for (y, x) in render::input_ends(screen, input) {
+                terminal.set_cursor_position((x, y))?;
+                ratatui::backend::Backend::clear_region(
+                    terminal.backend_mut(),
+                    ClearType::UntilNewLine,
+                )?;
+            }
+        }
+        if *cursor_hidden {
+            terminal.show_cursor()?;
+            *cursor_hidden = false;
+        }
+        terminal.set_cursor_position(render::caret(screen, input))?;
     }
-    terminal.set_cursor_position(render::caret(screen, input))?;
     terminal.backend_mut().flush()?;
     Ok(input)
 }
