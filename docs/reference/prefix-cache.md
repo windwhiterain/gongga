@@ -72,35 +72,54 @@ withdrawn rather than quoted.
 
 ### the boundary this provider actually has
 
-Measured 2026-11-05, a 21k-token request against the real endpoint (the machine's 15 tool
-schemas, the stored prose and a stored 51,310-character index), every request a variant of
-the one before:
+Measured 2026-11-05 against the real endpoint, with the messages long enough for the
+answer to be readable: the read is quantized to 128 tokens, so a message of a few dozen
+tokens cannot locate a boundary inside itself. Three messages of ~1,200 tokens each, on
+top of the machine's 15 tool schemas, the stored prose and a stored 51,310-character
+index:
 
-| send | total | read |
-| --- | --- | --- |
-| a prompt never sent | 21,281 | 0 |
-| **the same prompt extended** by an assistant turn and a new user turn | 21,295 | **21,120** |
-| that one extended again | 21,308 | **21,120** |
-| a sibling: same tools, same system, another card and another message | 21,223 | 128 |
-| three more siblings | 21,223 each | 128, 0, 128 |
-| the last character of a stored prompt changed | 21,030 | 192 |
+| send | total | read | read/128 |
+| --- | --- | --- | --- |
+| `[u1]`, never sent | 24,857 | 0 | |
+| `[u1, a1]` | 28,467 | 24,704 | 193 = floor(24,857/128) |
+| `[u1, a1, u2]` | 32,076 | 28,288 | 221 = floor(28,467/128) |
+| the same again | 32,076 | 31,872 | 249 = floor(32,076/128) |
+| `u2` extended by one word | 32,077 | 31,872 | the stored request's own length |
+| **`u2`'s first character changed** | 32,076 | **28,288** | the length of `[u1, a1]` |
+| **`a1`'s first character changed** | 32,076 | **24,704** | the length of `[u1]` |
+| **`u1`'s first character changed** | 32,016 | 192 | nothing: no stored request ends before it |
 
-So there is **one** thing this provider serves: a request that **extends a stored
-request** (or repeats it exactly). The served length is the stored request's length,
-quantized down to a multiple of 128 tokens. Nothing is served across requests that
-diverge anywhere -- not the tool definitions, not the system text, not its prose half.
+So the boundary is the **message**:
 
-That makes the earlier "a sibling's first turn hit 15,616 of 15,640" reading wrong, and
-the way it went wrong is worth keeping: a session's `cached_tokens` column is its
-*newest* measurement, and every turn that calls a tool sends two requests. The second
-extends the first, so it reads ~99%; the column reports that, not the turn's first
-request. Three of five "first turns" that hit were second requests inside their own turn.
+- a request is served up to the end of the longest **stored request** that is a prefix of
+  it, and the served length is that request's length **floored to a multiple of 128
+  tokens**;
+- a divergence inside message *k* costs message *k* and everything after it, and nothing
+  before it -- the stored request ending at *k-1* is what answers;
+- so an appended message, and a fork taken *after* a stored request's last message, are
+  both fully served;
+- and a stored request that ends *inside* the messages is the only thing that can answer a
+  divergence: `u1` changed gives 192 because nothing is stored that ends before it, while
+  `a1` changed gives the whole of `[u1]`.
 
-What follows for a plan: on this provider there is no order to choose, because a
-cross-session hit cannot happen at all. The only cross-session reuse reachable is an
-**identical prompt**, i.e. siblings whose whole request is byte-for-byte the same -- which
-the start card's session name and minute forbid, and which no ordering of the index can
-buy.
+Two blocks above the messages behave differently, both measured: the **system text is one
+unit** (appending a single space to it answers 189 -- the tools do not survive a system
+change), and the **tool definitions are one unit** (one description changed answers
+16,128 of 21,228, which is the system and nothing after it). Their order on the wire is
+**system, then tools, then messages**, which is the reverse of the order the provider's
+page states; the page describes how it assembles a prefix, not what it serialises.
+
+That also corrects an earlier reading of this file: a session's `cached_tokens` column is
+its *newest* measurement, and a turn that calls a tool sends two requests, so "five fresh
+sessions hit 15,616 of 15,640" was measuring each session's second request inside its own
+turn. The cross-session case, isolated: four siblings sharing the whole head answered
+128, 128, 0, 128.
+
+What follows for a plan: the transcript's own shape already earns the 98-99% (every step
+appends a message to the last request), and the only cross-session reuse reachable is
+siblings whose messages are identical from the first one on -- which the start card's
+session name and minute forbid. No ordering of the index can buy that, because the system
+text is a single unit and it comes first.
 
 MiniMax's automatic cache states three things worth writing down, checked 2026-11-05:
 caching applies to requests of **512 or more input tokens**; the prefix is matched in the
