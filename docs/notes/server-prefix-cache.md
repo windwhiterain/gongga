@@ -111,9 +111,8 @@ the two already hit, from bytes older sessions sent under their own session name
 there the key is not a namespace, and a new session's first turn is warm from its
 siblings.
 
-**MiniMax `MiniMax-M3.1-Flash` does too, up to the last user message.** What its cache
-serves is everything in front of the request's *final* user message; a difference in that
-region is a miss, a difference inside the final message is not. Two sessions whose stored
+**MiniMax `MiniMax-M3.1-Flash` does too, and where the differing bytes sit decides how
+much of it is served.** Measured with two sessions whose stored
 `instructions` and `index` are byte-equal (`cachefix-g`, `cachefix-h`), one user message,
 read twice each (`.dev/verify/`):
 
@@ -123,10 +122,12 @@ read twice each (`.dev/verify/`):
 | in front of the user message's text | 9585 of 9586 |
 
 So the card's *position* is what decides cross-session sharing: as its own item in front
-of the user message it sits inside the served region, and being per-session it is the one
-byte two sessions cannot share; carried by the message itself, the region is the system
-text (and, from the second turn on, the transcript), which every session of a directory
-shares. `docs/notes/server-body.md` has the change and its cost.
+of the user message it is the first byte where two sessions differ, and everything after
+it is a miss; carried by the message itself the difference is at the end of the stream,
+and the system text and tool list in front of it are shared. That is the provider's own
+advice -- "put dynamic user information at the end of the conversation" -- and it is what
+a prefix cache charges for: a hit is a *prefix*, so it stops at the first differing byte,
+whoever is asking. `docs/notes/server-body.md` has the change and its cost.
 
 On the real server, after the change, ten fresh sessions of this directory with one
 message each: three came back 14,336-14,391 of ~14,440 cached (99.3-99.7%), the rest
