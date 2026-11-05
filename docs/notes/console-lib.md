@@ -60,3 +60,26 @@ rule; the crate that drives a Tokio command uses `flags` directly.
 `crates/bundle` is the head of a distribution and depends on nothing, on purpose:
 it has to build on a machine that has nothing. It spells the flag itself, which
 is the one place in the repository where the value appears twice.
+
+## Measured on this machine
+
+A probe started each program from a parent with no console at all
+(`DETACHED_PROCESS`), sampled the visible console windows while it ran, and
+compared the build of `cb7fc75` with the build that carries the flag:
+
+| what was started | before | after |
+| --- | --- | --- |
+| the server, restarted by the supervisor | one window, titled with the exe's path | none |
+| the command layer's Python probe | one window, titled `AppInstallerPythonRedirector.exe` | none |
+
+The windows that were already there -- the reader's own terminals -- are in
+both columns.
+
+## What is left, and why
+
+Running a skill's entry still shows a window when the command layer itself has
+no console: the entry is meant to inherit the reader's terminal, and a flag
+would give it a console of its own, invisible and unable to draw. The same
+reason keeps `bundle::take_over` attached to the console it found. A program
+that wants a windowless child has to give the child its own console -- and the
+programs that start other programs here now say so.
