@@ -89,18 +89,39 @@ index:
 | **`a1`'s first character changed** | 32,076 | **24,704** | the length of `[u1]` |
 | **`u1`'s first character changed** | 32,016 | 192 | nothing: no stored request ends before it |
 
-So the boundary is the **message**:
+Those rows put the cut at the **start of the message** that changed, and they do not
+prove a message is one unit -- a divergence at a message's first character lands in the
+same place under both readings. Changing a word *inside* a 900-word message says which it
+is:
 
-- a request is served up to the end of the longest **stored request** that is a prefix of
-  it, and the served length is that request's length **floored to a multiple of 128
-  tokens**;
-- a divergence inside message *k* costs message *k* and everything after it, and nothing
-  before it -- the stored request ending at *k-1* is what answers;
-- so an appended message, and a fork taken *after* a stored request's last message, are
-  both fully served;
-- and a stored request that ends *inside* the messages is the only thing that can answer a
-  divergence: `u1` changed gives 192 because nothing is stored that ends before it, while
-  `a1` changed gives the whole of `[u1]`.
+| send (the same stored base as above) | total | read |
+| --- | --- | --- |
+| `u2` changed 10% into it | 32,078 | 28,672 |
+| `u2` changed 50% into it | 32,078 | 30,080 |
+| `u2` changed 95% into it | 32,078 | 31,744 |
+| `a1` changed 50% into it | 32,078 | 26,496 |
+
+The served length follows the change point through the message, so **the boundary is a
+token prefix, quantized to 128 tokens**; a message boundary is only the special case where
+the change begins there. An appended message, and a fork taken anywhere after a stored
+request's last message, are served to that point.
+
+## the readings that do not reproduce
+
+Two structurally identical pairs came back differently in one session, which is why no
+single reading here can be used as a rule:
+
+| pair | read |
+| --- | --- |
+| first message differs by one character (`alpha` -> `a1pha`), rest identical | 21,120 |
+| first message differs by its name (`alpha` -> `beta`), rest identical, same lengths | 189 |
+| the last character of a 21k prompt changed, messages merged | 192 |
+| the same, messages alternating (the `u2`/`a1` rows above) | 28,288 / 30,080 |
+
+So the *mechanism* is a token prefix, and the *service* of that prefix is not reliable on
+this account: identical structures answer anywhere between 0 and the whole prefix. What is
+reliable is only the case with no divergence at all -- repeating a request, or extending
+one -- which is what a conversation does on its own.
 
 Two blocks above the messages behave differently, both measured: the **system text is one
 unit** (appending a single space to it answers 189 -- the tools do not survive a system
