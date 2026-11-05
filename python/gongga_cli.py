@@ -29,16 +29,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import gongga
 
-#: The commands a *window* answers against its own state. A one-shot command line
-#: keeps no state, so it says whose they are instead of guessing.
-WINDOW_SIDE = {
-    "set_sticky": "set_sticky is the window's state",
-    "del_sticky": "del_sticky is the window's state",
-    "set_render": "set_render is the window's state",
-    "set_render_session": "set_render_session is the window's state",
-    "connect_server": "connect_server is the window's state",
-}
-
 #: Where the skills a session can open live, most specific first.
 def roots(home):
     """The three directories, as `crates/skill` orders them.
@@ -169,7 +159,8 @@ def bind(wanted, words):
     ]
     if missing:
         raise ValueError(
-            f"{wanted['name']} needs " + ", ".join(missing) + "; it reads " + usage(wanted)
+            "missing required argument" + ("s" if len(missing) > 1 else "")
+            + ": " + ", ".join(missing) + "; it reads " + usage(wanted)
         )
     return values
 
@@ -468,19 +459,13 @@ def main(argv):
         return 3
     try:
         wanted = next((row for row in client.catalog if row["name"] == name), None)
-        # A name the layer answers itself is refused only when this server does not
-        # publish it too: `skill` is both, and the server's is the one that runs here.
-        if wanted is None and name in CLIENT_SIDE:
-            print(
-                f"gongga-cli: {name} {CLIENT_SIDE[name]}, which the Python command line "
-                "does not answer yet",
-                file=sys.stderr,
-            )
-            return 2
         if wanted is None:
+            # A window's own commands (`set_sticky`, `set_render`, `connect_server`)
+            # arrive here too, and the answer is the same: this process has no state
+            # for them, so it has no such command.
             print(
-                f"gongga-cli: this server publishes no {name!r}; run it with no name "
-                "for the ones it does",
+                f'unknown command "{name}"; this server publishes: '
+                + ", ".join(row["name"] for row in client.catalog),
                 file=sys.stderr,
             )
             return 2
