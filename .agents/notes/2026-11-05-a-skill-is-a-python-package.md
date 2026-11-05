@@ -57,3 +57,36 @@ protocol）。跑着的服务端**下次启动时**才装这份内容，所以�
 `2026-11-02-an-entry-is-declared-once.md` 的结论（不要 `<home>/bin` 的 shim、一份三根的解析、
 `metadata.entry`、不加 lockfile）都还成立。变的是：**入口不再是「声明一个文件」为第一形态**，
 声明式入口降级为脚本形态，包形态是第一形态。
+
+## 一等公民的后半截：程序拿得到"我是哪个会话"
+
+包形态让函数成了 API，但一个包里的 Python 拿不到它该拿的东西：只有 **bash shell** 被服务端
+告知自己属于谁（`GONGGA_SESSION` / `GONGGA_MODEL` / `GONGGA_REMOTE`）。`exec` 的程序、Python
+解释器、skill 的入口进程，继承的都是**服务端自己的**环境——那是启动它的那个进程的环境，与调用者
+无关。本轮在会话 `arg` 里实测：`python` 工具回答的 `GONGGA_SESSION` 是 `tui`。
+
+这不是少一个便利，是一个错的答案，而且 `subagent` 的 `spawn` 正是从那个变量决定"父会话是谁"。
+
+改法（`57ed2fe`）：`session_vars` 是一个会话加在任何 base 上的部分（名字、模型、机器，每次从
+行里读，所以 `set_session --model` 之后下一个孩子看到的就是新的）；`SessionHandle::env` 是给
+**不是 shell** 的程序的 base（同样的事实 + Windows 读的原生 `PATH`）。`ToolContext::env` 就是
+它，`exec` / `python` / `skill` 把它交给子进程，`bash` 照旧用已有的 shells。
+
+同一次还补了 `GONGGA_SKILL_LIB` 的第三个读者：`skill` 的入口进程。`gongga_skill.py` 在 import
+时把这个目录放进 `sys.path`，于是包里的 `import gongga` 和驱动自己看到的是同一份。
+
+观测（临时 home + 临时端口 + 一个会 `import gongga` 的包，跑完删掉）：shell 里 `GONGGA_SESSION=arg`
+时，对会话 `other` 调 `skill` 工具，包回答 `session=other`、`client_pid` 等于那台服务端的 pid、
+`sessions=['other']`；`python` 工具同样。
+
+## 换手时撞到的两个过时测试
+
+`evolve`（把跑着的服务端换成新二进制）之前跑全量自测，红的三条都不是本轮的改动：
+
+- `subagent_selftest` 的 G/J/M 还在等**服务端替订阅说话**的那句 notice，而 `222847e` 已经把它
+  删了（一次匹配只跑行里带的命令，subagent 的 news 是它自己的 `send_message`）。之前"绿过"
+  是因为被测的二进制比 checkout 旧——脚本最后打印的 sha 是 checkout 的，不是二进制的。
+- `subscription_selftest` 从 `spawn` 里取 relay，而模块已经是 `subagent`（包形态）。
+
+两条都按现在的契约改：notice 是 `turn_end <会话>: {…事件…}`；`wait` 面对一次到达可能先说
+"a message arrived"（回调的 `send_message` 同时是 pending 行和 inbox 信号，谁先被看见不是契约）。
