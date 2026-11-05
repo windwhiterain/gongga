@@ -186,6 +186,7 @@ impl Runner {
             Op::Stat { path } => stat(&path),
             Op::Read { path, offset } => read(&path, offset).await,
             Op::List { path } => list(&path),
+            Op::Space { path } => space(&path),
         };
         self.reply(id, result).await;
     }
@@ -632,6 +633,25 @@ async fn send(pid: u32, signal: &str) -> bool {
 }
 
 /// Whether `path` is there, and what it is; `exists: false` is an answer, not an error.
+/// The peer's own disk, read by the peer.
+///
+/// # Invariant
+///
+/// Answered where the shells run: the machine that fills up is the only one that can
+/// report how much it has left, and a server asking its own `statvfs` would answer
+/// for the wrong machine. See `docs/notes/server-disk.md`.
+fn space(path: &str) -> Result<Value, String> {
+    let volumes = crate::disk::volumes(Path::new(path));
+    let free = volumes.iter().filter_map(|volume| volume.free).min();
+    Ok(json!({
+        "free": free,
+        "volumes": volumes
+            .iter()
+            .map(|volume| json!({ "label": volume.label, "free": volume.free }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
 fn stat(path: &str) -> Result<Value, String> {
     let given = Path::new(path);
     match std::fs::metadata(given) {

@@ -368,6 +368,21 @@ impl Runner {
         shell.runner.clone()
     }
 
+    /// The room the peer has left, read there and answered here.
+    ///
+    /// # Invariant
+    ///
+    /// A request, not a shell command: the runner multiplexes by id, so a reading
+    /// overtakes nothing and cannot swallow output a shell still owes its tool.
+    pub async fn space(&self, path: &str) -> anyhow::Result<Option<u64>> {
+        let reply = self
+            .request(Op::Space {
+                path: path.to_string(),
+            })
+            .await?;
+        Ok(reply["free"].as_u64())
+    }
+
     /// The peer's own pid for the runner process, once it has greeted.
     pub fn pid(&self) -> u32 {
         self.inner.pid.load(Ordering::SeqCst)

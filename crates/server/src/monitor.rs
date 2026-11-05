@@ -385,19 +385,33 @@ fn disk_report(home: &Path, payload: &str) -> String {
                 .join("\n")
         })
         .unwrap_or_else(|| "  (nothing was measured)".to_string());
+    let machine = text("machine");
+    let elsewhere = machine != crate::disk::LOCAL;
+    // A peer's disk is cleaned through the `remote` skill: the cleaner this machine
+    // has is a file on this machine, and the disk that is full is not.
+    let prefix = protocol::Reference::Skill.prefix();
+    let skills = if elsewhere {
+        // A peer's disk is cleaned through `remote`: the cleaner this machine has is
+        // a file on this machine, and the disk that is full is not.
+        format!("{prefix}{}\n{prefix}remote", DISK.skill)
+    } else {
+        format!("{prefix}{}", DISK.skill)
+    };
     let mut out = format!(
-        "{skill}\n\n\
-         A gongga server on this machine has less disk room left than this machine \
+        "{skills}\n\n\
+         A gongga server has less disk room left on {machine} than this machine \
          declared it must have. Nothing has failed yet; find what is filling the disk, \
          clean it with the skill, and say what you freed.\n\n\
          - home: {home}\n\
+         - the machine that is low: {machine}\n\
          - volumes as they stood then:\n{volumes}\n\
          - the threshold this machine declared: {threshold}\n\
          - the tool that was running: {tool} (in session {session}, {ok})\n\
          - its directory: {cwd}\n\
          - harness build: {build}\n\
          - server: pid {pid}, cwd {server_cwd}\n",
-        skill = format!("@{}({})", protocol::Reference::Skill.name(), DISK.skill),
+        skills = skills,
+        machine = machine,
         home = home.display(),
         volumes = volumes,
         threshold = number("threshold")
@@ -425,6 +439,13 @@ fn disk_report(home: &Path, payload: &str) -> String {
     if !session.is_empty() {
         out.push_str(&format!(
             "\nRead it back with:\n\n    gongga-cli get_messages --session {session} -40:-1\n"
+        ));
+    }
+    if elsewhere {
+        out.push_str(&format!(
+            "\nThe disk that is low is {machine}'s, and this turn's shells are this \
+             machine's: reach it with the `remote` skill (`remote run {machine} <command>`, \
+             `remote put`/`remote get` for files) before cleaning anything there.\n"
         ));
     }
     out.push_str(

@@ -76,6 +76,10 @@ pub enum Op {
     List {
         path: String,
     },
+    /// The room left on this machine's volumes, read from `path`'s point of view.
+    Space {
+        path: String,
+    },
 }
 
 /// One answer. Exactly one of the two fields is set.
