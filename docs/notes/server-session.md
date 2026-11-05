@@ -142,8 +142,8 @@ Refusing them would be this function inventing a policy SPEC does not have.
 
 The prefix that matters is the one the harness owns, and that refusal is
 `monitor::reserved`'s, kept separate: it now checks every segment rather than only the
-first, because `work/@monitor` draws a row a reader cannot tell from the harness's own
-session. Two functions, two reasons, both stated where they refuse.
+first, because `work/@monitor/error` draws a row a reader cannot tell from the
+harness's own session. Two functions, two reasons, both stated where they refuse.
 
 ## stated_directory
 

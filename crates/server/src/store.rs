@@ -165,6 +165,15 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_by_session ON events(session_id, seq);
 
+-- What a kind of monitor has already been handed. A table of its own because the
+-- two kinds count different things -- a transcript's row for one, the event log's
+-- id for the other -- and neither belongs in a column named after a session.
+-- See `docs/notes/server-monitor.md`.
+CREATE TABLE IF NOT EXISTS monitor_state (
+    kind  TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
+
 -- What a stream has said so far, while it is saying it. Not the transcript: a row
 -- here is rewritten as chunks arrive and deleted when the finished item is appended,
 -- which is how half a message survives a process that is killed mid-stream. At the
@@ -771,6 +780,35 @@ impl Store {
         conn.execute(
             "UPDATE sessions SET monitor_seq = ?2, monitor_attempts = ?3 WHERE id = ?1",
             params![session_id, seq, i64::from(attempts)],
+        )?;
+        Ok(())
+    }
+
+    /// One monitor kind's own memory, or `0` when it has none.
+    ///
+    /// # Invariant
+    ///
+    /// Written after the thing it records is accepted, never before: a restart
+    /// between the two repeats a handover, which is recoverable, where the other
+    /// order loses one. See `docs/notes/server-monitor.md`.
+    pub fn monitor_value(&self, kind: &str) -> anyhow::Result<i64> {
+        let conn = self.lock();
+        Ok(conn
+            .query_row(
+                "SELECT value FROM monitor_state WHERE kind = ?1",
+                params![kind],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    pub fn set_monitor_value(&self, kind: &str, value: i64) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO monitor_state (kind, value) VALUES (?1, ?2)
+             ON CONFLICT(kind) DO UPDATE SET value = ?2",
+            params![kind, value],
         )?;
         Ok(())
     }
@@ -1520,6 +1558,26 @@ impl Store {
     ///
     /// `after` is exclusive and is the log's `id`, never `seq`: the id is monotonic over
     /// the table where `seq` is per session, and a filter is applied on the way out.
+    /// One event row, by its id: what a retry re-reads.
+    pub fn event_row(&self, id: i64) -> anyhow::Result<Option<EventRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, seq, session_id, kind, payload, created_at FROM events WHERE id = ?1",
+        )?;
+        Ok(stmt
+            .query_row(params![id], |r| {
+                Ok(EventRow {
+                    id: r.get(0)?,
+                    seq: r.get(1)?,
+                    session_id: r.get(2)?,
+                    kind: r.get(3)?,
+                    payload: r.get(4)?,
+                    created_at: r.get(5)?,
+                })
+            })
+            .optional()?)
+    }
+
     pub fn events_after(
         &self,
         after: i64,

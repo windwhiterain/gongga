@@ -1,23 +1,44 @@
-//! SPEC's monitor: a session told to fix what stopped with an error.
+//! SPEC's monitor: the sessions the harness spawns and hands a report to.
 //!
 //! See `docs/notes/server-monitor.md`.
 
+use std::path::Path;
 use std::sync::Arc;
 
-use protocol::LogLevel;
+use protocol::{LogLevel, SessionStatus};
 
 use crate::commands::Dispatch;
 use crate::providers::Entry;
 use crate::store::Failure;
 
-/// The session SPEC gives failures to.
+/// One kind of monitor: the session it wakes, and the skill that session's
+/// standing knowledge comes from.
 ///
 /// # Invariant
 ///
-/// Built-in sessions are named with a leading `@`, and `set_session` refuses that
-/// prefix: the namespace is reserved, so the harness never has to look at a
-/// person's session and wonder whether it is its own.
-pub const SESSION: &str = "@monitor";
+/// One shape for every kind, so which model a monitor runs on, how it is
+/// re-chosen when it fails, and how a report reaches it are one implementation and
+/// not one per kind. Kinds differ only in what they watch and what a report says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Kind {
+    /// The session, inside the harness's reserved `@` namespace.
+    pub session: &'static str,
+    /// The skill the report references, so its words are an index entry in the
+    /// prompt's prefix instead of text riding the transcript.
+    pub skill: &'static str,
+}
+
+/// A session stopped with an error.
+pub const ERROR: Kind = Kind {
+    session: "@monitor/error",
+    skill: "monitor",
+};
+
+/// This device ran out of room.
+pub const DISK: Kind = Kind {
+    session: "@monitor/disk",
+    skill: "clean-disk",
+};
 
 /// Why `name` may not be a person's session, or `None` when it may.
 ///
@@ -26,42 +47,57 @@ pub const SESSION: &str = "@monitor";
 /// Refused, not renamed: a session under a name the caller did not choose is a
 /// session they will not find again. Deleting one is allowed -- a monitor that
 /// cannot work has to be removable. Every segment is checked, not just the whole
-/// name: `work/@monitor` draws a row the harness cannot tell from its own.
+/// name: `work/@monitor/error` draws a row the harness cannot tell from its own.
 pub fn reserved(name: &str) -> Option<String> {
     let taken = name.split('/').any(|segment| segment.starts_with('@'));
     taken.then(|| {
         format!(
-            "names beginning with `@` belong to the harness ({SESSION} is one), \
-             whole or by segment; pick a name without it"
+            "names beginning with `@` belong to the harness ({ERROR} and {DISK} are two), \
+             whole or by segment; pick a name without it",
+            ERROR = ERROR.session,
+            DISK = DISK.session,
         )
     })
+}
+
+/// Whether `name` is one of the harness's own, which a failure of is not a
+/// failure of somebody's work.
+fn is_monitor(name: &str) -> bool {
+    name.starts_with("@monitor/")
 }
 
 /// How many rows of the failing transcript a report opens with.
 const CONTEXT_ROWS: i64 = 20;
 
-/// The skill a monitor turn is given its standing knowledge through.
-///
-/// # Invariant
-///
-/// Referenced, not pasted: a reference becomes an index entry in the system
-/// prompt, which every later request of the session reuses, where the same text in
-/// a message would ride the transcript. See `docs/notes/server-monitor.md`.
-pub const SKILL: &str = "monitor";
+/// The event the disk kind has already handed over.
+const DISK_EVENT_CURSOR: &str = "disk.event";
+/// How many models that handover has been through.
+const DISK_EVENT_ATTEMPTS: &str = "disk.attempts";
+/// The row the last disk report became: a cleanup has happened once the session
+/// has written past it.
+const DISK_WAKE_ROW: &str = "disk.wake";
 
-/// Hands every unreported failure to the monitor session.
+/// Hands every unreported failure to the error monitor, every unread disk event
+/// to the disk monitor, and puts the device's reserve back when a cleanup is done.
 ///
 /// # Invariant
 ///
 /// The store is the truth, not the bus: a turn that ended while this process was
-/// not running is in `sessions.status`, and a subscriber that missed the event
-/// would lose it. Called at start-up and on the tick that already wakes inboxes,
+/// not running is in `sessions.status`, and an event published then was written to
+/// the log anyway. Called at start-up and on the tick that already wakes inboxes,
 /// so the answer does not depend on which of the two happened first. See
 /// `docs/notes/server-monitor.md`.
-pub async fn sweep(d: &Arc<Dispatch>, home: &std::path::Path) {
+pub async fn sweep(d: &Arc<Dispatch>, home: &Path) {
     if d.shutting_down.load(std::sync::atomic::Ordering::SeqCst) || d.shutdown.is_cancelled() {
         return;
     }
+    sweep_errors(d, home).await;
+    sweep_disk(d, home).await;
+    arm_again(d);
+}
+
+/// Every session in `error` that a monitor turn still owes a report to.
+async fn sweep_errors(d: &Arc<Dispatch>, home: &Path) {
     let Ok(failures) = d.store.failures() else {
         return;
     };
@@ -70,97 +106,253 @@ pub async fn sweep(d: &Arc<Dispatch>, home: &std::path::Path) {
         if failure.last_seq <= failure.monitor_seq {
             continue;
         }
-        dispatch(d, home, &failure, failure.name == SESSION).await;
+        report_failure(d, home, &failure, is_monitor(&failure.name)).await;
     }
 }
 
 /// One failure: choose a model for the monitor, and give it the report.
-async fn dispatch(d: &Arc<Dispatch>, home: &std::path::Path, failure: &Failure, self_failed: bool) {
-    let candidates = candidates();
-    if candidates.is_empty() {
-        tracing::warn!(
-            session = %failure.name,
-            "no usable flash model in the roster: the failure is left for a reader"
-        );
-        d.bus.publish(protocol::Event::Log {
-            level: LogLevel::Error,
-            message: format!(
-                "{}: stopped with an error, and no usable flash model is in the roster, \
-                 so no monitor turn was started",
-                failure.name
-            ),
-        });
-        // Recorded as delivered so the search does not run again every tick.
-        let _ = d
-            .store
-            .mark_monitored(failure.id, failure.last_seq, failure.monitor_attempts);
-        return;
-    }
+async fn report_failure(d: &Arc<Dispatch>, home: &Path, failure: &Failure, self_failed: bool) {
+    let attempts = failure.monitor_attempts;
     // The attempts made so far are also the index of the next candidate.
-    let attempt = usize::try_from(failure.monitor_attempts).unwrap_or(usize::MAX);
-    let entry = match candidates.get(attempt) {
-        Some(entry) => entry,
-        None if !self_failed && failure.monitor_attempts == 0 => &candidates[0],
-        None => {
-            // Every model has been tried for this failure: say so once, and stop.
-            tracing::error!(
+    match hand_over(d, ERROR, attempts, |entry| {
+        report(d, home, failure, self_failed, entry)
+    })
+    .await
+    {
+        Handed::Accepted(model) => {
+            tracing::info!(
                 session = %failure.name,
-                "the monitor failed on every usable flash model; leaving the failure to a reader"
+                model = %model,
+                attempt = attempts.saturating_add(1),
+                "handed a failure to the monitor"
             );
+            // After, not before: a crash between the two repeats a report, which is
+            // recoverable, where the other order loses one.
+            let _ =
+                d.store
+                    .mark_monitored(failure.id, failure.last_seq, attempts.saturating_add(1));
+        }
+        Handed::GivenUp(why) => {
+            // Recorded as delivered so the search does not run again every tick.
             d.bus.publish(protocol::Event::Log {
                 level: LogLevel::Error,
-                message: format!(
-                    "monitor: failed on every usable flash model ({}), so {} is left for a reader",
-                    candidates.len(),
-                    failure.name
-                ),
+                message: why,
             });
             let _ = d
                 .store
-                .mark_monitored(failure.id, failure.last_seq, failure.monitor_attempts);
-            return;
+                .mark_monitored(failure.id, failure.last_seq, attempts);
         }
-    };
-    // Stored after the handover: this attempt is one more than the ones recorded.
-    let attempts = failure.monitor_attempts.saturating_add(1);
-
-    let report = match report(d, home, failure, self_failed, entry) {
-        Ok(report) => report,
-        Err(e) => {
-            tracing::warn!(session = %failure.name, error = %e, "cannot write the monitor report");
-            return;
+        Handed::Refused(why) => {
+            tracing::warn!(session = %failure.name, why, "the monitor did not take the report");
         }
-    };
-    if let Err(e) = adopt(d, entry, attempts) {
-        tracing::warn!(error = %e, "cannot put the monitor session on {}", entry.model);
-        return;
     }
-    let outcome = crate::commands::deliver(d, SESSION, report).await;
-    if !outcome.ok {
-        tracing::warn!(
-            session = %failure.name,
-            why = %outcome.message,
-            "the monitor session did not take the report"
-        );
-        return;
-    }
-    tracing::info!(
-        session = %failure.name,
-        model = entry.model,
-        attempt = attempts,
-        "handed a failure to the monitor"
-    );
-    // After, not before: a crash between the two repeats a report, which is
-    // recoverable, where the other order loses one.
-    let _ = d
-        .store
-        .mark_monitored(failure.id, failure.last_seq, attempts);
 }
 
-/// What the report says: enough to start work without reading anything first.
+/// Every disk event no monitor has been told about yet, and the report a monitor
+/// that failed on its model is owed.
+///
+/// # Invariant
+///
+/// One wake per event row, and the row is the whole memory: a spent reserve that
+/// two servers raced over is one row, and a row is handed over once even across a
+/// restart. A monitor that failed is given the same report on the next usable
+/// model, so a disk whose first choice of model is refused is still cleaned -- and
+/// its own failure is the error kind's business as well, because a monitor that
+/// keeps failing is a harness question and not a disk.
+async fn sweep_disk(d: &Arc<Dispatch>, home: &Path) {
+    let cursor = d.store.monitor_value(DISK_EVENT_CURSOR).unwrap_or(0);
+    let attempts = d
+        .store
+        .monitor_value(DISK_EVENT_ATTEMPTS)
+        .unwrap_or(0)
+        .max(0) as u32;
+    let wake = d.store.monitor_value(DISK_WAKE_ROW).unwrap_or(0);
+    // A report already handed over, on a session that ended in error: the same
+    // report again, on the next model.
+    if wake > 0
+        && cursor > 0
+        && let Ok(Some(row)) = d.store.event_row(cursor)
+        && let Ok(Some(session)) = d.store.get_session(DISK.session)
+        && session.status == SessionStatus::Error
+    {
+        give_disk(d, home, &row, attempts.saturating_add(1)).await;
+        return;
+    }
+    let Ok(rows) = d
+        .store
+        .events_after(cursor, Some(crate::disk::EVENT), None, 8)
+    else {
+        return;
+    };
+    for row in rows {
+        give_disk(d, home, &row, attempts).await;
+    }
+}
+
+/// Hands one disk event to the monitor, and records what came of it.
+async fn give_disk(d: &Arc<Dispatch>, home: &Path, row: &crate::store::EventRow, attempts: u32) {
+    let payload = row.payload.clone();
+    match hand_over(d, DISK, attempts, move |_| Ok(disk_report(home, &payload))).await {
+        Handed::Accepted(model) => {
+            tracing::info!(
+                event = row.id,
+                model = %model,
+                attempt = attempts.saturating_add(1),
+                "handed the disk's last room to the monitor"
+            );
+            let _ = d.store.set_monitor_value(DISK_EVENT_CURSOR, row.id);
+            let _ = d.store.set_monitor_value(DISK_EVENT_ATTEMPTS, 0);
+            if let Ok(Some(session)) = d.store.get_session(DISK.session)
+                && let Ok(seq) = d.store.last_message_seq(session.id)
+            {
+                let _ = d.store.set_monitor_value(DISK_WAKE_ROW, seq);
+            }
+        }
+        Handed::GivenUp(why) => {
+            d.bus.publish(protocol::Event::Log {
+                level: LogLevel::Error,
+                message: why,
+            });
+            let _ = d.store.set_monitor_value(DISK_EVENT_CURSOR, row.id);
+            let _ = d.store.set_monitor_value(DISK_EVENT_ATTEMPTS, 0);
+            let _ = d.store.set_monitor_value(DISK_WAKE_ROW, 0);
+        }
+        Handed::Refused(why) => {
+            tracing::warn!(
+                event = row.id,
+                why,
+                "the monitor did not take the disk report"
+            );
+            let _ = d
+                .store
+                .set_monitor_value(DISK_EVENT_ATTEMPTS, i64::from(attempts.saturating_add(1)));
+        }
+    }
+}
+
+/// Puts the device's reserve back once the turn that spent it has ended.
+///
+/// # Invariant
+///
+/// Only after the cleanup has answered, never before: re-arming while the monitor
+/// is still working hands the next failed tool call a fresh way to wake a second
+/// monitor, which is the one thing the claim exists to prevent. A monitor that
+/// failed re-arms nothing -- its own failure is the error kind's business, and a
+/// disk that is still full would only spend the reserve again.
+fn arm_again(d: &Arc<Dispatch>) {
+    let Some(watcher) = crate::disk::installed() else {
+        return;
+    };
+    let reserve = &watcher.reserve;
+    if reserve.armed() {
+        return;
+    }
+    let wake = d.store.monitor_value(DISK_WAKE_ROW).unwrap_or(0);
+    if wake <= 0 {
+        // Nothing was spent through this server, so nothing here may arm it.
+        return;
+    }
+    let Ok(Some(session)) = d.store.get_session(DISK.session) else {
+        return;
+    };
+    if session.status == SessionStatus::Error {
+        return;
+    }
+    let Ok(last) = d.store.last_message_seq(session.id) else {
+        return;
+    };
+    if last <= wake {
+        // No answer yet: the cleanup turn has not finished.
+        return;
+    }
+    match reserve.arm() {
+        Ok(()) => {
+            tracing::info!(
+                path = %reserve.path().display(),
+                bytes = reserve.bytes(),
+                "the device's disk reserve is armed again"
+            );
+            let _ = d.store.set_monitor_value(DISK_WAKE_ROW, 0);
+            // The episode is over; a later one is a new event row.
+            let _ = d.store.set_monitor_value(DISK_EVENT_ATTEMPTS, 0);
+        }
+        Err(why) => {
+            // Full enough that the reserve does not fit yet: the next tick asks again.
+            tracing::debug!(why, "the disk reserve does not fit yet");
+        }
+    }
+}
+
+/// What one handover did.
+enum Handed {
+    /// The monitor took the report, on this model; the caller records that.
+    Accepted(String),
+    /// No model left to try: said once, and the report is left for a reader.
+    GivenUp(String),
+    /// A model was chosen and the report was written, but the session would not
+    /// take it.
+    Refused(String),
+}
+
+/// Puts `kind`'s session on a usable flash model, and gives it `report`.
+///
+/// # Invariant
+///
+/// One path for every kind: `commands::deliver` is how a turn starts anywhere, so
+/// the queue gate, `@skill:` expansion, the tools and the window's rendering are
+/// reused rather than re-implemented. `attempts` is the index of the candidate to
+/// try, which is how a monitor that failed hands the same report to the next model.
+async fn hand_over<F>(d: &Arc<Dispatch>, kind: Kind, attempts: u32, report: F) -> Handed
+where
+    F: FnOnce(&Entry) -> anyhow::Result<String>,
+{
+    let candidates = candidates();
+    if candidates.is_empty() {
+        tracing::warn!(
+            session = %kind.session,
+            "no usable flash model in the roster: the report is left for a reader"
+        );
+        return Handed::GivenUp(format!(
+            "{}: a report is waiting, and no usable flash model is in the roster, \
+             so no monitor turn was started",
+            kind.session
+        ));
+    }
+    let attempt = usize::try_from(attempts).unwrap_or(usize::MAX);
+    let Some(entry) = candidates.get(attempt) else {
+        // Every model has been tried for this report: say so once, and stop.
+        tracing::error!(
+            session = %kind.session,
+            "the monitor failed on every usable flash model; leaving the report to a reader"
+        );
+        return Handed::GivenUp(format!(
+            "{}: failed on every usable flash model ({}), so its report is left for a reader",
+            kind.session,
+            candidates.len()
+        ));
+    };
+    let report = match report(entry) {
+        Ok(report) => report,
+        Err(e) => return Handed::Refused(format!("cannot write the report: {e}")),
+    };
+    if let Err(e) = adopt(d, kind, entry, attempts) {
+        return Handed::Refused(format!(
+            "cannot put {} on {}: {e}",
+            kind.session, entry.model
+        ));
+    }
+    // Stored after the handover: this attempt is one more than the ones recorded.
+    let outcome = crate::commands::deliver(d, kind.session, report).await;
+    if !outcome.ok {
+        return Handed::Refused(outcome.message);
+    }
+    Handed::Accepted(entry.model.clone())
+}
+
+/// What the error report says: enough to start work without reading anything first.
 fn report(
     d: &Dispatch,
-    home: &std::path::Path,
+    home: &Path,
     failure: &Failure,
     self_failed: bool,
     entry: &Entry,
@@ -205,7 +397,7 @@ fn report(
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default(),
         mine = entry.model,
-        skill = format!("{}{}", protocol::Reference::Skill.prefix(), SKILL),
+        skill = format!("{}{}", protocol::Reference::Skill.prefix(), ERROR.skill),
     );
     if !written.is_empty() {
         out.push_str(&format!(
@@ -223,6 +415,87 @@ fn report(
     Ok(out)
 }
 
+/// What the disk report says: the room that was spent, and the volumes as they
+/// stood when the server needed to say something.
+fn disk_report(home: &Path, payload: &str) -> String {
+    let facts: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
+    let text = |key: &str| -> String {
+        facts
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let volumes = facts
+        .get("volumes")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .map(|volume| {
+                    format!(
+                        "  - {}: {}",
+                        volume.get("label").and_then(|v| v.as_str()).unwrap_or("?"),
+                        volume
+                            .get("free")
+                            .and_then(|v| v.as_u64())
+                            .map(crate::disk::human)
+                            .unwrap_or_else(|| "not reported".to_string()),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_else(|| "  (nothing was measured)".to_string());
+    let mut out = format!(
+        "{skill}\n\n\
+         A gongga server on this machine ran out of disk room: a tool failed, and the \
+         server spent the space it had set aside so that it could still write this. \
+         Find what filled the disk, clean it with the skill, and say what you freed.\n\n\
+         - home: {home}\n\
+         - volumes as they stood then:\n{volumes}\n\
+         - the space that was released: {path} ({bytes})\n\
+         - the session whose tool failed: {session}\n\
+         - the tool: {tool}\n\
+         - its directory: {cwd}\n\
+         - harness build: {build}\n\
+         - server: pid {pid}, cwd {server_cwd}\n",
+        skill = format!("{}{}", protocol::Reference::Skill.prefix(), DISK.skill),
+        home = home.display(),
+        volumes = volumes,
+        path = text("reserve"),
+        bytes = facts
+            .get("bytes")
+            .and_then(|v| v.as_u64())
+            .map(crate::disk::human)
+            .unwrap_or_else(|| "unknown".to_string()),
+        session = text("session"),
+        tool = text("tool"),
+        cwd = text("cwd"),
+        build = protocol::version_line(),
+        pid = std::process::id(),
+        server_cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    );
+    let failure = text("failure");
+    if !failure.is_empty() {
+        out.push_str(&format!("\nWhat the tool printed:\n\n{failure}\n"));
+    }
+    let session = text("session");
+    if !session.is_empty() {
+        out.push_str(&format!(
+            "\nRead it back with:\n\n    gongga-cli get_messages --session {session} -40:-1\n"
+        ));
+    }
+    out.push_str(
+        "\nThe skill surveys every volume first and reports what it freed per volume; \
+         start there. The space that was released is not held back again until your turn \
+         ends, so a second full disk before then has nowhere to report. Answer in one \
+         message: what was full, what you freed, and what is left.\n",
+    );
+    out
+}
+
 /// Puts the monitor session on `entry`, creating it the first time.
 ///
 /// # Invariant
@@ -231,11 +504,11 @@ fn report(
 /// one this model publishes, so a session is never left on a level its own model
 /// refuses. Called before the report, because a turn that starts while the write
 /// is pending would run on the model that just failed.
-fn adopt(d: &Dispatch, entry: &Entry, attempts: u32) -> anyhow::Result<()> {
-    let fresh = d.store.get_session(SESSION)?.is_none();
+fn adopt(d: &Dispatch, kind: Kind, entry: &Entry, attempts: u32) -> anyhow::Result<()> {
+    let fresh = d.store.get_session(kind.session)?.is_none();
     let session = d
         .sessions
-        .ensure_on(SESSION, None, Some(&entry.model), None)?;
+        .ensure_on(kind.session, None, Some(&entry.model), None)?;
     if fresh {
         // Inherited, so its own failure continues the search: the model this
         // handover just tried is not the next candidate.

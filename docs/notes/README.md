@@ -24,6 +24,7 @@ you are about to touch.
 | run the distribution (`gongga`, `gongga tui`) | [`bundle-main.md`](bundle-main.md) -- it is not a read-only run: pointed at a live home it stops that home's server |
 | start, stop or watch a server | [`cli-server.md`](cli-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
 | write into a home (payload, config, database) | [`server-config.md`](server-config.md), [`server-store.md`](server-store.md) |
+| spend or re-arm the disk safety space, or change what wakes `@monitor/disk` | [`server-disk.md`](server-disk.md), [`server-monitor.md`](server-monitor.md) |
 | change what a client sends or receives | [`cli-lib.md`](cli-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
 | change what the window remembers (`cli.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
@@ -79,6 +80,7 @@ you are about to touch.
 | [`server-commands.md`](server-commands.md) | `crates/server/src/commands.rs` |
 | [`server-config.md`](server-config.md) | `crates/server/src/config.rs` |
 | [`server-diff.md`](server-diff.md) | `crates/server/src/diff.rs` |
+| [`server-disk.md`](server-disk.md) | `crates/server/src/disk.rs` |
 | [`server-instance.md`](server-instance.md) | `crates/server/src/instance.rs` |
 | [`server-llm.md`](server-llm.md) | `crates/server/src/llm.rs` |
 | [`server-meta.md`](server-meta.md) | `crates/server/src/meta.rs` |

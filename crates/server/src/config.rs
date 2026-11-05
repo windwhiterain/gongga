@@ -56,6 +56,15 @@ pub const DEFAULT_INDEX_CHANGE_TOLERANCE: f64 = 0.2;
 /// The longest a retry delay may grow to. See `docs/notes/server-config.md`.
 pub const DEFAULT_RETRY_CEILING_MS: u64 = 30_000;
 
+/// How much room the server holds back on the device it stands on, in MiB.
+///
+/// # Invariant
+///
+/// One number, used twice: the space a spent reserve gives back to a full disk,
+/// and the yardstick for "this volume is down to its last room". See
+/// `docs/notes/server-disk.md`.
+pub const DEFAULT_DISK_RESERVE_MB: u64 = 1024;
+
 /// Share of a model's window `--context_limit` starts at; see `docs/notes/server-config.md`.
 pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
 /// Everything the server needs to boot.
@@ -76,6 +85,9 @@ pub struct Config {
     pub scripts: ScriptConfig,
     pub agent: AgentConfig,
     pub transport: TransportConfig,
+    /// Room held back on this device for a disk that fills up. See
+    /// `docs/notes/server-disk.md`.
+    pub disk_reserve: crate::disk::Reserve,
 }
 
 /// The model the server talks to by default: which provider serves it, and how.
@@ -277,6 +289,8 @@ struct FileServer {
     home: Option<PathBuf>,
     bind: Option<String>,
     key: Option<String>,
+    /// Room held back for a full disk, in MiB; `0` holds nothing back.
+    disk_reserve_mb: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -637,6 +651,16 @@ impl Config {
                 .unwrap_or(Duration::from_secs(60)),
         };
 
+        let disk_reserve = crate::disk::Reserve::new(
+            crate::disk::default_path(),
+            file.server
+                .as_ref()
+                .and_then(|s| s.disk_reserve_mb)
+                .or_else(|| env_or("GONGGA_DISK_RESERVE_MB").and_then(|v| v.parse().ok()))
+                .unwrap_or(DEFAULT_DISK_RESERVE_MB)
+                .saturating_mul(1024 * 1024),
+        );
+
         Ok(Self {
             config_path: std::path::absolute(&config_path).unwrap_or(config_path),
             home,
@@ -649,6 +673,7 @@ impl Config {
             scripts,
             agent,
             transport,
+            disk_reserve,
         })
     }
 }
