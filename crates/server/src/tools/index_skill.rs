@@ -69,7 +69,8 @@ impl Tool for IndexSkillTool {
                 }
                 return ToolOutcome::ok(message);
             }
-            let rows = ordered(skills, &ctx.store, &ctx.session, &ctx.model, ctx.rates);
+            let owner = crate::session::stated(&ctx.cwd);
+            let rows = ordered(skills, &ctx.store, &owner, &ctx.model, ctx.rates);
             let mut payload = json!({"skills": rows});
             if let Some(elsewhere) = elsewhere {
                 payload["elsewhere"] = json!(elsewhere);
@@ -107,7 +108,7 @@ pub fn installed_for(cwd: &Path, machine: Machine) -> Vec<Skill> {
 fn ordered(
     skills: Vec<Skill>,
     store: &crate::store::Store,
-    session: &str,
+    owner: &str,
     model: &str,
     rates: crate::prefix_cache::Rates,
 ) -> Vec<Value> {
@@ -137,7 +138,7 @@ fn ordered(
         })
         .collect();
     // No tolerance: a row is json, and a diff of one is not something a reader reads.
-    let planned = crate::prefix_cache::plan(store, session, "skill table", &wanted, rates, None);
+    let planned = crate::prefix_cache::plan(store, owner, "skill table", &wanted, rates, None);
     let mut by_key: HashMap<String, Value> =
         rows.into_iter().map(|(key, _, row)| (key, row)).collect();
     planned
