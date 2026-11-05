@@ -91,6 +91,14 @@ impl Sink for TuiSink<'_> {
     fn rewind(&mut self, window: &str) {
         self.0.rewind(window);
     }
+
+    fn older(&mut self, window: &str) {
+        self.0.older(window);
+    }
+
+    fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
+        self.0.landed(window, created, drawn, floor);
+    }
 }
 
 impl TuiSink<'_> {
@@ -159,7 +167,9 @@ fn declare(client: &mut link::Client, ui: &Tui) {
     let names: Vec<String> = client.sessions().iter().map(|s| s.name.clone()).collect();
     for name in names {
         match ui.stamp_of(&name) {
-            Some((created, drawn)) => client.declare_drawn(&name, created, drawn),
+            Some((created, drawn)) => {
+                client.declare_drawn(&name, created, drawn, ui.floor_of(&name))
+            }
             // No journal at all: nothing drawn, so the whole transcript is owed.
             None => client.declare_empty(&name),
         }
@@ -188,6 +198,36 @@ async fn answer_transcripts(client: &mut link::Client, link: Option<&link::Link>
         let Some(message) = client.ask_transcript(&name, ui.room_of(&name)) else {
             continue;
         };
+        if open.send(message).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// Asks the server for the page above what the windows the operator scrolled past
+/// their first row hold.
+///
+/// # Invariant
+///
+/// The keystroke is the request: a page is fetched because someone asked to read
+/// above the rows they had, and the request is dropped when the pane holds nothing
+/// older. One page, shaped by the pane -- there is no budget for this.
+async fn answer_older(client: &mut link::Client, link: Option<&link::Link>, ui: &mut Tui) {
+    let Some(open) = link else {
+        return;
+    };
+    for name in ui.wants() {
+        // The transcript's own first row: there is nothing above it to read.
+        if ui.floor_of(&name).is_some_and(|floor| floor <= 1) {
+            ui.resolve_want(&name);
+            continue;
+        }
+        // A fill of this window is in flight: the next step asks again, because a
+        // scroll is a request for a page and not for the frame that followed it.
+        let Some(message) = client.ask_older(&name, ui.room_of(&name)) else {
+            continue;
+        };
+        ui.resolve_want(&name);
         if open.send(message).await.is_err() {
             break;
         }
@@ -747,6 +787,8 @@ pub async fn interactive(args: &link::Args) -> anyhow::Result<()> {
         answer_completion(&mut client, link.as_ref(), &mut ui, &mut drawn_listings).await;
         // Same place, same reason: what a frame drew decides what is fetched.
         answer_transcripts(&mut client, link.as_ref(), &mut ui).await;
+        // And what the operator asked to read above: a page of the past.
+        answer_older(&mut client, link.as_ref(), &mut ui).await;
     };
 
     // SPEC's stop, for the server the bar drew as own, and nothing for one that is

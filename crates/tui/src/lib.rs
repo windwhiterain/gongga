@@ -780,6 +780,33 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// The oldest transcript row this window's journal says it holds.
+    pub fn floor_of(&self, name: &str) -> Option<i64> {
+        self.screen.panes.floor_of(name)
+    }
+
+    /// The rows arriving from here on are older than the ones this window holds.
+    pub fn older(&mut self, name: &str) {
+        self.screen.panes.older(name);
+        self.dirty = true;
+    }
+
+    /// A page of older rows landed: this window holds every row from `floor` up.
+    pub fn landed(&mut self, name: &str, created: i64, drawn: i64, floor: i64) {
+        self.screen.panes.landed(name, created, drawn, floor);
+        self.dirty = true;
+    }
+
+    /// The windows whose operator asked to read above what they had.
+    pub fn wants(&self) -> Vec<String> {
+        self.screen.panes.wants()
+    }
+
+    /// The request of a window has been answered, or never will be.
+    pub fn resolve_want(&mut self, name: &str) {
+        self.screen.panes.resolve_want(name);
+    }
+
     /// The rows a window's pane could draw last frame: what one page is.
     pub fn room_of(&self, name: &str) -> usize {
         self.screen.panes.room_of(name)

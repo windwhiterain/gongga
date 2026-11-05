@@ -136,6 +136,13 @@ pub struct Panes {
     drawn: Vec<String>,
     /// How many rows each window's pane could draw, as the last frame found it.
     room: std::collections::HashMap<String, usize>,
+    /// The windows whose operator scrolled past the rows they had.
+    ///
+    /// # Invariant
+    ///
+    /// A keystroke, never a frame: the page above is owed because someone asked to
+    /// read it, so a window sitting at its oldest row is not refilled over and over.
+    wants: std::collections::BTreeSet<String>,
 }
 
 impl Panes {
@@ -150,6 +157,7 @@ impl Panes {
             quota: None,
             drawn: Vec::new(),
             room: std::collections::HashMap::new(),
+            wants: std::collections::BTreeSet::new(),
         }
     }
 
@@ -165,6 +173,7 @@ impl Panes {
             quota: None,
             drawn: Vec::new(),
             room: std::collections::HashMap::new(),
+            wants: std::collections::BTreeSet::new(),
         }
     }
 
@@ -186,6 +195,31 @@ impl Panes {
     /// What a window's journal says it has drawn.
     pub fn stamp_of(&self, window: &str) -> Option<(i64, i64)> {
         self.log.stamp_of(window)
+    }
+
+    /// The oldest transcript row a window's journal says it holds.
+    pub fn floor_of(&self, window: &str) -> Option<i64> {
+        self.log.floor_of(window)
+    }
+
+    /// The rows about to arrive are older than the ones this window holds.
+    pub fn older(&mut self, window: &str) {
+        self.log.older(window);
+    }
+
+    /// A page of older rows landed, holding every row from `floor` up.
+    pub fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
+        self.log.landed(window, created, drawn, floor);
+    }
+
+    /// The windows whose operator asked for a page above what they had.
+    pub fn wants(&self) -> Vec<String> {
+        self.wants.iter().cloned().collect()
+    }
+
+    /// The request of a window has been answered, or never will be.
+    pub fn resolve_want(&mut self, window: &str) {
+        self.wants.remove(window);
     }
 
     /// Throws away a window's unaccounted tail before a refill.
@@ -549,9 +583,19 @@ impl Panes {
     }
 
     /// Positive scrolls into the past, negative towards the newest line.
+    ///
+    /// # Invariant
+    ///
+    /// A view that is already showing its oldest row and is scrolled further into
+    /// the past is asking for the page above it: that request is recorded here and
+    /// sent by the loop, because only a frame knows how much a page is.
     pub fn scroll_by(&mut self, name: &str, rows: i64) {
-        if let Some(pane) = self.get_mut(name) {
-            pane.scroll_by(rows);
+        let Some(pane) = self.get_mut(name) else {
+            return;
+        };
+        pane.scroll_by(rows);
+        if rows > 0 && pane.kind == Kind::Shown && pane.scroll >= pane.max_scroll {
+            self.wants.insert(name.to_string());
         }
     }
 

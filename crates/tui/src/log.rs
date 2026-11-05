@@ -811,6 +811,15 @@ pub struct Log {
     next_id: u64,
     /// The blocks whose bodies are here. Eviction walks this, not the log.
     hot: Vec<usize>,
+    /// The window whose next blocks are older than the ones it holds, and where in
+    /// its ledger the next of them goes.
+    ///
+    /// # Invariant
+    ///
+    /// A page of the past is drawn above what the window already has, so its blocks
+    /// take their places from the front rather than the end. Set by
+    /// [`Log::older`], cleared by the seal the page's answer brings.
+    prepend: Option<(String, usize)>,
     /// Windows this process has already decided the beginning of.
     ///
     /// # Invariant
@@ -878,6 +887,7 @@ impl Log {
             // Nothing is ever written: a log built with no front-end in mind does
             // not invent a directory.
             cache: Cache::none(),
+            prepend: None,
             next_id: 0,
             hot: Vec::new(),
             seeded: HashSet::new(),
@@ -1006,6 +1016,9 @@ impl Log {
     /// it -- so a block arriving under a reused name is that session's first and
     /// starts at row zero. See `docs/notes/tui-log.md`.
     pub fn forget(&mut self, window: &str) {
+        if self.prepend.as_ref().is_some_and(|(name, _)| name == window) {
+            self.prepend = None;
+        }
         self.cache.remove(window);
         self.drop_window(window);
         // The name may be handed out again: its next beginning is the server's.
@@ -1023,6 +1036,65 @@ impl Log {
     /// restart answers the same question with the same number.
     pub fn stamp(&mut self, window: &str, created: i64, seq: i64) {
         self.cache.stamp(window, created, seq);
+    }
+
+    /// The oldest transcript row this window's journal says it holds.
+    ///
+    /// # Invariant
+    ///
+    /// Read from the journal, never derived from the stamp: the page a window holds
+    /// is as wide as the last thing it was given, and a restart is the one moment
+    /// that width is not a number this process remembers.
+    pub fn floor_of(&self, window: &str) -> Option<i64> {
+        self.cache.floor(window)
+    }
+
+    /// The rows arriving from here on are older than the ones this window holds.
+    ///
+    /// # Invariant
+    ///
+    /// Nothing is dropped: a page of the past is added above the held rows, and the
+    /// row the window ends at does not move -- which is why the answer to it is a
+    /// [`Log::landed`] and not a stamp.
+    pub fn older(&mut self, window: &str) {
+        self.prepend = Some((window.to_string(), 0));
+    }
+
+    /// A page of older rows has landed, so this window now holds every row from
+    /// `floor` up.
+    ///
+    /// # Invariant
+    ///
+    /// The journal is written in the order the pane draws, so the page goes in front
+    /// of the window's other blocks instead of behind them. Left alone when a block
+    /// cannot stand for itself: a journal missing a body is worse than an order a
+    /// restart would get wrong. See `docs/notes/tui-cache.md`.
+    pub fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
+        if self.prepend.as_ref().is_some_and(|(name, _)| name == window) {
+            self.prepend = None;
+        }
+        let width = self.width_of(window);
+        let Some(blocks) = self.views.get(window).map(|ledger| ledger.blocks.clone()) else {
+            return;
+        };
+        let mut records = Vec::with_capacity(blocks.len() + 2);
+        for &at in &blocks {
+            materialize(&mut self.entries, &self.cache, at, width);
+            let entry = &self.entries[at];
+            if !entry.hot() || entry.pending {
+                return;
+            }
+            records.push(entry.seal_record());
+        }
+        records.push(Record::Stamp { created, seq: drawn });
+        records.push(Record::Floor { seq: floor });
+        let Some(offsets) = self.cache.rewrite(window, &records) else {
+            return;
+        };
+        for (&at, slot) in blocks.iter().zip(offsets) {
+            self.entries[at].slot = Some(slot);
+            self.entries[at].pending = false;
+        }
     }
 
     /// What this window's journal says it has drawn, and of which session.
@@ -1181,6 +1253,12 @@ impl Log {
     }
 
     /// Records block `at` in its own window's ledger.
+    ///
+    /// # Invariant
+    ///
+    /// The ledger's order is the order the pane draws, so a block of a page of older
+    /// rows lands where that page's own order puts it: in front of the rows the
+    /// window already held. Every block it moved keeps the position it is summed at.
     fn attach(&mut self, at: usize) {
         let rows = self.contributions(at);
         // The name is the ledger's key: the block takes that copy, not its own.
@@ -1192,15 +1270,46 @@ impl Log {
             self.entries[at].window = shared;
         }
         let window = self.entries[at].window.clone();
-        let pos = {
-            let ledger = self.views.entry(window).or_default();
-            let pos = ledger.blocks.len();
-            ledger.blocks.push(at);
-            ledger.index.push(rows);
-            pos
+        let above = match &self.prepend {
+            Some((name, pos)) if window.as_ref() == name.as_str() => Some(*pos),
+            _ => None,
         };
-        self.entries[at].at = pos;
-        self.hot.push(at);
+        let block_size = self.block_size;
+        let Log {
+            entries, views, hot, ..
+        } = self;
+        let ledger = views.entry(window.clone()).or_default();
+        let pos = match above {
+            None => {
+                let pos = ledger.blocks.len();
+                ledger.blocks.push(at);
+                ledger.index.push(rows);
+                pos
+            }
+            Some(pos) => {
+                let pos = pos.min(ledger.blocks.len());
+                ledger.blocks.insert(pos, at);
+                // A sum inserted above the others moves every one of them.
+                let cap = ledger.cap;
+                let mut index = RowIndex::default();
+                for &block in &ledger.blocks {
+                    let entry = &entries[block];
+                    index.push(entry.visible(room(entry.kind, cap, block_size)));
+                }
+                ledger.index = index;
+                for (place, &block) in ledger.blocks.iter().enumerate().skip(pos + 1) {
+                    entries[block].at = place;
+                }
+                pos
+            }
+        };
+        entries[at].at = pos;
+        hot.push(at);
+        if let Some((name, next)) = self.prepend.as_mut()
+            && window.as_ref() == name.as_str()
+        {
+            *next = pos + 1;
+        }
     }
 
     /// Where the block `key` currently names is: the open one, else the newest.
@@ -1963,6 +2072,8 @@ impl Log {
             },
             // Not a block: it says where a later `Rewind` cuts.
             Record::Stamp { .. } => *cut = Some(at),
+            // Not a block either: the floor a restart counts its next page from.
+            Record::Floor { .. } => {}
             // Thrown away again on the way forward: what is above it is the refill.
             Record::Rewind => {
                 let window = window.to_string();
@@ -2202,7 +2313,9 @@ fn whole(record: Record, window: &str, width: usize) -> Option<Entry> {
         }
         // Neither is a block: one says where the transcript stands, the other
         // says what to throw away.
-        Record::Delta { .. } | Record::Stamp { .. } | Record::Rewind => return None,
+        Record::Delta { .. } | Record::Stamp { .. } | Record::Floor { .. } | Record::Rewind => {
+            return None;
+        }
     };
     let mut entry = Entry::with_tag(id, window, kind, &tag, text, width);
     entry.key = key;

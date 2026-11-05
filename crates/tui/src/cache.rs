@@ -64,6 +64,14 @@ pub enum Record {
     /// window: a restart mid-refill neither loses the rows below the stamp nor keeps
     /// the half-written block it replaced.
     Rewind,
+    /// The oldest transcript row this window's blocks stand for.
+    ///
+    /// # Invariant
+    ///
+    /// Written with every `Stamp` and only ever beside one: `seq` is the floor the
+    /// stamp's ceiling is counted from, so a window read back from a journal knows
+    /// which page above it is still owed. See `docs/notes/tui-cache.md`.
+    Floor { seq: i64 },
     /// A block as it stands: created, relabelled, described, opened or closed.
     Seal {
         id: u64,
@@ -313,6 +321,65 @@ impl Cache {
     /// Writes down that the window has drawn up to `seq` of the session.
     pub fn stamp(&self, window: &str, created: i64, seq: i64) {
         self.append(window, &Record::Stamp { created, seq });
+    }
+
+    /// Rewrites one window's journal as `records`, and answers where each landed.
+    ///
+    /// # Invariant
+    ///
+    /// The file's order *is* the order the pane draws, so a window that gains rows
+    /// above the ones it holds writes them in front of the rest rather than behind
+    /// them: a replay would otherwise show the older page below the newer rows. The
+    /// copy is made beside the journal and renamed over it, so an interrupted
+    /// rewrite leaves the previous journal whole. See `docs/notes/tui-cache.md`.
+    pub fn rewrite(&self, window: &str, records: &[Record]) -> Option<Vec<u64>> {
+        let path = self.path(window)?;
+        let next = path.with_extension("rewrite");
+        let mut framed: Vec<u8> = Vec::new();
+        let mut offsets = Vec::with_capacity(records.len());
+        for record in records {
+            let at = framed.len() as u64;
+            let mut body = Vec::new();
+            body.extend_from_slice(&VERSION.to_le_bytes());
+            body.extend_from_slice(&serde_json::to_vec(record).ok()?);
+            let len = (body.len() as u32).to_le_bytes();
+            framed.extend_from_slice(&len);
+            framed.extend_from_slice(&body);
+            framed.extend_from_slice(&len);
+            offsets.push(at);
+        }
+        {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&next)
+                .ok()?;
+            file.write_all(&framed).ok()?;
+        }
+        // Windows refuses to replace a file this process holds open.
+        self.close(window);
+        std::fs::rename(&next, &path).ok()?;
+        Some(offsets)
+    }
+
+    /// The oldest transcript row this window's journal says it holds.
+    ///
+    /// # Invariant
+    ///
+    /// The newest `Floor`, found the way a stamp is: walking back stops at the
+    /// first record this build cannot read, for the same reason every other
+    /// backward walk does.
+    pub fn floor(&self, window: &str) -> Option<i64> {
+        let mut at = self.end(window);
+        while at > 0 {
+            let start = self.back(window, at, 1);
+            if let Some(Record::Floor { seq }) = self.read(window, start) {
+                return Some(seq);
+            }
+            at = start;
+        }
+        None
     }
 
     /// Writes down that the tail above the last stamp is thrown away.
