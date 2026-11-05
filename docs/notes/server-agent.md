@@ -538,10 +538,18 @@ The checker holds a preamble to 120 characters and an `# Invariant` to 400, so t
 argument behind a short claim lives here.
 
 **The head is stamped once.** It is part of the prefix the provider caches, so it is
-written once and read from the store after that. A template edit, a moved directory, a
-rewritten `AGENTS.md` and a re-planned index all used to re-render it, and each one
-invalidated the whole transcript behind it. What the references say is still read every
-step, but a change is a row appended to the transcript, never a head that moves.
+written once and read from the store after that. A template edit, a rewritten
+`AGENTS.md` and a re-planned index all used to re-render it, and each one invalidated the
+whole transcript behind it. What the references say is still read every step, but a
+change is a row appended to the transcript, never a head that moves.
+
+**The one exception is a move.** A prompt row records the directory and the peer it was
+written for (`Prompt::cwd`, `Prompt::remote`), so the next step can tell that the session
+is somewhere else. Then — and only then — a new row is appended: the card would otherwise
+name a machine the session is not on, and the index would lack the `remote` skill that
+the new arrangement is indexed with. The old row stays as it was; nothing already sent is
+rewritten. A row written before `remote` existed reads as `None`, which is a session on a
+peer getting its card once, on purpose.
 
 **The index.** The order is `prefix_cache`'s, which is a permutation of what it was
 given: no entry is invented for a reference that could not be read, and the spellings
