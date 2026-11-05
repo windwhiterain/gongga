@@ -134,3 +134,26 @@ differs on two of them:
   neither the old binary nor these semantics; a new claw A/B is the next step.
 - Cancel/resume of a queued notice was not exercised; the drain logic itself is
   unchanged from the first round.
+
+## Review fix round (2026-11-05 third round, review: cc35308-live-compact-review.json)
+
+- Blocker: the fresh-lineage reset and plan row lived only on `begin_turn`; heir's
+  lesson lands as a pending inject inside the running turn, leaving a stale origin
+  that suppressed every post-heir compaction round. Fixed with `append_user_conn`,
+  the single boundary both `begin_turn` and `deliver_pending` cross in their own
+  transactions: empty transcript resets lineage, first row anchors origin, tagged
+  plan row follows. Not a string special-case for heir — any first row after an
+  emptied transcript (heir lesson, monitor/trigger inject) gets the same semantics.
+- Regression: monitor `last_report` popped the plan row and would resend plan prose
+  on a self-failed retry. The plan row now carries `"harness": "live_compact_plan"`
+  in its stored display; `user_texts` skips harness-tagged rows (contract: harness
+  notices are not operator messages). `wire_item` never maps the tag, so the model
+  sees an ordinary user row.
+- comments-check back to the 6047dcd baseline (174); the three d1b700d additions
+  and one new inline note are within budget.
+- Gates on f7fb1c0: build 0, fmt --check 0, comments-check 174==baseline,
+  test-layout 0, skill_contract 0, `cargo test -p gongga-server` raw exit 0
+  (0 tests), ship --check 1 (pre-existing drift, unchanged, see review JSON).
+- Verify record: `.dev/verify/f7fb1c0-live-compact-review.json`.
+- Still unverified by execution: the heir walkthrough itself, monitor retry, and
+  cancel/resume; next step is a real claw A/B on this sha.
