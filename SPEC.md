@@ -142,13 +142,14 @@ for the first user message to a empty session, find all meta references recursiv
 stikcy argument will auto fill:
 - non optional corresponding argument in cmd if missing.
 - optional corresponding argument's initial value (if it has).
+stikcy to xxx means del its sticky if sticky xxx is changed
 
 
 ## Cmd
 all named argument's name can be ommited via argument order.
 
 - server:
-  - `set_session --name <session>(sticky) [--model <model>](initial: none) [--thinking <thinking>](initial: default) [--ctx_limit <ctx_limit%>](initial: "70%") [--remote <remote>](initial: none) [--cwd <cwd>](initial: ".") [--must_create <bool>](initial: false)`:
+  - `set_session --name <session>(sticky) [--model <model>](initial: none)(sticky) [--thinking <thinking>](initial: default)(stikcy to model) [--ctx_limit <ctx_limit%>](initial: "70%")(tsikcy to model) [--remote <remote>](initial: none) [--cwd <cwd>](initial: ".")(sticky to remote) [--must_create <bool>](initial: false)`:
     - `--must_create true` refuses the command when the session already exists: a caller
       that starts its own session must not join another one's transcript by reusing a name.
   - `del_session --name <session>(sticky)`: also delete all bash with the session name in key.
