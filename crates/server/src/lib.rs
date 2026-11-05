@@ -387,6 +387,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if settled > 0 {
         tracing::info!(settled, "half-answers kept before serving");
     }
+    // What a greeting hands every client: the picture a change is diffed against.
+    commands::prime_sessions(&dispatch);
     // Whatever was in flight when the server last stopped is owed work.
     let resumed = commands::resume_pending(&dispatch).await;
     if resumed > 0 {

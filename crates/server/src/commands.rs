@@ -2369,6 +2369,23 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
     resumed
 }
 
+/// Fills the published picture from the database, announcing nothing.
+///
+/// # Invariant
+///
+/// The picture a greeting hands every client is the one [`publish_sessions`]
+/// compares against. A server that started with sessions already in its database
+/// would otherwise diff against nothing: it would announce every row as new, and
+/// a deletion -- the one change a client cannot work out for itself -- would be
+/// the one thing it never heard.
+pub fn prime_sessions(d: &Dispatch) {
+    let Ok(rows) = d.sessions.list() else {
+        return;
+    };
+    let picture: Vec<protocol::SessionInfo> = rows.iter().map(|r| session_info(d, r)).collect();
+    *d.published.lock().unwrap_or_else(|e| e.into_inner()) = picture;
+}
+
 /// Publishes what changed in the session list, one row at a time.
 ///
 /// # Invariant
