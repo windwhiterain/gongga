@@ -25,11 +25,11 @@ ok() { # name, condition-result
 }
 
 [[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
-  echo "build first: cargo build -p gongga-server -p gongga-cli" >&2; exit 1; }
-[[ -x "$bin/gongga-cli.exe" || -x "$bin/gongga-cli" ]] || {
+  echo "build first: cargo build -p gongga-server" >&2; exit 1; }
+[[ -x "$home/bin/gongga-cli" || -x "$home/bin/gongga-cli" ]] || {
   echo "build first: cargo build -p gongga-cli" >&2; exit 1; }
 server_bin="$bin/gongga-server.exe"; [[ -x "$server_bin" ]] || server_bin="$bin/gongga-server"
-cli_bin="$bin/gongga-cli.exe"; [[ -x "$cli_bin" ]] || cli_bin="$bin/gongga-cli"
+cli_bin="$home/bin/gongga-cli"; [[ -x "$cli_bin" ]] || cli_bin="$home/bin/gongga-cli"
 
 alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
 # The pid of a server is the one holding its home's lock, never `$!`: Git Bash

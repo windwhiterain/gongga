@@ -89,7 +89,7 @@ start() { # logfile-to-append-to
 
 start "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
-cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
+cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 "${cli[@]}" set_session v fake/flash-fake --cwd "$work" >/dev/null 2>&1
 "${cli[@]}" send_message v "run it" >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q "tool start session=v" "$log" && break; sleep 0.2; done

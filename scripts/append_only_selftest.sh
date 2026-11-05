@@ -88,7 +88,7 @@ env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u G
 # client that dials in between retries for a minute and then gives up silently.
 for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log" && break; sleep 0.2; done
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
-cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
+cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
 created=$("${cli[@]}" set_session reader fake/flash-fake --cwd "$root" 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }

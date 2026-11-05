@@ -18,7 +18,7 @@ fails=0
 ok() { if [[ "$2" == 0 ]]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
 
 [[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
-  echo "build first: cargo build -p gongga-server -p gongga-cli" >&2; exit 1; }
+  echo "build first: cargo build -p gongga-server" >&2; exit 1; }
 
 alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
 child_pid() { tr -d '\r\n' < "$home/server.lock" 2>/dev/null; }
@@ -115,7 +115,7 @@ env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u G
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
 wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
 server_pid=$(child_pid)
-cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
+cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
 # A session in the repository, whose rules file names SPEC.md and a skill. The model
 # is named: this home's roster has one provider, and the built-in default is not it.

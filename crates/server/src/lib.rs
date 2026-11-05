@@ -237,7 +237,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // command has to be there before any shell exists.
     let command = shell_command::ensure_pair(&cfg.home);
     if command.is_none() {
-        shell_command::warn_missing_command(&cfg.home);
+        tracing::warn!(home = %cfg.home.display(), "no bin/ in this home: a shell cannot find gongga-cli");
     }
     let mut base_env = vec![
         ("GONGGA_SERVER".to_string(), cfg.bind.to_string()),
