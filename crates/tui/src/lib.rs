@@ -780,6 +780,11 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// The rows a window's pane could draw last frame: what one page is.
+    pub fn room_of(&self, name: &str) -> usize {
+        self.screen.panes.room_of(name)
+    }
+
     /// The windows a frame drew last: a window nobody draws costs nothing.
     pub fn drawn(&self) -> &[String] {
         self.screen.panes.drawn()

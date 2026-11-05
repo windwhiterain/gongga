@@ -134,6 +134,8 @@ pub struct Panes {
     quota: Option<crate::QuotaRow>,
     /// The windows this frame drew, so the rest can let their bodies go.
     drawn: Vec<String>,
+    /// How many rows each window's pane could draw, as the last frame found it.
+    room: std::collections::HashMap<String, usize>,
 }
 
 impl Panes {
@@ -147,6 +149,7 @@ impl Panes {
             unseen: std::collections::BTreeSet::new(),
             quota: None,
             drawn: Vec::new(),
+            room: std::collections::HashMap::new(),
         }
     }
 
@@ -161,6 +164,7 @@ impl Panes {
             unseen: std::collections::BTreeSet::new(),
             quota: None,
             drawn: Vec::new(),
+            room: std::collections::HashMap::new(),
         }
     }
 
@@ -204,6 +208,21 @@ impl Panes {
         if !self.drawn.iter().any(|name| name == window) {
             self.drawn.push(window.to_string());
         }
+    }
+
+    /// How many rows a pane could draw, as the last frame found it.
+    ///
+    /// # Invariant
+    ///
+    /// The only answer to "how much is worth fetching": a page is what a pane can
+    /// show, never a constant -- there is no budget to set.
+    pub fn note_room(&mut self, window: &str, rows: usize) {
+        self.room.insert(window.to_string(), rows.max(1));
+    }
+
+    /// The rows a window's pane could draw last frame: what a page is sized by.
+    pub fn room_of(&self, window: &str) -> usize {
+        self.room.get(window).copied().unwrap_or(1)
     }
 
     /// Starts a frame: nothing has been drawn yet.

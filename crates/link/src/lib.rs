@@ -78,6 +78,9 @@ pub struct Args {
     /// binary another is a flag the reader cannot type.
     #[arg(long = "client_only", alias = "client-only", global = true)]
     pub client_only: bool,
+    /// Stop a server of another build by pid instead of asking it to cancel.
+    #[arg(long, global = true)]
+    pub force: bool,
     #[command(subcommand)]
     pub command: Option<Sub>,
 }
@@ -112,6 +115,7 @@ impl Args {
                 "--key",
                 "--client_only",
                 "--client-only",
+                "--force",
             ];
             if let Some(flag) = ordered
                 .iter()
@@ -615,8 +619,6 @@ enum Drawn {
     Unknown,
     /// The session, and the row its window ends at.
     At { created: i64, seq: i64 },
-    /// The stream skipped events: what it holds cannot be trusted.
-    Lost,
 }
 
 /// One session's transcript, as the two sides state it.
@@ -636,6 +638,16 @@ struct Sync {
     drawn: Drawn,
     /// The refill in flight, when one is. See [`Fill`].
     fill: Option<Fill>,
+    /// Set when the stream skipped events: what was drawn still counts, the tail is owed.
+    stale: bool,
+    /// Whether a page has been read for this window at all.
+    ///
+    /// # Invariant
+    ///
+    /// Not the same as "in sync": a window that was never given a page holds
+    /// nothing, and the first thing it is owed is the *tail* -- the rows a pane can
+    /// draw -- not the transcript. See `docs/notes` on lazy retrieval.
+    loaded: bool,
     /// Set when a refill was refused, so a drawing window cannot spin.
     ///
     /// # Invariant
@@ -1020,7 +1032,7 @@ impl Client {
             && let Some(sync) = self.sync.get_mut(session)
             && matches!(sync.drawn, Drawn::At { .. })
         {
-            sync.drawn = Drawn::Lost;
+            sync.stale = true;
         }
         if let Some(session) = event.session()
             && let Some(sync) = self.sync.get_mut(session)
@@ -1334,12 +1346,16 @@ impl Client {
             server: row.transcript,
             drawn: Drawn::Unknown,
             fill: None,
+            stale: false,
+            loaded: false,
             blocked: false,
         });
         if entry.created != row.created_at {
             entry.created = row.created_at;
             entry.drawn = Drawn::Unknown;
             entry.fill = None;
+            entry.stale = false;
+            entry.loaded = false;
             entry.blocked = false;
         }
         entry.server = row.transcript;
@@ -1456,6 +1472,8 @@ impl Client {
             return true;
         }
         let sync_created = sync.created;
+        sync.stale = false;
+        sync.loaded = true;
         sync.server = last_seq;
         sync.drawn = Drawn::At {
             created: sync.created,
@@ -1588,6 +1606,7 @@ impl Client {
             created,
             seq: drawn,
         };
+        sync.stale = false;
     }
 
     /// The sessions whose window is behind the server, and the row a refill
@@ -1615,9 +1634,8 @@ impl Client {
         match sync.drawn {
             // Nothing declared: nothing owed on the front-end's behalf.
             Drawn::Unknown => None,
-            // A lost thread or a reused name: the window holds what cannot be
-            // trusted, and only a whole read replaces it.
-            Drawn::Lost => Some(1),
+            // A jump needs the tail; a reused name is another transcript entirely.
+            Drawn::At { seq, .. } if sync.stale => Some(seq + 1),
             Drawn::At { created, .. } if created != sync.created => Some(1),
             // Past the server's own end: rows were truncated, so the window
             // holds rows that no longer exist.
@@ -1639,6 +1657,7 @@ impl Client {
         if let Some(sync) = self.sync.get_mut(name) {
             let created = sync.created;
             sync.drawn = Drawn::At { created, seq: 0 };
+            sync.stale = false;
         }
     }
 
@@ -1651,16 +1670,27 @@ impl Client {
     /// line is not replaced by it. The answer's rows arrive as the events that
     /// drew them live, so a refilled window is indistinguishable from one that
     /// never had a gap -- which is the only thing a whole fill has to be.
-    pub fn ask_transcript(&mut self, name: &str) -> Option<ClientMessage> {
+    pub fn ask_transcript(&mut self, name: &str, room: usize) -> Option<ClientMessage> {
         if !self.connected || self.catalog.command("get_messages").is_none() {
             return None;
         }
-        let from = self.behind_one(name)?;
-        let whole = from == 1;
+        let sync = self.sync.get(name)?;
+        if sync.fill.is_some() || sync.blocked {
+            return None;
+        }
+        // A window holding nothing is owed the rows a pane can draw, counted from
+        // the end; one that lost its thread is owed the tail after what it has.
+        let range = match sync.loaded {
+            false if sync.drawn != Drawn::Unknown => format!("-{}:", room.max(1)),
+            false => return None,
+            true => format!("{}:", self.behind_one(name)?),
+        };
+        // Never a whole-window replacement: what the window has already drawn is
+        // good, and a page lands below it.
+        let whole = false;
         let id = self.next_id();
         let mut args = protocol::Args::new();
-        // An empty end is the boundary: every row from `from` to the last one.
-        args.insert("range".to_string(), format!("{from}:"));
+        args.insert("range".to_string(), range);
         args.insert("session".to_string(), name.to_string());
         // The rows a window draws, and where the transcript stood: a refill, not a read.
         args.insert("replay".to_string(), "true".to_string());
@@ -2475,7 +2505,8 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
             .await
             .map_err(|e| DialFailure::Temporary(e.into()))?,
     );
-    let channel = protocol::connect(socket, endpoint.addr, ChannelConfig::default())
+    let config = ChannelConfig::default().tune_for_peer(endpoint.addr);
+    let channel = protocol::connect(socket, endpoint.addr, config)
         .await
         .map_err(|e| DialFailure::Temporary(anyhow!("{e}")))?;
     let (wire, mut stream) = channel.split();
