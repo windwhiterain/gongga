@@ -312,6 +312,7 @@ fn resolve(home: &Path) -> anyhow::Result<Content> {
     let link = link();
     let fork = Fork::at(&checkout(home));
     adopt(home, link)?;
+    point(home, &fork, link)?;
     let mut reachable = true;
     match fork.ensure(&[link.url.clone()])? {
         Sync::Foreign => anyhow::bail!(
@@ -343,6 +344,32 @@ fn resolve(home: &Path) -> anyhow::Result<Content> {
         reachable,
         declared,
     })
+}
+
+/// Points an existing checkout's `origin` at the repository this home names.
+///
+/// # Invariant
+///
+/// The repository is the home's answer, not a property of the clone: a home whose
+/// config moved from the published content to a local checkout fetches from there at
+/// its next start, and moving back is the same edit removed. Only `origin` moves --
+/// the commits, the personal branch and the pin are this home's own.
+fn point(home: &Path, fork: &Fork, link: &Link) -> anyhow::Result<()> {
+    if !fork.exists() {
+        return Ok(());
+    }
+    let current = crate::fork::git(fork.dir(), &["remote", "get-url", "origin"]);
+    let named = String::from_utf8_lossy(&current.stdout).trim().to_string();
+    if current.status.success() && named == link.url {
+        return Ok(());
+    }
+    tracing::info!(
+        home = %home.display(),
+        from = %named,
+        to = %link.url,
+        "content origin follows this home's config"
+    );
+    crate::fork::git_ok(fork.dir(), &["remote", "set-url", "origin", &link.url])
 }
 
 /// Turns the bare cache an older build kept into this home's checkout.
