@@ -27,7 +27,7 @@ you are about to touch.
 | spend or re-arm the disk safety space, or change what wakes `@monitor/disk` | [`server-disk.md`](server-disk.md), [`server-monitor.md`](server-monitor.md) |
 | change what a client sends or receives | [`link-lib.md`](link-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
-| change what the window remembers (`cli.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
+| change what the window remembers (`tui.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
 
 ## Index
 

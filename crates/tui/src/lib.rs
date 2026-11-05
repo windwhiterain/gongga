@@ -142,6 +142,14 @@ pub enum UiEvent {
     Operate(link::protocol::Operation),
     /// Alt+Q: leave.
     Quit,
+    /// The operator asked to read above what these windows hold.
+    ///
+    /// # Invariant
+    ///
+    /// Named, never searched for: the request is what the key or the wheel said at
+    /// the moment it was pressed, so the loop that answers it holds the pages owed
+    /// and the next frame cannot add to them behind its back.
+    Older(Vec<String>),
     /// Nothing to submit: the completion asked for something only the connection
     /// can answer.
     ///
@@ -293,6 +301,11 @@ impl Screen {
             return;
         };
         self.panes.scroll_by(&target, rows);
+    }
+
+    /// The windows whose operator asked to read above what they had.
+    pub fn take_wants(&mut self) -> Vec<String> {
+        self.panes.take_wants()
     }
 
     /// Shift+Down: back to the newest line, which is where a window starts.
@@ -796,6 +809,33 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// The oldest transcript row this window's journal says it holds.
+    pub fn floor_of(&self, name: &str) -> Option<i64> {
+        self.screen.panes.floor_of(name)
+    }
+
+    /// The rows arriving from here on are older than the ones this window holds.
+    pub fn older(&mut self, name: &str) {
+        self.screen.panes.older(name);
+        self.dirty = true;
+    }
+
+    /// A page of older rows landed: this window holds every row from `floor` up.
+    pub fn landed(&mut self, name: &str, created: i64, drawn: i64, floor: i64) {
+        self.screen.panes.landed(name, created, drawn, floor);
+        self.dirty = true;
+    }
+
+    /// The windows whose operator asked to read above what they had.
+    ///
+    /// # Invariant
+    ///
+    /// Taken, not read: each request is one page, so the one who answers it holds
+    /// it from here on and the window does not keep asking on its behalf.
+    pub fn take_wants(&mut self) -> Vec<String> {
+        self.screen.take_wants()
+    }
+
     /// The rows a window's pane could draw last frame: what one page is.
     pub fn room_of(&self, name: &str) -> usize {
         self.screen.panes.room_of(name)
@@ -898,6 +938,11 @@ impl Tui {
             // knows how to send one.
             if let Some(operation) = self.clicked.take() {
                 return Some(UiEvent::Operate(operation));
+            }
+            // Taken, not read: a request is answered once, never on every frame.
+            let owed = self.screen.take_wants();
+            if !owed.is_empty() {
+                return Some(UiEvent::Older(owed));
             }
             if self.draw().is_err() {
                 return None;
@@ -1590,7 +1635,7 @@ impl Tui {
     /// the frame that shows it.
     pub fn refresh_completion(&mut self) {
         let fresh = next_completion(&self.screen.input, &self.completer);
-        // A rebuild keeps the row the operator moved to: an event is not a keystroke.
+        // The row the operator moved to survives: an event is not a keystroke.
         self.screen.completion = match (self.screen.completion.take(), fresh) {
             (Some(old), Some(mut new)) if same_offering(&old, &new) => {
                 new.selected = old.selected.min(new.candidates.len() - 1);

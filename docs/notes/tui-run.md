@@ -110,7 +110,7 @@ both of those cases.
 ## interactive
 
 The address in force is the window's: `connect_server` saves it and the loop dials what
-it saved, starting from the entry `cli.toml` holds (`docs/notes/tui-state.md`). A
+it saved, starting from the entry `tui.toml` holds (`docs/notes/tui-state.md`). A
 one-shot command has no such memory -- it names its server or reads `GONGGA_SERVER`.
 
 The window and the link are separate things. Nothing here makes the server's

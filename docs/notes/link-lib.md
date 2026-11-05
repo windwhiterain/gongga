@@ -4,7 +4,7 @@
 
 This crate owns the command surface `crates/cli` prints and `crates/tui` draws: it takes the catalog the server publishes,
 turns one command's tokens into a message on the wire, and keeps no state of its
-own -- the sticky arguments, the drawn sessions and `cli.toml` are the window's
+own -- the sticky arguments, the drawn sessions and `tui.toml` are the window's
 (`docs/notes/tui-state.md`). Which is which is the published `target`, not a
 list here -- so a command a script registered is handled by the same code path
 as a built-in, and none of them needs a client rebuild.
@@ -232,7 +232,7 @@ Two facts the front-end supplies, and this layer stores neither: the sticky argu
 names (what `set_sticky <type>` completes) and the session a bare message goes to
 (what makes `@skill(...)` complete the skills of the session the message will reach). A
 message names no session on its own line, so that entry is the only address it has.
-The window calls this after any change; nothing here reads `cli.toml`.
+The window calls this after any change; nothing here reads `tui.toml`.
 
 Where the skills are read moved out of here and into the catalog, keyed by the
 directory they came from. Pushing a list in from this function made its correctness
@@ -376,7 +376,7 @@ The API a window's gestures use. An operation is not a command line: the window 
 what it means. Only one of the three is the server's -- delete a session -- and the
 other two are the window's own state, answered by the window before this is called
 (`docs/notes/tui-run.md`). Answering them here too would make this layer a second
-owner of `cli.toml`, which is what the split removed.
+owner of `tui.toml`, which is what the split removed.
 
 ## Client::handle_bytes
 
@@ -665,7 +665,7 @@ one thing it still answers -- whether a move is pending -- so a front-end asks o
 ## One-shot: no remembered address
 
 `resolve_server` reads `--server`, then `GONGGA_SERVER`, then `[server] bind`. It used
-to fall through to the address a `connect_server` had written into `cli.toml`, which is
+to fall through to the address a `connect_server` had written into `tui.toml`, which is
 how a one-shot command reached a server nobody named: exactly the client state this
 crate no longer reads. A tool call has `GONGGA_SERVER` exported for it, so the agent
 still reaches its own server.
@@ -896,7 +896,7 @@ The catalog starts empty and is filled by the greeting, which is why a client ca
 exist before its server does -- and why, with no greeting yet, it knows no
 command at all rather than a stale list of its own.
 
-It reads nothing from the home it is given: `cli.toml` is the window's, so a one-shot
+It reads nothing from the home it is given: `tui.toml` is the window's, so a one-shot
 process cannot inherit a sticky session, a remembered address or a drawn set. The home
 is there for one thing -- where `skills/` is read from.
 
