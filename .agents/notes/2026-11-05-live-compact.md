@@ -157,3 +157,20 @@ differs on two of them:
 - Verify record: `.dev/verify/f7fb1c0-live-compact-review.json`.
 - Still unverified by execution: the heir walkthrough itself, monitor retry, and
   cancel/resume; next step is a real claw A/B on this sha.
+
+## Focused-review predicate fix (2026-11-05 fourth round)
+
+The physically-empty test never fired on the real heir path: transcript.py
+deletes `seq < kept.seq`, leaving the in-flight call, and its result lands
+before the lesson does. The fresh-lineage predicate is now "no kind='text'
+row survives", unified across all kinds: text is the only conversational
+kind, the kept pair is not text, the plan row is (so a lineage never
+re-resets), and the REQUEST_KIND marker is not. ship/heir untouched.
+
+Gates on 607ea38: build 0, fmt 0, comments 174==baseline, test-layout 0,
+skill_contract 0, cargo test -p gongga-server raw exit 0, and
+scripts/heir_selftest.sh exit 0 (unmodified). That selftest covers the heir
+script's copy/wipe/kept/rollback semantics against this checkout's schema —
+which now holds the live_compact tables — but asserts nothing about
+server-side lineage state; the post-heir live-compact state remains
+code-review-only. Verify record: .dev/verify/607ea38-live-compact-review.json.
