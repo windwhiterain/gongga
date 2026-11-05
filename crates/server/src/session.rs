@@ -97,7 +97,7 @@ impl Shells {
     ///
     /// One directory, one machine: it is the remote's when the session names one,
     /// and this machine's otherwise. Everything that reads a path -- the prompt's
-    /// index, `@file:`, `@image:`, `@skill:` -- asks this, and nothing infers it
+    /// index, `@file(...)`, `@image(...)`, `@skill(...)` -- asks this, and nothing infers it
     /// from how a path is spelled.
     pub fn owner(&self) -> Machine {
         match self.remote {

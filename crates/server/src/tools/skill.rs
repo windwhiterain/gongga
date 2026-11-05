@@ -202,7 +202,7 @@ fn table(ctx: &ToolContext) -> ToolOutcome {
              that checkout are that machine's files, under `.agents/skills`. List and \
              read them with `remote_bash` (`ls`, `cat`). The rows above are this \
              machine's -- the home's and the machine's own -- and they are the ones \
-             `@skill:` opens.",
+             `@skill(...)` opens.",
             ctx.cwd.display()
         )
     });

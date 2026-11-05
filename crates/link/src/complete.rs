@@ -36,6 +36,12 @@ impl Candidate {
 pub struct Offered {
     pub subject: Option<String>,
     pub candidates: Vec<Candidate>,
+    /// Where the range being completed begins, when it is not the token's start.
+    ///
+    /// A reference sits inside the word it is written in (`看下@file(x)`), and
+    /// replacing the whole word would take the prose in front of it; so the popup
+    /// is told where its own range starts.
+    pub start: Option<usize>,
 }
 
 /// The open completion popup: which token is replaced, and the options.

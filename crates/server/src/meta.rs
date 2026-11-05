@@ -12,7 +12,8 @@ use crate::llm::LlmClient;
 pub struct Mention {
     /// Byte offset of the opening `@`.
     pub start: usize,
-    /// Byte offset just past the value.
+    /// Byte offset just past the closing `)`, or past the closing quote when the
+    /// value was written in one.
     pub end: usize,
     pub kind: Reference,
     pub value: String,
@@ -22,74 +23,94 @@ pub struct Mention {
 ///
 /// # Invariant
 ///
-/// The value is one word: `@kind:` and the word after it, or `@kind:value` written
-/// together, which is what the completion popup inserts. Trailing sentence
-/// punctuation belongs to the sentence.
+/// A reference is `@kind(value)`, and the parentheses are the delimitation: the
+/// value ends where its group closes, so the prose around it never has to be
+/// guessed at. Those parentheses are part of the spelling rather than punctuation
+/// inside the name, which is what lets `看下@file(src/meta.rs)这个文件` be one
+/// sentence holding one reference -- the `@` need not open a word, and the name need
+/// not stop at a space. See `docs/notes/server-meta.md`.
 pub fn mentions(text: &str) -> Vec<Mention> {
-    let words: Vec<(usize, usize)> = tokens(text);
     let mut out = Vec::new();
-    let mut index = 0;
-    while index < words.len() {
-        let (start, end) = words[index];
-        index += 1;
-        let word = &text[start..end];
-        // Bracket and quote before the `@` belong to the sentence around it.
-        let bare = word.trim_start_matches(['(', '[', '{', '"', '\'', '`']);
-        let start = start + (word.len() - bare.len());
-        let Some(kind) = Reference::of_prefix(bare) else {
+    let mut cursor = 0;
+    while let Some(index) = text[cursor..].find('@') {
+        let start = cursor + index;
+        // Past the `@`: a `@` that opens nothing does not hold the walk, and the
+        // next reference may open inside the same word.
+        cursor = start + 1;
+        let Some(kind) = Reference::of_prefix(&text[start..]) else {
             continue;
         };
-        // `@image:<path>` carries its value; a bare `@image:` takes the next word.
-        let (value, span_end) = match bare.strip_prefix(kind.prefix()) {
-            Some(rest) if !rest.is_empty() => (rest.to_string(), end),
-            _ => match words.get(index) {
-                Some((next_start, next_end)) => {
-                    index += 1;
-                    (text[*next_start..*next_end].to_string(), *next_end)
-                }
-                // Nothing to name: not a reference, and the text keeps it.
-                None => continue,
-            },
+        let Some((value, end)) = group(text, start + kind.prefix().len()) else {
+            continue;
         };
-        let value = value
-            .trim_end_matches([',', ';', ':', '.', '!', '?', ')', ']', '}', '"', '\'', '`'])
-            .to_string();
+        let value = unquote(value.trim());
         if value.is_empty() {
             continue;
         }
+        cursor = end;
         out.push(Mention {
             start,
-            end: span_end,
+            end,
             kind,
-            value,
+            value: value.to_string(),
         });
     }
     out
 }
 
-/// The byte spans of `text`'s whitespace-separated words.
-fn tokens(text: &str) -> Vec<(usize, usize)> {
-    let mut out = Vec::new();
-    let mut start = None;
-    for (at, c) in text.char_indices() {
-        if c.is_whitespace() {
-            if let Some(from) = start.take() {
-                out.push((from, at));
+/// The value of the group whose `(` is the byte before `open`, and the byte just
+/// past its `)`.
+///
+/// # Invariant
+///
+/// A group is read, not searched for: `(` opens one and `)` closes it, nested ones
+/// count, and a quoted run carries its own -- so a name holding either character is
+/// written as it is. A group with no closing `)` is not a reference at all: the
+/// operator is still typing, and prose is not a hole.
+fn group(text: &str, open: usize) -> Option<(&str, usize)> {
+    // The `(` is behind `open`, so this group is already one deep.
+    let mut depth = 1usize;
+    let mut quote: Option<char> = None;
+    for (at, c) in text[open..].char_indices() {
+        if let Some(opened) = quote {
+            if c == opened {
+                quote = None;
             }
-        } else if start.is_none() {
-            start = Some(at);
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' => quote = Some(c),
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&text[open..open + at], open + at + c.len_utf8()));
+                }
+            }
+            _ => {}
         }
     }
-    if let Some(from) = start {
-        out.push((from, text.len()));
+    None
+}
+
+/// A value written in quotes, without them: the way to name something that itself
+/// starts or ends with a space.
+fn unquote(value: &str) -> &str {
+    for quote in ['"', '\'', '`'] {
+        if let Some(inner) = value
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return inner;
+        }
     }
-    out
+    value
 }
 
 /// One reference's text: the spelling that names it, and what it stands for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Root {
-    /// `@file:notes.txt`, the canonical spelling a mention is matched against.
+    /// `@file(notes.txt)`, the canonical spelling a mention is matched against.
     pub spelling: String,
     pub content: String,
 }
@@ -173,7 +194,7 @@ pub const RULES: &str = "AGENTS.md";
 /// See `docs/notes/server-meta.md`.
 pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root> {
     // Seeded here rather than named by a message: the index holds it behind the prose.
-    let first = format!("{}{}", Reference::File.prefix(), RULES);
+    let first = format!("@{}({})", Reference::File.name(), RULES);
     let mut queue: Vec<String> = vec![first.clone()];
     let mut seen: Vec<String> = vec![first];
     let mut out: Vec<Root> = Vec::new();
@@ -214,10 +235,10 @@ pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root>
 /// # Invariant
 ///
 /// One spelling for one reference, whoever asks: the index carries these and
-/// `expand` writes one back into every `@skill:` mention, so a second way of
+/// `expand` writes one back into every `@skill(...)` mention, so a second way of
 /// writing it would make the same file two entries.
 pub fn spelling(mention: &Mention) -> String {
-    format!("{}{}", mention.kind.prefix(), mention.value)
+    format!("@{}({})", mention.kind.name(), mention.value)
 }
 
 /// What one spelling stands for, or nothing when this build cannot read it.
@@ -228,7 +249,10 @@ pub fn spelling(mention: &Mention) -> String {
 /// both leave the mention literal in the prompt.
 async fn content(source: Source<'_>, home: &Path, spelling: &str) -> Option<String> {
     let kind = Reference::of_prefix(spelling)?;
-    let value = spelling.strip_prefix(kind.prefix())?;
+    let value = spelling
+        .strip_prefix(kind.prefix())?
+        .strip_suffix(')')
+        .unwrap_or_default();
     match kind {
         Reference::Image => None,
         Reference::File => String::from_utf8(source.read(home, value).await?).ok(),
@@ -284,7 +308,7 @@ impl Expanded {
 ///
 /// # Invariant
 ///
-/// A `@skill:` mention keeps its spelling and gains the `SKILL.md` it names, even
+/// A `@skill(...)` mention keeps its spelling and gains the `SKILL.md` it names, even
 /// when the index already carries that body: a body never says where it lives.
 ///
 /// An unresolvable reference stays in the text verbatim: an unreadable picture or
@@ -314,8 +338,8 @@ pub async fn expand(
                     }
                     (
                         format!(
-                            "{} {} ({})",
-                            Reference::Skill.prefix(),
+                            "@{}({}) ({})",
+                            Reference::Skill.name(),
                             skill.name,
                             skill.path.display()
                         ),
@@ -364,7 +388,7 @@ pub async fn expand(
     out
 }
 
-/// The `SKILL.md` one `@skill: <name>` names, wherever this machine reads skills.
+/// The `SKILL.md` one `@skill(<name>)` names, wherever this machine reads skills.
 ///
 /// # Invariant
 ///
@@ -377,7 +401,7 @@ fn skill_at(home: &Path, machine: crate::session::Machine, name: &str) -> Option
         .find(|skill| skill.name == name)
 }
 
-/// The picture `@image: <path>` names, copied into this home.
+/// The picture `@image(<path>)` names, copied into this home.
 ///
 /// # Invariant
 ///
