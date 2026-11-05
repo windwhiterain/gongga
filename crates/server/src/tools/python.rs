@@ -537,10 +537,14 @@ impl Tool for PythonTool {
                 let owner = handle.facts().machine;
                 if owner != self.machine {
                     return ToolOutcome::err(format!(
-                        "`{name}` is already a Python on {}: a name is one interpreter, and \
-                         `python` and `remote_python` share the names. Name this one \
-                         otherwise, or `del_python name_regex: \"^{name}$\"` first.",
-                        owner.named()
+                        "`{name}` is already a Python on {owner}: a name is one \
+                         interpreter, and `python` and `remote_python` share the names. \
+                         Pass a different `name` for this call -- an interpreter on {here} \
+                         cannot reuse the one {owner} holds. `del_python name_regex: \
+                         \"^{name}$\"` frees the name by ending that interpreter instead, \
+                         and any call it is running goes with it.",
+                        owner = owner.named(),
+                        here = self.machine.named()
                     ));
                 }
                 // Nothing here may read the answer to a call it did not make.

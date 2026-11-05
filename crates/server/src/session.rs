@@ -167,10 +167,13 @@ impl Shells {
             && other.peek(name).is_some()
         {
             anyhow::bail!(
-                "`{name}` is already a shell on {}: a name is one shell, and `bash` and \
-                 `remote_bash` share the names. Name this one otherwise, or \
-                 `del_bash name_regex: \"^{name}$\"` first.",
-                other_machine(machine).named()
+                "`{name}` is already a shell on {other}: a name is one shell, and `bash` \
+                 and `remote_bash` share the names. Pass a different `name` for this call \
+                 -- a shell on {here} cannot reuse the one {other} holds. \
+                 `del_bash name_regex: \"^{name}$\"` frees the name by ending that shell \
+                 instead, and its background jobs go with it.",
+                other = other_machine(machine).named(),
+                here = machine.named()
             );
         }
         set.lock().unwrap_or_else(|e| e.into_inner()).get(name)
