@@ -92,6 +92,7 @@ impl RequestSource {
         &self,
         head: &[u8],
         uploader: std::sync::Arc<Uploader>,
+        card: Option<String>,
     ) -> anyhow::Result<(
         crate::body::RequestBody,
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -100,7 +101,7 @@ impl RequestSource {
             crate::transcript::Transcript::open(&self.db_path, self.session_id, self.upto_seq)?;
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let files = crate::image::files::Files::new(self.store.clone(), uploader);
-        let body = crate::body::RequestBody::new(head.to_vec(), rows, files, counter.clone());
+        let body = crate::body::RequestBody::new(head.to_vec(), rows, files, counter.clone(), card);
         Ok((body, counter))
     }
 }
@@ -197,7 +198,7 @@ impl LlmClient {
         &self,
         instructions: &str,
         index: Option<&str>,
-        tail: Option<&str>,
+        card: Option<&str>,
         source: &RequestSource,
         affinity: &str,
         tools: &[ToolDefinition],
@@ -207,15 +208,9 @@ impl LlmClient {
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
-        let head = self.build_head(
-            instructions,
-            index,
-            tail,
-            affinity,
-            tools,
-            effort,
-            cache_tier,
-        );
+        let head = self.build_head(instructions, index, affinity, tools, effort, cache_tier);
+        // The first user message carries the card; it is not a message of its own.
+        let card = card.filter(|card| !card.is_empty()).map(str::to_string);
         let session_header = self.cache_session_header.then(|| affinity.to_string());
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
@@ -245,7 +240,7 @@ impl LlmClient {
                 // Opened again for every attempt: a body is read once, and a retry
                 // has to send what the attempt before it sent.
                 let open_started = Instant::now();
-                let opened = source.open(&head, uploader.clone());
+                let opened = source.open(&head, uploader.clone(), card.clone());
                 let transcript_open_ms = open_started.elapsed().as_millis() as u64;
                 let mut probe =
                     crate::probe::AttemptProbe::new(build_head_ms, transcript_open_ms, head_bytes);
@@ -398,7 +393,6 @@ impl LlmClient {
         &self,
         instructions: &str,
         index: Option<&str>,
-        card: Option<&str>,
         affinity: &str,
         tools: &[ToolDefinition],
         effort: Option<&str>,
@@ -474,18 +468,6 @@ impl LlmClient {
         let mut head = body.to_string();
         head.pop();
         head.push_str(",\"input\":[");
-        // SPEC's card: one message after the system prompt and before the first user
-        // message, so it goes in first.
-        if let Some(card) = card.filter(|card| !card.is_empty()) {
-            head.push_str(
-                &json!({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": card}],
-                })
-                .to_string(),
-            );
-            head.push(',');
-        }
         head.into_bytes()
     }
 }

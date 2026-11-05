@@ -126,15 +126,16 @@ patching when it is not -- the same answer a tolerance of `0` gives.
 
 The session's start card: name, the harness and the commit it runs, the minute of the
 **first** turn, and the directory that turn stood in. Stamped once into the first prompt
-row and replayed verbatim from the store after that -- it is sent as the last input item,
-and it never changes, because what a request has sent is never rewritten. `{{build}}` is `protocol::BUILD`, the same identity a bug
-report carries, so a model reading its own prompt can say which build it is.
+row and replayed verbatim from the store after that, so what a request has sent is never
+rewritten. `{{build}}` is `protocol::BUILD`, the same identity a bug report carries, so a
+model reading its own prompt can say which build it is.
 
-It is not part of `instructions` and not part of the transcript either: `build_head`
-writes it as the request's first `input` item, which is where SPEC puts it. See
-`docs/notes/server-body.md` for why both halves of that position matter. What it
-buys: a session that is asked "what time is it" or "where are you" answers without a
-tool call, and a transcript replayed later says when it happened and which build said it.
+It is not part of `instructions` and not a message of its own: `RequestBody` puts it in
+front of the text of the session's first user message, which is where SPEC puts it now.
+See `docs/notes/server-body.md` for the three positions tried and what each measured.
+What it buys: a session that is asked "what time is it" or "where are you" answers
+without a tool call, and a transcript replayed later says when it happened and which
+build said it.
 
 ## dynamic_tail_remote
 

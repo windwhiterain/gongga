@@ -11,27 +11,34 @@ and it made a retry send a body that had already been read.
 serialized as JSON; every item after it is the bytes the database already holds,
 and the array is closed with a tail. Nothing parses the transcript.
 
-## the card is the head's first message
+## the card rides in front of the first user message
 
-SPEC: "after the system prompt, before the first user message, inject one message with
-useful information about session name, harness version, cwd, time." So the request's head
-opens with it — one `input` item, ahead of a fold's note and of every row.
+SPEC: "the first user message carries a card in front of its text: useful information
+about session name, harness version (commit id), cwd, time." So a request has no card
+item of its own: `RequestBody` puts the card in front of the text of the session's first
+user message, the one row `Transcript` names as its carrier.
 
-Both halves of where it goes are load-bearing, and I got the second one wrong first:
+Three positions have been tried, and each was measured:
 
-- **Before the transcript, not after.** A value written after the rows is a *new
-  message on every step*. A live session read that as "the harness keeps injecting" and
-  spent a 45-step turn answering it, and each step re-billed the whole prefix behind it.
-- **After the system prompt, not in it.** SPEC puts it there, and the two halves have
-  different lifetimes: the prose follows an edited template, the card is stamped once and
-  replayed. A value that must never be re-derived does not belong inside a value that is
-  composed again on every turn.
+- **Inside `instructions`.** A change there costs the index and the whole transcript,
+  which is the entire prompt: 24k characters of index edited by one line cost a session
+  292k cached tokens (`server-prefix-cache.md`). And a per-session value in the head
+  makes every new session's first request one the provider has never seen.
+- **Its own item, after the transcript.** A value written after the rows is a *new
+  message on every step*: a live session read that as "the harness keeps injecting" and
+  spent a 45-step turn answering it.
+- **Its own item, before the first user message.** Well-behaved, but it sits inside the
+  region a provider serves -- MiniMax serves the prefix in front of the request's *final*
+  user message -- and the card is the one thing two sessions cannot share, so no sibling
+  could ever warm another's first turn. Measured on one 9.6k-token prompt, the same bytes
+  except the card: 128 of 9,586 cached with the card in front, 9,585 of 9,586 with it
+  inside the final message.
 
-  The cache *is* the reason, and this section had it wrong once. A change inside
-  `instructions` does keep everything before it -- there is nothing before it -- and
-  costs everything that follows, which is the index and the whole transcript. That is
-  the entire prompt. Measured: 24k characters of index edited by one line cost a
-  session 292k cached tokens (`server-prefix-cache.md`).
+In front of the first user message's text, the card is part of the turn the user asked
+for: the model reads it as that message's preamble, the provider serves the prefix in
+front of the final message, and a sibling session's head is then a prefix the provider
+holds. `carry` in `body` is the one place the text is rewritten, and what it prepends
+comes from the stamped prompt row, so a replay sends the same bytes.
 
 The card itself is stamped once, with the session's first prompt row, and replayed
 verbatim from the store after that: the minute it says is the session's start, not the

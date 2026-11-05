@@ -72,7 +72,7 @@ refused: a session's directory is on one peer.
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
 ## Prompt
-after the system prompt, before the first user message, inject one message with useful information about session name, harness version (commit id), cwd, time.
+the first user message carries a card in front of its text: useful information about session name, harness version (commit id), cwd, time. it is stamped once with the session's first prompt row and never re-rendered.
 
 ### Invariant
 transcript is append only, transcript that has been sent must not be change.

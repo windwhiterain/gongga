@@ -117,15 +117,16 @@ region is a miss, a difference inside the final message is not. Two sessions who
 `instructions` and `index` are byte-equal (`cachefix-g`, `cachefix-h`), one user message,
 read twice each (`.dev/verify/`):
 
-| input order | cached, first send of a card the store had not seen |
+| where the card sits | cached, first send of a card the store had not seen |
 | --- | --- |
-| `[card][user]` -- the order this server sends | 128 of 9586 |
-| `[user][card]` | 9585 of 9586 |
+| a message of its own, before the user message | 128 of 9586 |
+| in front of the user message's text | 9585 of 9586 |
 
-So the card's *position* is what decides cross-session sharing: in front of the user
-message it sits inside the cached region, and being per-session it is the one byte two
-sessions cannot share; behind it, the region is the system text (and, from the second turn
-on, the transcript), which every session of a directory shares.
+So the card's *position* is what decides cross-session sharing: as its own item in front
+of the user message it sits inside the served region, and being per-session it is the one
+byte two sessions cannot share; carried by the message itself, the region is the system
+text (and, from the second turn on, the transcript), which every session of a directory
+shares. `docs/notes/server-body.md` has the change and its cost.
 
 Two things this had to be untangled from. One is the first reading of any shape: a prompt
 is cold the first time it is sent and warm on the very next identical send, so a single

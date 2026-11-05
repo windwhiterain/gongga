@@ -1,6 +1,6 @@
 """R1-R3 / R5: nothing may be sent that the database does not hold.
 
-Drives a real server, a real turn with a tool call, a prose edit between turns and
+Drives a real server, a real turn with a tool call, a prose edit between sessions and
 a fold mid-conversation, then reads the request bodies the provider was given and
 the rows that were written, and checks them against each other.
 """
@@ -53,7 +53,7 @@ def main():
     # first line below is the whole defence -- there is no URL in it but 127.0.0.1.
     roster_path = os.path.join(SCRATCH, "roster.toml")
     io.open(roster_path, "w", encoding="utf-8", newline="").write(
-        "[[provider]]\nid = \"p\"\nkey = \"dummy\"\n"
+        "[[provider]]\nid = \"p\"\nkey_env = \"GONGGA_API_KEY\"\n"
         "[[provider.endpoint]]\napi = \"openai-responses\"\n"
         f"base_url = \"http://127.0.0.1:{FAKE_PORT}/v1\"\n"
         "[[provider.model]]\nid = \"m1\"\n")
@@ -76,25 +76,37 @@ def main():
         base = [CLI, "--server", f"127.0.0.1:{PORT}", "--home", HOME, "--key", key]
 
         def command(*args):
-            subprocess.run(base + list(args), capture_output=True, text=True)
+            result = subprocess.run(base + list(args), capture_output=True, text=True)
+            # A refused command is this audit's own setup failing: say so here, not
+            # forty seconds later as a session row that is missing.
+            if '"ok":false' in result.stdout or '"ok": false' in result.stdout:
+                print("  FAIL setup", " ".join(args), result.stdout[-300:], flush=True)
+                failures.append("setup " + args[0])
+            return result
 
-        command("set_session", "audit")
-        command("send_message", "audit", "第一回合，会调一个工具")
+        # The model the roster above names: the default is a real one, and this home
+        # may not have it.
+        command("set_session", "audit", "--model", "p/m1")
+        command("send_message", "--name", "audit", "--message", "第一回合，会调一个工具")
         time.sleep(8)
 
-        # A prose edit between turns: it must land as a new row, not rewrite the old.
+        # A prose edit reaches the next session, and the row the old one sent stands:
+        # a prompt row is stamped once, so the edit cannot rewrite it.
         cfg = os.path.join(HOME, "config.toml")
         raw = io.open(cfg, "rb").read()
         anchor = b"do not ask for confirmation, and leave nothing behind."
         assert raw.count(anchor) == 1
         io.open(cfg + ".tmp", "wb").write(raw.replace(anchor, anchor + b" Edited between turns."))
         os.replace(cfg + ".tmp", cfg)
-        command("send_message", "audit", "第二回合，改过的散文")
+        command("set_session", "audit2", "--model", "p/m1")
+        command("send_message", "--name", "audit2", "--message", "改过散文之后的新会话")
+        time.sleep(8)
+        command("send_message", "--name", "audit", "--message", "第二回合，散文已改，本会话不变")
         time.sleep(8)
 
         # New content entering the store mid-conversation, the way an heir's first
         # lesson does: a message that names a reference of its own.
-        command("send_message", "audit", "第三回合，带一个 @file: Cargo.toml 的引用")
+        command("send_message", "--name", "audit", "--message", "第三回合，带一个 @file: Cargo.toml 的引用")
         time.sleep(8)
 
         # Deleting a session has to take the payload with it -- and it has to be
@@ -108,10 +120,21 @@ def main():
         blobs_before = sorted(os.listdir(os.path.join(HOME, "blobs")))
         rows = [(r["seq"], r["kind"], r["display"]) for r in db.execute(
             "select seq, kind, display from messages where session_id=? order by seq", (sid,))]
+        # One prompt row per session, and one text per session: what the prose edit may
+        # and may not do. The row is not sent as an item, so it lives in `display`.
+        stamped = {}
+        for r in db.execute("select session_id, display from messages where kind='system'"):
+            stamped.setdefault(r["session_id"], []).append(json.loads(r["display"]))
+        # Every session's rows, because a second session sent its own items too.
+        every = [{"seq": r["seq"], "kind": r["kind"], "content": r["display"]}
+                 for r in db.execute("select seq, kind, display from messages")]
         db.close()
-        deleted = subprocess.run(base + ["del_session", "audit"],
-                                 capture_output=True, text=True)
-        print("   del_session:", (deleted.stdout or deleted.stderr).strip()[:110])
+        # Both sessions own a payload with the fake's one id, so both go before the
+        # check that deleting takes it.
+        for name in ("audit", "audit2"):
+            deleted = subprocess.run(base + ["del_session", name],
+                                     capture_output=True, text=True)
+            print(f"   del_session {name}:", (deleted.stdout or deleted.stderr).strip()[:100])
         time.sleep(3)
     finally:
         taskkill(server.pid)
@@ -124,17 +147,32 @@ def main():
 
     print(f"== {len(requests)} requests, {len(rows)} rows, {len(prompts)} stored prompts")
 
+    # What the wire calls `instructions` is the stored prose with the stored index after
+    # it -- the index is not a row of its own.
+    def as_sent(prompt):
+        return prompt["instructions"] + (
+            "\n\n" + prompt["index"] if prompt.get("index") else "")
+
     sent_texts = {r.get("instructions", "") for r in requests}
-    stored_texts = {p["instructions"] for p in prompts}
+    stored_texts = {as_sent(row) for rows_ in stamped.values() for row in rows_}
     check("every instructions text the provider saw is a stored row",
           sent_texts <= stored_texts, f"{len(sent_texts)} sent / {len(stored_texts)} stored")
-    check("a prose edit added a row instead of rewriting one",
-          len(stored_texts) == len(sent_texts) and len(prompts) >= 2,
-          f"{len(prompts)} rows")
+    texts = {row["instructions"] for rows_ in stamped.values() for row in rows_}
+    check("a prose edit reaches the next session and leaves the old row alone",
+          len(texts) == 2 and all(len(rows_) == 1 for rows_ in stamped.values()),
+          f"{ {sid: len(rows_) for sid, rows_ in stamped.items()} }")
 
-    # The turn's own facts are a prompt row's `tail`, sent as its own item, so they
-    # are stored -- just not as a transcript row.
-    notes = {p.get("tail") for p in prompts if p.get("tail")}
+    # The turn's own facts are a prompt row's `tail`, put in front of the session's first
+    # user message, so they are stored -- and every session's card counts, not just this
+    # one's.
+    notes = {row.get("tail") for rows_ in stamped.values() for row in rows_ if row.get("tail")}
+
+    def carried(text):
+        # A sent user item is a stored message with one of those tails in front of it.
+        for note in notes:
+            if text.startswith(note + "\n\n"):
+                return text[len(note) + 2:]
+        return None
 
     def flat(item):
         c = item.get("content")
@@ -153,7 +191,7 @@ def main():
             return (kind, (v.get("item") or {}).get("id"))
         return (kind, None)
 
-    stored_shapes = {shape(r["kind"], r["content"]) for r in rows
+    stored_shapes = {shape(r["kind"], r["content"]) for r in rows + every
                      if r["kind"] not in ("system", "notice")}
 
     unexplained = []
@@ -174,6 +212,10 @@ def main():
                 s = ("user", flat(item))
             if s in stored_shapes or (s[1] in notes):
                 continue
+            if s[0] == "user":
+                rest = carried(s[1])
+                if rest is not None and ("user", rest) in stored_shapes:
+                    continue
             unexplained.append((i, s))
     check(f"every one of the {items} sent items is in the database",
           not unexplained, f"{len(unexplained)} unexplained")
@@ -204,8 +246,6 @@ def main():
           f"{len(sent)} request(s), {len(carried)} item(s)")
 
     log = re.sub(r"\[[0-9;]*m", "", io.open(LOG, encoding="utf-8", errors="replace").read())
-    check("the boundary where the prose changed was logged",
-          "the prompt in force changed" in log)
     sample = next((l for l in log.splitlines() if "provider usage" in l), "(none)")
     check("the usage lines carry a cached count", "cached=" in sample,
           f"{log.count('provider usage')} line(s); sample: {sample[-96:]!r}")
