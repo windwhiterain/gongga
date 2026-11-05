@@ -80,3 +80,57 @@ per-run homes and run-ID container namespaces; the original Claw checkout was no
 - Each fix passed `CARGO_TARGET_DIR=$PWD/target/live-compact cargo check -p gongga-server`;
   only the two pre-existing protocol deprecation warnings remain. No tests were added and no
   server or evolve was run.
+
+## SPEC alignment (2026-11-05 second round)
+
+The authoritative SPEC (verbatim, given in session; the checkout's SPEC.md is the
+older text and was not edited) has four clauses, and the first round's contract
+differs on two of them:
+
+1. after first true user message, inject prompt to ask agent to give a plan.
+2. after the first turn end, set the starting checkpoint of compaction.
+3. after the starting checkpoint, every time reach a context increase limit, ask
+   the agent to call live compact to compact the history since the last checkpoint.
+4. live compact summary can reference meta that directly embed in the summary,
+   creating a new checkpoint.
+
+### Changes (commit d1b700d, plus the fmt commit on top)
+
+- `begin_turn` appends one user-role plan-request row immediately behind the first
+  genuine operator row, decided by the same `live_compact_origin_seq IS NULL`
+  transition that establishes the origin, so it fires exactly once per fresh
+  transcript (including after heir empties one).
+- The starting checkpoint is established at a turn end, not by the first usage:
+  new `live_compact_started` flag; the per-usage baseline write is gated on it,
+  and `establish_live_compact_baseline` runs at every turn end (no-op once set),
+  copying the latest absolute `context_tokens` when it is positive. Mid-turn
+  usage can therefore never start the interval inside turn one, while
+  post-compaction baselines still re-establish at the next usage mid-turn.
+- Clause 3's interval mechanism is unchanged (delta between the provider's latest
+  absolute input tokens and the current baseline, default 20,000, 0 disables).
+- Clause 4: `meta::embed` inlines each `@file`/`@skill` mention's content into the
+  `live_compact` summary through the session's own machine, reusing
+  `mentions`/`content`; unresolvable references and pictures stay literal. The
+  tool result carries the embedded text, so the committed checkpoint artifact is
+  self-contained.
+- Everything else (append-only raw rows, checkpoint transaction, projection SQL,
+  pending-task drain, rollback) is untouched.
+
+### Verification so far
+
+- `CARGO_TARGET_DIR=$PWD/target/live-compact cargo check -p gongga-server`:
+  exit 0, only the two pre-existing protocol `fetch_update` deprecations.
+- `cargo test --workspace` after fmt: exit 0; all 12 test binaries report
+  `ok` with 0 tests (the workspace keeps no Rust tests, and none were added;
+  no selftest/probe scripts were created or modified either, per the user's
+  ban on writing tests this round).
+- `cargo fmt -p gongga-server`: reformatted only the new `PLAN_NOTICE` constant.
+
+### Not yet verified
+
+- No real process run yet: trigger-only-after-turn-end, plan row placement,
+  embed behavior, and projection after a commit have only been read in code.
+  The three 6f5f5ea Claw runs predate all of this and d1b700d, so they verify
+  neither the old binary nor these semantics; a new claw A/B is the next step.
+- Cancel/resume of a queued notice was not exercised; the drain logic itself is
+  unchanged from the first round.

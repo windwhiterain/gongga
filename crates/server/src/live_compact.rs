@@ -9,8 +9,7 @@ pub const REQUEST_KIND: &str = "live_compact_request";
 
 /// What the first genuine operator message is asked for: the plan is the
 /// baseline the starting checkpoint anchors. See `docs/notes/server-meta.md`.
-pub const PLAN_NOTICE: &str =
-    "Give a plan for this task before acting: the goal, the ordered steps, and the first \
+pub const PLAN_NOTICE: &str = "Give a plan for this task before acting: the goal, the ordered steps, and the first \
      action. The server keeps the plan as the live-compaction baseline.";
 
 #[derive(Debug, Clone, Copy)]
