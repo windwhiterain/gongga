@@ -429,12 +429,19 @@ impl ToolRegistry {
                 Arc::new(DelBashTool),
                 Arc::new(DelJobTool),
                 Arc::new(ListBashTool),
-                Arc::new(live_compact::LiveCompactTool),
                 Arc::new(python::CheckPythonTool),
                 Arc::new(python::DelPythonTool),
                 Arc::new(python::ListPythonTool),
             ],
         }
+    }
+
+    /// Makes compaction callable without offering its schema in ordinary requests.
+    pub fn with_live_compact(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.tools.push(Arc::new(live_compact::LiveCompactTool));
+        }
+        self
     }
 
     /// Adds the Python tools; `lib` is where `gongga_skill.py` sits.
@@ -521,23 +528,32 @@ impl ToolRegistry {
     pub fn definitions(&self, has_remote: bool) -> Vec<crate::llm::ToolDefinition> {
         self.tools
             .iter()
+            .filter(|t| t.name() != live_compact::LIVE_COMPACT_TOOL)
             .filter(|t| has_remote || !t.is_remote())
-            .map(|t| {
-                let mut parameters = general_parameters(t.as_ref());
-                if !has_remote
-                    && let Some(properties) = parameters
-                        .get_mut("properties")
-                        .and_then(Value::as_object_mut)
-                {
-                    properties.remove("remote");
-                }
-                crate::llm::ToolDefinition {
-                    name: t.name().to_string(),
-                    description: text::shared().description(t.name()).unwrap_or_default(),
-                    parameters,
-                }
-            })
+            .map(|t| Self::definition_of(t, has_remote))
             .collect()
+    }
+
+    /// One explicitly requested schema, outside the ordinary tool list.
+    pub fn definition(&self, name: &str, has_remote: bool) -> Option<crate::llm::ToolDefinition> {
+        self.get(name)
+            .map(|tool| Self::definition_of(&tool, has_remote))
+    }
+
+    fn definition_of(tool: &Arc<dyn Tool>, has_remote: bool) -> crate::llm::ToolDefinition {
+        let mut parameters = general_parameters(tool.as_ref());
+        if !has_remote
+            && let Some(properties) = parameters
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+        {
+            properties.remove("remote");
+        }
+        crate::llm::ToolDefinition {
+            name: tool.name().to_string(),
+            description: text::shared().description(tool.name()).unwrap_or_default(),
+            parameters,
+        }
     }
 
     /// Runs one tool, and reads a failure as what it may be: a full disk.
