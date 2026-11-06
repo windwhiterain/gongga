@@ -36,6 +36,8 @@ pub struct Cover {
     cell: FontSize,
     /// The picture's own width divided by its own height.
     aspect: f64,
+    /// The area the last frame drew it in, so a frame after a size is known is owed.
+    painted: Option<(u16, u16)>,
 }
 
 impl Cover {
@@ -51,7 +53,19 @@ impl Cover {
             picture: picker.new_resize_protocol(picture.into()),
             cell,
             aspect,
+            painted: None,
         })
+    }
+
+    /// What area this cover has already been drawn in, if any.
+    ///
+    /// # Invariant
+    ///
+    /// The window's as much as the cover's: a frame drawn before the terminal reports
+    /// its size paints nothing, so the area it drew in is how the loop knows whether
+    /// the cover has been seen yet.
+    pub fn painted(&self) -> Option<(u16, u16)> {
+        self.painted
     }
 
     /// Paints black, then the picture, then the hint on the last row.
@@ -60,6 +74,7 @@ impl Cover {
         if area.width == 0 || area.height == 0 {
             return;
         }
+        self.painted = Some((area.width, area.height));
         // Uncovered cells are black, not blank: a blank cell is the terminal's background.
         frame.render_widget(Block::new().style(Style::default().bg(Color::Black)), area);
         // The hint's row carries no pixels, so the picture is fitted above it.
