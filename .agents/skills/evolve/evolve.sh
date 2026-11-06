@@ -530,9 +530,9 @@ cmd_stage() {
   # which is what keeps a running .exe from blocking the build (see SKILL.md).
   ( cd "$ROOT" && cargo build -p gongga-bundle ) || die "building the bundle failed"
   # The head is `gongga` (see crates/bundle/Cargo.toml), not the package name.
-  local head="$ROOT/target/debug/gongga"
+  local head="${CARGO_TARGET_DIR:-$ROOT/target}/debug/gongga"
   [ -f "$head" ] || head="$head.exe"
-  [ -f "$head" ] || die "no bundle head at $ROOT/target/debug/gongga"
+  [ -f "$head" ] || die "no bundle head at $head"
 
   local exe old_pid launcher
   exe="$RUN/evolve-$stamp-gongga.exe"

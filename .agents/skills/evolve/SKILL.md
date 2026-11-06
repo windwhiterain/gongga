@@ -193,7 +193,8 @@ MSYS 记的 `ParentProcessId` 不是可见 bash 进程的 Windows pid（三层�
 和 launcher 都构建在默认的 `target/`，而继任者拿到的是 `cp` 出来的 bundle 副本，所以
 "正在跑的 exe 锁住构建目录"不再是问题——被替换的从来不是 `target/debug/gongga-server.exe`。
 这个目录只会一路长到十几 GB（本机量到 14 GB，磁盘 97%）；`rm -rf .dev/target` 不影响
-任何一次换手。
+任何一次换手。设了 `CARGO_TARGET_DIR` 时 stage 从 `$CARGO_TARGET_DIR/debug/gongga` 取
+head，嵌套 payload 仍写死 `target/bundle-payload`（`build.rs` 的 invariant），不随之迁移。
 
 **3. `stage` 构建整个发行版，不是一个程序。** bundle 把 server、cli、tui 装进一个文件，
 换手一次就换掉三个程序；`--all` 是唯一模式（旧旗标只留一句 note）。构建产物是 `cp` 出去
