@@ -122,6 +122,25 @@ index and no use for a patch, and refusing to start over prose it may not need i
 wrong trade; `Agent::index_tolerance` asks whether the template is there and stops
 patching when it is not -- the same answer a tolerance of `0` gives.
 
+## monitor_error, monitor_error_again, monitor_disk
+
+The report the server hands a monitor session. It is a prompt like any other -- a model
+reads it and acts -- so its prose lives here rather than in `monitor.rs`, and the rules a
+monitor works under travel with it: which session failed, what the server last recorded
+for it, and the limit of its authorization (that one session's error, and a model swap
+only inside the session's own tier). `{{noted}}` is the server's last notice for that
+session, or nothing; `{{rows}}` is the transcript window the report covers.
+
+`monitor_error_again` is the same report handed to the next model after the monitor
+itself failed: `{{again}}` is the report unchanged, because re-deriving it would lose
+what the first attempt was told. `monitor_disk` is the cleaner's report, and `{{read_back}}`
+with `{{reach}}` are its two conditional tails -- empty when they do not apply, the same
+way `monitor_error`'s `{{noted}}` is.
+
+All three are in `REQUIRED`, unlike `REVISION`: a missing patch costs a re-sent entry,
+while a missing report is a monitor that never learns what it may not do. That is also
+why the content that carries them declares protocol 3.
+
 ## dynamic_tail
 
 The session's start card: name, the harness and the commit it runs, the minute of the

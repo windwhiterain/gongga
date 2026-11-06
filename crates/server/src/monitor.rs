@@ -297,67 +297,58 @@ fn report(
     entry: &Entry,
 ) -> anyhow::Result<String> {
     let written = last_notice(d, failure.id)?;
+    let prompts = crate::prompts::shared();
     if self_failed && let Some(again) = last_report(d, failure.id) {
         // The same report again: re-deriving it would lose what it was told.
-        return Ok(format!(
-            "The monitor failed on {model}. This is the report it was given, unchanged; \
-             the failure is in this conversation.\n\n\
-             What the server recorded for that turn:\n\n{failure_note}\n\n---\n\n{again}",
-            model = failure.model,
-            failure_note = if written.is_empty() {
-                "(nothing)".to_string()
-            } else {
-                written.clone()
-            },
+        return Ok(prompts.render(
+            crate::prompts::MONITOR_ERROR_AGAIN,
+            &[
+                ("model", &failure.model),
+                (
+                    "failure",
+                    &if written.is_empty() {
+                        "(nothing)".to_string()
+                    } else {
+                        written.clone()
+                    },
+                ),
+                ("again", &again),
+            ],
         ));
     }
-    // Only this failure varies; the map and the rules are the skill's, in the index.
-    let mut out = format!(
-        "{skill}\n\n\
-         A gongga session stopped with an error. Find the cause and fix it; the skill \
-         says how to tell a provider's refusal from a harness bug, and where the truth \
-         is on this machine.\n\n\
-         - session: {name}\n\
-         - its model: {model}\n\
-         - its rows: {from}..{to} ({rows} rows in the transcript)\n\
-         - harness build: {build}\n\
-         - home: {home}\n\
-         - server: pid {pid}, cwd {cwd}\n\
-         - this turn runs on: {mine}\n",
-        name = failure.name,
-        model = failure.model,
-        from = (failure.last_seq - CONTEXT_ROWS).max(0),
-        to = failure.last_seq,
-        rows = failure.last_seq,
-        build = protocol::version_line(),
-        home = home.display(),
-        pid = std::process::id(),
-        cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        mine = entry.model,
-        skill = format!("@{}({})", protocol::Reference::Skill.name(), ERROR.skill),
-    );
-    if !written.is_empty() {
-        out.push_str(&format!(
-            "\nThe last thing the server recorded for it:\n\n{written}\n"
-        ));
-    }
-    out.push_str(&format!(
-        "\nRead it back with:\n\n    gongga-cli get_messages --session {name} -40:-1\n",
-        name = failure.name,
-    ));
-    out.push_str(
-        "\nYour authorization is this session's error and nothing else: find the cause and \
-         fix it. A session whose model cannot run may be moved to another model of the \
-         same tier -- the tier is the setup's choice, never yours, so do not change it -- \
-         and nothing else about the session, its records or the file tree is yours to \
-         change. When that tier has nothing able to run, say so and stop instead of \
-         reaching for another one. If it is a harness bug, `@skill(self-control)` says how \
-         to restart the server without losing a turn. Report what you found and what you \
-         changed in one message.\n",
-    );
-    Ok(out)
+    // Only this failure varies; the map and the rules are the template's.
+    let noted = if written.is_empty() {
+        String::new()
+    } else {
+        format!("\nThe last thing the server recorded for it:\n\n{written}\n")
+    };
+    Ok(prompts.render(
+        crate::prompts::MONITOR_ERROR,
+        &[
+            ("session", &failure.name),
+            ("model", &failure.model),
+            (
+                "rows",
+                &format!(
+                    "{}..{} ({} rows in the transcript)",
+                    (failure.last_seq - CONTEXT_ROWS).max(0),
+                    failure.last_seq,
+                    failure.last_seq
+                ),
+            ),
+            ("build", &protocol::version_line()),
+            ("home", &home.display().to_string()),
+            ("pid", &std::process::id().to_string()),
+            (
+                "cwd",
+                &std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+            ("mine", &entry.model),
+            ("noted", &noted),
+        ],
+    ))
 }
 
 /// What the disk report says: the room left, and the volumes as they stood.
@@ -400,63 +391,61 @@ fn disk_report(home: &Path, payload: &str) -> String {
     } else {
         format!("{prefix}{})", DISK.skill)
     };
-    let mut out = format!(
-        "{skills}\n\n\
-         A gongga server has less disk room left on {machine} than this machine \
-         declared it must have. Nothing has failed yet; find what is filling the disk, \
-         clean it with the skill, and say what you freed.\n\n\
-         - home: {home}\n\
-         - the machine that is low: {machine}\n\
-         - volumes as they stood then:\n{volumes}\n\
-         - the threshold this machine declared: {threshold}\n\
-         - the tool that was running: {tool} (in session {session}, {ok})\n\
-         - its directory: {cwd}\n\
-         - harness build: {build}\n\
-         - server: pid {pid}, cwd {server_cwd}\n",
-        skills = skills,
-        machine = machine,
-        home = home.display(),
-        volumes = volumes,
-        threshold = number("threshold")
-            .map(crate::disk::human)
-            .unwrap_or_else(|| "unknown".to_string()),
-        tool = text("tool"),
-        session = text("session"),
-        ok = if facts
-            .get("tool_ok")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true)
-        {
-            "which succeeded"
-        } else {
-            "which failed"
-        },
-        cwd = text("cwd"),
-        build = protocol::version_line(),
-        pid = std::process::id(),
-        server_cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-    );
     let session = text("session");
-    if !session.is_empty() {
-        out.push_str(&format!(
-            "\nRead it back with:\n\n    gongga-cli get_messages --session {session} -40:-1\n"
-        ));
-    }
-    if elsewhere {
-        out.push_str(&format!(
+    let read_back = if session.is_empty() {
+        String::new()
+    } else {
+        format!("\nRead it back with:\n\n    gongga-cli get_messages --session {session} -40:-1\n")
+    };
+    let reach = if elsewhere {
+        format!(
             "\nThe disk that is low is {machine}'s, and this turn's shells are this \
              machine's: reach it with the `remote` skill (`remote run {machine} <command>`, \
              `remote put`/`remote get` for files) before cleaning anything there.\n"
-        ));
-    }
-    out.push_str(
-        "\nThe skill surveys every volume first and reports what it freed per volume; \
-         start there. This server said this once for the whole time the disk stays this \
-         low: answer in one message with what was full, what you freed, and what is left.\n",
-    );
-    out
+        )
+    } else {
+        String::new()
+    };
+    crate::prompts::shared().render(
+        crate::prompts::MONITOR_DISK,
+        &[
+            ("skills", &skills),
+            ("machine", &machine),
+            ("home", &home.display().to_string()),
+            ("volumes", &volumes),
+            (
+                "threshold",
+                &number("threshold")
+                    .map(crate::disk::human)
+                    .unwrap_or_else(|| "unknown".to_string()),
+            ),
+            ("tool", &text("tool")),
+            ("session", &session),
+            (
+                "ok",
+                &if facts
+                    .get("tool_ok")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true)
+                {
+                    "which succeeded".to_string()
+                } else {
+                    "which failed".to_string()
+                },
+            ),
+            ("cwd", &text("cwd")),
+            ("build", &protocol::version_line()),
+            ("pid", &std::process::id().to_string()),
+            (
+                "server_cwd",
+                &std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+            ("read_back", &read_back),
+            ("reach", &reach),
+        ],
+    )
 }
 
 /// Puts the monitor session on `entry`, creating it the first time.
