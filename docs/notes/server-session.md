@@ -10,6 +10,17 @@ created on first use and removed by the `del_bash` tool.
 
 ## Tuning
 
+## SessionInner::explore
+
+`Some(watch)` is explore mode, `None` is work. The watch is the session's chained
+snapshot, so the field carries both halves of the same fact -- whether this session
+explores, and what it explores from -- and nothing has to keep two of them in step.
+
+`set_mode` down to `work` drops the snapshot rather than keeping it warm: a snapshot
+from an hour ago would report every file the session wrote in between as a change the
+moment it went back. Up from `work` starts a fresh chain, which costs one `First` look
+and no reminder. See `docs/notes/server-explore.md`.
+
 Kept beside the session rather than in the agent because it is per-session state:
 two sessions on one server can run different models at different notice
 points, and a turn reads this when it starts so a change applies to the next turn

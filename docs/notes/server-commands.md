@@ -115,6 +115,14 @@ the row meaningful later: it is handed to a shell at the next start, and a relat
 path there would mean wherever that shell happened to be.
 
 ## set_session — must_create
+## set_session — mode
+
+`--mode explore` is stored in the session's row and applied before the answer, and the
+session is told in one queued message that it changed -- a mode that moved silently
+would be a rule the agent never read. The message is a notice (`notice: "explore"`), so
+it owes no turn: a person who sets the mode on an idle session gets the setting, not a
+turn they did not ask for. See `docs/notes/server-explore.md`.
+
 
 `--must_create true` refuses the command when the session already exists, and it is
 checked before anything else about the session is resolved: a refusal must not have

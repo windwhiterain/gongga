@@ -14,6 +14,13 @@ belonged to the process the caller was talking to.
 
 ## Request
 
+`explore` rides with the request because the worker builds its own `ToolContext` and
+runs the same `ToolRegistry::run`: a mode the request did not spell would be a way to
+refuse a write in the server and allow it in the process the server started. Only the
+refusal is the worker's -- its snapshot is its own and means nothing to the session, so
+the look that follows the call is taken by the server when it collects the answer.
+
+
 Everything the call needs is in the file: the home, the session and the call it answers
 for, the tool and its arguments, the directory and environment the session gave its
 programs, and where the answer goes. The environment is carried rather than recomputed

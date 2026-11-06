@@ -170,6 +170,16 @@ with the whole home instead of with the answer.
 
 ## Store::set_session_tuning
 
+## Store::set_session_mode
+
+Its own statement, unlike the tuning, because the mode is not one of the model's
+settings: it says what the session may do to the workspace, it is read per call rather
+than per turn, and a session whose model is re-resolved must not have its mode rewritten
+as a side effect.
+
+A `NULL` column is `work` -- the mode of every session the column was added behind --
+so an upgrade takes no rewrite and the read is one fallback.
+
 Both columns at once: they are one decision ("how should this session behave"),
 and `set_session` is the only thing that writes them, so a half-applied tuning is
 not a state anything else has to handle.
