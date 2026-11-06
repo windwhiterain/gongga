@@ -1,8 +1,16 @@
 # Live compact experiment
 
-## Approved contract
+## Current opt-in contract
 
-- A separate token interval defaults to 20,000; zero disables it. Trigger on the delta between the
+- Live compact is disabled by default. Only an explicit nonzero interval enables it.
+- Disabled sessions receive no plan request, no compaction tool schema, and no pending
+  compaction delivery. Existing transcript rows remain untouched.
+- The compaction schema is never in the ordinary tool list. It is added only to a request
+  made while a durable compaction request is outstanding, and withdrawn after its commit.
+
+## Initial contract (historical)
+
+- A separate token interval initially defaulted to 20,000; zero disables it. Trigger on the delta between the
   provider's latest absolute `input_tokens` and the current checkpoint's post-compaction
   baseline, never on cumulative billed input.
 - Create the first baseline in `begin_turn`, immediately after the first genuine operator
@@ -27,9 +35,9 @@ per-run homes and run-ID container namespaces; the original Claw checkout was no
 
 ## Implementation WIP
 
-- `live_compact_interval_tokens` / `GONGGA_LIVE_COMPACT_INTERVAL_TOKENS` defaults to 20,000;
-  an explicit zero disables it. File configuration overrides the default and the environment
-  variable overrides file configuration.
+- The initial implementation defaulted `live_compact_interval_tokens` to 20,000. The current
+  opt-in contract above supersedes it. File configuration overrides the default and the
+  environment variable overrides file configuration.
 - `begin_turn` owns the genuine-message origin. Existing histories are not scanned or
   backfilled; an empty transcript after heir starts a fresh origin on its next begin turn.
 - Delivery computes the newest complete ordinary round before appending the compaction

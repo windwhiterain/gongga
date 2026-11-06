@@ -844,7 +844,20 @@ impl Agent {
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
-        let definitions = self.tools.definitions(session.on_remote());
+        let mut definitions = self.tools.definitions(session.on_remote());
+        // A durable request alone makes the compaction schema visible to the model.
+        if self.live_compact_interval_tokens > 0
+            && self
+                .store
+                .live_compact_measurement(id)
+                .is_ok_and(|measurement| measurement.requested)
+            && let Some(definition) = self.tools.definition(
+                crate::tools::live_compact::LIVE_COMPACT_TOOL,
+                session.on_remote(),
+            )
+        {
+            definitions.push(definition);
+        }
         let reader = session.reader();
         let source = match (&reader, session.owner()) {
             (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),

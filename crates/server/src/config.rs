@@ -276,7 +276,7 @@ pub struct AgentConfig {
     /// Input tokens above which the agent is told to fold its own context.
     pub compress_above_tokens: u64,
     /// Input-token growth between agent-written checkpoints.
-    /// Defaults to 20,000; 0 disables live compact.
+    /// Disabled by default; an explicit nonzero interval opts in.
     pub live_compact_interval_tokens: u64,
     /// The chance a cached prefix is gone by the next request, `0.0..=1.0`.
     pub cache_invalid_rate: f64,
@@ -647,7 +647,7 @@ impl Config {
                 .or_else(|| {
                     env_or("GONGGA_LIVE_COMPACT_INTERVAL_TOKENS").and_then(|v| v.parse().ok())
                 })
-                .unwrap_or(20_000),
+                .unwrap_or(0),
             cache_invalid_rate: file
                 .agent
                 .as_ref()

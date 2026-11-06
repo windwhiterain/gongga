@@ -318,6 +318,7 @@ pub struct Store {
     conn: Arc<Mutex<Connection>>,
     /// Where the database is, so a request can open its own read-only view of it.
     path: PathBuf,
+    live_compact_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Whether `table` already has `column`, and adds it when it does not.
@@ -601,7 +602,19 @@ impl Store {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: path.to_path_buf(),
+            live_compact_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
+    }
+
+    /// Enables plan requests and delivery only for an explicit nonzero interval.
+    pub fn set_live_compact_enabled(&self, enabled: bool) {
+        self.live_compact_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn live_compact_is_enabled(&self) -> bool {
+        self.live_compact_enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The connection every picture and upload row is read and written through.
@@ -1993,6 +2006,7 @@ impl Store {
     /// so "fresh" means no `text` row survives, never a physically empty table,
     /// and the reset and plan request live here rather than on `begin_turn`.
     fn append_user_conn(
+        &self,
         tx: &rusqlite::Transaction<'_>,
         session_id: i64,
         expanded: &crate::meta::Expanded,
@@ -2034,7 +2048,7 @@ impl Store {
              WHERE id = ?1 AND live_compact_origin_seq IS NULL",
             params![session_id, seq],
         )?;
-        if origin_was_null {
+        if origin_was_null && self.live_compact_is_enabled() {
             // SPEC: the first true user message is asked for a plan, one row behind it.
             return Self::append_message_conn(
                 tx,
@@ -2074,7 +2088,7 @@ impl Store {
             ],
         )?;
         let id = tx.last_insert_rowid();
-        let seq = Self::append_user_conn(&tx, session_id, expanded)?;
+        let seq = self.append_user_conn(&tx, session_id, expanded)?;
         tx.commit()?;
         Ok((id, seq))
     }
@@ -2182,6 +2196,14 @@ impl Store {
                 }
             }
 
+            if payload.get("live_compact").is_some() && !self.live_compact_is_enabled() {
+                tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
+                tx.execute(
+                    "UPDATE sessions SET live_compact_requested = 0 WHERE id = ?1",
+                    params![session_id],
+                )?;
+                continue;
+            }
             let mut compact_round = None;
             if let Some(request) = payload.get("live_compact") {
                 let generation = request
@@ -2224,7 +2246,7 @@ impl Store {
 
             let expanded = crate::meta::Expanded::from_json(&payload)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
-            last = Self::append_user_conn(&tx, session_id, &expanded)?;
+            last = self.append_user_conn(&tx, session_id, &expanded)?;
             if let Some((round, segment_after, generation)) = compact_round {
                 let request = crate::live_compact::Request {
                     request_seq: last,
