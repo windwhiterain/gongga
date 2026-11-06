@@ -407,8 +407,8 @@ taken anyway. After an interrupt it is a wait measured in milliseconds; without
 the interrupt it is the length of the turn.
 
 Deleting a session is the one thing that means "the work it started is not wanted
-either". `cancel` disagrees on purpose: detached jobs exist to outlive the
-server's own shutdown.
+either". `cancel` disagrees on purpose: detached jobs exist to outlive a cancel,
+and a delete is not one.
 
 ## interrupt
 
@@ -452,6 +452,13 @@ Detached jobs are the exception and the point of the whole exercise: they were
 started precisely so that they would survive this. Killing them here would make
 `detached` indistinguishable from `background`, and would take away the one thing
 an agent needs in order to replace the server it is running on.
+
+Except that only a `cancel` a client asked for lets them go. A stop that a signal
+asked for is not that ask: the window closed, the console was interrupted, the
+process this server follows ended -- nothing in any of those promised the job a
+life after this server's. So `cancel` releases the armed trees when `Origin` is a
+client and calls nothing when it is a signal, and the answer it records says which
+of the two happened.
 
 Not `cancel()`: a cancelled turn must still be there for the next start to pick
 up, otherwise "cancel, restart, continue" -- the whole point of shutting down

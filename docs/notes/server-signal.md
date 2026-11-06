@@ -42,6 +42,13 @@ in `--parent`. When the window ends -- normally, by a crash, or by `taskkill /F`
 the server takes the same stop: the turn is preserved and the server exits, so a
 killed window does not leave a process holding the port and the home lock.
 
+That stop does not let anything go. A detached job is spared by `cancel`, and
+this is not one: the window went away without asking, so nothing promised those
+processes a life after this server's. Their job objects close with the process
+and take their trees with them -- which is what "kill the window and everything
+under it" means to the user who did it. See
+`docs/notes/server-tools-detached.md`.
+
 Both platforms ask, every 250 ms, whether the pid is still running: Windows by
 reading the handle's exit code, Unix by `kill(pid, 0)`. Windows used to *wait* on
 the handle instead -- `WaitForSingleObject(handle, INFINITE)` inside
