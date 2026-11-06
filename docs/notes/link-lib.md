@@ -411,16 +411,22 @@ comparison, and `ask_transcript` is the question — `get_messages --replay true
 --range <from>:`, never echoed, because it is the window's own line and not the
 operator's.
 
-Three states, because "I have nothing" is not "I am behind":
+Two states, because "I have nothing" is not "I am behind":
 
 | declaration | means | what happens |
 | --- | --- | --- |
 | nothing | no journal at all | nothing owed; the window starts from what arrives now |
 | `At { created, seq }` | this is what my record ends at | compared with the server's stamp |
-| `Lost` | the stream skipped events | the window holds what cannot be trusted: one whole read replaces it |
 
 A `created_at` that moved means a name was reused, so the journal's number
 belongs to another session and the declaration is dropped.
+
+A hole in the stream is not one of these. It used to mark the event's session as
+`Lost` -- a whole read would replace that window -- until it became clear that a
+deletion is a *name*, not a row: the event inside the hole may be the one that says
+a session is gone, and then no window of it is left to refill. So the hole is the
+stream's own fact (`Client::take_hole`), and what answers it is a greeting:
+`Event::SessionGone` and `Client::set_sessions`.
 
 ## A refill's answer
 
@@ -431,8 +437,14 @@ by nothing and followed by a `cmd_result` carrying `last_seq` and `as_of`.
 
 `as_of` is the stream position the answer is a picture of, taken inside the same
 gate the bus publishes through. That is what makes the join exact: an event
-buffered while the answer was on its way is either already inside it
-(`seq <= as_of`, dropped) or news (`seq > as_of`, applied after). Without the
+buffered while the answer was on its way is either already inside it or news, and
+`restated` is what decides -- the answer replays the session's rows, the parts still
+streaming and where they end, and it carries no copy of anything else. A session
+row, a status, a usage reading or a deletion that waited behind a refill is
+therefore news even when its number is below `as_of`; dropping those by the number
+alone is how a deleted session stayed in the list of the window being refilled. A
+refused refill restates nothing at all, so everything that waited behind it is
+applied. Without the
 number a refill either repeats the tail of an answer or loses it.
 
 The first event of the answer is what makes room: `Sink::forget` for a whole

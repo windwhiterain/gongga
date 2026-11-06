@@ -44,6 +44,7 @@ use ratatui::Terminal;
 use ratatui::backend::ClearType;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
+use ratatui_image::FontSize;
 use ratatui_image::picker::Picker;
 
 pub use crate::input::{InputLine, apply_completion};
@@ -594,10 +595,24 @@ pub struct Tui {
 ///
 /// # Invariant
 ///
-/// Nothing here picks the protocol: the terminal is asked, and one that answers nothing
-/// is drawn to in half blocks, which every terminal has. See `docs/notes/tui-cover.md`.
+/// The protocol is the terminal's to name -- it is the one that paints. The cell
+/// geometry is not taken on faith: `Cover::rect` counts the picture in cells from it,
+/// and a number that is not a cell (a window's pixel size is what a terminal sends by
+/// mistake) leaves a dot of picture on a black page that says nothing about why.
+/// See `docs/notes/tui-cover.md`.
 fn picker() -> Picker {
-    Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+    let queried = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    if cell_shaped(queried.font_size()) {
+        return queried;
+    }
+    let mut fallback = Picker::halfblocks();
+    fallback.set_protocol_type(queried.protocol_type());
+    fallback
+}
+
+/// Whether this measures a character cell: a few pixels across, about twice as tall.
+fn cell_shaped(size: FontSize) -> bool {
+    (1..=32).contains(&size.width) && (1..=64).contains(&size.height) && size.height >= size.width
 }
 
 impl Tui {
@@ -941,8 +956,9 @@ impl Tui {
     }
 
     pub fn draw(&mut self) -> anyhow::Result<()> {
-        // Nothing changed, so nothing is written: a fast stream cannot hog the loop.
-        if !self.dirty {
+        // Nothing changed: nothing is written. The cover is the one exception.
+        // See `docs/notes/tui-cover.md`.
+        if !self.dirty && !self.cover_awaiting_size() {
             return Ok(());
         }
         let seen = (self.screen.input.text().len(), self.screen.input.cursor());
@@ -968,6 +984,24 @@ impl Tui {
         // Cleared only after the frame landed, so a failed paint is retried.
         self.dirty = false;
         Ok(())
+    }
+
+    /// Whether the cover is up and has not been drawn for this terminal size.
+    ///
+    /// # Invariant
+    ///
+    /// The first frame is drawn before any event, when the terminal may still be
+    /// reporting the size it had a moment ago: a cover painted into an empty area
+    /// draws nothing, and nothing else asks for a second one. See
+    /// `docs/notes/tui-cover.md`.
+    fn cover_awaiting_size(&self) -> bool {
+        let Some(cover) = &self.screen.cover else {
+            return false;
+        };
+        let Ok(size) = self.terminal.size() else {
+            return false;
+        };
+        cover.painted() != Some((size.width, size.height))
     }
 
     /// Waits for the operator, painting a frame before every wait.

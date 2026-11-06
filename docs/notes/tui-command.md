@@ -58,6 +58,13 @@ completion needs (sticky names, the session a bare message goes to, the live ses
 list, the roots) after any change, so a popup and the line it completes never
 disagree.
 
+The command word itself is neither side's: `/set` is the server's `set_session` and
+this window's `set_render`, so `Window::complete` answers that word from both
+catalogs, with the prefix matches first across the merged list rather than within
+each half -- two lists sorted apart would read as one list in a strange order. A line
+past its command word has one owner and only that owner answers, so an argument is
+never completed from the wrong catalog.
+
 ## follows
 
 The published dependencies, read off the catalog: `(kind, sticky_to)` for every

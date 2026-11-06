@@ -432,6 +432,11 @@ impl link::Completer for Window {
     fn complete(&self, line: &str, cursor: usize) -> link::Offered {
         match head(line) {
             Some(name) if handles(name) => self.own.complete(line, cursor),
+            // The word names both sides: `/set` is `set_session` and `set_render`.
+            // See `docs/notes/tui-command.md`.
+            _ if line.trim_start().starts_with('/') && in_command_word(line, cursor) => {
+                self.both(line, cursor)
+            }
             _ => self.server.complete(line, cursor),
         }
     }
@@ -440,6 +445,60 @@ impl link::Completer for Window {
         // A client command names no remote, so a listing is never wanted here.
         self.server.wants()
     }
+}
+
+impl Window {
+    /// Both sides' command words: the ones this window runs and the ones the
+    /// server does.
+    ///
+    /// # Invariant
+    ///
+    /// Names, not arguments: past its command word a line belongs to one command,
+    /// and which one is the head's to say, so no argument is ever completed from
+    /// the window's own catalog on a line the server will run.
+    fn both(&self, line: &str, cursor: usize) -> link::Offered {
+        let typed = head(line).unwrap_or_default();
+        // Two catalogs answer the one word: the trait is what makes `Catalog`
+        // callable beside the server's completer.
+        let own = link::Completer::complete(&self.own, line, cursor);
+        merged(self.server.complete(line, cursor), own, typed)
+    }
+}
+
+/// Whether the cursor is still in the line's command word.
+///
+/// # Invariant
+///
+/// The word the slash starts, and nothing after the first space: past it the line
+/// belongs to one command, whose own catalog answers for it.
+fn in_command_word(line: &str, cursor: usize) -> bool {
+    let start = line.len() - line.trim_start().len();
+    let rest = &line[start..];
+    let end = start + rest.find(char::is_whitespace).unwrap_or(rest.len());
+    cursor.min(line.len()) <= end
+}
+
+/// One side's candidates, then the other's, under one rule about order.
+///
+/// # Invariant
+///
+/// A prefix match comes first across both lists, not within each: two catalogs
+/// sorted apart would read as the server's answers followed by the window's, and
+/// the operator would read that as one list in a strange order.
+fn merged(mut server: link::Offered, own: link::Offered, typed: &str) -> link::Offered {
+    for candidate in own.candidates {
+        if !server
+            .candidates
+            .iter()
+            .any(|held| held.insert == candidate.insert)
+        {
+            server.candidates.push(candidate);
+        }
+    }
+    server
+        .candidates
+        .sort_by_key(|c| !c.insert.trim_start_matches('/').starts_with(typed));
+    server
 }
 
 /// The command word of a line being typed, without its slash.

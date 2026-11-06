@@ -25,11 +25,23 @@ and still shows the picture in one that does not.
 
 The question is put to the terminal once, at startup, after the alternate screen is entered and
 before the event stream takes stdin, because that is where the answer arrives. Nothing here
-overrides it: a terminal that reports a protocol gets that protocol, and one that reports nothing
-is drawn to in half blocks.
+overrides the protocol: a terminal that reports one gets it. The *cell geometry* is the half of
+the answer that is checked, because the picture's rectangle is counted in cells from it and a
+number that is not a cell -- a window's pixel size is what a terminal sends by mistake -- turns
+the picture into a dot without saying anything about why. A geometry with a side of zero, more
+pixels than a cell can be, or a width larger than its height is not believed: the terminal's
+protocol is kept and the crate's own cell (ten by twenty) is used in its place.
 
 The protocol encodes the picture once per size and keeps it, so a repaint at an unchanged size
 re-sends the escape it already built rather than encoding again.
+
+## The frame that is owed
+
+The cover is drawn before the first event, which is also before the terminal has necessarily
+answered how large it is: `Cover::draw` paints nothing into an empty area, and a window that
+draws one frame and waits would keep a black page until a key. So the cover remembers the area
+it has been painted in, and a frame is owed while that is not the terminal's current size --
+the first real one comes a moment later, without anything else having to happen.
 
 ## What is drawn
 

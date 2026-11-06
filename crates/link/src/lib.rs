@@ -625,6 +625,15 @@ pub struct Client {
     attempts: u32,
     /// Set by `connect_server`; the front-end reads it and dials again.
     server_changed: bool,
+    /// Set when the stream skipped events this client will never be handed.
+    ///
+    /// # Invariant
+    ///
+    /// The hole is the whole stream's, never one session's: a lost event may be a
+    /// session's row or the name that says a session is gone, so nothing in this
+    /// layer can work out what is missing. A greeting is the only whole picture, so
+    /// the front-end reads this and dials again. See `docs/notes/link-lib.md`.
+    holed: bool,
     /// The server said it is finishing a `cancel`. See `docs/notes/cli-lib.md`.
     draining: bool,
     /// Another build or home: part of the facts, which no note can wipe.
@@ -670,8 +679,6 @@ struct Sync {
     drawn: Drawn,
     /// The refill in flight, when one is. See [`Fill`].
     fill: Option<Fill>,
-    /// Set when the stream skipped events: what was drawn still counts, the tail is owed.
-    stale: bool,
     /// The oldest row of the transcript this window holds, when it holds any.
     ///
     /// # Invariant
@@ -1018,6 +1025,7 @@ impl Client {
             quota: None,
             sync: HashMap::new(),
             cursor: None,
+            holed: false,
         }
     }
 
@@ -1029,6 +1037,17 @@ impl Client {
     /// Whether a `connect_server` moved this client, once per move.
     pub fn take_server_change(&mut self) -> bool {
         std::mem::take(&mut self.server_changed)
+    }
+
+    /// Whether the stream skipped events, once per hole.
+    ///
+    /// # Invariant
+    ///
+    /// The front-end's cue to dial again, because a greeting is the only thing that
+    /// rebuilds a session list. Nothing here can repair itself: what was published
+    /// in the hole was published once.
+    pub fn take_hole(&mut self) -> bool {
+        std::mem::take(&mut self.holed)
     }
 
     /// The first id this client will use.
@@ -1100,6 +1119,9 @@ impl Client {
                 self.draining = server.draining;
                 // Where this link's stream starts.
                 self.cursor = Some(cursor);
+                // A greeting carries the whole list, so it answers a hole as well
+                // as it opens a link.
+                self.holed = false;
                 // The announcement is the facts: the model and the session count.
                 // A warning belongs beside them.
                 self.build_note = (!server.build.is_empty() && server.build != protocol::BUILD)
@@ -1158,8 +1180,9 @@ impl Client {
     /// # Invariant
     ///
     /// A number that is not the one after the last is a hole, and nothing here
-    /// invents what it held: the event's session is marked lost instead, so the next
-    /// read of that window fetches rather than showing a gap as the conversation.
+    /// invents what it held: the whole stream is marked holed, because what was
+    /// missed is not one session's rows -- a deletion is one name and it may be the
+    /// name that was lost. [`Client::take_hole`] is how a front-end hears it.
     ///
     /// While a refill is in flight its events wait here. See [`Fill`].
     fn handle_delta(&mut self, seq: Option<u64>, event: Event, sink: &mut dyn Sink) {
@@ -1171,12 +1194,8 @@ impl Client {
         };
         let skipped = self.cursor.is_some_and(|last| seq > last + 1);
         self.cursor = Some(self.cursor.map_or(seq, |last| last.max(seq)));
-        if skipped
-            && let Some(session) = event.session()
-            && let Some(sync) = self.sync.get_mut(session)
-            && matches!(sync.drawn, Drawn::At { .. })
-        {
-            sync.stale = true;
+        if skipped {
+            self.holed = true;
         }
         if let Some(session) = event.session()
             && let Some(sync) = self.sync.get_mut(session)
@@ -1494,7 +1513,6 @@ impl Client {
             server: row.transcript,
             drawn: Drawn::Unknown,
             fill: None,
-            stale: false,
             floor: None,
             loaded: false,
             blocked: false,
@@ -1503,7 +1521,6 @@ impl Client {
             entry.created = row.created_at;
             entry.drawn = Drawn::Unknown;
             entry.fill = None;
-            entry.stale = false;
             entry.floor = None;
             entry.loaded = false;
             entry.blocked = false;
@@ -1581,8 +1598,10 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// `seq <= as_of` is inside the reply and dropped; `seq > as_of` is news and is
-    /// applied in order. A refusal leaves the window behind, never "current".
+    /// An event is inside the reply when the answer replays it -- [`restated`] --
+    /// or when it is numbered at or below the `as_of` the answer is a picture of;
+    /// everything else is news and is applied in order. A refusal leaves the window
+    /// behind, never "current", and restates nothing.
     fn settle_fill(
         &mut self,
         id: u64,
@@ -1623,13 +1642,22 @@ impl Client {
                 LineKind::Error,
                 &format!("{name}: its transcript could not be fetched: {message}"),
             );
+            // A refusal is not a picture of anything, so not one of the events that
+            // waited behind it is in it.
+            for (_, event) in fill.buffered {
+                self.handle_event(event, sink);
+            }
             return true;
         }
         let sync_created = sync.created;
         let as_of = as_of.unwrap_or_default();
-        let (late, stale): (Vec<_>, Vec<_>) =
-            fill.buffered.into_iter().partition(|(seq, _)| *seq > as_of);
-        drop(stale);
+        // What the answer covers goes: a replayed row, or one older than its
+        // picture. See `docs/notes/link-lib.md`.
+        let (owed, restated): (Vec<_>, Vec<_>) = fill
+            .buffered
+            .into_iter()
+            .partition(|(seq, event)| *seq > as_of || !restated(event));
+        drop(restated);
         sync.server = last_seq;
         let floor = fill.floor.at(last_seq);
         if fill.older {
@@ -1644,7 +1672,6 @@ impl Client {
         } else {
             // The tail: the window now ends where the answer does, and the page it
             // was given says which rows it holds.
-            sync.stale = false;
             sync.loaded = true;
             sync.drawn = Drawn::At {
                 created: sync.created,
@@ -1653,7 +1680,7 @@ impl Client {
             sync.floor = Some(sync.floor.map_or(floor, |held| held.min(floor)));
             sink.landed(&name, sync_created, last_seq, floor);
         }
-        for (_, event) in late {
+        for (_, event) in owed {
             self.handle_event(event, sink);
         }
         self.refresh(sink);
@@ -1777,7 +1804,6 @@ impl Client {
             seq: drawn,
         };
         sync.floor = floor;
-        sync.stale = false;
     }
 
     /// The sessions whose window is behind the server, and the row a refill
@@ -1805,8 +1831,7 @@ impl Client {
         match sync.drawn {
             // Nothing declared: nothing owed on the front-end's behalf.
             Drawn::Unknown => None,
-            // A jump needs the tail; a reused name is another transcript entirely.
-            Drawn::At { seq, .. } if sync.stale => Some(seq + 1),
+            // A reused name is another transcript entirely.
             Drawn::At { created, .. } if created != sync.created => Some(1),
             // Past the server's own end: rows were truncated, so the window
             // holds rows that no longer exist.
@@ -1829,7 +1854,6 @@ impl Client {
             let created = sync.created;
             sync.drawn = Drawn::At { created, seq: 0 };
             sync.floor = None;
-            sync.stale = false;
         }
     }
 
@@ -2199,6 +2223,25 @@ fn title_note(session: &protocol::SessionInfo) -> String {
         });
     }
     parts.join(" · ")
+}
+
+/// Whether a refill's answer already carries this event.
+///
+/// # Invariant
+///
+/// Only the kinds `get_messages --replay true` replays: the rows a window drew, the
+/// parts still streaming under them, and where the transcript ends (`last_seq`). A
+/// session row, a status, a usage reading and a deletion are no part of a
+/// transcript, so an answer never carries them -- and dropping one because it was
+/// numbered before the answer would lose it for good.
+fn restated(event: &Event) -> bool {
+    match event {
+        Event::Response(_)
+        | Event::ToolCall(_)
+        | Event::ToolAnswer(_)
+        | Event::Transcript { .. } => true,
+        _ => false,
+    }
 }
 
 /// The session list's order: the turn that ended last comes first.

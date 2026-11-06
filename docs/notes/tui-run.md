@@ -166,6 +166,16 @@ loop, and one frame covers the burst (`Link::try_recv`). The accounting matters
 as much as the draining: each message taken is one fewer pending, which is what
 gives the peer the receive window back.
 
+A burst is also where a hole is seen, and a hole is answered by dialing again. The
+bus drops events for a connection that falls behind -- a reader busy painting is
+exactly that -- and what it drops is not one session's rows: a deletion is published
+as one name, and a name the client never received is a session it believes is still
+there. `Client::take_hole` says so once, the link is dropped, and the next dial's
+greeting is the whole list again -- the same announcement that emptied a deleted
+session's window in the first place (`docs/notes/link-lib.md`). Nothing of the
+operator's is lost with it: a line the server has not answered comes back through
+`set_offline`, the way it does when a link ends.
+
 The window draws the session a command names, and works it out for itself: before
 the command goes out, `Client::show_named_session` reads the catalog's kind and shows
 that session. A session the server announces is not shown -- nobody here asked for
