@@ -206,13 +206,18 @@ GONGGA_SESSION=source "${cli[@]}" skill self-control new_session copy >"$work/ne
 a=$?
 copy_columns=$(columns_of copy)
 a_label="the new session's row is the source's row: '$copy_columns' (source: '$source_columns')"
-[[ $a == 0 && -n "$copy_columns" && "$copy_columns" == "$source_columns" ]]
+[[ -n "$copy_columns" && "$copy_columns" == "$source_columns" ]]
 ok "$a_label" $?
 empty=$(empty_of copy)
 a_label="and it is empty: $empty (messages|pending|subscriptions)"
 # A copy that is not there is not an empty one: the emptiness is only said of a
 # session that exists.
 [[ -n "$copy_columns" && "$empty" == "0|0|0" ]]
+ok "$a_label" $?
+# The call's own verdict: a session that was made and a call that says it was
+# refused are two facts, and a caller reads the second one.
+a_label="and the command says so: exit $a, $(first_line "$work/new-a.out" "$work/new-a.err")"
+[[ $a == 0 ]]
 ok "$a_label" $?
 
 # --- B: a name that is taken is refused, and the row it names is left alone -----
@@ -221,7 +226,7 @@ taken_before=$(columns_of taken)
 GONGGA_SESSION=source "${cli[@]}" skill self-control new_session taken >"$work/new-b.out" 2>"$work/new-b.err"
 b=$?
 said=$(cat "$work/new-b.out" "$work/new-b.err")
-b_label="a taken name is refused with the server's own words: $(first_line "$work/new-b.out" "$work/new-b.err")"
+b_label="a taken name is refused with the server's own words: exit $b, $(first_line "$work/new-b.out" "$work/new-b.err")"
 [[ $b == 2 && "$said" == *"already exists"* ]]
 ok "$b_label" $?
 b_label="and the row it names is untouched: $(columns_of taken)"
@@ -233,7 +238,7 @@ GONGGA_SESSION=source "${cli[@]}" skill self-control new_session far --remote no
   >"$work/new-c.out" 2>"$work/new-c.err"
 c=$?
 said=$(cat "$work/new-c.out" "$work/new-c.err")
-c_label="an unknown remote is refused: $(first_line "$work/new-c.out" "$work/new-c.err")"
+c_label="an unknown remote is refused: exit $c, $(first_line "$work/new-c.out" "$work/new-c.err")"
 [[ $c == 2 && "$said" == *"no remote named"* ]]
 ok "$c_label" $?
 c_label="and nothing was created"
@@ -244,7 +249,7 @@ ok "$c_label" $?
 env -u GONGGA_SESSION "${cli[@]}" skill self-control new_session orphan >"$work/new-d.out" 2>"$work/new-d.err"
 d=$?
 said=$(cat "$work/new-d.out" "$work/new-d.err")
-d_label="no source session is refused: $(first_line "$work/new-d.out" "$work/new-d.err")"
+d_label="no source session is refused: exit $d, $(first_line "$work/new-d.out" "$work/new-d.err")"
 # The refusal is about the source: a message that names no session at all is a
 # line that failed to parse, not a helper that refused to copy nothing.
 lower=$(printf '%s' "$said" | tr 'A-Z' 'a-z')
@@ -258,16 +263,16 @@ ok "$d_label" $?
 "${cli[@]}" skill self-control >"$work/e.out" 2>"$work/e.err"
 e=$?
 said=$(cat "$work/e.out" "$work/e.err")
-e_label="the package publishes ask and new_session: $(first_line "$work/e.out" "$work/e.err")"
+e_label="the package publishes ask and new_session: exit $e, $(first_line "$work/e.out" "$work/e.err")"
 [[ $e != 0 && "$said" == *"ask"* && "$said" == *"new_session"* ]]
 ok "$e_label" $?
 
 # --- F: `ask` asks, waits and prints the answer ---------------------------------
 "${cli[@]}" set_session mentor --model fake/flash-fake --cwd "$project_native" >"$work/mentor.out" 2>&1
 answer=$(timeout -k 5 120 "${cli[@]}" skill self-control ask mentor "What did I ask?" 2>"$work/ask-f.err")
-printf '%s' "$answer" > "$work/ask-f.out"
 f=$?
-f_label="ask asks, waits and prints the answer: '$answer' $(first_line "$work/ask-f.out" "$work/ask-f.err")"
+printf '%s' "$answer" > "$work/ask-f.out"
+f_label="ask asks, waits and prints the answer: exit $f, '$answer' $(first_line "$work/ask-f.out" "$work/ask-f.err")"
 [[ $f == 0 && "$answer" == *"hello from the fake"* ]]
 ok "$f_label" $?
 
@@ -276,7 +281,7 @@ GONGGA_SESSION=source "${cli[@]}" skill self-control new_session dryrun --dry_ru
   >"$work/new-g.out" 2>"$work/new-g.err"
 g=$?
 said=$(cat "$work/new-g.out" "$work/new-g.err")
-g_label="a dry run prints what it would do: $(first_line "$work/new-g.out" "$work/new-g.err")"
+g_label="a dry run prints what it would do: exit $g, $(first_line "$work/new-g.out" "$work/new-g.err")"
 [[ $g == 0 && -n "$said" && "$said" == *"dryrun"* ]]
 ok "$g_label" $?
 g_label="and creates nothing"
@@ -285,9 +290,9 @@ ok "$g_label" $?
 
 # --- H: the script form of `ask` still runs -------------------------------------
 answer=$(timeout -k 5 120 "$home/skills/self-control/ask_session.py" mentor "What did I ask?" 2>"$work/ask-h.err")
-printf '%s' "$answer" > "$work/ask-h.out"
 h=$?
-h_label="the script form of ask still runs: '$answer' $(first_line "$work/ask-h.out" "$work/ask-h.err")"
+printf '%s' "$answer" > "$work/ask-h.out"
+h_label="the script form of ask still runs: exit $h, '$answer' $(first_line "$work/ask-h.out" "$work/ask-h.err")"
 [[ $h == 0 && "$answer" == *"hello from the fake"* ]]
 ok "$h_label" $?
 
