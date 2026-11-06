@@ -88,6 +88,17 @@ impl Reader {
         self.runner().await?.list(path).await
     }
 
+    /// The room left on the peer's own disk, read by the peer's runner.
+    ///
+    /// # Invariant
+    ///
+    /// The room left on the peer's own disk, read by the peer's runner. The
+    /// connection is the one this reader already keeps, so a reading costs one round
+    /// trip and no shell is touched.
+    pub async fn space(&self, path: &str) -> anyhow::Result<Option<u64>> {
+        self.runner().await?.space(path).await
+    }
+
     /// The kept connection, dialled if there is none or the old one has died.
     async fn runner(&self) -> anyhow::Result<Runner> {
         let held = {

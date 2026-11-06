@@ -206,7 +206,7 @@ pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root>
     let mut seen: Vec<String> = vec![first];
     // The shape of a session on a peer, told to it without being asked.
     if source.machine() == crate::session::Machine::Remote {
-        let skill = format!("{}{}", Reference::Skill.prefix(), REMOTE_SKILL);
+        let skill = format!("{}{})", Reference::Skill.prefix(), REMOTE_SKILL);
         seen.push(skill.clone());
         queue.push(skill);
     }

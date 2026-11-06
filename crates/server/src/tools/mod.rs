@@ -1938,7 +1938,29 @@ pub(crate) async fn invoke(
     ctx: &ToolContext,
 ) -> ToolOutcome {
     let outcome = waited(&tool, &args, ctx).await;
-    crate::disk::note_tool_end(&ctx.store, &ctx.session, name, &ctx.cwd, outcome.ok);
+    // The machine this call ran on reports its own room.
+    let peer = match (&ctx.remote, &ctx.reader) {
+        (Some(machine), reader) => Some(crate::disk::Peer {
+            machine: machine.clone(),
+            volumes: match reader {
+                Some(reader) => reader
+                    .space(&ctx.cwd.to_string_lossy())
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|free| {
+                        vec![crate::disk::Volume {
+                            label: machine.clone(),
+                            free: Some(free),
+                        }]
+                    })
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            },
+        }),
+        _ => None,
+    };
+    crate::disk::note_tool_end(&ctx.store, &ctx.session, name, &ctx.cwd, outcome.ok, peer).await;
     outcome
 }
 

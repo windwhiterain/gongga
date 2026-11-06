@@ -3,11 +3,13 @@
 //! See `docs/notes/server-disk.md`.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 /// The event kind a low disk reports itself with: a fact in the log, not a message.
 pub const EVENT: &str = "disk_space";
+
+/// The name this machine goes by in an event and in a report.
+pub const LOCAL: &str = "local";
 
 /// What this process watches: the threshold, and the home's own volume.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,17 +51,32 @@ pub fn uninstall() {
     }
 }
 
-/// Whether this server is already inside an episode it has reported.
+/// The machines already reported as out of room, by name.
 ///
 /// # Invariant
 ///
-/// The episode is a fact about *this server*, not about the device: the room left
-/// is read on every tool call, and a disk that stays small would otherwise report
-/// itself on every one of them. Nothing durable and no shared file -- a restart
-/// reads the disk again and says so once, which is what a restart should do.
-fn reported() -> &'static AtomicBool {
-    static REPORTED: OnceLock<AtomicBool> = OnceLock::new();
-    REPORTED.get_or_init(|| AtomicBool::new(false))
+/// An episode is per machine: the room is read on every tool call, and a disk that
+/// stays small would otherwise report itself on every one of them, while two machines
+/// have two episodes so one does not hide the other. Nothing durable -- a restart
+/// reads the disks again and says so once.
+fn reported() -> &'static RwLock<std::collections::BTreeSet<String>> {
+    static REPORTED: OnceLock<RwLock<std::collections::BTreeSet<String>>> = OnceLock::new();
+    REPORTED.get_or_init(|| RwLock::new(std::collections::BTreeSet::new()))
+}
+
+/// Records that `machine` is no longer out of room, so its next fall is news.
+fn clear(machine: &str) {
+    if let Ok(mut reported) = reported().write() {
+        reported.remove(machine);
+    }
+}
+
+/// Whether this is `machine`'s first reading below the line.
+fn claim_episode(machine: &str) -> bool {
+    match reported().write() {
+        Ok(mut reported) => reported.insert(machine.to_string()),
+        Err(_) => false,
+    }
 }
 
 /// Reads the room left after a tool call, and writes the fact if it is new.
@@ -71,53 +88,75 @@ fn reported() -> &'static AtomicBool {
 /// that only reads -- so waiting for a failure waits for the first write that
 /// happens to be big enough, which on a server that mostly reads may be never.
 /// See `docs/notes/server-disk.md`.
-pub fn note_tool_end(store: &crate::store::Store, session: &str, tool: &str, cwd: &Path, ok: bool) {
+pub async fn note_tool_end(
+    store: &crate::store::Store,
+    session: &str,
+    tool: &str,
+    cwd: &Path,
+    ok: bool,
+    peer: Option<Peer>,
+) {
     let Some(watcher) = installed() else {
         return;
     };
     if watcher.threshold == 0 {
         return;
     }
-    let volumes = volumes(&watcher.home);
-    let free = volumes.iter().filter_map(|volume| volume.free).min();
-    if !low(free, watcher.threshold) {
-        reported().store(false, Ordering::SeqCst);
-        return;
+    // The machine the call ran on first, then this one.
+    let mut machines: Vec<(String, Vec<Volume>)> = Vec::new();
+    if let Some(peer) = peer {
+        machines.push((peer.machine, peer.volumes));
     }
-    // The edge only: an episode already reported stays quiet until the disk is
-    // seen above the threshold again.
-    if reported().swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let payload = serde_json::json!({
-        "session": session,
-        "tool": tool,
-        "tool_ok": ok,
-        "cwd": cwd.display().to_string(),
-        "threshold": watcher.threshold,
-        "volumes": volumes
-            .into_iter()
-            .map(|volume| serde_json::json!({
-                "label": volume.label,
-                "free": volume.free,
-            }))
-            .collect::<Vec<_>>(),
-    });
-    match store.append_event_row(None, EVENT, &payload) {
-        Ok(row) => tracing::info!(
-            session,
-            tool,
-            event = row.id,
-            threshold = watcher.threshold,
-            free = ?free,
-            "the disk is below the threshold this machine declared"
-        ),
-        Err(e) => {
-            tracing::warn!(error = %e, "could not record a low disk");
-            // Not reported then: the next call may say so.
-            reported().store(false, Ordering::SeqCst);
+    machines.push((LOCAL.to_string(), volumes(&watcher.home)));
+    for (machine, volumes) in machines {
+        let free = volumes.iter().filter_map(|volume| volume.free).min();
+        if !low(free, watcher.threshold) {
+            clear(&machine);
+            continue;
+        }
+        // The edge only: an episode already reported stays quiet until the disk is
+        // seen above the threshold again.
+        if !claim_episode(&machine) {
+            continue;
+        }
+        let payload = serde_json::json!({
+            "machine": machine,
+            "session": session,
+            "tool": tool,
+            "tool_ok": ok,
+            "cwd": cwd.display().to_string(),
+            "threshold": watcher.threshold,
+            "volumes": volumes
+                .into_iter()
+                .map(|volume| serde_json::json!({
+                    "label": volume.label,
+                    "free": volume.free,
+                }))
+                .collect::<Vec<_>>(),
+        });
+        match store.append_event_row(None, EVENT, &payload) {
+            Ok(row) => tracing::info!(
+                machine,
+                session,
+                tool,
+                event = row.id,
+                threshold = watcher.threshold,
+                free = ?free,
+                "a disk is below the threshold this machine declared"
+            ),
+            Err(e) => {
+                tracing::warn!(machine, error = %e, "could not record a low disk");
+                clear(&machine);
+            }
         }
     }
+}
+
+/// What a session's peer said about its own disk, when a call ran there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub machine: String,
+    pub volumes: Vec<Volume>,
 }
 
 /// Whether the smallest of what the volumes reported is below the threshold.

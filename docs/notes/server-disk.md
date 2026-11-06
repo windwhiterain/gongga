@@ -77,14 +77,40 @@ standing map — where a home keeps its database and its log, how to tell a prov
 refusal from a harness bug — comes from `@skill: clean-disk`, which is an index
 entry in the prompt's prefix rather than text in the message.
 
+## A peer's disk is read by the peer
+
+A session whose shells are on a peer writes there, so that machine's disk is the one
+that can fill up. Its room is asked for on the runner, not here:
+
+| where | what |
+| --- | --- |
+| `remote/protocol.rs` | `Op::Space { path }` |
+| `remote/runner.rs` | answered on the peer, with the same `disk::volumes()`/`free_space()` this machine uses on itself |
+| `remote/transport.rs` | `Runner::space`, one request on the connection the session already keeps |
+| `remote/files.rs` | `Reader::space`, so a tool call costs one round trip and touches no shell |
+| `disk.rs` | one episode per **machine**, and the row carries `machine` |
+
+The scheme is the same point values as locally: a request multiplexed by id cannot
+overtake a shell or swallow output a tool still owes, and the answer describes the
+machine that has to live with the answer.
+
+## One monitor, and the machine it is told about
+
+`@monitor(disk)` is always **this machine's** session: its shells are here, and the
+cleaner it has is a file here. A report about a peer therefore names the machine and
+references `@skill(remote)` beside `@skill(clean-disk)`, so the monitor reaches that
+machine (`remote run <machine> …`) instead of cleaning the wrong one. One name, one
+report, and the machine is a fact in it.
+
 ## Two boundaries
 
-- **A session on another machine.** `--remote` puts the session's directory on a
-  peer; this reading is this machine's, so a full disk on the peer is not seen here.
 - **A home and the volumes above it.** The drive letters are named as they are, and
   the threshold is one number for all of them: a machine that wants one disk watched
   more closely than another is asking for two numbers, which `AGENTS.md` is right to
   refuse until somebody has a reason.
+- **A peer nobody has called yet.** Its reading arrives with a tool call that ran
+  there; a peer whose disk fills up while no session talks to it is not watched, and
+  that is the same line the local reading draws -- nothing polls.
 
 ## Verified
 
