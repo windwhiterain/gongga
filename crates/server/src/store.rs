@@ -32,6 +32,10 @@ pub struct Prompt {
     /// The directory the shell stood in, so a move is noticed.
     #[serde(default)]
     pub cwd: String,
+    /// The model the card was stamped for, so a swap is noticed: a card that still
+    /// named the model this session no longer runs on would be a head that lies.
+    #[serde(default)]
+    pub model: Option<String>,
     /// The peer that directory was on, when it was one.
     ///
     /// # Invariant

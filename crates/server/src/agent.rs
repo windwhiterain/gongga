@@ -535,6 +535,7 @@ impl Agent {
         if let Some(kept) = self.store.prompt(id)?
             && kept.cwd == here
             && kept.remote.as_deref() == remote
+            && kept.model.as_deref() == Some(model)
         {
             return Ok(kept);
         }
@@ -556,6 +557,7 @@ impl Agent {
                 ("now", &crate::clock::now()),
                 ("cwd", &here),
                 ("remote", remote.unwrap_or_default()),
+                ("model", model),
             ],
         ));
         // Where the conversation's references stand now, planned once, for the one
@@ -571,6 +573,7 @@ impl Agent {
             rooted,
             cwd: here,
             remote: remote.map(str::to_string),
+            model: Some(model.to_string()),
         };
         self.store.append_prompt(id, &prompt)?;
         Ok(prompt)
@@ -1960,6 +1963,7 @@ mod tests {
             rooted: Vec::new(),
             cwd: ".".to_string(),
             remote: None,
+            model: Some("m".to_string()),
         };
         store.append_prompt(id, &first).expect("one row");
         // A minute later: the stored card is what a request carries, not the clock.
