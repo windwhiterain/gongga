@@ -617,7 +617,7 @@ impl Store {
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
-    fn live_compact_is_enabled(&self) -> bool {
+    pub(crate) fn live_compact_is_enabled(&self) -> bool {
         self.live_compact_enabled
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1578,8 +1578,7 @@ impl Store {
         Ok(())
     }
 
-    /// Every operator message this session has stored, oldest first. Harness
-    /// notices are not operator messages.
+    /// Every operator message this session has stored, oldest first.
     pub fn user_texts(&self, session_id: i64) -> anyhow::Result<Vec<String>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
@@ -1590,9 +1589,6 @@ impl Store {
         for row in rows {
             let value: serde_json::Value = serde_json::from_str(&row?).unwrap_or_default();
             if value.get("role").and_then(|r| r.as_str()) != Some("user") {
-                continue;
-            }
-            if value.get("harness").is_some() {
                 continue;
             }
             if let Some(text) = value.get("text").and_then(|t| t.as_str()) {
@@ -1641,8 +1637,7 @@ impl Store {
             "UPDATE sessions SET live_compact_baseline_tokens = ?1
              WHERE id = ?2 AND context_generation = ?3
                AND live_compact_origin_seq IS NOT NULL
-               AND live_compact_baseline_tokens IS NULL
-               AND live_compact_started = 1",
+               AND live_compact_baseline_tokens IS NULL",
             params![input_tokens as i64, session_id, generation as i64],
         )?;
         Ok(())
@@ -1686,16 +1681,57 @@ impl Store {
         Ok(true)
     }
 
-    /// Sets the starting checkpoint baseline at a turn end; a usage may only
-    /// re-establish one after this has run.
-    pub fn establish_live_compact_baseline(&self, session_id: i64) -> anyhow::Result<()> {
-        self.lock().execute(
-            "UPDATE sessions SET live_compact_baseline_tokens = context_tokens,
-                    live_compact_started = 1
-             WHERE id = ?1 AND live_compact_origin_seq IS NOT NULL
-               AND live_compact_baseline_tokens IS NULL AND context_tokens > 0",
+    /// Opens live compaction where the plan finished: explore -> work.
+    ///
+    /// # Invariant
+    ///
+    /// Origin and baseline land in one transaction, so a usage write cannot land
+    /// between them. The origin is the lineage's first real operator row — the
+    /// permanent prefix a compacted request keeps — and the baseline is the latest
+    /// measured context: with a measurement in flight the number is still changing,
+    /// and with no operator row there is nothing to compact from. Both refuse.
+    pub fn start_live_compact(&self, session_id: i64) -> anyhow::Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let (status, context_tokens): (String, i64) = tx.query_row(
+            "SELECT status, context_tokens FROM sessions WHERE id = ?1",
             params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        if status == status_name(SessionStatus::Running) {
+            anyhow::bail!("a measurement is in flight; let the turn end before finishing the plan");
+        }
+        let first = {
+            let mut stmt = tx.prepare(
+                "SELECT seq, display FROM messages
+                 WHERE session_id = ?1 AND kind = 'text' ORDER BY seq ASC",
+            )?;
+            let rows = stmt.query_map(params![session_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut found = None;
+            for row in rows {
+                let (seq, display) = row?;
+                let value: serde_json::Value = serde_json::from_str(&display).unwrap_or_default();
+                let real = value.get("role").and_then(|r| r.as_str()) == Some("user")
+                    && value.get("harness").is_none();
+                if real {
+                    found = Some(seq);
+                    break;
+                }
+            }
+            found
+        };
+        let Some(origin) = first else {
+            anyhow::bail!("no operator message anchors this lineage yet");
+        };
+        tx.execute(
+            "UPDATE sessions SET live_compact_origin_seq = ?2,
+                    live_compact_baseline_tokens = ?3, live_compact_started = 1
+             WHERE id = ?1 AND live_compact_origin_seq IS NULL",
+            params![session_id, origin, context_tokens],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2019,19 +2055,13 @@ impl Store {
     /// Heir empties a transcript from under a still-running turn, keeping only
     /// the in-flight call and its result, and its lesson lands as an injection —
     /// so "fresh" means no `text` row survives, never a physically empty table,
-    /// and the reset and plan request live here rather than on `begin_turn`.
-    ///
-    /// # Invariant
-    ///
-    /// Answers where the transcript ends and the notice written behind the message,
-    /// because the caller publishes both: a row nobody publishes is a row a window
-    /// never draws. See `docs/notes/server-store.md`.
+    /// and the reset lives here rather than on `begin_turn`.
     fn append_user_conn(
         &self,
         tx: &rusqlite::Transaction<'_>,
         session_id: i64,
         expanded: &crate::meta::Expanded,
-    ) -> anyhow::Result<(i64, Option<String>)> {
+    ) -> anyhow::Result<i64> {
         let no_text = tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM messages
                  WHERE session_id = ?1 AND kind = 'text')",
@@ -2057,33 +2087,7 @@ impl Store {
                 params![session_id],
             )?;
         }
-        let origin_was_null = tx.query_row(
-            "SELECT live_compact_origin_seq IS NULL FROM sessions WHERE id = ?1",
-            params![session_id],
-            |row| row.get::<_, bool>(0),
-        )?;
-        let seq = Self::append_message_conn(tx, session_id, "text", &user_row(expanded))?;
-        tx.execute(
-            "UPDATE sessions SET live_compact_origin_seq = ?2,
-                    live_compact_baseline_tokens = NULL
-             WHERE id = ?1 AND live_compact_origin_seq IS NULL",
-            params![session_id, seq],
-        )?;
-        if origin_was_null && self.live_compact_is_enabled() {
-            // SPEC: the first true user message is asked for a plan, one row behind it.
-            let notice = Self::append_message_conn(
-                tx,
-                session_id,
-                "text",
-                &serde_json::json!({
-                    "role": "user",
-                    "text": crate::live_compact::PLAN_NOTICE,
-                    "harness": "live_compact_plan",
-                }),
-            )?;
-            return Ok((notice, Some(crate::live_compact::PLAN_NOTICE.to_string())));
-        }
-        Ok((seq, None))
+        Self::append_message_conn(tx, session_id, "text", &user_row(expanded))
     }
 
     /// Accepts an idle session's first message and its turn obligation together.
@@ -2091,8 +2095,8 @@ impl Store {
     /// # Invariant
     ///
     /// Answers the task and the rows it wrote, in the order they landed: the caller
-    /// publishes them before it announces where the transcript now ends, including
-    /// the plan row. See `docs/notes/server-store.md`.
+    /// publishes them before it announces where the transcript now ends. See
+    /// `docs/notes/server-store.md`.
     pub fn begin_turn(
         &self,
         session_id: i64,
@@ -2111,11 +2115,15 @@ impl Store {
             ],
         )?;
         let id = tx.last_insert_rowid();
-        let (seq, notice) = self.append_user_conn(&tx, session_id, expanded)?;
-        let mut lines = vec![expanded.text.clone()];
-        lines.extend(notice);
+        let seq = self.append_user_conn(&tx, session_id, expanded)?;
         tx.commit()?;
-        Ok((id, OperatorRows { lines, seq }))
+        Ok((
+            id,
+            OperatorRows {
+                lines: vec![expanded.text.clone()],
+                seq,
+            },
+        ))
     }
 
     /// The newest copy this home holds for `path`, and the type it was read as.
@@ -2276,13 +2284,11 @@ impl Store {
 
             let expanded = crate::meta::Expanded::from_json(&payload)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
-            let (seq, notice) = self.append_user_conn(&tx, session_id, &expanded)?;
+            written.seq = self.append_user_conn(&tx, session_id, &expanded)?;
             written.lines.push(expanded.text.clone());
-            written.lines.extend(notice);
-            written.seq = seq;
             if let Some((round, segment_after, generation)) = compact_round {
                 let request = crate::live_compact::Request {
-                    request_seq: seq,
+                    request_seq: written.seq,
                     segment_after_seq: segment_after,
                     round_start_seq: round.start_seq,
                     cutoff_seq: round.cutoff_seq,

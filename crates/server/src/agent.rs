@@ -293,10 +293,6 @@ impl Agent {
         };
 
         tracing::info!(session = %name, outcome = ?outcome.0, elapsed = ?started.elapsed(), "turn end");
-        // SPEC: the starting checkpoint is set at the first turn end, never mid-turn.
-        if let Err(e) = self.store.establish_live_compact_baseline(id) {
-            tracing::warn!(session = %name, error = %e, "could not establish the live compact baseline");
-        }
         outcome
     }
 
