@@ -348,8 +348,14 @@ fn report(
         name = failure.name,
     ));
     out.push_str(
-        "\nIf it is a harness bug, `@skill(self-control)` says how to restart the server \
-         without losing a turn. Report what you found and what you changed in one message.\n",
+        "\nYour authorization is this session's error and nothing else: find the cause and \
+         fix it. A session whose model cannot run may be moved to another model of the \
+         same tier -- the tier is the setup's choice, never yours, so do not change it -- \
+         and nothing else about the session, its records or the file tree is yours to \
+         change. When that tier has nothing able to run, say so and stop instead of \
+         reaching for another one. If it is a harness bug, `@skill(self-control)` says how \
+         to restart the server without losing a turn. Report what you found and what you \
+         changed in one message.\n",
     );
     Ok(out)
 }
