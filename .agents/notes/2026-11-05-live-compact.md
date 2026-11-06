@@ -12,12 +12,12 @@
   marker, and the user_texts harness filter are gone; appending a user row never
   establishes compaction state.
 - The starting checkpoint opens at plan finish — the explore -> work transition — not at
-  a turn end. With live compaction enabled, `start_live_compact` runs in that act, one
-  transaction: refuse a running turn (a measurement is in flight) and a lineage with no
-  real operator row; otherwise set `origin` at the first real operator row (the permanent
-  prefix) and the baseline at the latest `context_tokens`. Failure refuses the mode
-  change. With no origin yet, interval requests cannot be delivered, so a session that
-  never planned is never asked to compact.
+  a turn end. Plan finish is the agent's own act inside its turn, so `start_live_compact`
+  never refuses a running session: it takes the last persisted `context_tokens` as the
+  baseline (zero stays NULL for the usage write to fill), and refuses only a lineage
+  with no real operator row — failure refuses the mode change. Origin and baseline land
+  in one transaction. With no origin yet, interval requests cannot be delivered, so a
+  session that never planned is never asked to compact.
 
 ## Initial contract (historical)
 
