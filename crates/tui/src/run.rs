@@ -583,6 +583,10 @@ pub async fn interactive(args: &link::Args) -> anyhow::Result<()> {
     let mut client = link::build_client(args);
     let window = command::Window::new(client.completer());
     let mut ui = Tui::new(window.shared(), &client_home, &endpoint)?;
+    // What this window drew last: a greeting may never come.
+    // See `docs/notes/tui-roster.md`.
+    let known = ui.known_list();
+    client.seed_listed(known);
     // Nothing has been sent yet: a fresh client owes nobody a line.
     let _ = client.set_offline(0, &mut TuiSink(&mut ui));
     sync(&mut client, &state, &window, &mut ui);

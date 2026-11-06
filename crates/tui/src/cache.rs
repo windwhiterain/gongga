@@ -591,7 +591,7 @@ impl Ask {
 /// Reversible and injective over the bytes a name may hold, because two windows that
 /// differ only in a character must not share one journal -- and a name is not a file
 /// name: `cmd ` ends in a space, and a session may be called anything.
-fn escaped(window: &str) -> String {
+pub(crate) fn escaped(window: &str) -> String {
     let mut out = String::with_capacity(window.len());
     for byte in window.bytes() {
         match byte {

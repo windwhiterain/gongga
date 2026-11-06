@@ -307,9 +307,10 @@ fn write_session(
     sink: &mut dyn Sink,
 ) {
     let written = if show && solo {
-        // Only a session the server has is a window: an entry a deleted name left
-        // behind was never one.
-        let live: Vec<&str> = client.sessions().iter().map(|s| s.name.as_str()).collect();
+        // Only a session the window draws is a window: the list on screen is the
+        // one a linkless start kept.
+        let listed = client.listed();
+        let live: Vec<&str> = listed.iter().map(|row| row.name.as_str()).collect();
         state.show_only(name, |held| live.contains(&held))
     } else {
         state.set_shown(name, show).map(|()| 0)

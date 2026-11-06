@@ -18,6 +18,7 @@ mod notice;
 mod panes;
 pub mod program;
 mod render;
+mod roster;
 pub mod run;
 mod state;
 mod table;
@@ -576,6 +577,16 @@ pub struct Tui {
     /// inside a frame the command layer is already parsing: what the window keeps
     /// for an accepted command is the window's, and this is how it hears.
     answers: Vec<(u64, bool)>,
+    /// The session list this window drew last, and the file it lives in.
+    ///
+    /// # Invariant
+    ///
+    /// Written by the frames that drew a list and read once, before the first dial:
+    /// a window renders its own state, so a list it had is a list it can draw. The
+    /// failure to record one is said once and then left alone -- a window that
+    /// cannot write still draws. See `docs/notes/tui-roster.md`.
+    roster: roster::Roster,
+    roster_failed: bool,
 }
 
 impl Tui {
@@ -632,6 +643,8 @@ impl Tui {
             input_area: Rect::default(),
             dragging: None,
             answers: Vec::new(),
+            roster: roster::Roster::new(client_home, endpoint),
+            roster_failed: false,
             events: EventStream::new(),
             mouse_captured: true,
             restored: false,
@@ -678,7 +691,13 @@ impl Tui {
     /// `docs/notes/tui-cache.md`.
     pub fn repoint(&mut self, client_home: &Path, endpoint: &str) {
         self.screen.panes.repoint(client_home, endpoint);
+        self.roster.repoint(client_home, endpoint);
         self.dirty = true;
+    }
+
+    /// The session list this window drew last, for a start that has no link yet.
+    pub fn known_list(&self) -> Vec<link::Listed> {
+        self.roster.load()
     }
 
     /// What kind of thing the status line says, for its colour.
@@ -704,6 +723,14 @@ impl Tui {
     /// How the events area is divided, as the command layer last said.
     pub fn set_layout(&mut self, layout: &Layout) {
         self.screen.panes.layout(layout);
+        // One file, written by the frames that drew a list.
+        if let Err(e) = self.roster.know(&layout.listed)
+            && !self.roster_failed
+        {
+            self.roster_failed = true;
+            let note = format!("this window's session list could not be recorded: {e}");
+            self.say(LineKind::Error, note);
+        }
         self.dirty = true;
     }
 
