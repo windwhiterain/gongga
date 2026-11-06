@@ -23,9 +23,10 @@ $S clean              # 收掉没人会 swap 的旧继任者（--artifacts 连�
                       # 输出 "N killed, M left, K kept"：kept 那几行要说清为什么留
 ```
 
-`stage` 先 fetch 内容仓、把 `local` rebase 到官方 `main`，再跑 `ship.sh --check`，
-然后才取 lease。继任者按本机官方 ref 安装内容：这个 preflight 失败的构建不能占用 home，
-也不会等到新 server 启动时才发现缺少新工具文案。
+`stage` 先 fetch 内容仓、把 `local` rebase 到官方 `main`，再跑 `ship.sh --check`；
+它也同步 `$GONGGA_HOME/ship`，因为继任者读的是 home 的 fork，不是源码树那个 checkout。
+官方 `main` 必须是 home 当前内容分支的祖先。全部通过后才取 lease：preflight 失败的
+构建不能占用 home，也不会等到新 server 启动时才发现缺少新工具文案。
 
 ## 规范：一次改动，一次换手
 

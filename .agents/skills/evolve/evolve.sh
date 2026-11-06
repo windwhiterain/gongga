@@ -466,6 +466,26 @@ cmd_stage() {
   ( cd "$ROOT" && git -C ship fetch origin main && git -C ship rebase origin/main \
       && scripts/ship.sh --check ) \
     || die "the ship checkout is not current and published; refusing to stage a handover"
+  # The successor reads the home's fork, not the source checkout checked above.
+  local home_ship="$HOME_DIR/ship"
+  if [ -d "$home_ship/.git" ]; then
+    git -C "$home_ship" fetch origin main \
+      || die "cannot refresh $home_ship; refusing to stage a handover"
+    local home_tip=main
+    if git -C "$home_ship" show-ref --verify --quiet refs/heads/local; then
+      git -C "$home_ship" rebase origin/main local \
+        || die "cannot rebase $home_ship/local; refusing to stage a handover"
+      home_tip=local
+    elif [ "$(git -C "$home_ship" symbolic-ref --short -q HEAD || true)" = main ]; then
+      git -C "$home_ship" merge --ff-only origin/main \
+        || die "cannot fast-forward $home_ship/main; refusing to stage a handover"
+    else
+      git -C "$home_ship" branch -f main origin/main \
+        || die "cannot update $home_ship/main; refusing to stage a handover"
+    fi
+    git -C "$home_ship" merge-base --is-ancestor origin/main "$home_tip" \
+      || die "$home_ship/$home_tip does not contain official main; refusing to stage"
+  fi
 
   # Taken before the build: two agents waiting for a compile that only one of them
   # may finish is the cost this avoids, and the claim is what tells the second one
