@@ -1837,6 +1837,8 @@ impl SessionManager {
                 pending_move: Mutex::new(None),
             }),
         };
+        // A session that read before the restart reads still: this is its baseline.
+        crate::explore::prime(handle.explore(), handle.cwd());
         live.insert(row.name, handle.clone());
         Ok(handle)
     }

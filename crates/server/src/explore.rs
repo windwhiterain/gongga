@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde_json::json;
 
@@ -166,6 +166,24 @@ async fn probe(cwd: &Path) -> Option<Vec<String>> {
             .map(|line| line.to_string())
             .collect(),
     )
+}
+
+/// Takes the baseline a session's first look is measured against.
+///
+/// # Invariant
+///
+/// Without it the first change after the mode went on *is* the baseline and is never
+/// reported: a look has nothing to compare a workspace it has never seen with.
+pub fn prime(watch: Option<Arc<Watch>>, cwd: std::path::PathBuf) {
+    let Some(watch) = watch else {
+        return;
+    };
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    handle.spawn(async move {
+        let _ = watch.look(&cwd).await;
+    });
 }
 
 /// Whether this tool runs a program of the operator's choosing, so only its effects can

@@ -60,6 +60,16 @@ The comparison is between two sets of status lines, so it reports a path that en
 the set and a path that left it. `First` and `Blind` are not `Same`: a look with nothing
 to compare against must not read as "nothing happened".
 
+## explore::prime
+
+The chain has one end that must not be left loose. `First` is silent, so the first change
+after the mode went on would *be* the baseline and would never be reported -- and that
+first change is the common case, not the corner: an operator switches a session to
+explore and the agent's next `bash` writes. So the baseline is taken when the mode goes
+on (`set_session`) and when a session that was reading materialises after a restart.
+Both take it on a task of their own and drop the answer: a primer that reported would
+report the whole tree it had just met.
+
 ## is_program
 
 The tools whose result is a program's: `bash`, `exec`, `python`, `skill` and the
