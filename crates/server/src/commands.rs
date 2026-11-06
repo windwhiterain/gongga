@@ -432,6 +432,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("true|false"),
                     CompletionSource::Static(vec!["true".into(), "false".into()]),
                 ),
+                kind_arg(
+                    "mode",
+                    "What this session may do to the workspace. `work` (the default)                      writes as it likes; `explore` refuses `write_file` and `replace`                      outright and tells the session which paths a `bash`, `exec`,                      `python` or `skill` call changed when it ended. Not a jail: a                      program that writes is told, not stopped, so read the changed                      paths and put them back before answering.",
+                    false,
+                    "mode",
+                    Some("work|explore"),
+                    CompletionSource::Static(vec!["work".into(), "explore".into()]),
+                ),
                 // SPEC: `[--remote <remote>](initial: none)`.
                 kind_arg(
                     "remote",
@@ -1168,6 +1176,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => return Outcome::err(format!("--cache_keepalive: {e}")),
         },
     };
+    // What this session may do to the workspace. Absent keeps what it had.
+    let mode = match args.get("mode").map(String::as_str) {
+        None => None,
+        Some(raw) => match crate::explore::Mode::parse(raw) {
+            Ok(mode) => Some(mode),
+            Err(e) => return Outcome::err(format!("--mode: {e}")),
+        },
+    };
     // A percentage needs a window; silently keeping the old budget would lie.
     let context = entry.context.or(d.agent.default_context);
     if let (Some(percent), None) = (threshold, context) {
@@ -1334,6 +1350,24 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
         session.set_tuning(tuning.clone());
     }
+    // A mode that changed says so: the agent hears it at the next step boundary.
+    if let Some(mode) = mode.filter(|mode| *mode != session.mode()) {
+        if let Err(e) = d.store.set_session_mode(session.id(), mode.as_str()) {
+            return Outcome::err(format!("could not save the session's mode: {e}"));
+        }
+        session.set_mode(mode);
+        if let Err(e) = d.store.add_pending_task(
+            &name,
+            "inject",
+            &json!({
+                "session": name,
+                "message": crate::explore::mode_notice(mode),
+                "notice": "explore",
+            }),
+        ) {
+            tracing::warn!(session = %name, error = %e, "could not say the session's mode");
+        }
+    }
     publish_sessions(d);
 
     let cwd = session.cwd();
@@ -1389,6 +1423,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "model": tuning.model,
             "context_limit": tuning.context_limit,
             "thinking_effort": tuning.thinking_effort,
+            "mode": session.mode().as_str(),
         }),
     )
 }

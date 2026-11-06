@@ -117,6 +117,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Whether a periodic time notice keeps this session's prefix warm. Off by
     -- default: a session that never asked starts no timer of its own.
     cache_keepalive INTEGER NOT NULL DEFAULT 0,
+    -- What this session is for, in `explore`'s spelling. NULL is `work`, so a row
+    -- written before this column existed reads what a session that never asked
+    -- reads. See `docs/notes/server-explore.md`.
+    mode TEXT,
     -- When this session's last turn ended, and nothing else. NULL is a session
     -- that has not finished a turn yet, which the list orders by `created_at`.
     -- Its own column rather than `updated_at`, which a tuning change rewrites:
@@ -425,6 +429,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "cache_keepalive",
             "ALTER TABLE sessions ADD COLUMN cache_keepalive INTEGER NOT NULL DEFAULT 0",
         ),
+        ("mode", "ALTER TABLE sessions ADD COLUMN mode TEXT"),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
@@ -690,11 +695,11 @@ impl Store {
                                        updated_at, context_limit, thinking_effort,
                                        context_tokens, context_generation, cached_tokens,
                                        tps, ttft_ms, remote, monitor_seq, monitor_attempts,
-                                       cache_tier, cache_keepalive)
+                                       cache_tier, cache_keepalive, mode)
                  SELECT ?2, 'idle', model, model_name, cwd, ?3, ?3, context_limit,
                         thinking_effort, context_tokens, context_generation, cached_tokens,
                         tps, ttft_ms, remote, monitor_seq, monitor_attempts, cache_tier,
-                        cache_keepalive
+                        cache_keepalive, mode
                    FROM sessions WHERE name = ?1",
                 params![source, name, now],
             )
@@ -842,7 +847,7 @@ impl Store {
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
                     s.context_limit, s.thinking_effort,
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote,
-                    s.cache_tier, s.cache_keepalive, s.ended_at
+                    s.cache_tier, s.cache_keepalive, s.ended_at, s.mode
              FROM sessions s";
 
     /// Every session in `error`, with what a monitor turn still owes it.
@@ -977,6 +982,7 @@ impl Store {
             cache_tier: r.get(15)?,
             cache_keepalive: r.get::<_, i64>(16)? != 0,
             ended_at: r.get(17)?,
+            mode: crate::explore::Mode::of(r.get::<_, Option<String>>(18)?.as_deref()),
         })
     }
 
@@ -1028,6 +1034,15 @@ impl Store {
                     updated_at = ?3
               WHERE id = ?4",
             params![tier, i64::from(keepalive), now_millis(), id],
+        )?;
+        Ok(())
+    }
+
+    /// What this session is for, in `explore`'s spelling, as a named command set it.
+    pub fn set_session_mode(&self, id: i64, mode: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET mode = ?1, updated_at = ?2 WHERE id = ?3",
+            params![mode, now_millis(), id],
         )?;
         Ok(())
     }
@@ -2827,6 +2842,8 @@ pub struct SessionRow {
     pub cache_tier: Option<String>,
     /// Whether a periodic time notice keeps this session's prefix warm.
     pub cache_keepalive: bool,
+    /// What this session is for: a read, or the work it may change.
+    pub mode: crate::explore::Mode,
 }
 
 /// What a clone wrote: the new session, its rows, and where it ends.

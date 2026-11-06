@@ -1080,6 +1080,11 @@ impl Tool for WriteFileTool {
         crate::tools::tunnel::Carried::Worker
     }
 
+    /// The arguments are the write, so there is nothing to weigh.
+    fn writes(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &'static str {
         "write_file"
     }
@@ -1176,6 +1181,11 @@ impl Tool for ReplaceTool {
     /// One file, read or written, is a one-shot a worker can own.
     fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
         crate::tools::tunnel::Carried::Worker
+    }
+
+    /// The arguments are the write, so there is nothing to weigh.
+    fn writes(&self) -> bool {
+        true
     }
 
     fn name(&self) -> &'static str {

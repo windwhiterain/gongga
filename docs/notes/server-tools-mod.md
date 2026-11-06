@@ -48,6 +48,16 @@ a note, so no description defers to prose that is not itself a tool.
 Deliberately not part of a shell: a detached job outlives its shell, its
 session and the server.
 
+## ToolContext::explore
+
+`Some` is explore mode and carries the session's workspace snapshot; `None` is work
+mode. One field rather than two because there is no state in which they disagree: a
+session that explores has a chain to compare against, and a session that does not has
+nothing to compare.
+
+It is read per call, not captured when the turn started, so `set_session --mode` reaches
+the very next call. See `docs/notes/server-explore.md`.
+
 ## ToolContext::store
 
 Where a command that outlived its deadline reports back to the session when it

@@ -25,6 +25,17 @@ pub struct Request {
     pub env: Vec<(String, String)>,
     /// Where the answer goes: the server reads it, now or after a restart.
     pub answer: std::path::PathBuf,
+    /// Whether the session this call belongs to is for a read.
+    ///
+    /// # Invariant
+    ///
+    /// Carried in the file because a worker keeps no state of the server that wrote it:
+    /// a mode the request does not spell is a way around a refusal the caller's own
+    /// process makes. The look a call ends with is not taken here -- the server that
+    /// collects the answer takes it, on the session it knows. See
+    /// `docs/notes/server-explore.md`.
+    #[serde(default)]
+    pub explore: bool,
 }
 
 /// What a worker leaves behind for the server to collect.
@@ -147,6 +158,11 @@ async fn call(request: &Request) -> Answer {
         holds_the_turn: false,
         stop: crate::session::StopSignal::idle(),
         closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        // Its own, so a write-shaped tool is refused here too.
+        explore: request.explore.then(|| {
+            crate::explore::watch_of(crate::explore::Mode::Explore)
+                .unwrap_or_else(|| std::sync::Arc::new(crate::explore::Watch::default()))
+        }),
     };
     let outcome = tools.run(&request.tool, request.args.clone(), &ctx).await;
     Answer {

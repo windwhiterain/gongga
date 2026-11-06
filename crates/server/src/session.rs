@@ -496,6 +496,16 @@ struct SessionInner {
     turns: AtomicU64,
     /// The tuning this session was given, behind a lock because it is read as a pair.
     tuning: Mutex<Tuning>,
+    /// The workspace look this session takes after each program call, when what it
+    /// is for is a read. `None` is work mode.
+    ///
+    /// # Invariant
+    ///
+    /// Behind a lock because `set_session --mode` may land while a turn runs, and one
+    /// value for both facts -- the mode in force is `is_some`. Every tool call reads
+    /// it again, so the mode a call runs under is the one in force when it was made.
+    /// See `docs/notes/server-explore.md`.
+    explore: Mutex<Option<Arc<crate::explore::Watch>>>,
     /// Set once the rows are gone, so a queued turn gives up instead of writing.
     deleted: AtomicBool,
     /// Set by a shutdown's `cancel`: the turn stops but its pending row stays.
@@ -723,6 +733,39 @@ impl SessionHandle {
     /// copy turns read.
     pub fn set_tuning(&self, tuning: Tuning) {
         *self.inner.tuning.lock().unwrap_or_else(|e| e.into_inner()) = tuning;
+    }
+
+    /// What this session is for. Read at the start of every tool call.
+    pub fn mode(&self) -> crate::explore::Mode {
+        if self.explore().is_some() {
+            crate::explore::Mode::Explore
+        } else {
+            crate::explore::Mode::Work
+        }
+    }
+
+    /// The look a program call of this session takes when it ends, if it takes one.
+    pub fn explore(&self) -> Option<Arc<crate::explore::Watch>> {
+        self.inner
+            .explore
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Replaces the mode. The caller has already written it down; this is the copy
+    /// tool calls read.
+    ///
+    /// # Invariant
+    ///
+    /// The look survives a mode that stays a read, so a change of some other setting
+    /// does not throw away what the next call is compared against.
+    pub fn set_mode(&self, mode: crate::explore::Mode) {
+        let mut held = self.inner.explore.lock().unwrap_or_else(|e| e.into_inner());
+        *held = match mode {
+            crate::explore::Mode::Explore => held.take().or_else(|| crate::explore::watch_of(mode)),
+            crate::explore::Mode::Work => None,
+        };
     }
 
     /// Records that a message landed which no running turn can read yet.
@@ -1510,6 +1553,8 @@ impl SessionManager {
                 remote: recorded.clone(),
                 cache_tier: None,
                 cache_keepalive: false,
+                // Born working; `set_session` moves it in the same command.
+                mode: crate::explore::Mode::Work,
             },
             &mut live,
         )
@@ -1781,6 +1826,7 @@ impl SessionManager {
                     cache_tier: row.cache_tier,
                     cache_keepalive: row.cache_keepalive,
                 }),
+                explore: Mutex::new(crate::explore::watch_of(row.mode)),
                 deleted: AtomicBool::new(false),
                 resumable: Arc::new(AtomicBool::new(false)),
                 stopping: Arc::new(AtomicBool::new(false)),

@@ -81,6 +81,7 @@ you are about to touch.
 | [`server-config.md`](server-config.md) | `crates/server/src/config.rs` |
 | [`server-diff.md`](server-diff.md) | `crates/server/src/diff.rs` |
 | [`server-disk.md`](server-disk.md) | `crates/server/src/disk.rs` |
+| [`server-explore.md`](server-explore.md) | `crates/server/src/explore.rs` |
 | [`server-instance.md`](server-instance.md) | `crates/server/src/instance.rs` |
 | [`server-llm.md`](server-llm.md) | `crates/server/src/llm.rs` |
 | [`server-meta.md`](server-meta.md) | `crates/server/src/meta.rs` |

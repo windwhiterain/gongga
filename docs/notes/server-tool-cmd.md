@@ -45,6 +45,11 @@ There is deliberately no streaming on the command path: `events` is `None` and
 the whole outcome is the answer. A turn owns a stream; a command owns an
 answer.
 
+Explore mode rides this context as `explore`, from the session's own `SessionInner`, so
+a command layer's `write_file` is refused on the same terms as a model's, and the look
+that follows a foreground call is taken inside `ToolRegistry::run` -- once for every
+caller -- rather than here: see `docs/notes/server-explore.md`.
+
 ## The tool list and the greeting
 
 The catalog publishes every tool, including `remote_bash`, which only a session

@@ -14,6 +14,7 @@ mod commands;
 mod config;
 mod diff;
 mod disk;
+mod explore;
 mod fork;
 mod image;
 mod instance;

@@ -1395,6 +1395,7 @@ impl Agent {
             holds_the_turn: true,
             stop: session.stop_signal(),
             closing: session.closing_signal(),
+            explore: session.explore(),
         };
         let run_started = std::time::Instant::now();
         tracing::info!(session = %name, tool = %tool, "tool start");

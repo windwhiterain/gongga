@@ -310,6 +310,7 @@ pub async fn detach_to_worker(
         cwd: ctx.cwd.clone(),
         env: ctx.env.clone(),
         answer: answer_path.clone(),
+        explore: ctx.explore.is_some(),
     };
     let written = std::fs::create_dir_all(&ctx.output_dir)
         .map_err(|e| e.to_string())
@@ -470,6 +471,8 @@ pub(crate) async fn report(
     };
     let notice =
         speaking.then(|| json!({"session": ctx.session, "message": message, "notice": kind}));
+    // A job that ran asynchronously ended here, so `detached` writes are seen too.
+    crate::explore::after_job(ctx, name);
     let collected = mode == Mode::Detached && notice.is_some();
     if let Err(e) = ctx
         .store
@@ -642,5 +645,7 @@ fn adopted(
         holds_the_turn: false,
         stop: crate::session::StopSignal::idle(),
         closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        // The row a stopped run left is an answer that exists: nothing to look at.
+        explore: None,
     }
 }
