@@ -745,6 +745,21 @@ pub async fn interactive(args: &link::Args) -> anyhow::Result<()> {
                 }
                 settle(&client, &mut state, &mut pending, &mut ui);
                 sync(&mut client, &state, &window, &mut ui);
+                // A hole: only a greeting carries the whole list, so dial again.
+                // See `docs/notes/tui-run.md`.
+                if client.take_hole() && link.is_some() {
+                    link = None;
+                    ui.set_server(None);
+                    backoff = RECONNECT_MIN;
+                    attempts = 0;
+                    next_try = tokio::time::Instant::now();
+                    let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
+                    TuiSink(&mut ui).say(
+                        LineKind::System,
+                        "the stream skipped events — reconnecting to read the list again",
+                    );
+                    give_back(&mut ui, unanswered);
+                }
             }
             Step::Wire(None) => {
                 link = None;
