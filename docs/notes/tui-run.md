@@ -122,6 +122,16 @@ A restart therefore looks like two lines in the log -- `connection lost`, then
 `connected` -- with the input line, the history and the scroll position exactly
 where they were.
 
+# Invariant
+
+The window renders its own state, and a greeting only corrects it: the session
+list is seeded from `roster/<endpoint>.toml` (`docs/notes/tui-roster.md`) before
+the first dial, so a start with no server still draws the windows this client last
+read. What a greeting cannot reach is the journal, which is why the rows come back
+with no link at all, and what it does reach is the list: `set_sessions` drops the
+seed, so a session deleted while this window was away stops being drawn at the
+moment the server says so rather than staying behind as a local ghost.
+
 A cold start is not a fault and is not reported as one. While a server this
 window spawned is coming up, the first failed dials are that and nothing else --
 a fresh home has no connection key until the server writes it -- so the outage

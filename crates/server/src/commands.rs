@@ -432,6 +432,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("true|false"),
                     CompletionSource::Static(vec!["true".into(), "false".into()]),
                 ),
+                kind_arg(
+                    "mode",
+                    "What this session may do to the workspace. `work` (the default)                      writes as it likes; `explore` refuses `write_file` and `replace`                      outright and tells the session which paths a `bash`, `exec`,                      `python` or `skill` call changed when it ended. Not a jail: a                      program that writes is told, not stopped, so read the changed                      paths and put them back before answering.",
+                    false,
+                    "mode",
+                    Some("work|explore"),
+                    CompletionSource::Static(vec!["work".into(), "explore".into()]),
+                ),
                 // SPEC: `[--remote <remote>](initial: none)`.
                 kind_arg(
                     "remote",
@@ -1039,9 +1047,10 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
         // The gate is claimed before the durable write, so a second sender can only
         // inject, never spawn a competing turn.
         match d.store.begin_turn(session.id(), name, &message) {
-            Ok((task, seq)) => {
-                // A row like any other: windows draw it from their own echo.
-                d.agent.announce_row(name, Ok(seq));
+            Ok((task, rows)) => {
+                // Both rows are published before their position: the operator's line
+                // and the plan notice behind it, if one landed.
+                d.agent.announce_operator_rows(name, rows);
                 spawn_turn(
                     d,
                     TurnWork {
@@ -1166,6 +1175,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         Some(raw) => match parse_bool(raw) {
             Ok(value) => Some(value),
             Err(e) => return Outcome::err(format!("--cache_keepalive: {e}")),
+        },
+    };
+    // What this session may do to the workspace. Absent keeps what it had.
+    let mode = match args.get("mode").map(String::as_str) {
+        None => None,
+        Some(raw) => match crate::explore::Mode::parse(raw) {
+            Ok(mode) => Some(mode),
+            Err(e) => return Outcome::err(format!("--mode: {e}")),
         },
     };
     // A percentage needs a window; silently keeping the old budget would lie.
@@ -1334,6 +1351,34 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
         session.set_tuning(tuning.clone());
     }
+    // A mode that changed says so: the agent hears it at the next step boundary.
+    if let Some(mode) = mode.filter(|mode| *mode != session.mode()) {
+        // Plan finish (explore -> work) opens the starting checkpoint; a failed
+        // open refuses the mode change.
+        if mode == crate::explore::Mode::Work
+            && session.mode() == crate::explore::Mode::Explore
+            && d.store.live_compact_is_enabled()
+            && let Err(e) = d.store.start_live_compact(session.id())
+        {
+            return Outcome::err(format!("could not open the live compact checkpoint: {e:#}"));
+        }
+        if let Err(e) = d.store.set_session_mode(session.id(), mode.as_str()) {
+            return Outcome::err(format!("could not save the session's mode: {e}"));
+        }
+        session.set_mode(mode);
+        crate::explore::prime(session.explore(), session.cwd());
+        if let Err(e) = d.store.add_pending_task(
+            &name,
+            "inject",
+            &json!({
+                "session": name,
+                "message": crate::explore::mode_notice(mode),
+                "notice": "explore",
+            }),
+        ) {
+            tracing::warn!(session = %name, error = %e, "could not say the session's mode");
+        }
+    }
     publish_sessions(d);
 
     let cwd = session.cwd();
@@ -1389,6 +1434,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "model": tuning.model,
             "context_limit": tuning.context_limit,
             "thinking_effort": tuning.thinking_effort,
+            "mode": session.mode().as_str(),
         }),
     )
 }
@@ -2217,22 +2263,29 @@ fn recovery_groups(
 ///
 /// # Invariant
 ///
-/// A notice about a background job is news for a working session; on its own it
-/// must not cost an idle session a turn. See `docs/notes/server-commands.md`.
-fn is_notice(task: &PendingTask) -> bool {
-    task.payload.get("notice").is_some()
-}
-
 /// The rows a session owes a *turn* for.
 ///
 /// # Invariant
 ///
-/// An operator message or a turn begun; a notice alone waits for the next step
-/// boundary.
+/// News this session is owed -- a message, or a notice about work that ended -- owes a
+/// turn, so an idle session is woken for it. That is what a `wait` survives a stop by:
+/// SPEC leaves the news it was waiting for to the next start, and the next start has to
+/// deliver it to a session that is doing nothing. Only a reminder for the turn already
+/// running owes nothing.
 fn owes_a_turn(tasks: &[PendingTask]) -> bool {
-    tasks
-        .iter()
-        .any(|task| task.kind == "turn" || (task.kind == "inject" && !is_notice(task)))
+    tasks.iter().any(|task| {
+        task.kind == "turn" || (task.kind == "inject" && !is_running_turns_reminder(task))
+    })
+}
+
+/// A notice the turn that is running reads at its next step, and nobody else.
+///
+/// # Invariant
+///
+/// `explore` is about the turn's own conduct, not about work that ended: an idle
+/// session woken for it would be woken to read advice about a turn it is not in.
+fn is_running_turns_reminder(task: &PendingTask) -> bool {
+    task.payload.get("notice").and_then(|kind| kind.as_str()) == Some("explore")
 }
 
 /// Wakes each session with stranded work at most once.
@@ -2348,17 +2401,26 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
             continue;
         };
-        // A notice about work the last run took names nothing readable: stale.
-        // `announce_owed` says what that run still owed.
+        // A `job` row speaks through `announce_owed`; a shell's buffer is gone.
         let mut kept = Vec::with_capacity(tasks.len());
         let mut dropped = 0;
+        let mut lost: Vec<String> = Vec::new();
         for task in tasks {
-            if matches!(task.payload["notice"].as_str(), Some("background" | "job")) {
-                let _ = d.store.delete_pending_task(task.id);
-                dropped += 1;
-                continue;
+            match task.payload["notice"].as_str() {
+                Some("background") => {
+                    let said = task.payload["message"].as_str().unwrap_or("").trim();
+                    if !said.is_empty() {
+                        lost.push(said.to_string());
+                    }
+                }
+                Some("job") => {}
+                _ => {
+                    kept.push(task);
+                    continue;
+                }
             }
-            kept.push(task);
+            let _ = d.store.delete_pending_task(task.id);
+            dropped += 1;
         }
         if dropped > 0 {
             tracing::info!(
@@ -2367,13 +2429,18 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             );
         }
         // Said as a message, not a notice: this one has to wake the session.
-        if dropped > 0 {
-            let message = format!(
-                "{dropped} piece(s) of work you were told would report did not outlive the \
-                 server that was running them: they were jobs of that run, so what they \
-                 printed went with it. Nothing of theirs is left to read -- run them again \
-                 if it mattered."
+        if !lost.is_empty() {
+            let mut message = String::from(
+                "Work you were told would report did not outlive the server that was running \
+                 it, so what it printed went with that process and there is nothing left to \
+                 read. These are the notices you can no longer act on:\n\n",
             );
+            for said in &lost {
+                message.push_str("-- ");
+                message.push_str(said);
+                message.push_str("\n\n");
+            }
+            message.push_str("Run them again if it mattered.");
             let payload = json!({"session": name, "message": message});
             match d.store.add_pending_task(&name, "inject", &payload) {
                 // In `kept`: what owes a turn has to be a task this pass knows about.

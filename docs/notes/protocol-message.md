@@ -110,10 +110,11 @@ one, and a list ordered by it would move a session because its model was chosen.
 The SPEC models a response as `{session, reasoning, toolcall, output}`; the
 session name identifies the turn and the other three are interleaved deltas.
 
-`Input` is the operator's own words, replayed. It is never live — a message this
-client sent was drawn from its own echo — and it exists because a transcript read
-back has to put that message in the window exactly as the echo that wrote it did.
-Without it a refill would show the answer to a question nobody can see.
+`Input` is the operator's own words: published when the row is written, and replayed
+by a transcript read in exactly that shape. There is no local echo to lean on —
+the window that sent nothing, a second window, and a session `send_message` reached
+from a shell all draw the line from this event — so a row published after its own
+`Event::Transcript` is a row nobody draws. See `docs/notes/server-agent.md`.
 
 `Activity` is a fourth: a tool the *provider* ran on its own side -- a web
 search, a web fetch, an image generation -- plus the sources it cited. It is not

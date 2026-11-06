@@ -55,6 +55,7 @@ pub async fn run(
         holds_the_turn: true,
         stop: handle.stop_signal(),
         closing: handle.closing_signal(),
+        explore: handle.explore(),
     };
     let outcome = agent.tools.run(tool, args, &ctx).await;
     match outcome.ok {

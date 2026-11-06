@@ -460,6 +460,33 @@ cmd_stage() {
     esac
   done
 
+  # Content is refreshed before any claim: a successor installs what the local
+  # official ref names, so a stale ref can make an otherwise valid bundle unstartable.
+  echo "== ship =="
+  ( cd "$ROOT" && git -C ship fetch origin main && git -C ship rebase origin/main \
+      && scripts/ship.sh --check ) \
+    || die "the ship checkout is not current and published; refusing to stage a handover"
+  # The successor reads the home's fork, not the source checkout checked above.
+  local home_ship="$HOME_DIR/ship"
+  if [ -d "$home_ship/.git" ]; then
+    git -C "$home_ship" fetch origin main \
+      || die "cannot refresh $home_ship; refusing to stage a handover"
+    local home_tip=main
+    if git -C "$home_ship" show-ref --verify --quiet refs/heads/local; then
+      git -C "$home_ship" rebase origin/main local \
+        || die "cannot rebase $home_ship/local; refusing to stage a handover"
+      home_tip=local
+    elif [ "$(git -C "$home_ship" symbolic-ref --short -q HEAD || true)" = main ]; then
+      git -C "$home_ship" merge --ff-only origin/main \
+        || die "cannot fast-forward $home_ship/main; refusing to stage a handover"
+    else
+      git -C "$home_ship" branch -f main origin/main \
+        || die "cannot update $home_ship/main; refusing to stage a handover"
+    fi
+    git -C "$home_ship" merge-base --is-ancestor origin/main "$home_tip" \
+      || die "$home_ship/$home_tip does not contain official main; refusing to stage"
+  fi
+
   # Taken before the build: two agents waiting for a compile that only one of them
   # may finish is the cost this avoids, and the claim is what tells the second one
   # to stop rather than to supersede.
@@ -503,9 +530,9 @@ cmd_stage() {
   # which is what keeps a running .exe from blocking the build (see SKILL.md).
   ( cd "$ROOT" && cargo build -p gongga-bundle ) || die "building the bundle failed"
   # The head is `gongga` (see crates/bundle/Cargo.toml), not the package name.
-  local head="$ROOT/target/debug/gongga"
+  local head="${CARGO_TARGET_DIR:-$ROOT/target}/debug/gongga"
   [ -f "$head" ] || head="$head.exe"
-  [ -f "$head" ] || die "no bundle head at $ROOT/target/debug/gongga"
+  [ -f "$head" ] || die "no bundle head at $head"
 
   local exe old_pid launcher
   exe="$RUN/evolve-$stamp-gongga.exe"

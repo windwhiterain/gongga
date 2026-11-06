@@ -198,7 +198,8 @@ async fn answer_transcripts(client: &mut link::Client, link: Option<&link::Link>
         let Some(message) = client.ask_transcript(&name, ui.room_of(&name)) else {
             continue;
         };
-        if open.send(message).await.is_err() {
+        if open.send(message.clone()).await.is_err() {
+            client.never_sent(&message);
             break;
         }
     }
@@ -230,7 +231,8 @@ async fn answer_older(
         // One page, shaped by the pane. A fill already on its way answers it too.
         match client.ask_older(&name, ui.room_of(&name)) {
             Some(message) => {
-                if open.send(message).await.is_err() {
+                if open.send(message.clone()).await.is_err() {
+                    client.never_sent(&message);
                     break;
                 }
             }
@@ -581,6 +583,10 @@ pub async fn interactive(args: &link::Args) -> anyhow::Result<()> {
     let mut client = link::build_client(args);
     let window = command::Window::new(client.completer());
     let mut ui = Tui::new(window.shared(), &client_home, &endpoint)?;
+    // What this window drew last: a greeting may never come.
+    // See `docs/notes/tui-roster.md`.
+    let known = ui.known_list();
+    client.seed_listed(known);
     // Nothing has been sent yet: a fresh client owes nobody a line.
     let _ = client.set_offline(0, &mut TuiSink(&mut ui));
     sync(&mut client, &state, &window, &mut ui);

@@ -28,6 +28,7 @@ pub mod exec_remote;
 pub mod interpreter;
 #[cfg(windows)]
 pub mod job;
+pub mod live_compact;
 pub mod python;
 pub mod python_remote;
 pub mod skill;
@@ -103,6 +104,14 @@ pub struct ToolContext {
     pub stop: crate::session::StopSignal,
     /// Set when shells end because the server is going: nothing that stops then finished.
     pub closing: Arc<std::sync::atomic::AtomicBool>,
+    /// The look this session takes after a program call, when it reads. `None` is work.
+    ///
+    /// # Invariant
+    ///
+    /// One field for both facts, because they are one fact: a session that may not
+    /// change its workspace is a session that looks, and `is_some` is the whole test
+    /// a tool is refused or a look is taken by. See `docs/notes/server-explore.md`.
+    pub explore: Option<std::sync::Arc<crate::explore::Watch>>,
 }
 
 impl ToolContext {
@@ -309,6 +318,19 @@ pub trait Tool: Send + Sync {
         tunnel::Carried::Here
     }
 
+    /// Whether calling this tool is itself a change to the workspace.
+    ///
+    /// # Invariant
+    ///
+    /// Said by the tool that knows, not inferred from its name: a session that is for
+    /// a read refuses exactly the tools whose arguments *are* the write, since no
+    /// earlier or later look could catch what has not happened yet. A tool that
+    /// changes the workspace some other way -- through a program -- is caught by the
+    /// look its call takes when it ends. See `docs/notes/server-explore.md`.
+    fn writes(&self) -> bool {
+        false
+    }
+
     /// Whether `background` is this tool's own work rather than the tunnel's.
     ///
     /// # Invariant
@@ -435,6 +457,14 @@ impl ToolRegistry {
         }
     }
 
+    /// Makes compaction callable without offering its schema in ordinary requests.
+    pub fn with_live_compact(mut self, enabled: bool) -> Self {
+        if enabled {
+            self.tools.push(Arc::new(live_compact::LiveCompactTool));
+        }
+        self
+    }
+
     /// Adds the Python tools; `lib` is where `gongga_skill.py` sits.
     pub fn with_python(
         mut self,
@@ -519,23 +549,32 @@ impl ToolRegistry {
     pub fn definitions(&self, has_remote: bool) -> Vec<crate::llm::ToolDefinition> {
         self.tools
             .iter()
+            .filter(|t| t.name() != live_compact::LIVE_COMPACT_TOOL)
             .filter(|t| has_remote || !t.is_remote())
-            .map(|t| {
-                let mut parameters = general_parameters(t.as_ref());
-                if !has_remote
-                    && let Some(properties) = parameters
-                        .get_mut("properties")
-                        .and_then(Value::as_object_mut)
-                {
-                    properties.remove("remote");
-                }
-                crate::llm::ToolDefinition {
-                    name: t.name().to_string(),
-                    description: text::shared().description(t.name()).unwrap_or_default(),
-                    parameters,
-                }
-            })
+            .map(|t| Self::definition_of(t, has_remote))
             .collect()
+    }
+
+    /// One explicitly requested schema, outside the ordinary tool list.
+    pub fn definition(&self, name: &str, has_remote: bool) -> Option<crate::llm::ToolDefinition> {
+        self.get(name)
+            .map(|tool| Self::definition_of(&tool, has_remote))
+    }
+
+    fn definition_of(tool: &Arc<dyn Tool>, has_remote: bool) -> crate::llm::ToolDefinition {
+        let mut parameters = general_parameters(tool.as_ref());
+        if !has_remote
+            && let Some(properties) = parameters
+                .get_mut("properties")
+                .and_then(Value::as_object_mut)
+        {
+            properties.remove("remote");
+        }
+        crate::llm::ToolDefinition {
+            name: tool.name().to_string(),
+            description: text::shared().description(tool.name()).unwrap_or_default(),
+            parameters,
+        }
     }
 
     /// Runs one tool, and reads a failure as what it may be: a full disk.
@@ -559,6 +598,11 @@ impl ToolRegistry {
                 self.names().join(", ")
             ));
         };
+        // Before the arguments are read: a refused call must not reach the tool at all,
+        // so nothing is spawned for it.
+        if tool.writes() && ctx.explore.is_some() {
+            return ToolOutcome::err(crate::explore::refusal(name));
+        }
         if let Some(message) = argument_error(tool.as_ref(), &args) {
             return ToolOutcome::err(message);
         }
@@ -601,7 +645,10 @@ impl ToolRegistry {
                 }
             }
         }
-        invoke(name, tool, args, ctx).await
+        let outcome = invoke(name, tool, args, ctx).await;
+        // The call ended; the look is a task of its own, so nothing waits on it.
+        crate::explore::after_job(ctx, name);
+        outcome
     }
 
     pub fn names(&self) -> Vec<&'static str> {

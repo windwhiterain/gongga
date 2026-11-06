@@ -170,6 +170,16 @@ with the whole home instead of with the answer.
 
 ## Store::set_session_tuning
 
+## Store::set_session_mode
+
+Its own statement, unlike the tuning, because the mode is not one of the model's
+settings: it says what the session may do to the workspace, it is read per call rather
+than per turn, and a session whose model is re-resolved must not have its mode rewritten
+as a side effect.
+
+A `NULL` column is `work` -- the mode of every session the column was added behind --
+so an upgrade takes no rewrite and the read is one fallback.
+
 Both columns at once: they are one decision ("how should this session behave"),
 and `set_session` is the only thing that writes them, so a half-applied tuning is
 not a state anything else has to handle.
@@ -273,15 +283,19 @@ provider sees, and make the model answer questions nobody asked. That is decided
 where the row is written (`wire_item`), not here, so the walk has no drop rules
 of its own.
 
-## begin_turn and deliver_pending — the seq they answer
+## begin_turn and deliver_pending — the rows they answer
 
 Both write the operator's own message as a `text` row with `role: user`, and both
-answer where that row landed. The caller announces it: a row whose position nobody
-told is a row a client cannot account for, and the window would be measured as
-behind from that moment on.
+answer its text beside where the transcript now ends (`OperatorRows`). The caller
+publishes the text and only then announces the position: a window reads the
+announcement as "I have drawn that row", so a row written and announced without
+being sent is a line no window ever draws.
 
-`deliver_pending` answers the *last* seq it wrote, which is enough for a watermark:
-"every row up to here" is not a claim about any one of them.
+A row written behind the operator's message -- the live-compaction plan notice --
+travels in the same answer, because it is the same kind of row: `role: user`, drawn
+by `row_event` as an input line. The seq is the last one written, which is what a
+watermark needs: "every row up to here" is not a claim about any one of them.
+
 
 ## Store::truncate_after
 

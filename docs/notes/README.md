@@ -81,6 +81,7 @@ you are about to touch.
 | [`server-config.md`](server-config.md) | `crates/server/src/config.rs` |
 | [`server-diff.md`](server-diff.md) | `crates/server/src/diff.rs` |
 | [`server-disk.md`](server-disk.md) | `crates/server/src/disk.rs` |
+| [`server-explore.md`](server-explore.md) | `crates/server/src/explore.rs` |
 | [`server-instance.md`](server-instance.md) | `crates/server/src/instance.rs` |
 | [`server-llm.md`](server-llm.md) | `crates/server/src/llm.rs` |
 | [`server-meta.md`](server-meta.md) | `crates/server/src/meta.rs` |
@@ -146,6 +147,7 @@ surface, two front-ends.
 | [`tui-notice.md`](tui-notice.md) | `crates/tui/src/notice.rs` |
 | [`tui-panes.md`](tui-panes.md) | `crates/tui/src/panes.rs` |
 | [`tui-render.md`](tui-render.md) | `crates/tui/src/render.rs` |
+| [`tui-roster.md`](tui-roster.md) | `crates/tui/src/roster.rs` |
 | [`tui-table.md`](tui-table.md) | `crates/tui/src/table.rs` |
 | [`tui-tree.md`](tui-tree.md) | `crates/tui/src/tree.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |

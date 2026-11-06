@@ -380,8 +380,9 @@ impl Panes {
     ///
     /// # Invariant
     ///
-    /// The order is the announcement's on both lists, and the command line is
-    /// always last of the panes: it is drawn under everything else.
+    /// Each list keeps the order it came with -- the rows the announcement's, the
+    /// panes the split's -- and the command line is always last of the panes: it is
+    /// drawn under everything else.
     pub fn layout(&mut self, layout: &Layout) {
         self.listed = layout.listed.clone();
         // A session that is shown again is seen again: the mark it left goes back

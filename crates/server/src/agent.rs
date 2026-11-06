@@ -66,6 +66,12 @@ pub struct Agent {
     pub context_limit_percent: u8,
     /// The home this call belongs to: what a worker needs to be started.
     pub home: PathBuf,
+    /// Whether the agent is asked to write checkpoint summaries; the switch, not the
+    /// threshold, is the opt-in.
+    pub live_compact_enabled: bool,
+    /// Input-token growth between agent-written checkpoints; the threshold the
+    /// enabled feature measures against.
+    pub live_compact_interval_tokens: u64,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
     /// Detached jobs of every session, reached through `ToolContext`.
@@ -241,6 +247,7 @@ impl Agent {
             }
             // Ask before the request is built, so this is the step that hears it.
             self.maybe_notify_context(session, id, &name, budget);
+            self.maybe_request_live_compact(id, &name);
             let cwd = session.cwd();
             tracing::info!(
                 session = %name,
@@ -383,9 +390,9 @@ impl Agent {
         match self.store.deliver_pending(id, name) {
             // `waited` is the "no answer yet" number: a message written mid-step lands
             // only here.
-            Ok((delivered, waited_ms, last)) => {
+            Ok((delivered, waited_ms, written)) => {
                 if delivered > 0 {
-                    self.announce_row(name, Ok(last));
+                    self.announce_operator_rows(name, written);
                     tracing::info!(
                         session = %name,
                         delivered,
@@ -454,6 +461,46 @@ impl Agent {
                 "{name}: context at {tokens} of {budget} tokens; asked the agent to fold"
             ),
         });
+    }
+
+    /// Queues one durable agent-written checkpoint request for this token interval.
+    fn maybe_request_live_compact(&self, id: i64, name: &str) {
+        if !self.live_compact_enabled {
+            return;
+        }
+        let interval = self.live_compact_interval_tokens;
+        let Ok(measurement) = self.store.live_compact_measurement(id) else {
+            return;
+        };
+        if measurement.requested {
+            return;
+        }
+        let Some(baseline) = measurement.baseline_tokens else {
+            return;
+        };
+        if measurement.tokens.saturating_sub(baseline) < interval {
+            return;
+        }
+        let message = live_compact_notice();
+        match self
+            .store
+            .request_live_compact(id, name, measurement.generation, &message)
+        {
+            Ok(true) => {
+                self.log_event(
+                    Some(id),
+                    "live_compact_notice",
+                    &json!({
+                        "tokens": measurement.tokens,
+                        "baseline": baseline,
+                        "interval": interval,
+                        "generation": measurement.generation,
+                    }),
+                );
+            }
+            Ok(false) => {}
+            Err(e) => self.error(id, name, "queueing the live compact request", e),
+        }
     }
 
     /// The prose this session sends: stamped once, and the same bytes for ever.
@@ -797,7 +844,20 @@ impl Agent {
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
-        let definitions = self.tools.definitions(session.on_remote());
+        let mut definitions = self.tools.definitions(session.on_remote());
+        // A durable request alone makes the compaction schema visible to the model.
+        if self.live_compact_enabled
+            && self
+                .store
+                .live_compact_measurement(id)
+                .is_ok_and(|measurement| measurement.requested)
+            && let Some(definition) = self.tools.definition(
+                crate::tools::live_compact::LIVE_COMPACT_TOOL,
+                session.on_remote(),
+            )
+        {
+            definitions.push(definition);
+        }
         let reader = session.reader();
         let source = match (&reader, session.owner()) {
             (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
@@ -1119,6 +1179,14 @@ impl Agent {
                     let _ = self
                         .store
                         .set_usage_for_generation(id, generation, measured);
+                    if let Some(input_tokens) = usage.as_ref().and_then(|u| u.input_tokens) {
+                        if let Err(e) =
+                            self.store
+                                .set_live_compact_baseline(id, generation, input_tokens)
+                        {
+                            tracing::warn!(session = %name, error = %e, "could not set live compact baseline");
+                        }
+                    }
                     // SPEC: the row updates at every step's end. Off the turn's
                     // path, because reading an allowance is a network call.
                     crate::quota::publish(
@@ -1327,6 +1395,7 @@ impl Agent {
             holds_the_turn: true,
             stop: session.stop_signal(),
             closing: session.closing_signal(),
+            explore: session.explore(),
         };
         let run_started = std::time::Instant::now();
         tracing::info!(session = %name, tool = %tool, "tool start");
@@ -1373,24 +1442,78 @@ impl Agent {
             })
             .unwrap_or_else(|| outcome.output.clone());
         // A tool that streamed nothing owes its output to the final chunk.
-        let tail = match sent.load(Ordering::Relaxed) {
+        let compacting = tool == crate::tools::live_compact::LIVE_COMPACT_TOOL;
+        let mut tail = match sent.load(Ordering::Relaxed) {
+            0 if compacting => outcome.output.clone(),
             0 => capped.clone(),
             _ => String::new(),
         };
-        // The model is shown no head and no label, so the time ends the text it reads.
-        let output = with_time(capped, run_ms);
+        // A checkpoint artifact is exactly the agent's summary, not a timing annotation.
+        let mut output = if compacting {
+            outcome.output.clone()
+        } else {
+            // The model is shown no head and no label, so the time ends the text it reads.
+            with_time(capped, run_ms)
+        };
         drop(ctx);
         // A shell on an endpoint starts in a directory only that endpoint knows.
         session.adopt_reported_cwd();
         let _ = forwarder.await;
+        let mut status = if outcome.ok { "ok" } else { "error" };
+        // A command that printed `@image: <path>` names a picture: it becomes an
+        // attachment, uploaded once per file.
+        let images: Vec<_> = scanned
+            .iter()
+            .map(crate::image::ImageRef::to_json)
+            .collect();
+        let mut content = json!({"call_id": call_id, "output": output, "images": images,
+                    "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
+        let mut checkpointed = false;
+        let mut checkpoint_error = None;
+        if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && outcome.ok {
+            match self
+                .store
+                .append_live_compact_result(id, &call_id, &content)
+            {
+                Ok(committed) => {
+                    checkpointed = true;
+                    self.announce_row(name, Ok(committed.result_seq));
+                    self.log_event(
+                        Some(id),
+                        "live_compact",
+                        &json!({
+                            "checkpoint": committed.checkpoint_id,
+                            "result_seq": committed.result_seq,
+                            "generation": committed.generation,
+                        }),
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
+                    checkpoint_error = Some(format!("{e:#}"));
+                }
+            }
+        }
+        if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
+            status = "error";
+            let reason = checkpoint_error.unwrap_or_else(|| output.clone());
+            output = format!("ERROR: live_compact checkpoint was not committed: {reason}");
+            content["output"] = json!(output.clone());
+            content["ok"] = json!(false);
+            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            let _ = self.store.reset_live_compact_request(id);
+            tail = output.clone();
+        } else if !checkpointed {
+            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+        }
+        let tool_ok = status == "ok";
         tracing::info!(
             session = %name,
             tool = %tool,
-            ok = outcome.ok,
+            ok = tool_ok,
             elapsed = ?started.elapsed(),
             "tool end"
         );
-
         // The one chunk that ends the call, and the only one that knows how it went.
         self.bus.publish(Event::ToolAnswer(ToolAnswerEvent {
             session: name.to_string(),
@@ -1399,25 +1522,8 @@ impl Agent {
             stream: ToolStream::Stdout,
             text: tail,
             done: true,
-            head: Some(result_head(outcome.ok, run_ms)),
+            head: Some(result_head(tool_ok, run_ms)),
         }));
-
-        let status = if outcome.ok { "ok" } else { "error" };
-        // A command that printed `@image(<path>)` names a picture: it becomes an
-        // attachment, uploaded once per file.
-        let images: Vec<_> = scanned
-            .iter()
-            .map(crate::image::ImageRef::to_json)
-            .collect();
-        self.announce_row(
-            name,
-            self.store.append_message(
-                id,
-                "tool_result",
-                &json!({"call_id": call_id, "output": output, "images": images,
-                        "step": step, "ok": outcome.ok, "elapsed_ms": run_ms}),
-            ),
-        );
         let _ = self.store.finish_tool_call(id, &call_id, &output, status);
         self.log_event(
             Some(id),
@@ -1495,15 +1601,35 @@ impl Agent {
         session.open_done(item_id);
     }
 
+    /// Publishes the operator's own lines, then where the transcript now ends.
+    ///
+    /// # Invariant
+    ///
+    /// The lines come before the announcement: a window reads that as "this row is
+    /// drawn", so a row announced first is one it never fetches. `Input` is the
+    /// shape `commands::row_event` replays, so live and refilled agree.
+    /// See `docs/notes/server-agent.md`.
+    pub(crate) fn announce_operator_rows(&self, session: &str, rows: crate::store::OperatorRows) {
+        for line in &rows.lines {
+            self.bus.publish(Event::Response(ResponseEvent {
+                session: session.to_string(),
+                turn: protocol::REPLAY_TURN,
+                part: ResponsePart::Input,
+                text: line.clone(),
+                done: true,
+                call_id: None,
+            }));
+        }
+        self.announce_row(session, Ok(rows.seq));
+    }
+
     /// Publishes where a session's transcript now ends, after a row was written.
     ///
     /// # Invariant
     ///
-    /// Every stored row is followed by its position, so a client's watermark is
-    /// a statement about what it drew rather than a guess about what the server
-    /// might have written. Nothing is announced for a row that was not written:
-    /// a position that names no row is a position a client cannot check.
-    /// See `docs/notes/protocol-message.md`.
+    /// Nothing is announced for a row that was not written: a position that names
+    /// no row is a position a client cannot check. See
+    /// `docs/notes/protocol-message.md`.
     pub(crate) fn announce_row(&self, session: &str, written: anyhow::Result<i64>) {
         match written {
             Ok(seq) => {
@@ -1719,6 +1845,11 @@ fn context_notice(
             ("budget", &budget.to_string()),
         ],
     )
+}
+
+fn live_compact_notice() -> String {
+    "The live-compaction token interval has elapsed. Call `live_compact` now with a      `summary` of everything since the previous checkpoint, including the latest complete      ordinary tool-call round. The server retains that round and every checkpoint summary;      do not use heir or delete any transcript rows."
+        .to_string()
 }
 
 /// The notice threshold in input tokens, or 0 for "off".

@@ -97,6 +97,11 @@ and `del_job` answers for it out of its row.
 
 ## tunnel::report
 
+The look that ends a call in explore mode is taken here too, because every asynchronous
+ending passes through this function: `background`, `detached`, a foreground call the
+clock promoted, and a job adopted after a restart. See `docs/notes/server-explore.md`.
+
+
 The row and the notice are written in one transaction. That is what makes a row left
 `running` mean exactly one thing -- a job that never got to say how it ended -- and it
 is what stops the other two orderings from existing: an answer nobody can find, and a

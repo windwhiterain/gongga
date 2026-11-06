@@ -14,9 +14,11 @@ mod commands;
 mod config;
 mod diff;
 mod disk;
+mod explore;
 mod fork;
 mod image;
 mod instance;
+mod live_compact;
 mod llm;
 mod meta;
 mod migrate;
@@ -224,6 +226,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
+    store.set_live_compact_enabled(cfg.agent.live_compact_enabled);
     // Read after every tool call, before a full disk takes the room to report it.
     disk::install(cfg.disk_low, cfg.home.clone());
     if cfg.disk_low == 0 {
@@ -326,6 +329,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
             )
+            .with_live_compact(cfg.agent.live_compact_enabled)
             .with_python(cfg.python.clone(), skill_lib.clone())
             .with_skills(
                 tools::skill::programs(&cfg),
@@ -336,6 +340,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         ),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,
+        live_compact_enabled: cfg.agent.live_compact_enabled,
+        live_compact_interval_tokens: cfg.agent.live_compact_interval_tokens,
         cache_invalid_rate: cfg.agent.cache_invalid_rate,
         cache_ttl_ms: (cfg.agent.cache_ttl_secs > 0)
             .then(|| cfg.agent.cache_ttl_secs.saturating_mul(1_000)),
@@ -347,16 +353,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         jobs: crate::tools::tunnel::JobRegistry::new(),
     });
 
-    // A tool's sentences live only in the config. See `tools::text`.
-    let missing = tools::text::shared().missing(&agent.tools);
-    if !missing.is_empty() {
-        anyhow::bail!(
-            "{} words nothing about {missing:?}, and a tool's sentences live only there \
-             (`[tool_text.<tool>]`); without them a model is guessing what each argument \
-             is for",
-            cfg.config_path.display(),
-        );
-    }
+    // A tool without sentences still runs; the whole-check is
+    // `tools::text::tests` now, where a build is checked.
 
     // Turns in flight and subscription actions: a stop waits for both.
     let active = Arc::new(AtomicUsize::new(0));

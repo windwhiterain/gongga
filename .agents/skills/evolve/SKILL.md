@@ -23,6 +23,11 @@ $S clean              # 收掉没人会 swap 的旧继任者（--artifacts 连�
                       # 输出 "N killed, M left, K kept"：kept 那几行要说清为什么留
 ```
 
+`stage` 先 fetch 内容仓、把 `local` rebase 到官方 `main`，再跑 `ship.sh --check`；
+它也同步 `$GONGGA_HOME/ship`，因为继任者读的是 home 的 fork，不是源码树那个 checkout。
+官方 `main` 必须是 home 当前内容分支的祖先。全部通过后才取 lease：preflight 失败的
+构建不能占用 home，也不会等到新 server 启动时才发现缺少新工具文案。
+
 ## 规范：一次改动，一次换手
 
 换手会 `cancel` 当前回合并让继任者重放它。所以**每一次 `stage` 都是一次真实的中断**，
@@ -188,7 +193,8 @@ MSYS 记的 `ParentProcessId` 不是可见 bash 进程的 Windows pid（三层�
 和 launcher 都构建在默认的 `target/`，而继任者拿到的是 `cp` 出来的 bundle 副本，所以
 "正在跑的 exe 锁住构建目录"不再是问题——被替换的从来不是 `target/debug/gongga-server.exe`。
 这个目录只会一路长到十几 GB（本机量到 14 GB，磁盘 97%）；`rm -rf .dev/target` 不影响
-任何一次换手。
+任何一次换手。设了 `CARGO_TARGET_DIR` 时 stage 从 `$CARGO_TARGET_DIR/debug/gongga` 取
+head，嵌套 payload 仍写死 `target/bundle-payload`（`build.rs` 的 invariant），不随之迁移。
 
 **3. `stage` 构建整个发行版，不是一个程序。** bundle 把 server、cli、tui 装进一个文件，
 换手一次就换掉三个程序；`--all` 是唯一模式（旧旗标只留一句 note）。构建产物是 `cp` 出去

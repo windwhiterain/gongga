@@ -2,7 +2,9 @@
 //!
 //! See `docs/notes/server-tools-text.md`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
@@ -51,11 +53,14 @@ struct Snapshot {
     complained: bool,
 }
 
-/// The words in force: read from one config and from nowhere else.
+/// The words in force: one config, and nowhere else.
 pub struct Texts {
     path: Option<PathBuf>,
     snapshot: Mutex<Snapshot>,
-    /// Names already reported, so a misspelling is said once and not every step.
+    /// Names already reported, said once.
+    ///
+    /// The test's check only.
+    #[cfg(test)]
     warned: Mutex<HashSet<String>>,
 }
 
@@ -64,6 +69,7 @@ impl Texts {
         Self {
             path,
             snapshot: Mutex::new(Snapshot::default()),
+            #[cfg(test)]
             warned: Mutex::new(HashSet::new()),
         }
     }
@@ -129,7 +135,7 @@ impl Texts {
         }
     }
 
-    /// What the registry says that this config does not word: a home that cannot start.
+    /// What the registry says that this config does not word: the check a test runs.
     ///
     /// # Invariant
     ///
@@ -137,6 +143,7 @@ impl Texts {
     /// schema declares -- because half a schema is a model guessing what an argument
     /// is for. A name the tool does not declare is reported and not fatal: it costs a
     /// sentence, not a call.
+    #[cfg(test)]
     pub fn missing(&self, registry: &crate::tools::ToolRegistry) -> Vec<String> {
         let entries = self.entries();
         let mut out = Vec::new();
@@ -189,6 +196,7 @@ impl Texts {
         out
     }
 
+    #[cfg(test)]
     fn warn_once(&self, key: String, message: impl FnOnce() -> String) {
         let mut warned = self.warned.lock().unwrap_or_else(|e| e.into_inner());
         if warned.insert(key) {
@@ -217,8 +225,9 @@ static SHARED: OnceLock<Texts> = OnceLock::new();
 ///
 /// # Invariant
 ///
-/// The file is the only source: a missing sentence is a startup failure, never a
-/// request that sends a schema with half its words in it.
+/// The file is the only source: a sentence missing here is a schema that carries the
+/// argument's name and nothing about it, which is what the model reads -- never a
+/// refusal to serve the home.
 pub fn install(config: &Path) {
     let _ = SHARED.set(Texts::at(Some(config.to_path_buf())));
     let texts = shared();
@@ -239,8 +248,9 @@ pub fn shared() -> &'static Texts {
 ///
 /// # Safety
 ///
-/// A file that does not parse yields nothing, and a server with no words refuses to
-/// start rather than guessing: see `Texts::missing`.
+/// A file that does not parse yields nothing, so every tool is sent with no words at
+/// all rather than with a guess: the arguments are still typed, and the names are
+/// what a model reads. See `Texts::missing` for the check that runs at test time.
 fn read_table(text: &str) -> (BTreeMap<String, Entry>, Vec<String>) {
     let mut out = BTreeMap::new();
     let mut problems = Vec::new();
@@ -294,4 +304,59 @@ fn read_table(text: &str) -> (BTreeMap<String, Entry>, Vec<String>) {
         out.insert(name.clone(), entry);
     }
     (out, problems)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Every tool this build carries, built as a server builds it.
+    fn registry() -> crate::tools::ToolRegistry {
+        crate::tools::ToolRegistry::with_builtins(
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            20_000,
+        )
+        .with_python(
+            crate::config::PythonConfig {
+                program: None,
+                args: Vec::new(),
+                timeout: Duration::from_secs(60),
+                max_output_chars: 20_000,
+            },
+            None,
+        )
+        .with_skills(
+            ::skill::Programs::default(),
+            None,
+            Duration::from_secs(60),
+            20_000,
+        )
+    }
+
+    /// The shipped config words every tool and every argument this build declares.
+    ///
+    /// # Invariant
+    ///
+    /// This is where the check lives *instead of* the start: a home whose words are
+    /// behind its build still serves, and a tool added without its sentence fails
+    /// `cargo test` -- which every handover already runs -- before a server is handed
+    /// the home. A clone without the content submodule has nothing to compare against
+    /// and is not failed for it.
+    #[test]
+    fn the_shipped_config_words_every_tool() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ship/config/config.toml");
+        if !path.exists() {
+            return;
+        }
+        let missing = Texts::at(Some(path.clone())).missing(&registry());
+        assert!(
+            missing.is_empty(),
+            "{} words nothing about {missing:?}; a tool's sentences live only there \
+             (`[tool_text.<tool>]`)",
+            path.display(),
+        );
+    }
 }
