@@ -2254,22 +2254,29 @@ fn recovery_groups(
 ///
 /// # Invariant
 ///
-/// A notice about a background job is news for a working session; on its own it
-/// must not cost an idle session a turn. See `docs/notes/server-commands.md`.
-fn is_notice(task: &PendingTask) -> bool {
-    task.payload.get("notice").is_some()
-}
-
 /// The rows a session owes a *turn* for.
 ///
 /// # Invariant
 ///
-/// An operator message or a turn begun; a notice alone waits for the next step
-/// boundary.
+/// News this session is owed -- a message, or a notice about work that ended -- owes a
+/// turn, so an idle session is woken for it. That is what a `wait` survives a stop by:
+/// SPEC leaves the news it was waiting for to the next start, and the next start has to
+/// deliver it to a session that is doing nothing. Only a reminder for the turn already
+/// running owes nothing.
 fn owes_a_turn(tasks: &[PendingTask]) -> bool {
-    tasks
-        .iter()
-        .any(|task| task.kind == "turn" || (task.kind == "inject" && !is_notice(task)))
+    tasks.iter().any(|task| {
+        task.kind == "turn" || (task.kind == "inject" && !is_running_turns_reminder(task))
+    })
+}
+
+/// A notice the turn that is running reads at its next step, and nobody else.
+///
+/// # Invariant
+///
+/// `explore` is about the turn's own conduct, not about work that ended: an idle
+/// session woken for it would be woken to read advice about a turn it is not in.
+fn is_running_turns_reminder(task: &PendingTask) -> bool {
+    task.payload.get("notice").and_then(|kind| kind.as_str()) == Some("explore")
 }
 
 /// Wakes each session with stranded work at most once.

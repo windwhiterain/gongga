@@ -105,10 +105,12 @@ about this machine.
 ## the pending task and its kind
 
 The reminder is a `pending_tasks` row of kind `inject` carrying `notice: "explore"`.
-That key is what makes it a *notice*: `owes_a_turn` is false for it, so a row that
-arrives when the session is idle waits for the next real turn instead of spending one,
-and `claim_recovery` has nothing to reclaim. The text is still a message: the step
-boundary delivers it into the transcript, and the next request is built from it.
+That value is what marks it as advice for the turn that is running: `owes_a_turn` is
+false for it, so a row that arrives when the session is idle waits for the next real
+turn instead of spending one, and `claim_recovery` has nothing to reclaim. Every other
+notice value owes a turn -- news about work that ended is news an idle session has
+nobody else to read. The text is still a message: the step boundary delivers it into
+the transcript, and the next request is built from it.
 
 The kind is not `background`. `resume_pending` rewrites a `background` notice into a
 real message that owes a turn, because a job the stopped server never reported is news;

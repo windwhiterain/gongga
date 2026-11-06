@@ -517,11 +517,14 @@ reason.
 
 A *notice* -- one of the server's own rows, `{"notice": "background"}` for a job
 that ended or `{"notice": "finished"}` for a command that outlived its wait -- is
-not a person waiting. Together with a real message it rides along in that turn;
-on its own it changes nothing here and waits for the next real turn, because
-waking an idle session to watch it read its own logbook is a turn spent for
-nothing. That is exactly what a restart used to do to every session that had ever
-left a background job running.
+news this session is owed, not a person waiting, and it owes a turn on its own
+too: a session that is idle has nobody else to read it, and SPEC's `wait` is
+answered by exactly this kind of row. `/wait` that a stop ended leaves a
+`"wait_cancelled"` notice for the same reason -- the next start is where the news
+it was waiting for arrives, so the next start is where it has to be woken. The
+one exception is `{"notice": "explore"}`: a reminder about the turn already
+running, which an idle session would be woken to read about a turn it is not in.
+See `docs/notes/server-explore.md`.
 
 `None` as the owning row: this turn was not started from a message, so the
 step-boundary drain may take every queued row it finds.
@@ -546,8 +549,8 @@ A `"background"` notice is dropped here rather than replayed. It says "what it
 printed is in that shell's unread buffer", and the shell died with the process
 that wrote the row: the buffer cannot be read by anyone, so delivering it wakes a
 session to be told to look somewhere empty. How many went is logged per session.
-The `"finished"` kind carries its output in the row itself, so it survives and
-waits for the session's next real turn.
+The `"finished"` and `"detached"` kinds carry their output -- or the path to it --
+in the row itself, so they survive and wake the session that was waiting.
 
 ## get_messages_pages_by_seq
 
