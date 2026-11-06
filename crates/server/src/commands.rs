@@ -1353,16 +1353,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     }
     // A mode that changed says so: the agent hears it at the next step boundary.
     if let Some(mode) = mode.filter(|mode| *mode != session.mode()) {
-        // Finishing the plan (explore -> work) opens live compaction's starting
-        // checkpoint; failure refuses the mode change rather than half-opening it.
+        // Plan finish (explore -> work) opens the starting checkpoint; a failed
+        // open refuses the mode change.
         if mode == crate::explore::Mode::Work
             && session.mode() == crate::explore::Mode::Explore
             && d.store.live_compact_is_enabled()
             && let Err(e) = d.store.start_live_compact(session.id())
         {
-            return Outcome::err(format!(
-                "could not open the live compact checkpoint: {e:#}"
-            ));
+            return Outcome::err(format!("could not open the live compact checkpoint: {e:#}"));
         }
         if let Err(e) = d.store.set_session_mode(session.id(), mode.as_str()) {
             return Outcome::err(format!("could not save the session's mode: {e}"));
