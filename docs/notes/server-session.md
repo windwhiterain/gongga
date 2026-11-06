@@ -85,16 +85,24 @@ gives up instead of writing to a session that no longer exists.
 
 ## SessionInner::resumable
 
-`interrupt_session` leaves this false, because there "stop" means "drop it". A tool
-call can clear it too, through [`StopSignal`]: a `wait` that a `cancel` ended started
-nothing and is over, so the turn it was in owes nothing and must not be replayed.
+Set by a `cancel` that found the turn inside `wait`. `interrupt` reads the mark
+before it fires the token, calls `mark_resumable`, and keeps the `turn` row; then
+`finish_turn` preserves it and the next start resumes the turn. Every other turn is
+interrupted and owes nothing, so this is false for it. `interrupt_session` and
+`del_session` never set it -- their "stop" means "drop it".
+
+## SessionInner::waiting
+
+Whether a call is inside `wait` right now. `StopSignal::begin_wait` sets it and its
+guard clears it on drop, which an aborted call also runs: a wait that ended for any
+reason is not a wait a later cancel can find.
 
 ## StopSignal
 
-The two flags a turn's tool call may need to read, handed out already paired because
-reading one and acting on the other is one decision: a call that hears the stop must be
-able to say the turn owes nothing. It is a copy, not a handle on the session -- a tool
-must not be able to do anything else to the session that holds it.
+A copy, not a handle on the session -- a tool must not be able to do anything else to
+the session that holds it. It carries `resumable` (what the stop decided) and
+`waiting` (whether this call is a wait), and nothing else: the token, not a flag, is
+what ends a call.
 
 ## SessionHandle::open — the part still being written
 
@@ -138,21 +146,14 @@ row, so the next start does not owe it anything.
 
 ## SessionHandle::request_stop
 
-This is what `cancel` (the command) does: it stops work to shut down, not to throw
-the work away.
+It is gone. `cancel` (the command) no longer asks a turn to stop cleanly: it fires
+each live session's turn token and clears that session's pending rows instead, so
+the work is interrupted where it is and nothing is owed to the next start.
 
-It is not `cancel`. SPEC says a `cancel` finishes every task that cannot be
-serialized before it stores and exits, and a running tool is exactly such a task: a
-command killed mid-flight is stored as a sentence about being stopped, not as the
-work it did. So `request_stop` sets a flag and leaves the token alone; the turn ends
-at the next step boundary, where every call already has its result. Only
-`interrupt_session` and `del_session` cancel the token, because those mean "stop
-now" rather than "stop cleanly".
-
-One call does not reach a step boundary on its own: `wait` sleeps inside the call for
-its whole ceiling. It reads this flag, which is why the flag exists as well as the
-token -- the token would abandon the call, and the flag lets the call end itself
-politely and say what it did.
+The one exception is a turn inside `wait`. It started nothing, so keeping it cannot
+run anything twice: `interrupt` marks it `resumable`, keeps its `turn` row, and the
+next start resumes the wait. `interrupt_session` and `del_session` still drop it --
+their "stop" means the turn is not wanted.
 
 `cancels` is still bumped, so a turn that is queued and has not started is dropped
 instead of running into a shutdown.

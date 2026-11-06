@@ -2,9 +2,9 @@
 
 One function, `parent_of(pid)`, and two callers with different reasons to ask.
 
-`tools::detached` asks it to tell a wrapped job from a detached one: a detached job
-that turns out to be this server's parent must not be adopted, or `del_bash` would
-kill the server it is running inside.
+`tools::detached` asks it to tell a wrapped job from a background one: a background
+job that turns out to be this server's parent must not be adopted, or `del_bash`
+would kill the server it is running inside.
 
 `supervise` asks it to check a claim: `GONGGA_SUPERVISED` in the environment is not
 proof that this process is a server's child, because a shell inherits the

@@ -37,20 +37,19 @@ standard OpenAI Response API/Anthropic API.
 path, rendered in hierarchy.
 
 ## Tool
-tool are tunnel of cmd that agents can directly call to avoid escape.
+tool provide a tunnel of cmd that agents can directly call to avoid escape.
 
-all tool has optional `description`, `max_output`, `timeout_ms`, `background`, `detached` argument that the tunnel consume.
-- `max_output`: in chars, if exeeded, save to temp file and return the file metadata {path, chars, line count}
+most tools have optional `description`, `max_output`, `timeout_ms`, `background` argument that the tunnel consume.
+- `max_output`: in chars, if exceeded, save to temp file and return the file metadata {path, chars, line count}
 - foreground job running over timeout become background.
-- job running over certain time auto become detached. long job is forced to use detached + wait that job and wait can live across cancel.
-- detached job lives over server cancel, adopted when server restart.
-- skill server skills all jobs.
-- background/detached job finish will notice caller session, missing detacthed job, likely finished or killed when the server is down, will also notice.
+- background job is a process of its own, can live across server cancel, adopted when server restart.
+- kill server kills all jobs.
+- background job finish will notice caller session, missing background job, likely finished or killed when the server is down, will also notice. unread answer is collected by check_job.
 
-wait is the only expecial tool that treated internally.
+wait is the special tool that treated internally.
 
 use `which("bash")` as bash.
-- bash{command, name = "default", detached = false}:
+- bash{command, name = "default", background = false}:
   cwd is session's cwd if session has no remote.
   runs in the persistent shell `name`
   - key = {session_name, bash_name}.
@@ -68,7 +67,7 @@ use `which("bash")` as bash.
 - remote_exec{command}: mirror exec.
 - remote_python{code, ...}: mirror remote_bash.
 - read_file/write_file/replace{remote = none}:
-- wait{}: if interrupted, the call end.
+- wait{}: if interrupted, the call end. can wait across server cancel, keep waiting when server restart.
 
 ## Server State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
@@ -128,7 +127,7 @@ for the first user message to a empty session, find all meta references recursiv
       |abstract{
         symbol (colored), content (gray),
         |reasoning{beginning (line), ending (line)} (vertical)
-        |toolcall{tool_name·description, {name, background, detached, timeout} (bash) | ...} (line)
+        |toolcall{tool_name·description, {name, background, timeout} (bash) | ...} (line)
         |tool_result{ok, time (spent)} (line)
       } (horizontal, 点击展开, block_size, box_edge, scroll 不溢出到外层)
       |output (colored markdown): a table is laid out in the events width, its
@@ -169,7 +168,7 @@ all named argument's name can be ommited via argument order.
   - `del_session --name <session>(sticky)`: also delete all bash with the session name in key.
   - `send_message --message <message> --name <session>(sticky)`: inject message instantly, turn waiting bash to backgound.
   - `interrupt_session --name <session>(sticky)`
-  - `cancel`: not instantly, but finish every task that can't be serialized to data, then store the pending tasks into data, the exit. next start will auto pick up those tasks.
+  - `cancel`: interrupt every session, make every job background, release every job then quit, retart will adopt realeased jobs.
   - `trigger_event --event <event>`
   - `subscribe --subscription <subscription> --pattern <pattern> [--persistant <bool>] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
     when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.

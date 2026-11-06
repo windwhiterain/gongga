@@ -40,9 +40,8 @@ pub mod words;
 ///
 /// # Invariant
 ///
-/// Copyable, because a call that said `detached` outlives the call that made it: it
-/// runs as a job of this server, with its own cancellation and no stream of the
-/// turn's to write to.
+/// Copyable, because a call that said `background` outlives the call that made it:
+/// it runs in a process of its own, with no stream of the turn's to write to.
 #[derive(Clone)]
 pub struct ToolContext {
     pub session: String,
@@ -302,18 +301,18 @@ pub trait Tool: Send + Sync {
     ///
     /// `wait` is the one tool that answers no: SPEC treats it internally, because
     /// waiting is its whole work -- a ceiling on it would keep it from waiting for what
-    /// it was asked to wait for, and `detached` would be a way of not waiting at all.
+    /// it was asked to wait for, and `background` would be a way of not waiting at all.
     fn tunneled(&self) -> bool {
         true
     }
 
-    /// What carries a call to this tool that says `detached`.
+    /// What carries a call to this tool that says `background`.
     ///
     /// # Invariant
     ///
     /// `Here` is the answer for a tool that acts on this server's state: a process of its
-    /// own would find none of it, so `detached` is refused. See
-    /// `docs/notes/server-tools-worker.md`.
+    /// own would find none of it, so `background` is refused rather than answered with a
+    /// job that would die with the server. See `docs/notes/server-tools-worker.md`.
     fn detached_carrier(&self) -> tunnel::Carried {
         tunnel::Carried::Here
     }
@@ -337,7 +336,7 @@ pub trait Tool: Send + Sync {
     ///
     /// A tool that backgrounds into a shell or an interpreter is read back by that
     /// collector (`check_bash`, `check_python`); every other tool's background is a
-    /// job of this server, read by `check_job`. See `docs/notes/server-tools-mod.md`.
+    /// process of its own, read by `check_job`. See `docs/notes/server-tools-mod.md`.
     fn handles_background(&self) -> bool {
         false
     }
@@ -617,32 +616,21 @@ impl ToolRegistry {
                  Call it without `{word}`."
             ));
         }
-        if tunnel::both_ways(&args) {
-            return ToolOutcome::err(
-                "pick one: `background` collects the answer with `check_job`, `detached` hands it \
-                 to you as a notice",
-            );
-        }
-        // A tool whose background is its own shell's keeps it; every other one is a job.
-        if tunnel::wants_background(&args) && !tool.handles_background() {
-            return tunnel::spawn(tool, name.to_string(), args, ctx, tunnel::Mode::Background)
-                .await;
-        }
-        // SPEC: `detached` means a process of its own, so only work that is one can.
-        if tunnel::wants_detached(&args) {
+        // SPEC: a background call is a process of its own, so it outlives a cancel.
+        if tunnel::wants_background(&args) {
             match tool.detached_carrier() {
                 tunnel::Carried::Process => {}
                 tunnel::Carried::Worker => {
-                    return tunnel::detach_to_worker(tool, name.to_string(), args, ctx).await;
+                    return tunnel::spawn_worker(tool, name.to_string(), args, ctx).await;
                 }
-                tunnel::Carried::Here => {
+                tunnel::Carried::Here if !tool.handles_background() => {
                     return ToolOutcome::err(format!(
-                        "`{name}` cannot run detached: a detached call is a process of its own, \
-                         and `{name}` acts on what this server holds -- its shells, its \
-                         interpreters, its jobs. Run it here, or say `background` and collect \
-                         it with `check_job`."
+                        "`{name}` cannot run in the background: a background call is a process \
+                         of its own, and `{name}` acts on what this server holds -- its shells, \
+                         its interpreters, its jobs. Call it in the foreground."
                     ));
                 }
+                tunnel::Carried::Here => {}
             }
         }
         let outcome = invoke(name, tool, args, ctx).await;
@@ -815,16 +803,7 @@ async fn promote(
             None => outcome.output,
         };
         let ran = crate::agent::spent(started.elapsed().as_millis() as u64);
-        tunnel::report(
-            &sink,
-            id,
-            &named,
-            &text,
-            outcome.ok,
-            &ran,
-            tunnel::Mode::Background,
-        )
-        .await;
+        tunnel::report(&sink, id, &named, &text, outcome.ok, &ran).await;
     });
     ToolOutcome::ok(format!(
         "`{tool}` was still running after {waited}, so this call became background job {id}. \
@@ -841,13 +820,7 @@ async fn promote(
 /// Injected into the model-facing schema in `definitions` (a declared
 /// property wins), read back at the call layer; they never reach the
 /// command surface, which reads `Tool::parameters` raw.
-pub const GENERAL_ARGS: &[&str] = &[
-    "description",
-    "max_output",
-    "timeout_ms",
-    "background",
-    "detached",
-];
+pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "background"];
 
 /// SPEC's adapter-level parameters added to every tool the model is offered.
 ///
@@ -883,11 +856,6 @@ pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
                     "type": "integer"
                 })
             });
-        properties.entry("detached".to_string()).or_insert_with(|| {
-            json!({
-                "type": "boolean"
-            })
-        });
         properties
             .entry("background".to_string())
             .or_insert_with(|| {
@@ -1300,17 +1268,10 @@ impl Tool for BashTool {
         properties["background"] = json!({
             "type": "boolean"
         });
-        match self.machine {
-            Machine::Local => {
-                properties["detached"] = json!({
-                    "type": "boolean"
-                });
-            }
-            Machine::Remote => {
-                properties["target"] = json!({
-                    "type": "string"
-                });
-            }
+        if self.machine == Machine::Remote {
+            properties["target"] = json!({
+                "type": "string"
+            });
         }
         json!({
             "type": "object",
@@ -1367,53 +1328,37 @@ impl Tool for BashTool {
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
-            // Both flags return at once; they differ in what happens to the output, not in blocking.
+            // The one flag that returns at once: a job of this shell.
             let background = args
                 .get("background")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let detached = args
-                .get("detached")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            // `detached` names the process itself; `background` is a job of a shell.
-            if detached {
-                // A detached process runs here, on the machine that holds the registry.
-                if self.machine == Machine::Remote {
-                    return ToolOutcome::err(
-                        "`remote_bash` has no `detached`: the process would be started on \
-                         this machine and outlive everything you asked for on that one. \
-                         Start it in the foreground, or with `&` and a log file on the \
-                         remote.",
-                    );
-                }
-                // Defaulting to `default` would collide with the persistent shell.
-                let Some(name) = args
+            // SPEC's key `{session, bash_name}` names one bash, not two.
+            if ctx.detached.holds(&ctx.session, name).await {
+                return ToolOutcome::err(format!(
+                    "this session already has a background bash named {name:?}; end it with \
+                     `del_bash name_regex: \"^{name}$\"` or name this shell otherwise"
+                ));
+            }
+            if background && self.machine == Machine::Local {
+                // A background call is a process of its own, named after the call.
+                let job_name = args
                     .get("name")
                     .and_then(|v| v.as_str())
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
-                else {
-                    return ToolOutcome::err(
-                        "`bash` with `detached: true` needs `name`: it is the only handle on a \
-                         process nothing owns, and the default name would collide with the \
-                         persistent shell called `default`",
-                    );
-                };
+                    .unwrap_or(&ctx.call_id);
                 let cwd = ctx.dir(Machine::Local);
-                if ctx.find(name).is_some() {
-                    return ToolOutcome::err(format!(
-                        "this session already has a persistent shell named {name:?}; \
-                         `del_bash name_regex: \"^{name}$\"` discards it first"
-                    ));
-                }
-                return match ctx.detached.start(&ctx.session, name, &command, &cwd).await {
+                return match ctx
+                    .detached
+                    .start(&ctx.session, job_name, &command, &cwd)
+                    .await
+                {
                     Ok(job) => ToolOutcome::ok(format!(
-                        "started detached bash `{}` (pid {}), running in {}. It outlives the \
-                         shell, the session, `cancel` and even a server restart, so it is how \
-                         you replace the server you are running on. Delete it with \
-                         `del_bash name_regex: \"^{}$\"`, which stops the process. Its output \
-                         is not collected -- read it at: {}",
+                        "started background bash `{}` (pid {}), running in {}. It is a process \
+                         of its own and outlives this server; delete it with \
+                         `del_bash name_regex: \"^{}$\"`. Its output is not collected -- read \
+                         it at: {}",
                         job.name,
                         job.pid,
                         cwd.display(),
@@ -1422,13 +1367,6 @@ impl Tool for BashTool {
                     )),
                     Err(e) => ToolOutcome::err(format!("{e}")),
                 };
-            }
-            // SPEC's key `{session, bash_name}` names one bash, not two.
-            if ctx.detached.holds(&ctx.session, name).await {
-                return ToolOutcome::err(format!(
-                    "this session already has a detached bash named {name:?}; end it with \
-                     `del_bash name_regex: \"^{name}$\"` or name this shell otherwise"
-                ));
             }
             if background {
                 let shell = match ctx.shell(self.machine, name) {
@@ -2006,6 +1944,8 @@ impl Tool for WaitTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
+            // A cancel that finds this mark keeps the turn: a wait lives across it.
+            let _waiting = ctx.stop.begin_wait();
             let wait = args
                 .get("timeout_ms")
                 .and_then(Value::as_u64)
@@ -2015,10 +1955,6 @@ impl Tool for WaitTool {
             let began = std::time::Instant::now();
             let deadline = began + wait;
             loop {
-                // Read first: a cancel that came before this call is not a reason to wait.
-                if ctx.stop.requested() {
-                    return wait_cancelled(ctx, began.elapsed());
-                }
                 // The person's message ends this wait (see `cut`); rows are what
                 // is left to watch.
                 match ctx.store.pending_injects_of(&ctx.session) {
@@ -2045,10 +1981,6 @@ impl Tool for WaitTool {
                     ));
                 }
                 tokio::time::sleep(remaining.min(WAIT_POLL)).await;
-                // The sleep is the whole poll: a `cancel` sets a flag, not this token.
-                if ctx.stop.requested() {
-                    return wait_cancelled(ctx, began.elapsed());
-                }
             }
         })
     }
@@ -2057,7 +1989,7 @@ impl Tool for WaitTool {
     fn cut<'a>(
         &'a self,
         _args: &Value,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         why: Cut,
         _started: std::time::Instant,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
@@ -2067,45 +1999,16 @@ impl Tool for WaitTool {
                     "a message arrived for this session while this call waited; it is \
                      delivered at the next step boundary",
                 ),
+                // A `cancel` marks the turn before it fires the token, so the answer
+                // says which stop this was rather than guessing.
+                Cut::Cancelled if ctx.stop.resumable() => ToolOutcome::ok(
+                    "the server is stopping: this wait ends here, but the turn is kept and \
+                     the next start resumes it.",
+                ),
                 Cut::Cancelled => ToolOutcome::err("wait stopped: this turn was cancelled"),
             }
         })
     }
-}
-
-/// What a `wait` answers when a `cancel` ended it, and what it leaves behind.
-///
-/// # Invariant
-///
-/// A wait is not work that can be left undone: it started nothing, and the news it was
-/// waiting for is still the server's to deliver. So the turn owes nothing afterwards --
-/// `nothing_owed` says so, which is why the next start does not replay it -- and what
-/// happened is recorded once, as a notice row the session reads whenever it next talks.
-fn wait_cancelled(ctx: &ToolContext, waited: Duration) -> ToolOutcome {
-    ctx.stop.nothing_owed();
-    let message = format!(
-        "This session was waiting for news when the server was asked to stop, {} into the \
-         wait. It ended there, and it is not resumed: nothing was left undone, so the next \
-         start owes nothing. What it was waiting for -- a message, a `subscribe` match, a \
-         finished job -- is still the next start's to deliver.",
-        crate::agent::spent(u64::try_from(waited.as_millis()).unwrap_or(u64::MAX))
-    );
-    if let Err(e) = ctx.store.add_pending_task(
-        &ctx.session,
-        "inject",
-        &json!({
-            "session": ctx.session,
-            "message": message,
-            "notice": "wait_cancelled",
-        }),
-    ) {
-        tracing::warn!(session = %ctx.session, error = %e,
-            "could not record a wait that a cancel ended");
-    }
-    ToolOutcome::ok(
-        "the server is stopping: this wait ends here and is not resumed. Nothing you were \
-         waiting for was stopped -- news that lands later is the next start's to deliver.",
-    )
 }
 
 /// What one queued row is, in the few words a summary can carry.
@@ -2263,7 +2166,7 @@ impl Tool for ListBashTool {
                 });
             }
             ToolOutcome::ok(
-                serde_json::to_string_pretty(&json!({"bash": rows, "detached": detached}))
+                serde_json::to_string_pretty(&json!({"bash": rows, "background": detached}))
                     .unwrap_or_default(),
             )
         })

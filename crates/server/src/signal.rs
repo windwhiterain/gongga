@@ -45,8 +45,9 @@ pub fn owner() -> Option<u32> {
 ///
 /// # Invariant
 /// The handler never stops anything itself: it only nudges. The stop runs on the
-/// runtime, on the path `cancel` already takes -- the running turn is preserved
-/// as pending, and the next server resumes it.
+/// runtime, on the path `cancel` already takes -- every running turn is
+/// interrupted, and a signal's stop ends its background jobs rather than letting
+/// them go.
 pub fn watch<F, Fut>(parent: Option<u32>, stop: F)
 where
     F: FnOnce() -> Fut + Send + 'static,
@@ -57,7 +58,7 @@ where
     // notifier, whichever of them arrives first.
     let _ = WAKE.set(wake.clone());
     if !install(wake.clone()) {
-        tracing::warn!("no signal handler: a Ctrl-C will not preserve the turn");
+        tracing::warn!("no signal handler: a Ctrl-C will not interrupt the turns");
     }
     if let Some(pid) = parent {
         follow_pid(pid);
@@ -105,8 +106,9 @@ fn follow_pid(pid: u32) {
 /// A signal, asked once or insisted on.
 ///
 /// # Invariant
-/// The first ask cancels and writes the pending row; a second ask leaves at
-/// once, so a turn that ignores the cancel cannot own the console.
+/// The first ask interrupts every turn and writes the `server_stop` row; a
+/// second ask leaves at once, so a turn that ignores the token cannot own the
+/// console.
 fn asked(reason: &str, wake: &Notify) {
     if ASKS.fetch_add(1, Ordering::SeqCst) == 0 {
         nudge(reason, wake);
@@ -120,9 +122,8 @@ fn asked(reason: &str, wake: &Notify) {
 /// # Invariant
 ///
 /// The parent is the window that owns this server, so its death is a stop
-/// request, not a kill: the turn is preserved like any other stop. The wait holds
-/// no work, so the exit never waits for the window -- the pending row is written
-/// before a turn starts (`commands::deliver`). In the blocking pool, which
+/// request, not a kill: it takes the same path as a signal. The wait holds no
+/// work, so the exit never waits for the window. In the blocking pool, which
 /// `Runtime::drop` joins, it was a stop held for the window's lifetime.
 fn follows(pid: u32, wake: Arc<Notify>) {
     tokio::spawn(async move {

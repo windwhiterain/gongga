@@ -54,12 +54,40 @@ refused instead, and the refusal says why.
 ## A wait that is cut
 
 A message, or a cancelled turn, ends the wait in `ToolRegistry::run` for every
-tool alike. `exec` is the tool for which that is a stopping, not a pausing: a
-program started here has no shell to be left running in, so the future is dropped
-and the program with it -- `kill_on_drop` on this machine, the connection's close
-on the peer. The call answers with that, and with the two facts a cut leaves
-unknown: what it printed after that point, and its exit status.
+tool alike. What happens to the program is the stop's answer, not the tool's
+choice:
 
-`bash` can do better, and does: a command in a shell outlives the call that
-started it. The difference is the shell, not the tool, which is why it is
-described once in the `exec` and `bash` notes rather than guessed per tool.
+* a `cancel` a client asked for lets jobs go, so the program is left running -- it
+  was started as a process of its own, and the row it was recorded as is the next
+  start's to adopt;
+* every other cut ends it with the call, and the answer says what is unknown: what
+  it printed after that point, and its exit status.
+
+A peer's program is the exception in the first case: `remote_exec` has no local
+process to let go, so it ends with the call. `commands::cancel_lets_go` is where
+the two stops are told apart, set before `cancel` interrupts anything.
+
+`bash` has a shell to leave the command in; `exec` has a process, which is the
+same promise by another name.
+
+## The clock's end: a program that is still running
+
+A foreground program is started the way a job is: a group of its own, armed to the
+server, both streams into one log. The row is written while the call waits, and
+what the wait decides is only who reads it:
+
+* it answers in time: the row is deleted, its output is the answer, and nothing is
+  left for `check_job`;
+* the clock runs out: the row stays, the process stays, and the call answers with
+  the job id. `check_job` collects what it printed, and a server that stops before
+  it ends is one whose next start adopts the row -- and reads the log as the answer
+  if the answer file was never written.
+
+That is SPEC's "foreground job running over timeout become background": the wait
+ends, the work does not. `OwnsItsWait` is how `exec` keeps the tunnel's clock from
+firing at the same instant and recording a second job for one call.
+
+The reading tools (`read_file`, `write_file`, `replace`) and `skill` still promote
+into a job of this server rather than a process: a worker per file read costs more
+than the read, and what they wait for is a file, not a build.
+

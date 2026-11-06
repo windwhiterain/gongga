@@ -123,7 +123,8 @@ rename over one with "access denied" for a few tens of milliseconds.
 ## payload::retire
 
 A build this one replaces is asked to stop, then removed: a server through its own
-`cancel`, so its turn stays pending work for the next start.
+`cancel`, which interrupts its turns and lets its background jobs go, so the
+handover keeps what was started to outlive it.
 
 Nothing else is touched. `gongga-tui` is a window somebody is typing in and a
 command line of an older build may be halfway through, so neither is killed to free
@@ -204,10 +205,12 @@ so it is opt-in and one alias away.
 
     ./gongga tui --force
 
-`cancel` asks the old server to drain its turns. A build that predates the tunnel
-ceiling can hold a turn forever, so the drain never ends, the server keeps the
-port, and the command line asking for the cancel waits for it with no timeout. The
-result is a new build that has placed its payload but never opens a window.
+A server on an old build can still hold a turn forever: its `cancel` only raises a
+boundary flag, and a turn stuck in a shell write or a model stream never reaches
+that boundary. The port stays taken and the command line asking for the cancel
+waits with no timeout, so a new build has placed its payload but never opens a
+window. The current build interrupts every turn's token and leaves, so this is a
+way out of a stuck *old* server, not of this build.
 
 `--force` is the operator's way out of that loop. The head reads the flag before
 it calls `retire`; the program parses argv only afterwards, so write the flag
@@ -215,11 +218,11 @@ it calls `retire`; the program parses argv only afterwards, so write the flag
 global flag in `link::Args`, so the command line accepts it too, and
 `check_flag_order` still requires it before a command name.
 
-What it costs: a killed server does not turn its running turns into pending work
-the way `cancel` does, and `taskkill /T` on Windows takes the server's whole
-process tree with it. Messages already in the database are not lost; the turns
-simply stop. Use it when the old build is known to be stuck, not as the everyday
-upgrade path.
+What it costs: `taskkill /T` on Windows takes the server's whole process tree
+with it, including every background job the server was holding, where a `cancel`
+would have let those jobs go. Messages already in the database are not lost; the
+turns simply stop. Use it when the old build is known to be stuck, not as the
+everyday upgrade path.
 
 What it cannot reach: `retire` walks `<home>/payload/<stamp>` directories other
 than this build's and stops only processes whose executable lives in one of them.

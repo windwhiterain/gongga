@@ -23,7 +23,7 @@ use crate::config::Config;
 
 const FRAME_QUEUE: usize = 512;
 
-/// How often a draining server checks its last turn, while still serving a window.
+/// How often a stopping server checks for the shutdown, while still serving a window.
 const DRAIN_TICK: Duration = Duration::from_millis(100);
 
 /// A send that waits this long is a client that stopped reading, not a queued burst.
@@ -62,7 +62,7 @@ pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow:
         // `select!` guard is read once, on entry.
         let received = tokio::select! {
             _ = tokio::time::sleep(DRAIN_TICK) => {
-                if d.shutdown.is_cancelled() && d.active.load(Ordering::SeqCst) == 0 {
+                if d.shutdown.is_cancelled() {
                     break;
                 }
                 continue;

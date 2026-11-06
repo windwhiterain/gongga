@@ -67,6 +67,20 @@ pub fn read(path: &std::path::Path) -> Option<Answer> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// Writes one answer where a reader looks for it, in the same act a worker does.
+///
+/// # Invariant
+///
+/// Written by a rename, so a reader never sees half of one: the server writes this for
+/// a program it stopped waiting for, and the next start may read it first.
+pub fn write(path: &std::path::Path, answer: &Answer) -> anyhow::Result<()> {
+    let text = serde_json::to_vec(answer)?;
+    let writing = path.with_extension("writing");
+    std::fs::write(&writing, &text)?;
+    std::fs::rename(&writing, path)?;
+    Ok(())
+}
+
 fn answer_of(request: &Request) -> Answer {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()

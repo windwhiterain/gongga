@@ -1667,7 +1667,7 @@ impl Client {
         let mut facts = if self.connected && self.draining {
             // Connected and stopping: the one thing the reader cannot work out
             // from silence, said outright.
-            "stopping — the server keeps answering until its turns finish".to_string()
+            "stopping — its turns were interrupted and it is leaving".to_string()
         } else if self.connected {
             format!("{} session(s)", self.sessions.len())
         } else if self.attempts == 0 {

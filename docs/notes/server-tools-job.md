@@ -87,7 +87,7 @@ null, so the drop of one is a no-op.
 
 Every tree this server holds, by the pid it was armed for, because there is
 exactly one act that lets a process outlive the server -- `cancel` -- and it has
-to reach every kind of detached job: a detached bash, a worker running one call.
+to reach every kind of background job: a background bash, a worker running one call.
 No single owner could hold the handle itself, or a handler that dropped would be
 the thing deciding.
 
@@ -96,10 +96,12 @@ let those go.
 
 ## Ends
 
-The field that says which of the two a tree is. `OnCancel` is a detached job: it
+The field that says which of the two a tree is. `OnCancel` is a background job: it
 was started precisely so a `cancel` would spare it. `WithServer` is a call the
 server is answering -- a skill's Python -- which nothing spares, because a stop
-that spared it would answer a caller that is no longer waiting.
+that spared it would answer a caller that is no longer waiting. A stop that is not
+a `cancel` calls `terminate_all`, which ends the `OnCancel` trees where they stand
+and leaves the `WithServer` ones to their own callers.
 
 ## arm / hold_served
 

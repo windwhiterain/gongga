@@ -2,25 +2,26 @@
 
 ## detached (module doc)
 
-`detached` is the strongest of the three ways `bash` can run, and it is defined
-by what does *not* happen to it:
+`background` on a local `bash` is the strongest of the ways it can run, and it
+is defined by what does *not* happen to it:
 
 * the call returns at once, so the turn is never blocked;
-* nothing is collected -- output goes to a log file, not to the model;
+* the command runs in a process of its own, writing to its log;
 * it outlives the shell it was started from, the session, and a `cancel`.
 
-That last word is the whole of it. A detached job is how an agent restarts the
-server it is running on: launch the replacement detached, then `cancel`. `cancel`
-is therefore the one stop that lets a detached job go -- it clears the job
-object's kill-on-close and closes it, so the next start adopts the same pid.
+That last word is the whole of it. A background job is how an agent restarts the
+server it is running on: launch the replacement in the background, then `cancel`.
+`cancel` asked over the protocol is therefore the one stop that lets a background
+job go -- it clears the job object's kill-on-close and closes it, so the next start
+adopts the same pid.
 
-Every other exit takes them. A server that is killed, that crashes, or that is
-stopped from outside the protocol -- its window died, a console sent Ctrl-C --
-leaves the job objects armed, so they close with the process and every detached
-tree goes with it. That is not a detail of the implementation: a window the user
-force-closed must not leave work running that nobody can see or stop, and the
-only way to make "the server is gone" and "its jobs are gone" the same fact is
-for the operating system to hold the tree.
+Every other stop takes them. A signal, a console interrupt, a window that died and
+a server killed outright all end every background tree: `stop_all` terminates the
+armed job objects and then stops the pids this registry holds, so a tree that
+failed to arm is covered too. That is SPEC's "kill server kills all jobs", and it
+is an act of the stop rather than a side effect of the process exiting. The rows
+are left behind, because a job killed while the server was down is still news for
+its session -- `adopt` says so on the next start.
 
 So the process is *owned* after all -- by a job object the server holds -- and
 `cancel` is a deliberate release rather than the default. The pid is still

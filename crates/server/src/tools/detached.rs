@@ -663,6 +663,34 @@ impl DetachedRegistry {
         out
     }
 
+    /// Ends every background job; a stop that is not a `cancel` owns this.
+    /// Rows stay for the next start to report as gone.
+    ///
+    /// # Invariant
+    ///
+    /// Two passes, because two things can hold a tree: the armed job objects cover
+    /// the workers this registry does not hold, and the pids here cover a process
+    /// that failed to arm. Neither pass deletes a row -- a job killed while the
+    /// server was down is still news for its session.
+    pub async fn stop_all(&self) -> usize {
+        #[cfg(windows)]
+        let killed = crate::tools::job::terminate_all();
+        #[cfg(not(windows))]
+        let killed = 0;
+        let jobs: Vec<DetachedJob> = {
+            let mut registry = self.inner.lock().await;
+            std::mem::take(&mut registry.jobs)
+                .into_values()
+                .flatten()
+                .collect()
+        };
+        let known = jobs.len();
+        for mut job in jobs {
+            job.stop().await;
+        }
+        killed.max(known)
+    }
+
     /// Puts failed stops back under their original names so the request can be retried.
     async fn restore(&self, session: &str, names: Vec<String>, retry: Vec<DetachedJob>) {
         let mut registry = self.inner.lock().await;
@@ -674,11 +702,6 @@ impl DetachedRegistry {
             jobs.extend(retry);
             jobs.sort_by_key(|j| j.job);
         }
-    }
-
-    /// Jobs still known, across every session.
-    pub async fn count(&self) -> usize {
-        self.inner.lock().await.jobs.values().map(Vec::len).sum()
     }
 
     /// Takes back the jobs a previous run left in the database.
@@ -1136,12 +1159,13 @@ pub fn disarm_detached(_pid: u32) -> bool {
     false
 }
 
-/// Lets every detached job outlive this server: what `cancel` means for them.
+/// Lets every background job outlive this server: what `cancel` means for them.
 ///
 /// # Invariant
 ///
-/// `cancel` asked by a client is the only caller. Every other exit leaves the job
-/// objects armed, so they close with the process and their trees go with it.
+/// `cancel` asked by a client is the only caller. Every other stop ends them
+/// through `terminate_all`, so letting them go is an act of the ask rather than
+/// a side effect of the process exiting.
 #[cfg(windows)]
 pub fn release_detached() -> usize {
     crate::tools::job::release_all()

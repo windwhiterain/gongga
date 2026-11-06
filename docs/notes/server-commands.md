@@ -407,18 +407,17 @@ taken anyway. After an interrupt it is a wait measured in milliseconds; without
 the interrupt it is the length of the turn.
 
 Deleting a session is the one thing that means "the work it started is not wanted
-either". `cancel` disagrees on purpose: detached jobs exist to outlive a cancel,
+either". `cancel` disagrees on purpose: background jobs exist to outlive a cancel,
 and a delete is not one.
 
 ## interrupt
 
 Stop one session's turn, and drop what it still owed.
 
-The counterpart to `cancel`, which stops everything but keeps the work: this one
-is about a single session and it throws the work away. The difference is a
-single pending row, and the distinction is worth a command of its own -- "stop
-that, I did not mean it" and "stop, I will continue after a restart" are not the
-same request.
+The same act as `cancel`, scoped to one session: both fire the turn's token and
+clear its pending rows, so neither leaves work for the next start. The difference
+is the scope -- "stop that one, I did not mean it" and "stop the whole server" are
+not the same request -- and the distinction is worth a command of its own.
 
 It used to be Ctrl+X, which meant only the TUI could do it: a script, and so the
 model, had no way to stop a turn it had started. As a command it is reachable by
@@ -430,10 +429,10 @@ the delete wait for however long that turn takes -- twenty minutes, if that is
 how long the turn takes. So delete interrupts first and only then waits, which is
 a wait measured in milliseconds.
 
-Not `request_stop`. Aborting is deliberate, so this work is not what the
-next start owes -- and clearing the rows is what makes that true for the turns
-queued behind the running one as well, since they give up once they reach the
-front.
+The token, not a boundary flag: a call stuck in a shell write has no boundary to
+reach. Clearing the rows is what keeps the next start from owing this work, and it
+does the same for the turns queued behind the running one, since they give up once
+they reach the front.
 
 ## interrupt_session
 
@@ -444,42 +443,39 @@ as "the turn did stop".
 
 ## cancel
 
-The SPEC's `cancle`: do not die on the spot. Running turns are cancelled,
-whatever they cannot serialise into the database is left as a pending task, and
-only then does the process leave.
+The SPEC's `cancle`: interrupt every turn and leave. `cancel` calls `interrupt`
+on every live session, which fires the turn's token and clears its pending rows;
+nothing unfinished is owed to the next start. The one thing kept is a turn inside
+`wait`: it started nothing, so `interrupt` marks it resumable, keeps its `turn` row,
+and the next start resumes the wait. Every other call is interrupted where it stands
+-- keeping a turn that was mid-program would run the program twice. The listen loop
+breaks as soon as
+`shutdown` is pulled, without waiting for `active` to drain -- a call stuck in a
+shell write or a model stream has no step boundary to reach, and a flag it may
+never read is not worth holding the port for.
 
-Detached jobs are the exception and the point of the whole exercise: they were
-started precisely so that they would survive this. Killing them here would make
-`detached` indistinguishable from `background`, and would take away the one thing
-an agent needs in order to replace the server it is running on.
+Background jobs are the exception, and only for this one ask: they were started
+precisely so that a `cancel` would let them go. Killing them here would make
+`background` indistinguishable from foreground work, and would take away the one
+thing an agent needs in order to replace the server it is running on.
 
-Except that only a `cancel` a client asked for lets them go. A stop that a signal
-asked for is not that ask: the window closed, the console was interrupted, the
-process this server follows ended -- nothing in any of those promised the job a
-life after this server's. So `cancel` releases the armed trees when `Origin` is a
-client and calls nothing when it is a signal, and the answer it records says which
-of the two happened.
+Only a `cancel` that crossed the wire does this. A window closing, a console
+interrupt and the end of the process this server follows reach `commands::stop`,
+which calls the same `cancel` through `Origin::Signal` -- and SPEC's "kill server
+kills all jobs" owns that path. `DetachedRegistry::stop_all` ends every armed tree,
+workers included, and stops the registry's pids as well for a tree that failed to
+arm. The rows are left for the next start, which reports a job killed while the
+server was down. `release_detached` is the one act that lets a job object go, and a
+client `cancel` is its only caller. The `server_stop` row says who asked and records
+`released` or `killed`, so the difference is a fact in the log.
 
-Not `cancel()`: a cancelled turn must still be there for the next start to pick
-up, otherwise "cancel, restart, continue" -- the whole point of shutting down
-cleanly -- loses the turn it was protecting.
-
-Except a turn that is only `wait`ing. `request_stop` raises a flag instead of firing
-the token, and every other tool sees it at its next step boundary; `wait` sits inside a
-call for its whole ceiling, so it reads the flag itself (`StopSignal`) and sends an
-answer of its own: the wait ends here, what it was waiting for is the next start's to
-deliver. It then clears the same flag that would have kept the turn's row, because a
-wait started nothing and left nothing undone. So the drain is a hundred milliseconds
-rather than a whole `timeout_ms`, and a restart does not replay a turn whose only work
-was waiting -- which is exactly what the flag used to make it do.
-
-Not quite yet: the acknowledgement announcing what is being cancelled is worth
-more than a fast exit, and the listen loop publishes it only after this handler
-returns. A quarter second is well inside one round trip.
+The acknowledgement announcing what was interrupted is worth more than a fast
+exit, and the listen loop publishes it only after this handler returns. A quarter
+second is well inside one round trip.
 
 ### Who asked
 
-`cancel` records the ask before it stops anything: an `events` row of kind
+`cancel` records the ask once the turns are interrupted: an `events` row of kind
 `server_stop` whose `payload.by` names the asker and whose counts say what is being
 stopped. Publishing that row is the notice -- it is how a window that did *not* ask
 learns the server is stopping, and it is the only place that says who asked. The
@@ -526,9 +522,9 @@ A *notice* -- one of the server's own rows, `{"notice": "background"}` for a job
 that ended or `{"notice": "finished"}` for a command that outlived its wait -- is
 news this session is owed, not a person waiting, and it owes a turn on its own
 too: a session that is idle has nobody else to read it, and SPEC's `wait` is
-answered by exactly this kind of row. `/wait` that a stop ended leaves a
-`"wait_cancelled"` notice for the same reason -- the next start is where the news
-it was waiting for arrives, so the next start is where it has to be woken. The
+answered by exactly this kind of row. A wait a `cancel` kept needs no notice of its
+own: its `turn` row is what wakes the session on the next start, which is where the
+news it was waiting for arrives. The
 one exception is `{"notice": "explore"}`: a reminder about the turn already
 running, which an idle session would be woken to read about a turn it is not in.
 See `docs/notes/server-explore.md`.

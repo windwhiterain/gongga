@@ -76,6 +76,42 @@ pub async fn run(
     })
 }
 
+/// One program of its own, printing into a file.
+///
+/// # Invariant
+///
+/// Started outside this server's job object, with `kill_on_drop` off: the wait can end
+/// without the work ending, which is what a call that outlives its clock is. See
+/// `docs/notes/server-tools-exec.md`.
+pub struct Own {
+    pub pid: u32,
+    /// Both streams, in the order they were written: one answer, not two.
+    pub log: std::path::PathBuf,
+    pub child: tokio::process::Child,
+}
+
+/// Starts one program the way a job is started: a group of its own, a log of its own.
+pub fn spawn_own(
+    program: &Path,
+    args: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    log: &Path,
+) -> Result<Own, String> {
+    let mut launched =
+        crate::tools::detached::DetachedJob::launch_program(program, args, cwd, log, env)
+            .map_err(|e| format!("could not run {}: {e}", program.display()))?;
+    let pid = launched.pid;
+    let child = launched
+        .take_child()
+        .ok_or_else(|| format!("{} started without a handle to wait on", program.display()))?;
+    Ok(Own {
+        pid,
+        log: log.to_path_buf(),
+        child,
+    })
+}
+
 /// Reads one stream to its end.
 async fn drain(mut stream: impl tokio::io::AsyncRead + Unpin) -> String {
     use tokio::io::AsyncReadExt;

@@ -542,7 +542,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             name: "interrupt_session".into(),
             description:
                 "Stop the turn one session is running. The turn is dropped, not resumed on \
-                      the next start. Detached jobs keep running."
+                      the next start. Background jobs keep running."
                     .into(),
             args: vec![{
                 let mut spec = pos(
@@ -560,10 +560,11 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "cancel".into(),
-            description: "Stop running turns, save what is left undone, and shut the server down. \
-                      Detached jobs are let go: they outlive the server, which is what a handover \
-                      needs. It is the only stop that leaves them running -- a server killed, or \
-                      stopped by a window closing, takes every job it started with it."
+            description: "Interrupt every running turn and shut the server down at once. Nothing \
+                      unfinished is kept for the next start. This is the only stop that lets \
+                      background jobs go: they are processes of their own, outlive this server \
+                      and are adopted on the next start. Any other stop -- a signal, a window \
+                      closing, a killed process -- ends every job it started with it."
                 .into(),
             args: vec![],
         },
@@ -2073,7 +2074,8 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
 }
 
 fn prepare_delete(d: &Dispatch, name: &str) -> (bool, usize) {
-    let interrupted = interrupt(d, name);
+    // A delete drops the turn even when it was waiting: nothing of it is kept.
+    let interrupted = interrupt(d, name, false);
     if let Some(session) = d.sessions.peek(name) {
         session.mark_deleted();
     }
@@ -2098,7 +2100,7 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
     let stopped = d.sessions.detached().stop_session(name).await;
     if stopped.failed > 0 {
         return Outcome::err(format!(
-            "could not stop {} detached bash(es) for {name}; session kept for retry",
+            "could not stop {} background bash(es) for {name}; session kept for retry",
             stopped.failed
         ));
     }
@@ -2114,7 +2116,7 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
             let mut message = format!("deleted session {name}");
             if stopped.stopped > 0 {
                 message.push_str(&format!(
-                    " and stopped {} detached bash(es)",
+                    " and stopped {} background bash(es)",
                     stopped.stopped
                 ));
             }
@@ -2143,16 +2145,29 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
     finish_delete(d, &name, was_busy, dropped).await
 }
 
-/// Stops one session's turn and drops its pending rows, unlike `cancel`.
-fn interrupt(d: &Dispatch, name: &str) -> (bool, usize) {
+/// Stops one session's turn and drops its pending rows.
+fn interrupt(d: &Dispatch, name: &str, keep_waiting: bool) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);
     };
     // Read before the cancel: afterwards there is nothing left to ask.
     let was_busy = session.busy();
+    // SPEC: a wait lives across a cancel. Marked before the token fires, because
+    // the token is what ends the wait.
+    let waiting = keep_waiting && session.stop_signal().is_waiting();
+    if waiting {
+        session.mark_resumable();
+    }
     session.cancel();
-    // Not `request_stop`: aborting is deliberate, so the work is not owed.
-    let dropped = d.store.clear_pending_tasks(name).unwrap_or(0);
+    // Aborting is deliberate, so the work is not owed -- except a wait, whose row
+    // is the next start's to resume.
+    let dropped = if waiting {
+        d.store
+            .clear_pending_tasks_except(name, "turn")
+            .unwrap_or(0)
+    } else {
+        d.store.clear_pending_tasks(name).unwrap_or(0)
+    };
     (was_busy, dropped)
 }
 
@@ -2166,7 +2181,8 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => Outcome::err(e.to_string()),
         };
     }
-    let (was_busy, dropped) = interrupt(d, &name);
+    // `interrupt_session` drops the turn; only a `cancel` keeps a waiting one.
+    let (was_busy, dropped) = interrupt(d, &name, false);
     let mut message = if was_busy {
         format!("interrupted {name}")
     } else {
@@ -2178,14 +2194,12 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
     Outcome::ok(message)
 }
 
-/// The SPEC's `cancle`: stop turns and leave their work for the next start.
+/// A stop from outside the protocol: a signal, a dead window, Ctrl-C.
 ///
 /// # Invariant
 ///
-/// Detached jobs keep running: they were started precisely so they would
-/// outlive this.
-/// A stop asked from outside the protocol -- a signal -- says what `cancel` says,
-/// and records the same way which ask it was.
+/// It runs the same `cancel`. Only a protocol `cancel` lets jobs go, so this
+/// one ends them all. See `docs/notes/server-signal.md`.
 pub(crate) async fn stop(d: &Dispatch) {
     // A window that cancelled as it left has already asked; this is the echo.
     if d.shutting_down.load(Ordering::SeqCst) {
@@ -2198,7 +2212,21 @@ pub(crate) async fn stop(d: &Dispatch) {
     tracing::info!(answer = %said.message, "stopped as a signal asks");
 }
 
-/// Stops every turn, records who asked, and leaves the work for the next start.
+/// Whether the stop in progress is one that lets background jobs go.
+///
+/// # Invariant
+///
+/// Set by `cancel` before it interrupts anything. A tool whose process outlives its
+/// call reads it to tell the two stops apart: a client's `cancel` releases the work,
+/// every other stop ends it. See `docs/notes/server-commands.md`.
+static CANCEL_LETS_GO: AtomicBool = AtomicBool::new(false);
+
+/// Whether this stop lets the work go, and the next start adopt it.
+pub fn cancel_lets_go() -> bool {
+    CANCEL_LETS_GO.load(Ordering::SeqCst)
+}
+
+/// Interrupts every turn, records who asked, and leaves at once.
 ///
 /// # Invariant
 ///
@@ -2207,20 +2235,21 @@ pub(crate) async fn stop(d: &Dispatch) {
 /// says who asked. The status that follows from it states the fact, not the
 /// name -- see `docs/notes/server-commands.md`.
 async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
-    // First: the listen loop keeps dispatching through the notice window; a turn
-    // started there is not waited for.
+    // Set first: a tool whose process outlives its call reads it to tell the stops apart.
+    CANCEL_LETS_GO.store(matches!(origin, Origin::Client { .. }), Ordering::SeqCst);
+    // The listen loop keeps dispatching through the notice window.
     d.shutting_down.store(true, Ordering::SeqCst);
     let running = d.sessions.live_sessions();
     for session in &running {
-        // A stop, not a kill: SPEC finishes what cannot be serialized first.
-        session.request_stop();
+        // Fire the token: a stuck call has no boundary. A wait is the exception;
+        // `interrupt` keeps its turn.
+        interrupt(d, session.name(), true);
     }
-    // Only a `cancel` a client asked for lets a detached job go.
-    let released = match origin {
-        Origin::Client { .. } => crate::tools::detached::release_detached(),
-        Origin::Signal { .. } => 0,
+    // Only a protocol `cancel` lets jobs go; every other stop ends them here.
+    let (released, killed) = match origin {
+        Origin::Client { .. } => (crate::tools::detached::release_detached(), 0),
+        Origin::Signal { .. } => (0, d.sessions.detached().stop_all().await),
     };
-    let detached = d.sessions.detached().count().await;
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
     let by = origin.describe();
     d.agent.log_event(
@@ -2230,8 +2259,8 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
             "by": by,
             "sessions": running.len(),
             "pending": pending,
-            "detached": detached,
             "released": released,
+            "killed": killed,
         }),
     );
     // Wait before shutting down: the acknowledgement is published after this returns.
@@ -2240,26 +2269,25 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
         tokio::time::sleep(SHUTDOWN_NOTICE).await;
         shutdown.cancel();
     });
+    let jobs = match origin {
+        Origin::Client { .. } => format!(
+            "{} background job(s) keep running -- they are processes of their own, outlive \
+             this server and are adopted on the next start",
+            released
+        ),
+        Origin::Signal { .. } => format!(
+            "{} background job(s) ended with this server: only a `cancel` lets them go",
+            killed
+        ),
+    };
     let said = format!(
-        "cancelling {} session(s); {} pending task(s) will be picked up on the next start; {}",
-        running.len(),
-        pending,
-        match origin {
-            Origin::Client { .. } => format!(
-                "{} detached job(s) keep running -- they outlive the server, stop them with \
-                 `del_bash`",
-                detached
-            ),
-            Origin::Signal { .. } => format!(
-                "{} detached job(s) stop with this server: nothing asked for them to outlive it",
-                detached
-            ),
-        }
+        "interrupted {} session(s); nothing is left for the next start; {jobs}",
+        running.len()
     );
     tracing::warn!(
         running = running.len(),
         by = %by,
-        "the server is stopping: it keeps answering until its turns finish"
+        "the server is stopping: every turn was interrupted"
     );
     Outcome::ok(said)
 }

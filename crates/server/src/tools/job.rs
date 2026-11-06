@@ -235,7 +235,7 @@ impl Drop for ProcessJob {
 /// How a tree this server holds ends with it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ends {
-    /// A `cancel` lets it go: a detached job, which was started to outlive the server.
+    /// A `cancel` lets it go: a background job, which was started to outlive the server.
     OnCancel,
     /// Nothing lets it go: a call the server is running, which no stop spares.
     WithServer,
@@ -251,7 +251,7 @@ struct Armed {
 /// # Invariant
 ///
 /// One registry: exactly one act lets a process outlive this server -- `cancel` -- and
-/// it must reach every kind of detached job. No owner may hold a handle itself, or a
+/// it must reach every kind of background job. No owner may hold a handle itself, or a
 /// handler that dropped would be the thing deciding.
 static ARMED: LazyLock<Mutex<HashMap<u32, Armed>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -291,12 +291,12 @@ pub fn release(pid: u32) {
     }
 }
 
-/// Lets every detached tree go, and says how many there were.
+/// Lets every background tree go, and says how many there were.
 ///
 /// # Invariant
 ///
-/// The whole of what `cancel` means for what was detached. Every other exit calls
-/// nothing, so the armed jobs close with the process and their trees go with it.
+/// The whole of what `cancel` means for a background job. Every other stop calls
+/// `terminate_all` instead, which ends the same trees where they stand.
 pub fn release_all() -> usize {
     let mut registry = armed();
     let going: Vec<u32> = registry
@@ -308,6 +308,30 @@ pub fn release_all() -> usize {
     for pid in going {
         if let Some(held) = registry.remove(&pid) {
             held.job.release();
+        }
+    }
+    count
+}
+
+/// Ends every background tree this server holds, and says how many there were.
+///
+/// # Invariant
+///
+/// The counterpart of `release_all`: what a stop that is not a `cancel` means for
+/// a background job. `WithServer` trees are left to their own callers. The job
+/// objects would take their trees with the process anyway; doing it here makes the
+/// kill an act of the stop rather than a side effect of exit.
+pub fn terminate_all() -> usize {
+    let mut registry = armed();
+    let going: Vec<u32> = registry
+        .iter()
+        .filter(|(_, held)| held.ends == Ends::OnCancel)
+        .map(|(pid, _)| *pid)
+        .collect();
+    let count = going.len();
+    for pid in going {
+        if let Some(held) = registry.remove(&pid) {
+            held.job.terminate();
         }
     }
     count

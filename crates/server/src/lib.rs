@@ -496,14 +496,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     });
 
     let served = net::serve(Arc::new(cfg), dispatch, bus).await;
-    // The drain's end: nothing new may fire, and what fired is waited for.
+    // Nothing new may fire once the socket stopped; turns were interrupted already.
     stop_watching.cancel();
     let _ = matcher.await;
     // Nothing notices a job's end after this: a stopping server did not see it finish.
     let _ = detached_watch.await;
-    while active.load(std::sync::atomic::Ordering::SeqCst) != 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
     // Every exit from `serve` lands here, so nothing it started outlives the
     // stop decision. See `docs/notes/server-main.md`.
     sessions.close_shells().await;

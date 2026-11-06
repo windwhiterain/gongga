@@ -10,11 +10,12 @@ Three ways to run a command, which the SPEC keeps separate:
 
 * **foreground** (default): run it in the shell, stream the output, return the
   result. The turn waits.
-* `background`: start it in the shell and return at once. Its output is tailed
-  into the shell's *unread* buffer, which `check_bash` collects.
-* `detached`: start a process of its own and return at once. It is not this
-  shell's business -- see [`crate::tools::detached`], which owns it, and which
-  is why a detached job outlives this shell, this session and even the server.
+* `background` on a peer: start it in that shell and return at once. Its output
+  is tailed into the shell's *unread* buffer, which `check_bash` collects.
+* `background` on this machine: start a process of its own and return at once.
+  It is not the shell's business -- see [`crate::tools::detached`], which owns it,
+  and which is why a background job outlives this shell, this session, a `cancel`
+  and even the server.
 
 A marker makes completion detectable. After each command we print a sentinel
 carrying the exit code to *both* stdout and stderr, so each stream can be
@@ -313,4 +314,4 @@ is non-zero, then reads the same pending buffer it always reads. `wait_ms` is a
 ceiling on the call, not on the jobs: passing it returns the output so far and the
 jobs keep running. A read that names no number reads now, and `owns_its_wait` keeps
 the tunnel's clock off it -- waiting is the whole work. A cancelled turn stops the wait and leaves
-them running. `detached` processes have no shell to wait on and are not included.
+them running. Background processes have no shell to wait on and are not included.

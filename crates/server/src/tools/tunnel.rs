@@ -53,13 +53,6 @@ pub fn wait_of(args: &Value) -> Option<Duration> {
         .map(Duration::from_millis)
 }
 
-/// Whether this call said `detached`.
-pub fn wants_detached(args: &Value) -> bool {
-    args.get("detached")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
 /// Whether this call said `background`.
 pub fn wants_background(args: &Value) -> bool {
     args.get("background")
@@ -67,38 +60,22 @@ pub fn wants_background(args: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// Whether a call that does not wait asked for both, which is no way to run it.
-///
-/// # Invariant
-///
-/// One refusal for every tool: `background` keeps the answer for `check_job` and
-/// `detached` hands it over, so a call that says both has asked for two answers.
-pub fn both_ways(args: &Value) -> bool {
-    wants_background(args) && wants_detached(args)
-}
-
 /// The word a tool the tunnel leaves alone may not say.
 pub fn foreign(tool: &dyn Tool, args: &Value) -> Option<&'static str> {
     if tool.tunneled() {
         return None;
     }
-    if wants_background(args) {
-        Some("background")
-    } else if wants_detached(args) {
-        Some("detached")
-    } else {
-        None
-    }
+    wants_background(args).then_some("background")
 }
 
-/// What carries a call that said `detached`.
+/// What carries a call that said `background`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Carried {
     /// The tool starts a process of its own and answers with what it started.
     Process,
     /// A worker process runs this call and leaves its answer in a file.
     Worker,
-    /// Neither: it acts on what this server holds, so it cannot be detached.
+    /// Neither: it acts on what this server holds, so `background` is refused.
     Here,
 }
 
@@ -152,107 +129,17 @@ impl JobRegistry {
     }
 }
 
-/// Which way a call that does not wait gives up its answer.
+/// How a call that does not wait is recorded: one kind of job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// The answer waits in the job's row until `check_job` reads it.
     Background,
-    /// The answer is handed to the session as a notice when the job ends.
-    Detached,
 }
 
 impl Mode {
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Background => "background",
-            Self::Detached => "detached",
-        }
+        "background"
     }
-}
-
-/// Starts the call as a job of this server and answers for it before it is done.
-///
-/// # Invariant
-///
-/// The job outlives the call, not the server: it takes its own cancellation and its
-/// own inbox, because the turn that asked for it ends long before it does, and it
-/// writes no stream, because that stream belonged to the turn. What it keeps is the
-/// session's shells, its interpreters and its store.
-pub async fn spawn(
-    tool: Arc<dyn Tool>,
-    name: String,
-    mut args: Value,
-    ctx: &ToolContext,
-    mode: Mode,
-) -> ToolOutcome {
-    let description = args
-        .get("description")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let max = args
-        .get("max_output")
-        .and_then(Value::as_u64)
-        .map(|max| usize::try_from(max).unwrap_or(usize::MAX))
-        .unwrap_or(crate::config::DEFAULT_MAX_OUTPUT_CHARS);
-    // The tool is not told either word: what it runs is the work, not the waiting.
-    if let Some(object) = args.as_object_mut() {
-        object.remove("background");
-        object.remove("detached");
-    }
-    // A job nothing records is one whose answer nobody could collect: it is not started.
-    let id = match ctx.store.add_job(
-        &ctx.session,
-        &ctx.call_id,
-        &name,
-        description.as_deref(),
-        mode.as_str(),
-        crate::store::now_millis(),
-    ) {
-        Ok(id) => id,
-        Err(e) => {
-            return ToolOutcome::err(format!(
-                "`{name}` ran nothing: this call could not be recorded as a job ({e}), and a \
-                 job nothing records is one whose answer nobody could collect."
-            ));
-        }
-    };
-    let mut job = ctx.clone();
-    job.cancel = CancellationToken::new();
-    job.events = None;
-    job.inbox = crate::session::InboxSignal::never();
-    job.holds_the_turn = false;
-    let started = std::time::Instant::now();
-    let called = name.clone();
-    let ended = job.cancel.clone();
-    ctx.jobs.add(id, ended.clone());
-    tokio::spawn(async move {
-        let outcome = crate::tools::invoke(&called, tool, args, &job).await;
-        job.jobs.done(id);
-        let spent = crate::agent::spent(started.elapsed().as_millis() as u64);
-        let text = match crate::tools::cap_max_output(
-            &job,
-            &called,
-            description.as_deref(),
-            &job.call_id,
-            &outcome.output,
-            max,
-        ) {
-            Some(metadata) => format!("{metadata}\n(over {max} chars: it is all in that file)"),
-            None => outcome.output,
-        };
-        report(&job, id, &called, &text, outcome.ok, &spent, mode).await;
-    });
-    ToolOutcome::ok(match mode {
-        Mode::Background => format!(
-            "`{name}` started as job {id}: it runs on without this turn. `check_job` with \
-             `job_id: {id}` collects what it answers, and this session is told when it ends."
-        ),
-        Mode::Detached => format!(
-            "`{name}` started detached as job {id}: it runs on without this turn, and this \
-             session is told when it ends. `wait` is how you stay in this turn until that \
-             news lands."
-        ),
-    })
 }
 
 /// Starts `name` as a worker process, and answers for it before it is done.
@@ -262,7 +149,7 @@ pub async fn spawn(
 /// The request file is written and the pid recorded before the receipt leaves, so an
 /// id the caller can name is one the next start can adopt: the worker outlives this
 /// server, and so must everything needed to collect what it answered.
-pub async fn detach_to_worker(
+pub async fn spawn_worker(
     _tool: Arc<dyn Tool>,
     name: String,
     mut args: Value,
@@ -279,7 +166,6 @@ pub async fn detach_to_worker(
         .unwrap_or(crate::config::DEFAULT_MAX_OUTPUT_CHARS);
     // The worker is told the work, not the waiting.
     if let Some(object) = args.as_object_mut() {
-        object.remove("detached");
         object.remove("background");
     }
     let id = match ctx.store.add_job(
@@ -287,7 +173,7 @@ pub async fn detach_to_worker(
         &ctx.call_id,
         &name,
         description.as_deref(),
-        Mode::Detached.as_str(),
+        Mode::Background.as_str(),
         crate::store::now_millis(),
     ) {
         Ok(id) => id,
@@ -352,15 +238,17 @@ pub async fn detach_to_worker(
         ));
     }
     let child = launched.take_child();
-    let sink = ctx.clone();
+    let mut sink = ctx.clone();
+    // The turn that asked for this stopped waiting: its stream is not this job's.
+    sink.events = None;
     let named = name.clone();
     tokio::spawn(async move {
         watch(sink, id, named, answer_path, pid, child, max).await;
     });
     ToolOutcome::ok(format!(
-        "`{name}` started detached as job {id}: it runs in a process of its own, so it \
-         outlives this server and is picked up again if the server restarts. This session \
-         is told when it ends, and `check_job` with `job_id: {id}` collects its answer."
+        "`{name}` started as job {id}: it runs in a process of its own, so it outlives \
+         this server and is picked up again if the server restarts. This session is told \
+         when it ends, and `check_job` with `job_id: {id}` collects its answer."
     ))
 }
 
@@ -412,20 +300,207 @@ pub(crate) async fn watch(
     );
     let (ok, text) = match crate::worker::read(&answer_path) {
         Some(answer) => (answer.ok, answer.output),
-        None => (
-            false,
-            format!(
-                "the process ended without leaving an answer; what it printed is in \
-                 {}",
+        // What it printed is the answer when the answer file was never written.
+        None => {
+            let printed =
+                std::fs::read_to_string(answer_path.with_extension("log")).unwrap_or_default();
+            let why = format!(
+                "the process ended without leaving an answer; what it printed is in {}",
                 answer_path.with_extension("log").display()
-            ),
-        ),
+            );
+            if printed.trim().is_empty() {
+                (false, why)
+            } else {
+                (false, format!("{printed}\n[{why}]"))
+            }
+        }
     };
     let capped = match crate::tools::cap_max_output(&ctx, &name, None, &ctx.call_id, &text, max) {
         Some(metadata) => format!("{metadata}\n(over {max} chars: it is all in that file)"),
         None => text,
     };
-    report(&ctx, id, &name, &capped, ok, &ran, Mode::Detached).await;
+    report(&ctx, id, &name, &capped, ok, &ran).await;
+}
+
+/// Runs one program as a process of its own, and waits for it until `clock`.
+///
+/// # Invariant
+///
+/// The row exists from the start and is deleted only when the call answered: a call
+/// still running when this server stops is a job the next start adopts, and one cut by
+/// anything that is not a `cancel` takes its program with it. See
+/// `docs/notes/server-tools-exec.md`.
+pub async fn run_own_program(
+    ctx: &ToolContext,
+    name: &str,
+    description: Option<&str>,
+    max: usize,
+    program: &std::path::Path,
+    args: &[String],
+    cwd: &std::path::Path,
+    env: &[(String, String)],
+    clock: std::time::Duration,
+) -> Result<crate::tools::words::RunOutcome, ToolOutcome> {
+    let log = ctx.output_dir.join(format!("call-{}.log", ctx.call_id));
+    if let Some(parent) = log.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let own = match crate::tools::words::spawn_own(program, args, cwd, env, &log) {
+        Ok(own) => own,
+        Err(e) => return Err(ToolOutcome::err(e)),
+    };
+    let id = match ctx.store.add_job(
+        &ctx.session,
+        &ctx.call_id,
+        name,
+        description,
+        Mode::Background.as_str(),
+        crate::store::now_millis(),
+    ) {
+        Ok(id) => id,
+        Err(e) => {
+            let mut child = own.child;
+            let _ = child.start_kill();
+            return Err(ToolOutcome::err(format!(
+                "`{name}` ran nothing: this call could not be recorded as a job ({e}), and a \
+                 process nothing records is one whose answer nobody could collect."
+            )));
+        }
+    };
+    let mut running = Running {
+        ctx,
+        id,
+        pid: own.pid,
+        log: own.log,
+        child: Some(own.child),
+        done: false,
+    };
+    let status = {
+        let child = running.child.as_mut().expect("just started");
+        tokio::time::timeout(clock, child.wait()).await
+    };
+    match status {
+        Ok(Ok(status)) => {
+            running.done = true;
+            let printed = std::fs::read_to_string(&running.log).unwrap_or_default();
+            crate::tools::detached::release_ended(running.pid);
+            let _ = ctx.store.delete_job(running.id);
+            // In hand, so the log is a copy: only a call that becomes a job keeps it.
+            let _ = std::fs::remove_file(&running.log);
+            Ok(crate::tools::words::RunOutcome {
+                stdout: printed,
+                stderr: String::new(),
+                code: status.code().unwrap_or(-1),
+            })
+        }
+        Ok(Err(e)) => Err(ToolOutcome::err(format!(
+            "waiting for {}: {e}",
+            program.display()
+        ))),
+        Err(_) => {
+            running.done = true;
+            let child = running.child.take();
+            Err(promote_child(
+                ctx,
+                name,
+                max,
+                running.id,
+                running.pid,
+                running.log.clone(),
+                child,
+                clock,
+            ))
+        }
+    }
+}
+
+/// A call's own program, and what becomes of it when the call ends without it.
+struct Running<'a> {
+    ctx: &'a ToolContext,
+    id: i64,
+    pid: u32,
+    log: std::path::PathBuf,
+    child: Option<tokio::process::Child>,
+    /// Set once the call has answered, or handed the work to the job table.
+    done: bool,
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        // A `cancel` lets it go; every other cut drops the work.
+        if crate::commands::cancel_lets_go() {
+            return;
+        }
+        if let Some(mut child) = self.child.take() {
+            let _ = child.start_kill();
+        }
+        let _ = std::fs::remove_file(&self.log);
+        let _ = self.ctx.store.delete_job(self.id);
+    }
+}
+
+/// Hands a program that outlived its wait to the job table, and answers for it.
+///
+/// # Invariant
+///
+/// The row names the process and the file its answer will be read from before the
+/// receipt leaves, so the next start can adopt a call this server never saw end.
+fn promote_child(
+    ctx: &ToolContext,
+    name: &str,
+    max: usize,
+    id: i64,
+    pid: u32,
+    log: std::path::PathBuf,
+    child: Option<tokio::process::Child>,
+    clock: std::time::Duration,
+) -> ToolOutcome {
+    let answer_path = log.with_extension("answer.json");
+    if let Err(e) = ctx.store.set_job_process(id, pid, &answer_path) {
+        return ToolOutcome::err(format!(
+            "`{name}` is still running, and the job it became could not be pointed at its \
+             process ({e}),             so nothing would collect what it prints."
+        ));
+    }
+    let mut sink = ctx.clone();
+    // The call that asked for this stopped waiting: its stream is not this job's.
+    sink.events = None;
+    let named = name.to_string();
+    tokio::spawn(async move {
+        let code = match child {
+            Some(mut child) => match child.wait().await {
+                Ok(status) => status.code(),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        crate::tools::detached::release_ended(pid);
+        let mut text = std::fs::read_to_string(&log).unwrap_or_default();
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(&format!(
+            "[exit status {}]",
+            code.map_or_else(|| "unknown".to_string(), |c| c.to_string())
+        ));
+        let _ = crate::worker::write(
+            &answer_path,
+            &crate::worker::Answer {
+                ok: code == Some(0),
+                output: text,
+            },
+        );
+        watch(sink, id, named, answer_path, pid, None, max).await;
+    });
+    ToolOutcome::ok(format!(
+        "`{name}` was still running after {}, so this call became background job {id}: it runs \
+         in a process of its own, so it outlives this server and is adopted on the next start. \
+         `check_job` with `job_id: {id}` collects what it prints.",
+        crate::agent::spent(u64::try_from(clock.as_millis()).unwrap_or(u64::MAX))
+    ))
 }
 
 /// Writes how the job ended, and the notice that says so, in one act.
@@ -433,9 +508,8 @@ pub(crate) async fn watch(
 /// # Invariant
 ///
 /// The row is written even when nobody is left to tell: what a session was owed must
-/// outlive the session's silence, and a deleted session owes nothing. A `detached`
-/// answer is the notice itself, so it counts as collected the moment that notice is
-/// queued; a `background` answer waits for `check_job`.
+/// outlive the session's silence, and a deleted session owes nothing. The answer
+/// waits in the row until `check_job` reads it.
 pub(crate) async fn report(
     ctx: &ToolContext,
     id: i64,
@@ -443,7 +517,6 @@ pub(crate) async fn report(
     text: &str,
     ok: bool,
     spent: &str,
-    mode: Mode,
 ) {
     let status = if ok { "ok" } else { "error" };
     let what = match ok {
@@ -453,29 +526,15 @@ pub(crate) async fn report(
     // A deleted session owes nothing, and a job the exit ended did not finish.
     let speaking = !matches!(ctx.store.get_session(&ctx.session), Ok(None))
         && !ctx.closing.load(std::sync::atomic::Ordering::SeqCst);
-    let (message, kind) = match mode {
-        // What the job is, not what the caller said: a call that outlived its clock
-        // is as much this job as one that asked to be.
-        Mode::Background => (
-            format!(
-                "Job {id} on `{name}` has {what} after {spent}. `check_job` with \
-                 `job_id: {id}` collects what it printed."
-            ),
-            "job",
-        ),
-        Mode::Detached => (
-            format!(
-                "The `{name}` call you started `detached` has finished after {spent}. This is \
-                 its answer, arriving after the call that asked for it:\n\n{text}"
-            ),
-            "detached",
-        ),
-    };
+    let message = format!(
+        "Job {id} on `{name}` has {what} after {spent}. `check_job` with \
+         `job_id: {id}` collects what it printed."
+    );
     let notice =
-        speaking.then(|| json!({"session": ctx.session, "message": message, "notice": kind}));
-    // A job that ran asynchronously ended here, so `detached` writes are seen too.
+        speaking.then(|| json!({"session": ctx.session, "message": message, "notice": "job"}));
+    // A job that ran asynchronously ended here, so its writes are seen too.
     crate::explore::after_job(ctx, name);
-    let collected = mode == Mode::Detached && notice.is_some();
+    let collected = false;
     if let Err(e) = ctx
         .store
         .finish_job(id, status, text, collected, notice.as_ref())
@@ -490,7 +549,7 @@ pub(crate) async fn report(
 ///
 /// # Invariant
 ///
-/// A `detached` job is a process of its own, so the next start adopts it rather than
+/// A `background` job is a process of its own, so the next start adopts it rather than
 /// mourning it, and only a job with nothing left to adopt is reported lost. The row is
 /// the truth and the notice only points at it. See `docs/notes/server-tools-worker.md`.
 pub async fn announce_owed(
@@ -524,7 +583,7 @@ pub async fn announce_owed(
                     // Still out there: it outlived us, so it is watched, not mourned.
                     Ok(alive) if !alive.is_empty() => {
                         tracing::info!(session = %row.session, job = row.id, pid,
-                            "adopted a detached call still running");
+                            "adopted a background call still running");
                         // Armed on proof only: a job object kills what it holds.
                         match crate::tools::detached::names_process(pid as u32, row.started_at) {
                             Ok(true) => crate::tools::detached::arm_adopted(pid as u32),
@@ -549,16 +608,8 @@ pub async fn announce_owed(
                                 u64::try_from((crate::store::now_millis() - row.started_at).max(0))
                                     .unwrap_or(u64::MAX),
                             );
-                            report(
-                                &ctx,
-                                row.id,
-                                &row.tool,
-                                &answer.output,
-                                answer.ok,
-                                &spent,
-                                Mode::Detached,
-                            )
-                            .await;
+                            report(&ctx, row.id, &row.tool, &answer.output, answer.ok, &spent)
+                                .await;
                             told += 1;
                             continue;
                         }

@@ -508,15 +508,10 @@ struct SessionInner {
     explore: Mutex<Option<Arc<crate::explore::Watch>>>,
     /// Set once the rows are gone, so a queued turn gives up instead of writing.
     deleted: AtomicBool,
-    /// Set by a shutdown's `cancel`: the turn stops but its pending row stays.
-    ///
-    /// # Invariant
-    ///
-    /// One flag, two holders: [`StopSignal`] hands it to a tool call that can decide
-    /// the turn owes nothing after all, which is the same answer this flag carries.
+    /// Set by a `cancel` that found the turn in `wait`: the next start resumes it.
     resumable: Arc<AtomicBool>,
-    /// Set by `cancel`: stop at the next storable point. See `request_stop`.
-    stopping: Arc<AtomicBool>,
+    /// Whether a call is inside `wait` right now: the one work a cancel keeps.
+    waiting: Arc<AtomicBool>,
     /// Set before the shells end, so a stop announced now is the command's, not the exit's.
     closing: Arc<AtomicBool>,
     /// The connection this session's references are read through, if any.
@@ -848,9 +843,9 @@ impl SessionHandle {
         guard.cancel();
         let token = CancellationToken::new();
         *guard = token.clone();
-        // A new turn is not a stopping one: a shutdown that asked the last turn to
-        // stop has no claim on this one.
-        self.inner.stopping.store(false, Ordering::SeqCst);
+        // A new turn is not a waiting one: a shutdown that kept the last turn for
+        // the next start has no claim on this one.
+        self.inner.resumable.store(false, Ordering::SeqCst);
         let turn = self.inner.turns.fetch_add(1, Ordering::Relaxed) + 1;
         (turn, token)
     }
@@ -887,29 +882,17 @@ impl SessionHandle {
         self.inner.cancels.load(Ordering::SeqCst)
     }
 
-    /// Asks the running turn to stop where it can be stored whole.
-    ///
-    /// # Invariant
-    ///
-    /// The token is left alone: a tool killed mid-flight would be stored as a
-    /// sentence about being stopped. See `docs/notes/server-session.md`.
-    pub fn request_stop(&self) {
-        self.inner.resumable.store(true, Ordering::SeqCst);
-        self.inner.stopping.store(true, Ordering::SeqCst);
-        self.inner.cancels.fetch_add(1, Ordering::SeqCst);
-    }
-
-    /// Whether a shutdown asked this turn to stop at its next boundary.
-    pub fn stop_requested(&self) -> bool {
-        self.inner.stopping.load(Ordering::SeqCst)
-    }
-
     /// What a tool call reads to know a `cancel` ended the turn it is inside.
     pub fn stop_signal(&self) -> StopSignal {
         StopSignal {
-            stopping: self.inner.stopping.clone(),
             resumable: self.inner.resumable.clone(),
+            waiting: self.inner.waiting.clone(),
         }
+    }
+
+    /// Keeps this turn's row for the next start: a `cancel` found it waiting.
+    pub fn mark_resumable(&self) {
+        self.inner.resumable.store(true, Ordering::SeqCst);
     }
 
     /// Remembers a move for whoever holds this session next.
@@ -1130,14 +1113,14 @@ impl InboxSignal {
 ///
 /// # Invariant
 ///
-/// The one place a tool learns two things at once: that the server is stopping, and
-/// that what it was doing is finished rather than unfinished. A `wait` that hears this
-/// says so, and a turn that ends after it owes nothing. See
+/// The one place a tool learns what the stop means for its turn: a `wait` marks
+/// itself here, and a cancel that finds the mark keeps the turn for the next start.
+/// Every other call is interrupted and owes nothing. See
 /// `docs/notes/server-commands.md`.
 #[derive(Clone)]
 pub struct StopSignal {
-    stopping: Arc<AtomicBool>,
     resumable: Arc<AtomicBool>,
+    waiting: Arc<AtomicBool>,
 }
 
 impl StopSignal {
@@ -1149,19 +1132,39 @@ impl StopSignal {
     /// has to be replayed. See `docs/notes/server-tools-worker.md`.
     pub fn idle() -> Self {
         Self {
-            stopping: Arc::new(AtomicBool::new(false)),
             resumable: Arc::new(AtomicBool::new(false)),
+            waiting: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Whether a `cancel` asked this turn to stop.
-    pub fn requested(&self) -> bool {
-        self.stopping.load(Ordering::SeqCst)
+    /// Says this call is waiting, so a `cancel` keeps its turn instead of dropping it.
+    ///
+    /// # Invariant
+    ///
+    /// The mark is cleared by the guard's drop, which an aborted call also runs: a
+    /// wait that ended for any reason is not a wait a later cancel can find.
+    pub fn begin_wait(&self) -> WaitGuard {
+        self.waiting.store(true, Ordering::SeqCst);
+        WaitGuard(self.waiting.clone())
     }
 
-    /// Records that nothing is left undone, so the next start does not replay the turn.
-    pub fn nothing_owed(&self) {
-        self.resumable.store(false, Ordering::SeqCst);
+    /// Whether a call is inside `wait` right now.
+    pub fn is_waiting(&self) -> bool {
+        self.waiting.load(Ordering::SeqCst)
+    }
+
+    /// Whether a `cancel` decided this turn is the next start's to resume.
+    pub fn resumable(&self) -> bool {
+        self.resumable.load(Ordering::SeqCst)
+    }
+}
+
+/// Clears the waiting mark however the call leaves, including an abort.
+pub struct WaitGuard(Arc<AtomicBool>);
+
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -1829,7 +1832,7 @@ impl SessionManager {
                 explore: Mutex::new(crate::explore::watch_of(row.mode)),
                 deleted: AtomicBool::new(false),
                 resumable: Arc::new(AtomicBool::new(false)),
-                stopping: Arc::new(AtomicBool::new(false)),
+                waiting: Arc::new(AtomicBool::new(false)),
                 closing: Arc::new(AtomicBool::new(false)),
                 reader: Mutex::new(reader),
                 placed: Mutex::new((!row_cwd.trim().is_empty()).then(|| PathBuf::from(&row_cwd))),

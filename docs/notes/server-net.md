@@ -80,13 +80,11 @@ unless the same address has already been re-inserted for a newer connection.
 
 There used to be a 30s deadline here, and it was a budget like any other: it
 decided that a turn had had long enough, and a turn still committing a tool
-result when it expired lost that work. Nothing needs the deadline either,
-because the wait has a real end -- `cancel` hands every running turn the same
-token, and a turn checks it at every point where it waits (model stream, tool
-call, retry delay) and leaves at its step boundary with its rows already
-written. So the loop waits until the count reaches zero, one [`DRAIN_TICK`] at a time, and
-if a turn ever fails to do that the process simply stays up, still answering --
-which is a state a reader can see, rather than an exit that hides it.
+result when it expired lost that work. Nothing needs the deadline now, because
+the loop does not wait for the count at all: `cancel` fires every turn's token and
+pulls the shutdown, and the loop breaks on `shutdown.is_cancelled()` -- one
+`DRAIN_TICK` later, at most. A call stuck in a shell write never reaches a step
+boundary, and holding the port for it was the bug this replaced.
 
 The wait is inside the accept loop, not after it, and that is the whole point: a
 draining server still serves. `cancel` records a `server_stop` row, and publishing

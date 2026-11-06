@@ -222,7 +222,7 @@ impl Agent {
 
         let outcome = loop {
             // A `cancel` ends the turn here, where it can be stored whole.
-            if cancel.is_cancelled() || session.stop_requested() {
+            if cancel.is_cancelled() {
                 break (TurnOutcome::Cancelled, step);
             }
             // Step boundary: a user line between a call and its result is rejected, so inject here.
@@ -2101,7 +2101,7 @@ fn summary_keys(tool: &str) -> &'static [&'static str] {
     match tool {
         // SPEC lists bash's own set; another tool is summarised by nothing yet,
         // which still reads better than a wall of JSON.
-        "bash" => &["name", "background", "detached", "time_out"],
+        "bash" => &["name", "background", "time_out"],
         "check_job" => &["job_id", "wait_ms"],
         _ => &[],
     }

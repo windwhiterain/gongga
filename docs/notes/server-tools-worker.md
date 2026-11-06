@@ -2,7 +2,8 @@
 
 ## worker (module doc)
 
-SPEC says a `detached` job "lives across server restart, adopted when server restart".
+SPEC says a `background` job "is a process of its own, can live across server cancel,
+adopted when server restart".
 A tool call is a future, and a future cannot outlive the process that is polling it, so
 the only way to keep that promise is for the call to *be* a process. A worker is that
 process: the same binary, started with one request file, owning exactly one call.

@@ -145,14 +145,14 @@ pub struct ServerInfo {
     /// that kills the answering process alone would be undone by a restart.
     #[serde(default)]
     pub supervisor: Option<u32>,
-    /// Whether this server is finishing a `cancel`: it answers, and it will not
-    /// start a new turn.
+    /// Whether this server is finishing a `cancel`: it answers for a short
+    /// notice window and starts no new turn.
     ///
     /// # Invariant
     ///
-    /// Stated so a window can tell "the server is draining" from "the server is
+    /// Stated so a window can tell "the server is stopping" from "the server is
     /// gone". Both look like silence on a wire, and a reader who has to guess
-    /// guesses wrong -- a cancel that takes a minute looked exactly like a crash.
+    /// guesses wrong -- a slow cancel looked exactly like a crash.
     #[serde(default)]
     pub draining: bool,
 }

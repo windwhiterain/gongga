@@ -463,7 +463,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if has_column(conn, "detached_calls", "call_id") {
         conn.execute_batch(
             "INSERT INTO tool_jobs (session, call_id, tool, description, mode, status, started_at)
-             SELECT session, call_id, tool, description, 'detached', 'running', started_at
+             SELECT session, call_id, tool, description, 'background', 'running', started_at
                FROM detached_calls
               WHERE NOT EXISTS (SELECT 1 FROM tool_jobs j WHERE j.call_id = detached_calls.call_id);
              DROP TABLE detached_calls;",
@@ -2416,6 +2416,20 @@ impl Store {
         )?)
     }
 
+    /// Drops everything of one session except the rows of `kind`.
+    ///
+    /// # Invariant
+    ///
+    /// A cancel that found the turn waiting keeps exactly its `turn` row: that row
+    /// is what the next start resumes, and everything else the session queued is
+    /// still dropped.
+    pub fn clear_pending_tasks_except(&self, session: &str, kind: &str) -> anyhow::Result<usize> {
+        Ok(self.lock().execute(
+            "DELETE FROM pending_tasks WHERE session = ?1 AND kind <> ?2",
+            params![session, kind],
+        )?)
+    }
+
     pub fn delete_pending_task(&self, id: i64) -> anyhow::Result<()> {
         self.lock()
             .execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
@@ -2491,6 +2505,23 @@ impl Store {
         )?;
         let id = tx.last_insert_rowid();
         tx.commit()?;
+        Ok(id)
+    }
+
+    /// The job one call became, if it is still one.
+    ///
+    /// # Invariant
+    ///
+    /// By call id, because that is the only name a tool holds while it runs: a call
+    /// whose wait ended before it answered is a job the model has to be able to name.
+    pub fn job_of_call(&self, session: &str, call_id: &str) -> anyhow::Result<Option<i64>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM tool_jobs WHERE session = ?1 AND call_id = ?2 ORDER BY id DESC LIMIT 1",
+        )?;
+        let id = stmt
+            .query_row(params![session, call_id], |row| row.get::<_, i64>(0))
+            .ok();
         Ok(id)
     }
 

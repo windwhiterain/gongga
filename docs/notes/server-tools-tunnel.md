@@ -44,47 +44,37 @@ work becomes a `background` job. A tool that says `owns_its_wait` never gets tha
 a shell, an interpreter and a reading tool each answer for their own wait, and a clock
 taking the call away from them would be taking away the thing that was asked for.
 
-## tunnel::wants_background, wants_detached, both_ways and Carried
+## tunnel::wants_background and Carried
 
-`background` and `detached` both mean "do not hold the turn", and they differ in one
-thing only: who reads the answer. `background` leaves it in the job's row for
-`check_job`; `detached` hands it to the session as a notice when the job ends. A call
-that says both has asked for two answers, so it is refused with one sentence, once,
-here -- `bash` used to say it itself.
+`background` is the one "do not hold the turn" switch, and its answer waits in the
+job's row for `check_job` whichever way the call is carried. There is no second word
+to ask for a second answer, so nothing here has to refuse a call that asked for two.
 
-What carries a `detached` call is the question SPEC made concrete: a detached job lives
-across a server restart, so it has to be a process. `Carried::Process` is local `bash`,
-which starts one; `Carried::Worker` is a one-shot call run by the server's own binary in a
-worker process (`worker.rs`), which outlives the server and writes its answer to a file;
-`Carried::Here` is every tool that acts on what this server holds, and it is refused --
-work with nothing of its own to run in is not detached work. `background` has the matching
-question, `Tool::handles_background`: `bash` and `python` answer it themselves through
-their shell's and their interpreter's own collector, and every other tool's background is
-a job of this server.
+What carries a `background` call is the question SPEC made concrete: a job that lives
+across a server cancel has to be a process of its own. `Carried::Process` is local
+`bash`, which starts one; `Carried::Worker` is a one-shot call run by the server's own
+binary in a worker process (`worker.rs`), which outlives the server and writes its
+answer to a file. `Carried::Here` is every tool that acts on what this server holds --
+its shells, its interpreters, its jobs -- and a separate process would find none of it,
+so `background` is refused there by name rather than answered with a job that would die
+with the server. `Tool::handles_background` is the one exception: a shell or an
+interpreter keeps its own background jobs, read back by `check_bash` and `check_python`.
 
 ## tunnel::foreign
 
 The tunnel's words are the tunnel's to offer. `wait` is the one tool it leaves alone,
-so `background` and `detached` are refused there by name instead of being silently
+so `background` is refused there by name instead of being silently
 ignored: a job that waits is a job that never has an answer to leave running.
 
-## tunnel::spawn
+## No job of this server
 
-One spawn for both ways. The job takes its own cancellation token, its own inbox and
-gives up the turn's stream. All three are the same fact: the turn that asked for this
-call ends long before the job does, so a token it hands down would cancel the work it
-just asked to continue, a stream it hands down would be a channel nobody is reading,
-and the session's own inbox would end the job as if the job had been the turn. That
-last one was a real bug for `detached` before `background` arrived: a message to the
-session cut the work it was told would keep running.
-
-A call that cannot be recorded is not started. The row is what names the job to
-`check_job` and what the next start reads, so accepting a call whose row failed would
-be starting work whose answer nobody could ever collect.
-
-The `max_output` cap is applied here as well as on the waited path, for the reason the
-cap exists at all: the answer arrives as a row or a message, and a message with a
-megabyte of build log in it is a step that costs more than the build did.
+There is no `tunnel::spawn` any more. An in-process task outlived the call but not
+the server: on a cancel its row survived with no pid to adopt, and `announce_owed`
+could only report it lost. SPEC says a `background` job is a process of its own, so
+the call now either starts one or is refused. `spawn_worker` keeps the two rules this
+path taught: the row is written before the process starts, because a call nothing
+records is one whose answer nobody could collect, and `max_output` is capped on the
+answer as well as on the waited path, because the answer arrives as a row.
 
 ## tunnel::JobRegistry
 
@@ -98,7 +88,7 @@ and `del_job` answers for it out of its row.
 ## tunnel::report
 
 The look that ends a call in explore mode is taken here too, because every asynchronous
-ending passes through this function: `background`, `detached`, a foreground call the
+ending passes through this function: `background`, a foreground call the
 clock promoted, and a job adopted after a restart. See `docs/notes/server-explore.md`.
 
 
@@ -109,9 +99,8 @@ notice about an answer nobody wrote.
 
 Suppressed when the session is gone and when the server is closing, the same two rules
 `background_notifier` follows and for the same reasons: a deleted session owes nothing,
-and a job the exit ended did not finish. A `detached` answer is the notice itself, so
-it counts as collected the moment that notice is queued; a `background` answer stays
-uncollected until `check_job` reads it.
+and a job the exit ended did not finish. Every answer stays uncollected in the row until
+`check_job` reads it, and the notice only points at that row.
 
 ## tunnel::announce_owed
 

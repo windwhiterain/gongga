@@ -473,17 +473,18 @@ grab under it, and `0` is a shape an operator picks rather than the absence of o
 ## `draining`
 
 `ServerInfo::draining` is true when the server is finishing a `cancel`: it is still
-answering, and it will not start another turn. `serde(default)`, so a greeting from a
-build without it reads as "not draining". A window already attached learns the same
-fact from the `server_stop` row the cancel writes -- see `SERVER_STOP` and
-`docs/notes/cli-lib.md`.
+answering through the notice window, and it will not start another turn.
+`serde(default)`, so a greeting from a build without it reads as "not draining". A
+window already attached learns the same fact from the `server_stop` row the cancel
+writes -- see `SERVER_STOP` and `docs/notes/cli-lib.md`.
 
-The field exists because both states look like silence on a wire. A `cancel` hands every
-running turn the same token, and the drain that follows can run for minutes while the
-socket answers nothing a window asked before -- a reader who has to guess between "it is
-stopping" and "it is gone" guesses wrong, and the guess it made was to print
-"reconnecting" for a whole cancel that was going fine. `cli::Client` carries it into the
-status line: "stopping — the server keeps answering until its turns finish".
+The field exists because both states look like silence on a wire. A `cancel` now
+interrupts every turn and leaves, but the quarter-second acknowledgement window is
+still a gap in which the socket answers nothing a window asked before -- a reader
+who has to guess between "it is stopping" and "it is gone" guesses wrong, and the
+guess it made was to print "reconnecting" for a cancel that was going fine.
+`cli::Client` carries it into the status line: "stopping — its turns were
+interrupted and it is leaving".
 
 ## `supervisor`
 

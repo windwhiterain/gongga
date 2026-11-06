@@ -1,13 +1,14 @@
 # server-signal: how the server is asked to stop
 
 A console window closes, a console sends Ctrl-C or Ctrl-Break, a shell sends
-SIGTERM: every one of these asks the server to stop, and none of them should lose
-the turn that is running.
+SIGTERM: every one of these asks the server to stop, and none of them waits for a
+turn that will not end.
 
-`cancel` already knows how to stop: it preserves each live session's turn as a
-pending row, lets the turn unwind, and only then breaks the listen loop. So the
-signal path is not a second stop -- it is `commands::cancel`, reached from a place
-with no client to answer.
+`cancel` already knows how to stop: it fires every live session's token, clears
+its pending rows and breaks the listen loop at once. So the signal path is not a
+second stop -- it is `commands::cancel`, reached from a place with no client to
+answer. That difference is not only who gets the answer: a signal's ask ends all
+background jobs, where a client's `cancel` is the one act that lets them go.
 
 ## The handler only nudges
 
@@ -15,8 +16,8 @@ with no client to answer.
 handler may not take a lock. So both do the one thing that is safe from any
 thread: `Notify::notify_one`. The async side awaits the nudge, logs, and runs
 `commands::stop`, which is `cancel` with the answer written to the log. The
-listen loop then drains as it always does and `serve` returns in the usual way,
-so shells close and scripts stop on the existing path.
+listen loop breaks as soon as `shutdown` is pulled, and `serve` returns in the
+usual way, so shells close and scripts stop on the existing path.
 
 A nudge with nobody waiting is remembered by `Notify`, so a signal that lands
 while the runtime is still starting is not lost.
@@ -29,25 +30,25 @@ the server is answered from the log, and a signal has no client to name.
 
 ## A second ask is the user insisting
 
-After the first ask, `net::serve` waits for running turns with no deadline at all.
-That is right for a turn that stops when cancelled, and wrong for a tool call that
-ignores it: the console would stop answering. The second ask therefore leaves at
-once with exit code 130. Nothing is lost by leaving then -- the pending row was
-written by the first ask.
+The first ask interrupts every turn's token and pulls the shutdown, so
+`net::serve` leaves without waiting for `active` to drain. A second ask still
+leaves at once with exit code 130, for a process whose turn ignored the token or
+whose console is owned by something that will not yield. The `server_stop` row is
+already written by the first ask, and no work is kept for the next start.
 
 ## The window that started the server
 
 A server started by the TUI is started for that window, and `cli::spawn` names it
 in `--parent`. When the window ends -- normally, by a crash, or by `taskkill /F` --
-the server takes the same stop: the turn is preserved and the server exits, so a
-killed window does not leave a process holding the port and the home lock.
+the server takes the same stop: every turn is interrupted and the server exits, so
+a killed window does not leave a process holding the port and the home lock.
 
-That stop does not let anything go. A detached job is spared by `cancel`, and
-this is not one: the window went away without asking, so nothing promised those
-processes a life after this server's. Their job objects close with the process
-and take their trees with them -- which is what "kill the window and everything
-under it" means to the user who did it. See
-`docs/notes/server-tools-detached.md`.
+That stop lets nothing go. It reaches `commands::stop`, which calls the same
+`cancel` a client would but marked `Origin::Signal`, and that branch ends every
+background job through `DetachedRegistry::stop_all` rather than releasing the job
+objects. A window the user force-closed must not leave work running that nobody
+can see or stop. Only a `cancel` sent over the protocol is the handover an agent
+starts a background job for. See `docs/notes/server-tools-detached.md`.
 
 Both platforms ask, every 250 ms, whether the pid is still running: Windows by
 reading the handle's exit code, Unix by `kill(pid, 0)`. Windows used to *wait* on
@@ -58,8 +59,8 @@ followed ended, which is minutes after the window was restarted and forever for 
 window that was never closed. The port and the turn were already released by
 then, which is what made it look like a handover that hung rather than an exit
 that waited. A wait that outlives the stop must not be work `Runtime::drop` joins;
-nothing is lost by asking instead of waiting, because the pending row is written
-before a turn starts (`commands::deliver`), not when the server leaves.
+asking instead of waiting costs nothing now, because a stop keeps no work for the
+next start.
 
 ## Who owns a server: `--parent`, and nothing else
 

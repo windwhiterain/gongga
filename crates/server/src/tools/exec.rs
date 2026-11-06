@@ -94,7 +94,30 @@ impl Tool for ExecTool {
                     let program = std::path::Path::new(&command.program);
                     // The session's own facts, as its shell has them: a program that
                     // asks `$GONGGA_SESSION` is asking about this session.
-                    super::words::run(program, &command.args, &command.cwd, &ctx.env, timeout).await
+                    if ctx.holds_the_turn {
+                        // A process of its own, so a wait that ends does not end it.
+                        match super::tunnel::run_own_program(
+                            ctx,
+                            self.name(),
+                            description,
+                            self.max_output_chars,
+                            program,
+                            &command.args,
+                            &command.cwd,
+                            &ctx.env,
+                            timeout,
+                        )
+                        .await
+                        {
+                            Ok(outcome) => Ok(outcome),
+                            Err(answered) => return answered,
+                        }
+                    } else {
+                        // A worker answers for its own call and has nothing to hand the
+                        // work to, so its program ends with the wait.
+                        super::words::run(program, &command.args, &command.cwd, &ctx.env, timeout)
+                            .await
+                    }
                 }
                 Machine::Remote => {
                     // The peer runs it: the program is looked up on its PATH and
@@ -159,10 +182,10 @@ impl Tool for ExecTool {
     ///
     /// # Invariant
     ///
-    /// The wait is dropped with the call, and the program with the wait: a local one
-    /// is spawned `kill_on_drop`, and a peer's ends when its connection closes. What
-    /// is left to say is that the run was stopped rather than finished, and its exit
-    /// status is unknown. See `docs/notes/server-tools-exec.md`.
+    /// The wait is dropped with the call. A local program is a process of its own, so a
+    /// stop that lets jobs go leaves it running and the row carries it; every other cut
+    /// ends it, and what is left to say is that it was stopped rather than finished.
+    /// See `docs/notes/server-tools-exec.md`.
     fn cut<'a>(
         &'a self,
         args: &'a Value,
@@ -177,6 +200,16 @@ impl Tool for ExecTool {
                 Ok(command) => format!("`{}`", command.program),
                 Err(_) => "the program".to_string(),
             };
+            if crate::commands::cancel_lets_go()
+                && let Ok(Some(id)) = ctx.store.job_of_call(&ctx.session, &ctx.call_id)
+            {
+                return ToolOutcome::err(format!(
+                    "{program} was still running: {why}. This stop lets background jobs go, so \
+                     it runs on in a process of its own as job {id}: `check_job` with `job_id: \
+                     {id}` collects what it prints, and the next start adopts it.",
+                    why = why.because()
+                ));
+            }
             ToolOutcome::err(format!(
                 "{program} was stopped: {why}. A program started with `{}` has no shell to be \
                  left running in, so it ends with the call -- what it printed after this point \
@@ -185,6 +218,17 @@ impl Tool for ExecTool {
                 why = why.because()
             ))
         })
+    }
+
+    /// The program's own clock ends the wait by handing it to the job table.
+    ///
+    /// # Invariant
+    ///
+    /// A local call that waits: the tunnel's clock would otherwise fire at the same
+    /// instant and record a second job for one call. A peer's program has no row this
+    /// server could adopt, so it keeps the tunnel's clock and ends with the call.
+    fn owns_its_wait(&self) -> bool {
+        self.machine == Machine::Local
     }
 }
 

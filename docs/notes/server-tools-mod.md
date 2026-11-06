@@ -5,7 +5,7 @@
 The SPEC gives the model `bash{name, cmd}` to run a command in a named
 persistent shell and `del_bash{name}` to throw one away; `check_bash` and
 `list_bash` are the reading half of the same idea, and `del_bash` exists
-because a `detached` job outlives everything else and therefore needs an
+because a `background` bash outlives everything else and therefore needs an
 explicit way to be stopped. Shells are keyed `session_name/bash_name`, so two
 sessions never share one and a single session can keep several independent
 ones.
@@ -45,7 +45,7 @@ a note, so no description defers to prose that is not itself a tool.
 
 ## ToolContext::detached
 
-Deliberately not part of a shell: a detached job outlives its shell, its
+Deliberately not part of a shell: a background job outlives its shell, its
 session and the server.
 
 ## ToolContext::explore
@@ -90,18 +90,18 @@ keeping the full output is being able to find the right one again. `slug()` in
 Implemented with a boxed future rather than `async_trait` so the crate keeps
 one fewer macro dependency; the signature is the same either way.
 
-## GENERAL_ARGS: description, max_output, timeout_ms, background, detached
+## GENERAL_ARGS: description, max_output, timeout_ms, background
 
 SPEC's tunnel-level parameters: every tool may carry them, none declares them by
 hand, and a tool the tunnel leaves alone (`Tool::tunneled`, which is `wait` alone)
 offers none of them. `general_parameters` injects them into the model-facing schema
-(a property a tool declares wins, so `bash`'s own `detached` keeps its longer
+(a property a tool declares wins, so `bash`'s own `background` keeps its longer
 description) and `argument_error` never names them as unexpected.
 
 The command surface reads the same function, so an operator can spell every argument
 a call may carry. It used to read `Tool::parameters` raw, which was right while the
 general arguments were a title and a cap -- the tunnel's words changed that, and a
-tool command that refuses `--detached` is a tool the model has and the operator does
+tool command that refuses `--background` is a tool the model has and the operator does
 not.
 
 At the call layer, `description` titles the row (already) and `max_output` caps the
@@ -113,13 +113,17 @@ pointing at a file the session's tools cannot open.
 ## The five questions the tunnel asks a tool
 
 Each with the answer that fits nearly every tool: a default wait (`None`, meaning the
-ceiling itself), subject to the tunnel (`true`), carried by the server when detached
-(`Carried::Call`), backgrounding as a job of the server (`false`), and answering for its
-own wait (`false`). Each override is in the tool that differs: `bash` states its
-configured wait and says a detached call of its own is a process, `wait` says the tunnel
-does not touch it at all, `bash` and `python` answer that their background and their
-clock are their shell's or their interpreter's, and the three reading tools answer for a
-clock of their own because a read that waits *is* the wait.
+ceiling itself), subject to the tunnel (`true`), carried by the server
+(`Carried::Here`), leaving `background` to the tunnel (`false`), and answering for its
+own wait (`false`). Those two defaults together refuse `background` by name: a tool
+that acts on what this server holds cannot be run in a process of its own, and a job
+of the server would die with it. Each override is in the tool that differs: `bash`
+states its configured wait and starts a process of its own for `background`, `exec`
+answers for its own clock because the end of its wait is a program it hands to the job
+table, `wait` says the tunnel does not touch it at all, `bash` and `python` answer that
+their background and their clock are their shell's or their interpreter's, and the
+three reading tools answer for a clock of their own because a read that waits *is* the
+wait.
 
 ## waited: from holding the turn to holding a job
 
@@ -131,20 +135,34 @@ both abort the task before the tool is asked what it left behind. Only the clock
 *without* aborting, which is the whole difference between a cut and a promotion.
 
 `holds_the_turn` is what tells the two apart. A call that already answers without
-waiting -- a `background` or `detached` job -- holds no turn, so a clock of its own is
+waiting -- a `background` job -- holds no turn, so a clock of its own is
 dormant for it: the id it was given stays the id the caller reads from.
+
+`exec` is where that division stops being enough: its work is a process, not a
+future, so it answers for its own clock (`owns_its_wait`) and hands the program to
+the job table itself (`tunnel::run_own_program`). The tunnel's clock would otherwise
+fire at the same instant and record a second job for one call. See
+`docs/notes/server-tools-exec.md`.
 
 ## promote
 
 The promotion is a row and a forwarder, in that order: the receipt names the id before
 the caller can ask, and the forwarder owns the answer until it is written where
-`check_job` reads it. The forwarder gives up the turn's stream for the same reason
-`tunnel::spawn` does -- nobody is reading that channel any more -- and then it is
+`check_job` reads it. The forwarder gives up the turn's stream for the same reason a
+worker does -- nobody is reading that channel any more -- and then it is
 indistinguishable from a job that was started as one.
 
+What it is *not* is a process of its own: this path is for the work that is a future
+inside this server (`read_file`, `write_file`, `replace`, `skill`, a peer's `exec`),
+and such a job dies with the server that was running it. `exec` on this machine does
+not come through here at all -- `tunnel::run_own_program` starts its program as a job
+from the first moment, so a wait that ends leaves a process rather than a row. A
+worker per file read would cost more than the read, which is why the reading tools
+keep the cheaper answer.
+
 `tunneled` is one word for one thing on purpose: `wait` is not capped *and* not
-detachable *and* not offered `timeout_ms` by the general parameters, because all three
-are the same sentence -- SPEC treats it internally.
+offered `background` *and* not offered `timeout_ms` by the general parameters, because
+all three are the same sentence -- SPEC treats it internally.
 
 ## argument_error
 
@@ -220,13 +238,15 @@ and the spill file's name. Only ever a label either way, so a missing or
 nonsensical one costs an untitled row and a less informative path rather than a
 failed call -- which is why it is read here and not validated.
 
-## BashTool::run (background and detached)
+## BashTool::run (background)
 
-Both flags return at once, which is the point: the turn stays responsive
-instead of sitting out a long command. They differ in what happens to the
-output, not in whether the call blocks. `bash` declares `background` itself and
-answers `handles_background` yes, so the tunnel's own background path never runs
-for it: a job of a shell is that shell's, and `check_bash` is what reads it.
+`background` returns at once, which is the point: the turn stays responsive
+instead of sitting out a long command. There is no second flag to differ from;
+one switch decides not to wait. On this machine it starts a process of its own
+through `DetachedRegistry`, so it outlives a cancel and is adopted on restart;
+`check_job` reads what it answered. On a peer there is no process to start here,
+so the command is a job of that shell and `check_bash` reads it -- the one
+background that is not a process of its own.
 
 ## CheckJobTool
 
@@ -246,13 +266,14 @@ same reason.
 `check_job` can say exactly, and answering with a failure would read as "the call was
 wrong" rather than "the work is gone".
 
-## detached, and what cannot be
+## background, and what cannot be
 
-`detached` means a process of its own, so the dispatch answers three ways: `Process` lets
-`bash` do what it already does, `Worker` hands the call to `worker.rs`, and `Here` refuses
-it. The refusal is the point of having a third answer: `del_bash` in a process with no
-shells would answer "done" and do nothing, and a silent no-op is worse than a word the
-caller did not expect.
+`background` means a process of its own, so the dispatch answers three ways: `Process`
+lets `bash` do what it already does, `Worker` hands the call to `worker.rs`, and `Here`
+refuses it. The refusal is the point of having a third answer: `del_bash` in a process
+with no shells would answer "done" and do nothing, and a silent no-op is worse than a
+word the caller did not expect. An in-process job used to be the fourth answer; it
+outlived the call but not the server, which SPEC does not allow.
 
 ## DelJobTool
 
@@ -267,10 +288,10 @@ job that is not in the registry had already ended, and deleting it is all that i
 to do. Leaving the session takes the same road: its jobs are stopped and deleted with
 it, because work a session started is not work a deleted session keeps.
 
-## BashTool::run (a detached job's cwd)
+## BashTool::run (a background job's cwd)
 
 Only the working directory is inherited. Exports and shell functions are not,
-because a detached job does not run in the shell -- it is a process of its own.
+because a background job does not run in the shell -- it is a process of its own.
 
 ## BashTool::run (relaying output)
 
@@ -464,22 +485,21 @@ The ceiling it defaults to is `bash`'s, because that is this harness's one answe
 is not lost. The tunnel's cap does not apply to it -- waiting is what it is for -- so a
 `wait` may legitimately ask for longer than any other call.
 
-A `cancel` is a different ending from a cancelled turn. Interrupting a turn abandons
-its work, and `wait` answers like any other call: an error, `this turn was
-cancelled`. A `cancel` abandons nothing, so the wait sends a third answer: the server
-is stopping, `wait` ends here, the news it was waiting for is the next start's to
-deliver. It then clears the session's `resumable` flag -- a wait started nothing, so
-nothing is left undone -- and the turn's pending row is dropped instead of replayed.
-Without that, a restart would run the same turn again to wait for news that has nothing
-to do with the work.
+A `cancel` ends the wait, but keeps its turn: SPEC says a wait lives across a cancel
+and is still waiting after the restart. The call marks the session while it is inside
+`wait` (`StopSignal::begin_wait`, cleared by the guard's drop even when the call is
+aborted), and `cancel` reads that mark before it fires the token. A marked turn is
+`mark_resumable`, its `turn` row is kept, and `finish_turn` preserves it -- so the
+next start resumes the turn and the wait begins again. `interrupt_session` and
+`del_session` pass `keep_waiting: false`: there "stop" means "drop it".
 
-The record of the cancelled wait is an `inject` row marked `wait_cancelled`: a notice,
-so it does not owe a turn, and the only trace of what the session was doing when the
-server stopped.
+Every other call is still interrupted where it stands. A wait is the one thing a
+cancel keeps because it started nothing; keeping a turn that was in the middle of a
+program would run the program twice.
 
 ## ListBashTool::run (detached rows)
 
-Detached jobs belong to the session, not to a shell, so they are listed on
+Background jobs belong to the session, not to a shell, so they are listed on
 their own -- including ones adopted from a previous run of the server, whose
 shell no longer exists.
 
@@ -489,9 +509,9 @@ Unanchored on purpose: `qa` is how someone actually names a shell family
 (`qa`, `qa2`, `qa5`), and requiring `^qa` would make the cleanup of a long
 session's leftovers guesswork.
 
-## DelBashTool::run (surviving detached jobs)
+## DelBashTool::run (surviving background jobs)
 
-Detached jobs are not the shells', so they keep running; say so, or the model
+Background jobs are not the shells', so they keep running; say so, or the model
 would assume discarding the shells stopped them.
 
 ## a name is one shell, on one machine
@@ -549,11 +569,11 @@ call it fails.
 
 ## the schema is per machine
 
-`BashTool::parameters` builds the two fields only one machine has: `background` and
-`detached` on this machine's `bash`, `target` on the peer's `remote_bash`. A flag a
-machine cannot honour is not a flag the model should be shown -- and both are still
-refused at run time, because the refusal is what explains *why*, and the schema is what
-keeps the model from asking.
+`BashTool::parameters` builds the two fields only one machine has: `background` on
+this machine's `bash`, `target` on the peer's `remote_bash`. A flag a machine cannot
+honour is not a flag the model should be shown -- and both are still refused at run
+time, because the refusal is what explains *why*, and the schema is what keeps the
+model from asking.
 
 ## the machine a spilled cut belongs to
 
