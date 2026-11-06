@@ -460,6 +460,13 @@ cmd_stage() {
     esac
   done
 
+  # Content is refreshed before any claim: a successor installs what the local
+  # official ref names, so a stale ref can make an otherwise valid bundle unstartable.
+  echo "== ship =="
+  ( cd "$ROOT" && git -C ship fetch origin main && git -C ship rebase origin/main \
+      && scripts/ship.sh --check ) \
+    || die "the ship checkout is not current and published; refusing to stage a handover"
+
   # Taken before the build: two agents waiting for a compile that only one of them
   # may finish is the cost this avoids, and the claim is what tells the second one
   # to stop rather than to supersede.
