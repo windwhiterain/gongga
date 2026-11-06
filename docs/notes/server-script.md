@@ -52,6 +52,15 @@ never arrives would otherwise wedge startup, and there is no `cancel` to save a
 server that never got as far as listening. Running a command has no such
 deadline -- that work is the caller's, and only the stop ends it.
 
+## arm / release
+
+A script is a child process of the server, so it is put in a job object the moment
+it starts and taken out when it ends. A hard kill never reaches a Rust destructor:
+without this, a `kill` on the server would leave a Python interpreter holding the
+home and answering nobody. It is armed as `WithServer` -- a `cancel` does not spare
+it, because a stop that spared a script would answer a caller that is no longer
+waiting (`docs/notes/server-tools-job.md`).
+
 ## stop_all
 
 A script is a child process. `cancel` must not leave one behind any more than it
@@ -59,3 +68,6 @@ may leave a turn behind, so every running pid is tracked and killed when the
 server stops. The caller waiting on that command is told the server stopped,
 rather than being shown the killed process's exit status as if the script had
 failed on its own.
+
+It disarms first, so the tree the script started ends with it rather than being
+walked -- the same two steps every stop takes.

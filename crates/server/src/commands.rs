@@ -561,7 +561,9 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "cancel".into(),
             description: "Stop running turns, save what is left undone, and shut the server down. \
-                      Detached jobs are left running."
+                      Detached jobs are let go: they outlive the server, which is what a handover \
+                      needs. It is the only stop that leaves them running -- a server killed, or \
+                      stopped by a window closing, takes every job it started with it."
                 .into(),
             args: vec![],
         },
@@ -2213,6 +2215,11 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
         // A stop, not a kill: SPEC finishes what cannot be serialized first.
         session.request_stop();
     }
+    // Only a `cancel` a client asked for lets a detached job go.
+    let released = match origin {
+        Origin::Client { .. } => crate::tools::detached::release_detached(),
+        Origin::Signal { .. } => 0,
+    };
     let detached = d.sessions.detached().count().await;
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
     let by = origin.describe();
@@ -2224,6 +2231,7 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
             "sessions": running.len(),
             "pending": pending,
             "detached": detached,
+            "released": released,
         }),
     );
     // Wait before shutting down: the acknowledgement is published after this returns.
@@ -2233,11 +2241,20 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
         shutdown.cancel();
     });
     let said = format!(
-        "cancelling {} session(s); {} pending task(s) will be picked up on the next start; {} \
-         detached bash(es) keep running -- they outlive the server, stop them with `del_bash`",
+        "cancelling {} session(s); {} pending task(s) will be picked up on the next start; {}",
         running.len(),
         pending,
-        detached
+        match origin {
+            Origin::Client { .. } => format!(
+                "{} detached job(s) keep running -- they outlive the server, stop them with \
+                 `del_bash`",
+                detached
+            ),
+            Origin::Signal { .. } => format!(
+                "{} detached job(s) stop with this server: nothing asked for them to outlive it",
+                detached
+            ),
+        }
     );
     tracing::warn!(
         running = running.len(),

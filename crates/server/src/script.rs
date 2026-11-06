@@ -26,6 +26,28 @@ use crate::commands::Outcome;
 /// A broken manifest must not wedge startup: this is a hang guard, not a budget.
 const DISCOVERY_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Puts a script under this server's life: a server that dies ends it.
+fn arm(pid: u32) {
+    #[cfg(windows)]
+    if !crate::tools::job::hold_served(pid) {
+        tracing::warn!(
+            pid,
+            "a script has no job object: it ends with this server only when the server \
+             lives to end it"
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
+}
+
+/// The script ended by itself, and what it left running is nobody's now.
+fn release(pid: u32) {
+    #[cfg(windows)]
+    crate::tools::job::release(pid);
+    #[cfg(not(windows))]
+    let _ = pid;
+}
+
 /// The scripts a server may call, and the commands they declared.
 pub struct Scripts {
     dir: PathBuf,
@@ -128,10 +150,13 @@ impl Scripts {
         let pid = child.id();
         if let Some(pid) = pid {
             self.running.lock().await.insert(pid, command.to_string());
+            // A script is a job of this server: a server that dies takes it along.
+            arm(pid);
         }
         let out = self.exchange(child, &request).await;
         if let Some(pid) = pid {
             self.running.lock().await.remove(&pid);
+            release(pid);
         }
         let out = match out {
             Ok(o) => o,
@@ -148,6 +173,11 @@ impl Scripts {
     }
 
     /// Stops every script still running. Called when the server stops.
+    ///
+    /// # Invariant
+    ///
+    /// A hard kill never reaches here; the job object each script is armed in ends them
+    /// then.
     pub async fn stop_all(&self) -> usize {
         self.stopping
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -160,6 +190,8 @@ impl Scripts {
             .collect();
         for (pid, name) in &running {
             tracing::warn!(pid, command = %name, "stopping a script left running by the stop");
+            // The job object is the tree when this server holds one.
+            crate::tools::detached::disarm_detached(*pid);
             crate::tools::detached::kill_tree(*pid).await;
         }
         running.len()
@@ -173,6 +205,7 @@ impl Scripts {
         }
     }
 
+    /// Starts one script; it ends with this server, not after it.
     fn spawn(&self, program: &Path, script: &Path) -> std::io::Result<tokio::process::Child> {
         // The child runs in the scripts directory: an absolute path or it
         // resolves twice.

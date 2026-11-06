@@ -27,8 +27,8 @@ fn events(store: &crate::store::Store) -> Vec<crate::store::EventRow> {
 ///
 /// The threshold is the test's own number, which is what makes this provable: a
 /// hundred terabytes is below no disk, and one byte is below every one.
-#[test]
-fn a_low_disk_is_reported_once_and_again_after_recovering() {
+#[tokio::test]
+async fn a_low_disk_is_reported_once_and_again_after_recovering() {
     let dir = scratch("episode");
     let store = crate::store::Store::open(&dir.join("gongga.db")).expect("a store");
     let huge = 100 * 1024 * 1024 * 1024 * 1024;
@@ -36,24 +36,44 @@ fn a_low_disk_is_reported_once_and_again_after_recovering() {
     let cwd = Path::new(".");
 
     install(huge, &dir);
-    note_tool_end(&store, "work", "bash", cwd, true);
+    note_tool_end(&store, "work", "bash", cwd, true, None).await;
     assert_eq!(
         events(&store).len(),
         1,
         "a low disk reports on a call that worked"
     );
     for _ in 0..5 {
-        note_tool_end(&store, "work", "bash", cwd, false);
+        note_tool_end(&store, "work", "bash", cwd, false, None).await;
     }
     assert_eq!(events(&store).len(), 1, "and not again while it stays low");
 
     install(tiny, &dir);
-    note_tool_end(&store, "work", "bash", cwd, true);
+    note_tool_end(&store, "work", "bash", cwd, true, None).await;
     assert_eq!(events(&store).len(), 1, "an ordinary disk says nothing");
 
     install(huge, &dir);
-    note_tool_end(&store, "work", "bash", cwd, true);
+    note_tool_end(&store, "work", "bash", cwd, true, None).await;
     assert_eq!(events(&store).len(), 2, "the next fall is a new episode");
+
+    // A peer's disk is its own episode, named: one full disk must not hide the other.
+    let peer = Some(super::Peer {
+        machine: "build-box".to_string(),
+        volumes: vec![super::Volume {
+            label: "build-box".to_string(),
+            free: Some(0),
+        }],
+    });
+    note_tool_end(&store, "work", "bash", cwd, true, peer.clone()).await;
+    assert_eq!(
+        events(&store).len(),
+        3,
+        "the peer's disk is news of its own"
+    );
+    let peer_row: serde_json::Value =
+        serde_json::from_str(&events(&store)[2].payload).expect("a payload");
+    assert_eq!(peer_row["machine"], "build-box");
+    note_tool_end(&store, "work", "bash", cwd, true, peer).await;
+    assert_eq!(events(&store).len(), 3, "and not again while it stays low");
 
     let payload: serde_json::Value =
         serde_json::from_str(&events(&store)[1].payload).expect("a payload");

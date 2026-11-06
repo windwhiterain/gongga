@@ -148,17 +148,17 @@ impl DetachedJob {
             command.process_group(0);
         }
         #[cfg(windows)]
-        let child = {
+        let mut child = {
             const NEW_GROUP: u32 = 0x0000_0200;
             const BREAKAWAY: u32 = 0x0100_0000;
-            // Out of this server's job object too, or `KILL_ON_JOB_CLOSE` would end a
-            // detached job with the process that started it.
-            command.creation_flags(NEW_GROUP | BREAKAWAY);
+            const SUSPENDED: u32 = 0x0000_0004;
+            // Out of this server's job, and suspended: armed before the first fork.
+            command.creation_flags(NEW_GROUP | BREAKAWAY | SUSPENDED);
             match command.spawn() {
                 Ok(child) => child,
                 // A job that does not allow breakaway has nothing to break out of.
                 Err(e) if e.raw_os_error() == Some(5) => {
-                    command.creation_flags(NEW_GROUP);
+                    command.creation_flags(NEW_GROUP | SUSPENDED);
                     command
                         .spawn()
                         .map_err(|e| anyhow::anyhow!("spawning detached command: {e}"))?
@@ -170,6 +170,23 @@ impl DetachedJob {
         let child = command
             .spawn()
             .map_err(|e| anyhow::anyhow!("spawning detached command: {e}"))?;
+        // Armed before it runs: this tree ends with this server unless it is let go.
+        #[cfg(windows)]
+        {
+            let pid = child.id().unwrap_or(0);
+            if !crate::tools::job::arm(pid) {
+                tracing::warn!(
+                    pid,
+                    "a detached process has no job object: it outlives this server whether \
+                     or not anything asked it to"
+                );
+            }
+            // A suspended process is resumed either way: a weaker promise, not a hang.
+            if let Err(e) = crate::tools::job::ProcessJob::resume_main(pid) {
+                let _ = child.start_kill();
+                return Err(anyhow::anyhow!("resuming detached process {pid}: {e}"));
+            }
+        }
         let pid = child.id().unwrap_or(0);
         Ok(Self {
             id: 0,
@@ -208,6 +225,8 @@ impl DetachedJob {
 
     /// Stops it, taking the whole tree with it; true only once absence is confirmed.
     pub async fn stop(&mut self) -> bool {
+        // The job object is the tree: it ends every member, which the walk approximates.
+        disarm_detached(self.pid);
         if let Some(child) = &mut self.child {
             // A dead leader proves nothing about its group: terminate the group
             // first, then reap or kill the leader.
@@ -539,6 +558,7 @@ impl DetachedRegistry {
                         }
                     };
                     job.noticed = true;
+                    release_ended(job.pid);
                     ended.push((
                         session.clone(),
                         job.id,
@@ -758,6 +778,7 @@ impl DetachedRegistry {
                 cmd = %row.cmd,
                 "adopting a detached job left by the previous run"
             );
+            arm_adopted(pid);
             registry
                 .jobs
                 .entry(row.session.clone())
@@ -1068,6 +1089,81 @@ async fn wait_group_gone(pid: u32, within: Duration) -> anyhow::Result<bool> {
         }
         tokio::time::sleep(SIGNAL_POLL).await;
     }
+}
+
+/// Whether `pid` is still the process that started at `started_at`.
+///
+/// # Invariant
+///
+/// The answer a caller needs before it touches a pid it did not start: a pid is only
+/// unique until it is recycled.
+pub fn names_process(pid: u32, started_at: i64) -> anyhow::Result<bool> {
+    match process_started_at(pid) {
+        Ok(Some(actual)) => Ok(same_process(started_at, actual)),
+        Ok(None) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Puts a process a previous run left under this server's life.
+///
+/// # Invariant
+///
+/// Only once the pid is proved to be the process its row names: this arms a job that
+/// kills on close, so a recycled pid would make this server's death somebody else's.
+pub(crate) fn arm_adopted(pid: u32) {
+    #[cfg(windows)]
+    if !crate::tools::job::arm(pid) {
+        tracing::warn!(
+            pid,
+            "could not put an adopted detached process under a job object: it ends with \
+             this server only when the server lives to end it"
+        );
+    }
+    #[cfg(not(windows))]
+    let _ = pid;
+}
+
+/// Ends a detached tree now, when this server holds a job for it.
+#[cfg(windows)]
+pub fn disarm_detached(pid: u32) -> bool {
+    crate::tools::job::disarm(pid)
+}
+
+/// No job object exists on this platform.
+#[cfg(not(windows))]
+pub fn disarm_detached(_pid: u32) -> bool {
+    false
+}
+
+/// Lets every detached job outlive this server: what `cancel` means for them.
+///
+/// # Invariant
+///
+/// `cancel` asked by a client is the only caller. Every other exit leaves the job
+/// objects armed, so they close with the process and their trees go with it.
+#[cfg(windows)]
+pub fn release_detached() -> usize {
+    crate::tools::job::release_all()
+}
+
+/// No job object exists here, so there is nothing to let go of.
+#[cfg(not(windows))]
+pub fn release_detached() -> usize {
+    0
+}
+
+/// Lets go of the tree a leader left behind, once its end is a fact.
+///
+/// # Invariant
+///
+/// Released, not killed: a leader that ended takes the job with it, so closing the job
+/// there would end what it started in the background.
+pub(crate) fn release_ended(pid: u32) {
+    #[cfg(windows)]
+    crate::tools::job::release(pid);
+    #[cfg(not(windows))]
+    let _ = pid;
 }
 
 fn same_process(saved_started_at: i64, actual_started_at: i64) -> bool {

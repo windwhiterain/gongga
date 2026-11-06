@@ -7,20 +7,26 @@ by what does *not* happen to it:
 
 * the call returns at once, so the turn is never blocked;
 * nothing is collected -- output goes to a log file, not to the model;
-* it outlives the shell it was started from, the session, and the server
-  process itself.
+* it outlives the shell it was started from, the session, and a `cancel`.
 
-That last point is the reason this module exists. A detached job is how an
-agent restarts the server it is running on: launch the replacement detached,
-then `cancel`. Anything the server owned would die with it, so a detached job
-is deliberately *not* owned -- it is a process the server knows about, keeps in
-the database, and can stop later, including after the server that started it is
-gone.
+That last word is the whole of it. A detached job is how an agent restarts the
+server it is running on: launch the replacement detached, then `cancel`. `cancel`
+is therefore the one stop that lets a detached job go -- it clears the job
+object's kill-on-close and closes it, so the next start adopts the same pid.
 
-Being killable across restarts is why the pid is recorded rather than the
-handle alone: a handle dies with the process holding it, a pid can be
-re-adopted. `adopt` is what takes the rows left by a previous run and makes
-them manageable again.
+Every other exit takes them. A server that is killed, that crashes, or that is
+stopped from outside the protocol -- its window died, a console sent Ctrl-C --
+leaves the job objects armed, so they close with the process and every detached
+tree goes with it. That is not a detail of the implementation: a window the user
+force-closed must not leave work running that nobody can see or stop, and the
+only way to make "the server is gone" and "its jobs are gone" the same fact is
+for the operating system to hold the tree.
+
+So the process is *owned* after all -- by a job object the server holds -- and
+`cancel` is a deliberate release rather than the default. The pid is still
+recorded, because a released job has to be findable by the next start: a handle
+dies with the process holding it, a pid can be re-adopted, and `adopt` is what
+takes the rows left by a previous run and arms them again.
 
 ## DetachedJob::child
 
@@ -39,10 +45,25 @@ Its own process group, so stopping the job can take the whole tree. tokio's
 `Command` has these inherently, which is why no `std::os::*::CommandExt` import
 is needed.
 
+## DetachedJob::launch (armed before it runs)
+
+Created suspended, armed, and only then resumed: a job object added after the
+first fork would hold the leader and not the tree, which is the failure this is
+for. The resume happens whatever the arming said -- a job object that could not
+be had is a weaker promise, not a hang -- and a resume that fails kills the
+suspended process rather than leaving one nothing can reach.
+
+`BREAKAWAY` is still asked for on Windows: it is the *server's* job that has to
+be left, not the one this call just made.
+
 ## DetachedJob::stop
 
 Returns true when the process is no longer running, whether because we stopped
 it or because it had already finished.
+
+It disarms first: the job object ends every member exactly, however it was
+forked, which the tree walk below can only approximate. The walk still runs --
+a tree that ended already, or one armed by another run, has no job object here.
 
 ## DetachedJob::stop (already gone)
 
@@ -100,8 +121,8 @@ disk, which is the record the model asked for.
 
 ## DetachedRegistry::stop_session
 
-`cancel` leaves detached work alone on purpose; deleting the session is the one
-place that means "this work is not wanted either".
+`cancel` lets detached work go on purpose; deleting the session is the one
+place that means "this work is not wanted either", so it ends it.
 
 ## DetachedRegistry::adopt
 
@@ -118,6 +139,46 @@ tolerance is five seconds, because Unix `ps` reports whole seconds and the row i
 written after the fork. A row that cannot be verified is left alone rather than
 adopted -- adopting the wrong process would let `del_bash` kill something nobody asked
 it to.
+
+A row that passes is armed again (`arm_adopted`): adopting it is a claim that this
+server owns it now, and the next kill has to reach it. The identity check comes
+first for the same reason it does for `del_bash` -- a job object ends its members
+when it closes, and a recycled pid would make this server's death somebody else's.
+
+## arm_adopted
+
+The one place an adopted process is put under a job object, shared with the tool
+jobs that adopt their own workers (`docs/notes/server-tools-worker.md`). Only
+after the caller proved the pid, which the two call sites check differently: this
+one via `same_process`, the worker one via `names_process`.
+
+## names_process
+
+The same question, asked by a caller that holds a row rather than a job: whether
+`pid` still names the process that started at `started_at`. `Ok(false)` and an
+error are not the same answer, and the worker adoption says which it got.
+
+## release_detached
+
+The whole of what `cancel` means for detached processes: one call, because the
+armed trees are one registry. It is the *only* caller of `job::release_all`, and
+that is the invariant worth keeping in one place -- a second caller would be a
+second definition of "this stop was a cancel".
+
+Uncounted on unix, where there is no job object and nothing to let go of.
+
+## release_ended
+
+A leader that ended takes its job with it, so what it left running is nobody's:
+released, not killed. A handover is exactly that case -- the launcher execs a
+server and is gone before the old server stops -- and killing there would end the
+successor.
+
+## disarm_detached
+
+What a stop asked for by name (`del_bash`, `del_job`, a deleted session, the stop
+at exit) uses: end the tree now, forget it. False means there was no job object,
+and the caller's own `kill_tree` is what remains.
 
 ## DetachedRegistry::adopt (dead rows)
 

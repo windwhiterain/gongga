@@ -405,6 +405,8 @@ pub(crate) async fn watch(
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         },
     }
+    // The leader ended, so what it left in the background is let go, not ended.
+    crate::tools::detached::release_ended(pid);
     let ran = crate::agent::spent(
         u64::try_from((crate::store::now_millis() - started).max(0)).unwrap_or(u64::MAX),
     );
@@ -523,6 +525,15 @@ pub async fn announce_owed(
                     Ok(alive) if !alive.is_empty() => {
                         tracing::info!(session = %row.session, job = row.id, pid,
                             "adopted a detached call still running");
+                        // Armed on proof only: a job object kills what it holds.
+                        match crate::tools::detached::names_process(pid as u32, row.started_at) {
+                            Ok(true) => crate::tools::detached::arm_adopted(pid as u32),
+                            Ok(false) => tracing::warn!(session = %row.session, job = row.id, pid,
+                                "not arming an adopted job whose pid now names another process"),
+                            Err(e) => tracing::warn!(session = %row.session, job = row.id, pid,
+                                error = %e,
+                                "could not verify an adopted job, so it is watched unarmed"),
+                        }
                         let sink = ctx.clone();
                         let name = row.tool.clone();
                         let path = std::path::PathBuf::from(answer);

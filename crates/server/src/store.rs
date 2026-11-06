@@ -211,8 +211,9 @@ CREATE TABLE IF NOT EXISTS pending_tasks (
 CREATE INDEX IF NOT EXISTS pending_by_session ON pending_tasks(session);
 
 -- Processes started with `bash --detached`. They outlive the shell, the
--- session and the server itself, so this table is the only thing that lets the
--- next run find -- and stop -- what the last one launched.
+-- session and a `cancel`, so this table is how the next run finds what a cancel
+-- let go: a server that ends any other way takes its jobs with it, and the rows
+-- it left name processes that are gone.
 CREATE TABLE IF NOT EXISTS detached_jobs (
     id         INTEGER PRIMARY KEY,
     session    TEXT NOT NULL,

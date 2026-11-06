@@ -1938,7 +1938,29 @@ pub(crate) async fn invoke(
     ctx: &ToolContext,
 ) -> ToolOutcome {
     let outcome = waited(&tool, &args, ctx).await;
-    crate::disk::note_tool_end(&ctx.store, &ctx.session, name, &ctx.cwd, outcome.ok);
+    // The machine this call ran on reports its own room.
+    let peer = match (&ctx.remote, &ctx.reader) {
+        (Some(machine), reader) => Some(crate::disk::Peer {
+            machine: machine.clone(),
+            volumes: match reader {
+                Some(reader) => reader
+                    .space(&ctx.cwd.to_string_lossy())
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|free| {
+                        vec![crate::disk::Volume {
+                            label: machine.clone(),
+                            free: Some(free),
+                        }]
+                    })
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            },
+        }),
+        _ => None,
+    };
+    crate::disk::note_tool_end(&ctx.store, &ctx.session, name, &ctx.cwd, outcome.ok, peer).await;
     outcome
 }
 
@@ -2148,7 +2170,11 @@ impl Tool for DelJobTool {
                 return ToolOutcome::err(format!("could not delete job {id}: {e}"));
             }
             let stopped = match row.pid {
-                Some(pid) => crate::tools::detached::kill_tree(pid as u32).await,
+                Some(pid) => {
+                    // Armed: the job object ends the tree exactly. Unarmed: the walk.
+                    let exact = crate::tools::detached::disarm_detached(pid as u32);
+                    crate::tools::detached::kill_tree(pid as u32).await || exact
+                }
                 None => ctx.jobs.stop(id),
             };
             let what = named(&row);
