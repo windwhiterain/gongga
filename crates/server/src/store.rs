@@ -1686,22 +1686,19 @@ impl Store {
     ///
     /// # Invariant
     ///
-    /// Origin and baseline land in one transaction, so a usage write cannot land
-    /// between them. The origin is the lineage's first real operator row — the
-    /// permanent prefix a compacted request keeps — and the baseline is the latest
-    /// measured context: with a measurement in flight the number is still changing,
-    /// and with no operator row there is nothing to compact from. Both refuse.
+    /// Plan finish is the agent's own act inside its turn, so a running session is
+    /// the rule, not the error: the baseline is the last persisted measurement,
+    /// never a waited-for one, and a zero stays NULL for the usage write to fill.
+    /// Origin and baseline land in one transaction; the origin is the lineage's
+    /// first real operator row — no row, nothing to compact from, and that refuses.
     pub fn start_live_compact(&self, session_id: i64) -> anyhow::Result<()> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
-        let (status, context_tokens): (String, i64) = tx.query_row(
-            "SELECT status, context_tokens FROM sessions WHERE id = ?1",
+        let context_tokens: i64 = tx.query_row(
+            "SELECT context_tokens FROM sessions WHERE id = ?1",
             params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )?;
-        if status == status_name(SessionStatus::Running) {
-            anyhow::bail!("a measurement is in flight; let the turn end before finishing the plan");
-        }
         let first = {
             let mut stmt = tx.prepare(
                 "SELECT seq, display FROM messages
@@ -1728,7 +1725,8 @@ impl Store {
         };
         tx.execute(
             "UPDATE sessions SET live_compact_origin_seq = ?2,
-                    live_compact_baseline_tokens = ?3, live_compact_started = 1
+                    live_compact_baseline_tokens = CASE WHEN ?3 > 0 THEN ?3 ELSE NULL END,
+                    live_compact_started = 1
              WHERE id = ?1 AND live_compact_origin_seq IS NULL",
             params![session_id, origin, context_tokens],
         )?;
