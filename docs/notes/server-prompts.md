@@ -143,10 +143,16 @@ why the content that carries them declares protocol 3.
 
 ## dynamic_tail
 
-The session's start card: name, the harness and the commit it runs, the minute of the
-**first** turn, and the directory that turn stood in. Stamped once into the first prompt
-row and replayed verbatim from the store after that, so what a request has sent is never
-rewritten. `{{build}}` is `protocol::BUILD`, the same identity a bug report carries, so a
+The session's start card: name, the model it runs on, the harness and the commit it
+runs, the minute of the **first** turn, and the directory that turn stood in. Stamped
+once into the first prompt row and replayed verbatim from the store after that, so what
+a request has sent is never rewritten.
+
+`{{model}}` is the one field that can change under a session: `set_session --model`
+swaps it without moving anything. The prompt row records the model the card was
+stamped for, and a swap re-stamps the card the way a move already does -- otherwise a
+session would keep reading a card that names a model it no longer runs on, and "which
+model am I" is a question the card exists to answer. `{{build}}` is `protocol::BUILD`, the same identity a bug report carries, so a
 model reading its own prompt can say which build it is.
 
 It is not part of `instructions` and not a message of its own: `RequestBody` puts it in
