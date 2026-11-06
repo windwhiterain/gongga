@@ -11,6 +11,53 @@
 - pointing at a home in use is not a read-only act: `GONGGA_HOME` on a live home makes the bundle place its payload there and retire the build it replaces, and that asks the home's server to `cancel` -- every turn it is running dies with the ask, unless the program starts no server of its own (as `--client_only` says). See `docs/notes/bundle-main.md`, "There is no read-only run".
 - track your WIP under (notes)[.agents/notes/].
 
+## Disk low：立刻跑脚本，一刻都不耽搁
+
+**收到磁盘告警（free < threshold）时，第一动作就是跑 @skill(clean-disk) 的脚本，
+不要先做任何调查、扫描、归因、计划。** 先释放，再解释。
+
+- **第一动作**：`powershell -NoProfile -ExecutionPolicy Bypass -File "<clean-disk 的
+  SKILL.md 同目录>/clean-disk.ps1"`（不弹 UAC 的用户级路径：见下）。
+  **不许**在跑脚本之前先做 `Get-ChildItem -Recurse` 之类的体积扫描——磁盘已满时这些
+  扫描会把机器拖到卡死，2026-11-06 就因此把一整轮拖成「脚本半天没跑」。
+- **不许**因为「想先弄清楚是谁占的」而推迟清理。归因可以放在清理**之后**。
+- 磁盘低于阈值时机器已经在卡：先腾出空间，让它能喘气，再谈分析。
+- **一次告警只回一次**：低空间期间持续告警是同一件事，不要每条都重跑一遍。
+- **报告用退出码和数字**（脚本汇总里的「实际释放」是权威值），不要用叙述顶替测量。
+
+### 跑法：不弹 UAC 的用户级路径
+
+脚本提权走 `Start-Process -Verb RunAs -Wait` + `-NoExit`，在无人值守的会话里会留下
+一个提权窗口。改跑它**自身的正文**（等价于用户在 UAC 点「否」的路径，系统级项目跳过）：
+
+```bash
+powershell -NoProfile -ExecutionPolicy Bypass -Command \
+  "Invoke-Expression (Get-Content -Raw '<clean-disk.ps1 的绝对路径>')"
+```
+
+### 已知缺陷：回收站那一步会虚报成功
+
+`clean-disk.ps1` 的第 11 步是 `Clear-RecycleBin -Force -ErrorAction SilentlyContinue`，
+紧接着**无条件**打印 `[完成] 回收站已清空`。实际它会抛
+`Win32Exception: The system cannot find the path specified`（回收站里的路径 shell API
+枚举不了），而错误被 `-ErrorAction SilentlyContinue` 吃掉。
+
+**后果**：回收站常常是最大的一块（实测单次 16 GiB ~ 52 GiB），脚本报「已清空」而
+文件还在。**不要相信那行输出，要自己量。** 清它要用脚本自己的 robocopy 空目录镜像
+（长路径和 ACL 都吃得下），路径里的 `$` 要防 shell 吃掉：
+
+```powershell
+$empty = 'C:\resource\gongga\.dev\empty-mirror'; New-Item -ItemType Directory -Force -Path $empty | Out-Null
+$bin  = 'C:' + [char]92 + [char]36 + 'Recycle.Bin' + [char]92 + '<当前用户 SID>'
+& robocopy.exe $empty $bin /MIR /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP /MT:8
+Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
+```
+
+- 写 `'C:\$Recycle.Bin'` 会被 bash 展开成 `C:\.Bin`（`$Recycle` 变空），**静默扫到
+  0 个目录**，看起来像「清完了」其实什么都没做。用 `[char]36` 拼 `$`。
+- 回收站里若有你**不拥有**的目录（如别的账号装的 Anaconda），`icacls /grant` 会
+  *Access is denied*——那是真需要管理员的一条，别反复试。
+
 ## Verification
 
 ### Invariant：门禁必须真的跑过
