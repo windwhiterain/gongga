@@ -574,11 +574,17 @@ shape gave each render mode one area and kept a name out of the list when anothe
 drew it, which made the list the only way back to a hidden session and cost the window
 two more areas (`line`, and the modes as words).
 
-The order is the store's, the turn that ended last first, read backwards so the
-session that just finished is drawn last: a frame reads like a transcript. A delta
-row lands where that order puts it (`newest_turn_first`), because `SessionInfo`
-carries `ended_at` and a client that kept the row where it arrived would draw a list
-the server no longer has.
+`listed` is ordered by the store's key, the turn that ended last first, read
+backwards so the session that just finished is drawn last: a frame reads like a
+transcript. A delta row lands where that order puts it (`newest_turn_first`), because
+`SessionInfo` carries `ended_at` and a client that kept the row where it arrived
+would draw a list the server no longer has.
+
+`shown` is a different order, and deliberately: the sessions oldest first, by
+`created_at`. A pane is where the operator reads, so a turn ending in another session
+must not move it; only the list is a record of when things happened. A name the
+server no longer has is not drawn, and one this client remembers while offline keeps
+the place it had.
 
 The flag is read off each session rather than off the file's entries, because a
 session nobody set is hidden: reading the map would leave a new session with no window

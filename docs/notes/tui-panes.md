@@ -77,8 +77,10 @@ line has a row of its own, so the body's arithmetic never counts it.
 ## Panes::layout
 
 One pane per announcement, in its order: the list, then the shown sessions, then the
-command line. An empty command name is no command line at all, which is what a frame
-of events alone asks for.
+command line. The two orders are the layout's and they are not the same one -- the
+list by the turn that ended last, the split by when each session was made -- so a
+finished turn moves a row and never a pane. An empty command name is no command line
+at all, which is what a frame of events alone asks for.
 
 A relayout carries each surviving pane's scroll over. The announcement is sent on
 every event that changes what is drawn -- a status, and the measurement that puts

@@ -389,7 +389,12 @@ pub struct Listed {
 pub struct Layout {
     /// Every session the server knows, in its order.
     pub listed: Vec<Listed>,
-    /// Sessions drawn with a header and their events, in the list's order.
+    /// Sessions drawn with a header and their events, in the split's own order.
+    ///
+    /// # Invariant
+    ///
+    /// The order the sessions were made in, not the list's: a pane is where the
+    /// operator is reading, so a turn that ends elsewhere must not move it.
     pub shown: Vec<String>,
     /// The window `cmd` and `cmd_result` are drawn in.
     pub command: String,
@@ -947,24 +952,45 @@ impl Client {
     /// # Invariant
     ///
     /// Every session the server knows is listed whatever its window -- the list is
-    /// where a session is clicked -- and `shown` is the ones drawn beside it. Both
-    /// read the announcement backwards, because it is ordered by the turn that
-    /// ended last and a frame reads like a transcript: the session that just
-    /// finished stands lowest. See `docs/notes/tui-tree.md`.
+    /// where a session is clicked -- and `shown` is the ones drawn beside it. The
+    /// two orders differ on purpose: the list by the turn that ended last, the
+    /// split by when a session was made, so no pane moves under a reader.
+    /// See `docs/notes/tui-tree.md`.
     fn layout(&self) -> Layout {
-        let listed = self.listed();
-        let known: Vec<String> = listed.iter().map(|row| row.name.clone()).collect();
         Layout {
-            listed,
-            // The front-end's own view, in the list's order: a name it wants and
-            // the list does not hold is not drawn.
-            shown: known
-                .into_iter()
-                .filter(|name| self.shown.contains(name))
-                .collect(),
+            listed: self.listed(),
+            shown: self.split(),
             command: self.command_window(),
             quota: self.quota.clone(),
         }
+    }
+
+    /// The split's order: the sessions drawn beside the list, oldest first.
+    ///
+    /// # Invariant
+    ///
+    /// `created_at`, never the turn that ended: a frame the operator is reading
+    /// must not be moved by a turn that finished somewhere else. A name the server
+    /// no longer has is not drawn, and a name this client remembers while offline
+    /// keeps the place it had, last. See `docs/notes/tui-tree.md`.
+    fn split(&self) -> Vec<String> {
+        let mut held: Vec<&protocol::SessionInfo> = self
+            .sessions
+            .iter()
+            .filter(|s| self.shown.contains(&s.name))
+            .collect();
+        held.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        let mut names: Vec<String> = held.iter().map(|s| s.name.clone()).collect();
+        for row in &self.seeded {
+            if self.shown.contains(&row.name) && !names.contains(&row.name) {
+                names.push(row.name.clone());
+            }
+        }
+        names
     }
 
     fn new(catalog: Catalog, home: PathBuf) -> Self {

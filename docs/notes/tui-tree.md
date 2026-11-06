@@ -86,9 +86,15 @@ would keep the tree's rows still while sessions come and go; it was not taken be
 the list's order is how a person finds the session they were just working on.
 
 The cost is real and it was taken deliberately: a turn ending moves its row to the
-bottom of the list, and a shown session's pane moves with it (SPEC draws the shown
-sessions in the list's order). A name's row therefore is not the place the operator
-left it; the list is a record of what happened, ordered by when it happened.
+bottom of the list. A name's row therefore is not the place the operator left it; the
+list is a record of what happened, ordered by when it happened.
+
+The split beside it does not move. `Client::layout` gives `shown` its own order --
+the sessions oldest first, by when they were made -- because a pane is where the
+operator is *reading*, and a turn finishing in another session must not slide the
+paragraph under the pointer. The two orders answer different questions: the list
+"where is the session I was just working on", the split "where is the window I was
+reading", and only the first of them is about turn ends.
 
 The walk is a stack, not recursion: depth is whatever the operator typed, and a
 hundred-segment name must not be a stack overflow in the frame that draws it. A
