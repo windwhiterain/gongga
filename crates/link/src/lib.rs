@@ -598,6 +598,17 @@ pub struct Client {
     /// through `set_offline`. See `docs/notes/cli-lib.md`.
     unconfirmed: Vec<(u64, String)>,
     sessions: Vec<SessionInfo>,
+    /// The session list this client was handed before it ever dialled, from the
+    /// window's own record of the last one it drew.
+    ///
+    /// # Invariant
+    ///
+    /// A prefix of nothing and no claim about a transcript: the rows carry no
+    /// `created_at` and no `transcript`, so nothing here can be compared with a
+    /// server -- they exist only so a window standing on no link has a list to
+    /// draw. A greeting is the validation, so it clears them; a session the server
+    /// drops afterwards is pruned rather than kept. See `docs/notes/tui-roster.md`.
+    seeded: Vec<Listed>,
     model: String,
     next_id: u64,
     /// Commands the completion sent, by the remote each asked: a popup, not a line.
@@ -804,6 +815,51 @@ impl Client {
         &self.sessions
     }
 
+    /// The list the window draws: the server's rows, then the seeded ones.
+    ///
+    /// # Invariant
+    ///
+    /// One list, one order, for every reader -- the frame, the completion and the
+    /// window names a command is echoed into -- so a seeded row and an announced
+    /// one are not two sessions with one name. An announced name wins: the roster is
+    /// what the window last knew, and the server is what is.
+    /// See `docs/notes/tui-roster.md`.
+    pub fn listed(&self) -> Vec<Listed> {
+        let mut rows: Vec<Listed> = self
+            .sessions
+            .iter()
+            .rev()
+            .map(|s| Listed {
+                name: s.name.clone(),
+                status: match s.status {
+                    SessionStatus::Idle => "idle",
+                    SessionStatus::Running => "running",
+                    SessionStatus::Error => "error",
+                }
+                .to_string(),
+                title: title_note(s),
+            })
+            .collect();
+        for row in &self.seeded {
+            if !rows.iter().any(|held| held.name == row.name) {
+                rows.push(row.clone());
+            }
+        }
+        rows
+    }
+
+    /// Hands this client the list its window drew last, for a link that is not open
+    /// yet.
+    ///
+    /// # Invariant
+    ///
+    /// Not a greeting: nothing here says how far any transcript reaches, so no
+    /// session is declared drawn and nothing is fetched on its behalf. It buys a
+    /// list to draw, and the first greeting takes it away again.
+    pub fn seed_listed(&mut self, rows: Vec<Listed>) {
+        self.seeded = rows;
+    }
+
     /// The sessions a front-end wants drawn beside the list.
     ///
     /// # Invariant
@@ -830,10 +886,23 @@ impl Client {
         self.catalog.refused_values(line, args)
     }
 
+    /// Whether a session goes by `name`: the server's word first, then the row this
+    /// client was handed before it dialled.
+    ///
+    /// # Invariant
+    ///
+    /// The same names `listed` answers, and the reason it is a membership test rather
+    /// than a scan of that list: the command window's name is decided by asking this
+    /// in a loop, and a list built per question would be a vector per iteration.
+    fn taken(&self, name: &str) -> bool {
+        self.sessions.iter().any(|session| session.name == name)
+            || self.seeded.iter().any(|row| row.name == name)
+    }
+
     /// The window for a line that names no session, named so no session can take it.
     fn command_window(&self) -> String {
         let mut name = COMMAND_WINDOW.to_string();
-        while self.sessions.iter().any(|s| s.name == name) {
+        while self.taken(&name) {
             name.push(' ');
         }
         name
@@ -858,8 +927,7 @@ impl Client {
     /// again -- and nobody would see it, because no pane draws that name any more.
     /// See `docs/notes/cli-lib.md`.
     fn answer_window(&self, window: String) -> String {
-        let live = window == self.command_window()
-            || self.sessions.iter().any(|session| session.name == window);
+        let live = window == self.command_window() || self.taken(&window);
         if live { window } else { self.command_window() }
     }
 
@@ -884,30 +952,15 @@ impl Client {
     /// ended last and a frame reads like a transcript: the session that just
     /// finished stands lowest. See `docs/notes/tui-tree.md`.
     fn layout(&self) -> Layout {
+        let listed = self.listed();
+        let known: Vec<String> = listed.iter().map(|row| row.name.clone()).collect();
         Layout {
-            listed: self
-                .sessions
-                .iter()
-                .rev()
-                .map(|s| Listed {
-                    name: s.name.clone(),
-                    status: match s.status {
-                        SessionStatus::Idle => "idle",
-                        SessionStatus::Running => "running",
-                        SessionStatus::Error => "error",
-                    }
-                    .to_string(),
-                    title: title_note(s),
-                })
-                .collect(),
-            // The front-end's own view, in the sessions' order: a name it wants
-            // and the server no longer has is not drawn.
-            shown: self
-                .sessions
-                .iter()
-                .rev()
-                .filter(|s| self.shown.contains(&s.name))
-                .map(|s| s.name.clone())
+            listed,
+            // The front-end's own view, in the list's order: a name it wants and
+            // the list does not hold is not drawn.
+            shown: known
+                .into_iter()
+                .filter(|name| self.shown.contains(name))
                 .collect(),
             command: self.command_window(),
             quota: self.quota.clone(),
@@ -926,6 +979,7 @@ impl Client {
             unconfirmed: Vec::new(),
             calls: HashSet::new(),
             sessions: Vec::new(),
+            seeded: Vec::new(),
             model: "-".to_string(),
             next_id: Self::seed_command_id(),
             quiet: HashMap::new(),
@@ -1396,6 +1450,8 @@ impl Client {
             self.stamp_server(row);
         }
         self.sessions = sessions;
+        // The greeting is the validation: a name it leaves out is not drawn.
+        self.seeded.clear();
     }
 
     /// Records what the server says about one session's transcript.
@@ -1432,6 +1488,9 @@ impl Client {
     /// One session row arrived: created, or changed.
     fn apply_session(&mut self, row: SessionInfo, sink: &mut dyn Sink) {
         let added = !self.sessions.iter().any(|s| s.name == row.name);
+        // The server has just spoken about this name: the window's own row is the
+        // older word and stops standing in for it.
+        self.seeded.retain(|held| held.name != row.name);
         self.stamp_server(&row);
         // A name never listed here has no journal either: the whole transcript is owed.
         if added && let Some(sync) = self.sync.get_mut(&row.name) {
@@ -1451,6 +1510,7 @@ impl Client {
     /// One session left: its window is emptied and its window's stamp goes.
     fn drop_session(&mut self, name: &str, sink: &mut dyn Sink) {
         self.sessions.retain(|s| s.name != name);
+        self.seeded.retain(|held| held.name != name);
         self.sync.remove(name);
         self.catalog.set_sessions(self.sessions.clone());
         sink.forget(name);
