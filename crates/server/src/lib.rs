@@ -346,16 +346,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         jobs: crate::tools::tunnel::JobRegistry::new(),
     });
 
-    // A tool's sentences live only in the config. See `tools::text`.
-    let missing = tools::text::shared().missing(&agent.tools);
-    if !missing.is_empty() {
-        anyhow::bail!(
-            "{} words nothing about {missing:?}, and a tool's sentences live only there \
-             (`[tool_text.<tool>]`); without them a model is guessing what each argument \
-             is for",
-            cfg.config_path.display(),
-        );
-    }
+    // A tool without sentences still runs; the whole-check is
+    // `tools::text::tests` now, where a build is checked.
 
     // Turns in flight and subscription actions: a stop waits for both.
     let active = Arc::new(AtomicUsize::new(0));

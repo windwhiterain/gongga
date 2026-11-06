@@ -57,6 +57,36 @@ WHY
   fi
 fi
 
+# A tool's sentences live in the content (`[tool_text.<tool>]`), and a tool added
+# without them is a schema a model reads with bare argument names. A running server
+# no longer refuses that: refusing it left a home with no server at all, because the
+# refusal happens after the old server was already cancelled. The check is a test
+# instead (`crates/server/src/tools/text.rs`), and this is the last moment both sides
+# are in one working tree -- the content is a submodule, so its edits never appear in
+# this index, and only the code side can trigger the check.
+if git diff --cached --name-only | grep -qE '^crates/server/src/(tools/|config\.rs)'; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "pre-commit: cargo is not on PATH, so the tool words were not checked" >&2
+    exit 1
+  fi
+  if ! out=$(timeout 600 cargo test -q -p gongga-server --lib tools::text::tests 2>&1); then
+    printf '%s\n' "$out" | tail -n 20 | sed 's/^/  /' >&2
+    cat >&2 <<'WHY'
+
+pre-commit: a tool this build carries has no words in the shipped config.
+
+  Every tool, and every argument its schema declares, needs a sentence in
+  `ship/config/config.toml` under `[tool_text.<tool>]` and
+  `[tool_text.<tool>.arguments]` -- including the tunnel's own `description`,
+  which `[tool_text.general]` does not cover.
+
+  Add the words in `ship/`, then commit: the test reads the working tree, so an
+  uncommitted sentence there is enough for this check to pass.
+WHY
+    exit 1
+  fi
+fi
+
 # Nothing about the content's protocol is being committed: no round trip, no opinion.
 if ! git diff --cached --name-only | grep -qxE 'ship|crates/server/ship\.toml'; then
 	exit 0
