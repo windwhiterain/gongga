@@ -96,8 +96,7 @@ pub struct Config {
     /// Room left below which this server says the disk is out of room. See
     /// `docs/notes/server-disk.md`.
     pub disk_low: u64,
-    /// `[ship] url`: where this home's content comes from, when it is not the
-    /// compiled one. A local path is what a machine developing the content uses.
+    /// `[ship] url`: this home's content repository. See `docs/notes/server-ship.md`.
     pub ship_url: Option<String>,
 }
 
@@ -325,11 +324,10 @@ struct FileServer {
     disk_low_mb: Option<u64>,
 }
 
-/// `[ship]`: the content this home installs, and where it is fetched from.
+/// `[ship]`: where this home fetches content from; a path is a local checkout.
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileShip {
-    /// A URL, or a path a machine keeps its own content in. Nothing here names a
-    /// commit: which one is installed is still the protocol's question.
+    /// A URL or a path. Which commit is installed is still the protocol's question.
     url: Option<String>,
 }
 

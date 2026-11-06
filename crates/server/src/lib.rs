@@ -176,8 +176,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // Off this thread before anything reads a roster: no start waits for a
     // network. See `docs/notes/server-agents.md`.
     agents::start();
-    // A home may name its own content repository; the lookup is memoized, so it is
-    // told before anything resolves. See `docs/notes/server-ship.md`.
+    // Before anything resolves: the lookup is memoized, one content per server.
     ship::remember_url(cfg.ship_url.clone());
     // Before anything reads this home: the content this start installs and the
     // migrator, resolved once so they agree.
