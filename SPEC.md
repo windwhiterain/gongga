@@ -8,7 +8,7 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - client: use protocal to send server cmd
   - cli: python.
     - cmd fully documented and diagnosed.
-  - tui: binary.
+  - tui: binary, receive delta from server, validate at reconnect, update self state and render.
 - bundle: binary, bundle server/cli/tui's binary, route the cmd.
   - `tui [--client_only]`: `bundle server` and connected to it, kill/exit will cancel the server it spawn.
     - `--client_only`: suppress auto spawn server.
@@ -35,6 +35,7 @@ standard OpenAI Response API/Anthropic API.
 
 ## Session name
 path, rendered in hierarchy.
+
 ## Tool
 tool are tunnel of cmd that agents can directly call to avoid escape.
 
@@ -42,8 +43,9 @@ all tool has optional `description`, `max_output`, `timeout_ms`, `background`, `
 - `max_output`: in chars, if exeeded, save to temp file and return the file metadata {path, chars, line count}
 - foreground job running over timeout become background.
 - job running over certain time auto become detached. long job is forced to use detached + wait that job and wait can live across cancel.
-- detached job lives across server restart, adopted when server restart.
-- background/detached job ended will notice caller session, missing detacthed job, likely finished or killed when the server is down, will also notice.
+- detached job lives over server cancel, adopted when server restart.
+- skill server skills all jobs.
+- background/detached job finish will notice caller session, missing detacthed job, likely finished or killed when the server is down, will also notice.
 
 wait is the only expecial tool that treated internally.
 
@@ -92,6 +94,12 @@ replace `id` with mapped File ID before sending for request.
 a cache tree is simulated for each model or (model, some config) that shares prefix cache.
 
 for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
+
+## Live Compact
+- after first true user message, inject prompt to ask agent to give a plan.
+- after the first turn end, set the starting checkpoint of compaction.
+- after the starting checkpoint, every time reach a context increase limit, ask the agent to call live compact to compact the history since the last checkpoint.
+- live compact summary can reference meta that directly embed in the summary, creating a new checkpoint.
 
 ## monitor
 - session: spawn/notice when any session is error.
@@ -218,7 +226,6 @@ do whatever user can do to the server.
 - subscribe new session's turn end event.
 - send_message to new session.
 - optionaly wait.
-
 
 ## Skill: evolve
 restart server should still keep its lifetime, e.g. tui spawned server's lifetime bound to tui.

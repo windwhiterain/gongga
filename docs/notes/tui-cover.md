@@ -16,19 +16,50 @@ A paste closes it and remains a paste. Resizing keeps the cover visible and redr
 size. The cursor is hidden for the cover and restored once on the transition to the window, not
 on every repaint.
 
-## Terminal adaptation
+## The picture protocol
 
-No Sixel, Kitty, or iTerm graphics escape is emitted. An upper-half-block cell carries two
-pixels, one as foreground and one as background, so the same ratatui/crossterm backend works in
-terminals with and without a native image protocol.
+The cover is drawn as pixels, not as cells. `ratatui-image` asks the terminal which picture
+protocol it answers -- sixel, kitty, or iTerm2 -- and draws in half blocks, two pixels per cell,
+for the terminals that answer none. So the same build is sharp in a terminal that carries pixels
+and still shows the picture in one that does not.
 
-`crossterm::style::available_color_count()` chooses RGB, the xterm 256-color palette, or the basic
-ANSI palette. Indexed colors use the nearer of the color cube and grayscale ramp; basic colors
-use the nearest of the sixteen named ANSI colors. `NO_COLOR` instead selects a monochrome ASCII
-luminance ramp.
+The question is put to the terminal once, at startup, after the alternate screen is entered and
+before the event stream takes stdin, because that is where the answer arrives. Nothing here
+overrides it: a terminal that reports a protocol gets that protocol, and one that reports nothing
+is drawn to in half blocks.
 
-`crossterm::terminal::window_size()` supplies the physical cell aspect ratio where supported.
-The source is center-cropped in physical units and then resized into the terminal's cell grid,
-which preserves its aspect ratio instead of stretching it to the window. A conventional cell
-twice as high as it is wide is the fallback for terminals that report no pixel dimensions. The
-image scales both up and down, including very short or narrow windows.
+The protocol encodes the picture once per size and keeps it, so a repaint at an unchanged size
+re-sends the escape it already built rather than encoding again.
+
+## What is drawn
+
+The cell size the terminal reports decides the grid. The picture's rectangle is counted in cells
+from the same font size the protocol uses for its own arithmetic, so the rectangle and the
+encoded picture cannot disagree about how many cells it covers.
+
+The picture is fitted whole: whichever of its width and height runs out first decides its size,
+and the rest of the screen stays black. Nothing is cropped, so a window of any shape shows all
+of the picture. The last row is reserved for `press any key` and carries no pixels, which is why
+a protocol that repaints its own rectangle cannot paint over the hint.
+
+Uncovered cells are painted black rather than left blank: a blank cell keeps the terminal's own
+background, and that is not a colour this program chose. For the same reason the picture is
+composited onto opaque black before it is encoded -- a protocol that pads its canvas leaves
+whatever it did not paint, and a transparent pixel is not black.
+
+The picture has no frame, so its rectangle would otherwise meet the black around it along a hard
+line. Every pixel is multiplied by a smootherstep fade that reaches full brightness
+`FEATHER_FRACTION` of the short side in, which leaves the edge itself black and the transition
+invisible. The fade carries grain, strongest at the very edge and gone inside the picture: a
+smooth ramp over a few dozen rows reads as a band, and speckle dissolving into black does not.
+The grain comes from the pixel's own coordinates, so it is the same on every run.
+
+The name is stamped into the picture's own pixels, not drawn as cells: a cell can only paint a
+background, so letters written into cells would leave black boxes on the photograph. The letters
+come from the `font8x8` bitmap font, white with a black outline, `WORDMARK_HEIGHT` of the
+picture's height tall, ending at `WORDMARK_BASELINE` of it. Being part of the picture, the name
+scales with it and needs no rows of its own.
+
+Downsampling uses the crate's default nearest filter: a terminal cannot show more than its own
+grid, and a smoother kernel would invent ringing around the edges of a picture being taken down
+to a few dozen rows.

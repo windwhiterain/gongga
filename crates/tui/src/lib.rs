@@ -44,6 +44,7 @@ use ratatui::Terminal;
 use ratatui::backend::ClearType;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
+use ratatui_image::picker::Picker;
 
 pub use crate::input::{InputLine, apply_completion};
 pub use crate::log::Log;
@@ -589,6 +590,16 @@ pub struct Tui {
     roster_failed: bool,
 }
 
+/// The terminal's own answer about the pictures it can be drawn with.
+///
+/// # Invariant
+///
+/// Nothing here picks the protocol: the terminal is asked, and one that answers nothing
+/// is drawn to in half blocks, which every terminal has. See `docs/notes/tui-cover.md`.
+fn picker() -> Picker {
+    Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+}
+
 impl Tui {
     /// The window, whose rows are written down under this client's own root.
     pub fn new(
@@ -596,7 +607,6 @@ impl Tui {
         client_home: &Path,
         endpoint: &str,
     ) -> anyhow::Result<Self> {
-        let cover = cover::Cover::new().context("decoding the embedded cover")?;
         enable_raw_mode().context("enabling raw mode")?;
         let initialized = (|| {
             let mut out = stdout();
@@ -612,10 +622,12 @@ impl Tui {
             let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
             // A blank cell is never written to, so a dead process's last frame stays.
             terminal.clear().context("clearing the alternate screen")?;
-            anyhow::Ok(terminal)
+            // Asked once, before the event stream takes the stdin the answer arrives on.
+            let cover = cover::Cover::new(picker()).context("decoding the embedded cover")?;
+            anyhow::Ok((terminal, cover))
         })();
-        let terminal = match initialized {
-            Ok(terminal) => terminal,
+        let (terminal, cover) = match initialized {
+            Ok(initialized) => initialized,
             Err(error) => {
                 let _ = restore_terminal(&mut stdout());
                 return Err(error);
@@ -1754,7 +1766,7 @@ where
     let input = {
         // The renderer writes the scroll bound back, hence `&mut`.
         let mut frame = terminal.get_frame();
-        if let Some(cover) = screen.cover.as_ref() {
+        if let Some(cover) = screen.cover.as_mut() {
             cover.draw(&mut frame);
             Rect::default()
         } else {

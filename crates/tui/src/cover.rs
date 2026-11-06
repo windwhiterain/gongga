@@ -1,121 +1,75 @@
 //! The window's startup cover. See `docs/notes/tui-cover.md`.
 
-use crossterm::style::available_color_count;
-use crossterm::terminal::window_size;
-use image::{RgbImage, imageops};
+use font8x8::{BASIC_FONTS, UnicodeFonts};
+use image::{Rgba, RgbaImage};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::{FontSize, Resize, StatefulImage};
 
-/// A cell is two pixels high when its terminal does not report its pixel size.
-const DEFAULT_CELL_ASPECT: f64 = 0.5;
-const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
-const MONOCHROME: &[u8] = b" .:-=+*#%@";
-const ANSI16: [(Color, [u8; 3]); 16] = [
-    (Color::Black, [0, 0, 0]),
-    (Color::Red, [128, 0, 0]),
-    (Color::Green, [0, 128, 0]),
-    (Color::Yellow, [128, 128, 0]),
-    (Color::Blue, [0, 0, 128]),
-    (Color::Magenta, [128, 0, 128]),
-    (Color::Cyan, [0, 128, 128]),
-    (Color::Gray, [192, 192, 192]),
-    (Color::DarkGray, [128, 128, 128]),
-    (Color::LightRed, [255, 0, 0]),
-    (Color::LightGreen, [0, 255, 0]),
-    (Color::LightYellow, [255, 255, 0]),
-    (Color::LightBlue, [0, 0, 255]),
-    (Color::LightMagenta, [255, 0, 255]),
-    (Color::LightCyan, [0, 255, 255]),
-    (Color::White, [255, 255, 255]),
-];
+/// How much of the picture's short side is spent fading its edge into the black around it.
+const FEATHER_FRACTION: f64 = 0.14;
 
-/// The source and the one palette this terminal can express.
+/// How far the grain at the very edge can carry a pixel away from the fade it would have had.
+const GRAIN: f64 = 0.30;
+
+/// The name this window opens with, stamped into the picture itself.
+const WORDMARK: &str = "Gongga Harness";
+
+/// The share of the picture's height the wordmark's letters take.
+const WORDMARK_HEIGHT: f64 = 0.07;
+
+/// Where the wordmark's letters end, as a share of the picture's height.
+const WORDMARK_BASELINE: f64 = 0.86;
+
+/// One glyph's side, in the font's own pixels.
+const GLYPH_SIDE: usize = 8;
+
+/// The picture the window opens on, and the one terminal it opens on.
 pub struct Cover {
-    source: RgbImage,
-    colors: Colors,
-    cell_aspect: f64,
-}
-
-#[derive(Clone, Copy)]
-enum Colors {
-    True,
-    Indexed,
-    Basic,
-    Monochrome,
+    /// The picture, encoded once per size: this terminal is asked for pixels, not for cells.
+    picture: StatefulProtocol,
+    /// The pixels one cell covers here, reckoned the same way the protocol reckons its size.
+    cell: FontSize,
+    /// The picture's own width divided by its own height.
+    aspect: f64,
 }
 
 impl Cover {
-    /// Decodes the asset carried by the executable; no file is read at startup.
-    pub fn new() -> Result<Self, image::ImageError> {
-        let source = image::load_from_memory(include_bytes!("../../../cover.png"))?.to_rgb8();
-        let colors = if std::env::var_os("NO_COLOR").is_some() {
-            Colors::Monochrome
-        } else {
-            match available_color_count() {
-                u16::MAX => Colors::True,
-                count if count >= 256 => Colors::Indexed,
-                _ => Colors::Basic,
-            }
-        };
+    /// Decodes the asset the executable carries, then asks `picker` how to draw it.
+    pub fn new(mut picker: Picker) -> Result<Self, image::ImageError> {
+        let source = image::load_from_memory(include_bytes!("../../../cover.png"))?.to_rgba8();
+        let picture = stamp(feather(source));
+        let aspect = f64::from(picture.width()) / f64::from(picture.height());
+        let cell = picker.font_size();
+        // The protocol pads the picture out to whole cells; the pad is painted with this.
+        picker.set_background_color(Some(image::Rgba([0, 0, 0, 255])));
         Ok(Self {
-            source,
-            colors,
-            cell_aspect: cell_aspect(),
+            picture: picker.new_resize_protocol(picture.into()),
+            cell,
+            aspect,
         })
     }
 
-    /// Paints a centered crop over the whole frame, with the dismissal hint on its last row.
-    pub fn draw(&self, frame: &mut Frame) {
+    /// Paints black, then the picture, then the hint on the last row.
+    pub fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        if area.width == 0 || area.height == 0 || self.source.width() == 0 {
+        if area.width == 0 || area.height == 0 {
             return;
         }
-        let Some(crop) = self.crop(area) else {
-            return;
-        };
-        let resized = imageops::resize(
-            &*crop,
-            u32::from(area.width),
-            u32::from(area.height) * 2,
-            imageops::FilterType::Triangle,
-        );
-        {
-            let buffer = frame.buffer_mut();
-            for y in area.y..area.bottom() {
-                for x in area.x..area.right() {
-                    let Some(pixel_x) = x.checked_sub(area.x) else {
-                        continue;
-                    };
-                    let Some(pixel_y) = y.checked_sub(area.y) else {
-                        continue;
-                    };
-                    let pixel_y = u32::from(pixel_y) * 2;
-                    let top = resized.get_pixel(u32::from(pixel_x), pixel_y).0;
-                    let bottom = resized.get_pixel(u32::from(pixel_x), pixel_y + 1).0;
-                    let Some(cell) = buffer.cell_mut((x, y)) else {
-                        continue;
-                    };
-                    match self.colors {
-                        Colors::Monochrome => {
-                            let luminance =
-                                (u16::from(luminance(top)) + u16::from(luminance(bottom))) / 2;
-                            let index =
-                                (usize::from(luminance) * (MONOCHROME.len() - 1) + 127) / 255;
-                            let symbol = MONOCHROME.get(index).copied().unwrap_or(b' ');
-                            cell.set_char(char::from(symbol))
-                                .set_fg(Color::Reset)
-                                .set_bg(Color::Reset);
-                        }
-                        _ => {
-                            cell.set_char('▀')
-                                .set_fg(self.color(top))
-                                .set_bg(self.color(bottom));
-                        }
-                    }
-                }
-            }
+        // Uncovered cells are black, not blank: a blank cell is the terminal's background.
+        frame.render_widget(Block::new().style(Style::default().bg(Color::Black)), area);
+        // The hint's row carries no pixels, so the picture is fitted above it.
+        let rows = area.height.saturating_sub(1);
+        if let Some(rect) = self.rect(area, rows) {
+            frame.render_stateful_widget(
+                StatefulImage::new().resize(Resize::Scale(None)),
+                rect,
+                &mut self.picture,
+            );
         }
         let hint = Rect {
             y: area.bottom().saturating_sub(1),
@@ -130,118 +84,197 @@ impl Cover {
         );
     }
 
-    /// Crops in physical units, so unequal cell widths and heights do not distort the picture.
-    fn crop(&self, area: Rect) -> Option<image::SubImage<&RgbImage>> {
-        let source_width = self.source.width();
-        let source_height = self.source.height();
-        if source_height == 0 || area.height == 0 {
+    /// Where the whole picture fits, in cells, centred in the `rows` it may use.
+    ///
+    /// # Invariant
+    ///
+    /// The whole picture: the cover shows the one image the window was given, so nothing
+    /// is cropped. What is left over stays black, and the picture's own edge fades into it.
+    fn rect(&self, area: Rect, rows: u16) -> Option<Rect> {
+        if area.width == 0 || rows == 0 {
             return None;
         }
-        let aspect = f64::from(area.width) * self.cell_aspect / f64::from(area.height);
-        if !aspect.is_finite() || aspect <= 0.0 {
+        let cell_width = f64::from(self.cell.width);
+        let cell_height = f64::from(self.cell.height);
+        if !(self.aspect.is_finite() && self.aspect > 0.0)
+            || !(cell_width > 0.0 && cell_height > 0.0)
+        {
             return None;
         }
-        let source_aspect = f64::from(source_width) / f64::from(source_height);
-        let (width, height) = if source_aspect > aspect {
-            (
-                (f64::from(source_height) * aspect)
-                    .round()
-                    .clamp(1.0, f64::from(source_width)) as u32,
-                source_height,
-            )
+        let available_width = f64::from(area.width) * cell_width;
+        let available_height = f64::from(rows) * cell_height;
+        // The picture's shape against the box's: whichever of the two runs out first decides.
+        let (width, height) = if available_width / available_height > self.aspect {
+            (self.aspect * available_height, available_height)
         } else {
-            (
-                source_width,
-                (f64::from(source_width) / aspect)
-                    .round()
-                    .clamp(1.0, f64::from(source_height)) as u32,
-            )
+            (available_width, available_width / self.aspect)
         };
-        let cropped = imageops::crop_imm(
-            &self.source,
-            (source_width - width) / 2,
-            (source_height - height) / 2,
+        let width = cells(width / cell_width, area.width);
+        let height = cells(height / cell_height, rows);
+        Some(Rect {
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (rows - height) / 2,
             width,
             height,
-        );
-        Some(cropped)
+        })
     }
+}
 
-    fn color(&self, rgb: [u8; 3]) -> Color {
-        match self.colors {
-            Colors::True => Color::Rgb(rgb[0], rgb[1], rgb[2]),
-            Colors::Indexed => ansi256(rgb),
-            Colors::Basic | Colors::Monochrome => ansi16(rgb),
+/// Stamps the wordmark into the picture: white letters, black edge, so the photograph
+/// behind them stays behind them.
+///
+/// # Invariant
+///
+/// The name belongs to the picture, not to the cells under it: a terminal cell can only
+/// paint a background, so letters drawn as cells would leave black boxes on the photograph.
+/// Every letter is one font pixel per `scale` picture pixels, so it stays square and crisp.
+fn stamp(mut picture: RgbaImage) -> RgbaImage {
+    let Some(scale) = letter_scale(picture.height()) else {
+        return picture;
+    };
+    let letters = letters(WORDMARK, scale);
+    let (width, height) = (letters.first().map_or(0, Vec::len), letters.len());
+    if width == 0 || height == 0 || width > picture.width() as usize {
+        return picture;
+    }
+    let edge = (scale / 2).max(1);
+    let left = (picture.width() as usize - width) / 2;
+    let bottom = (f64::from(picture.height()) * WORDMARK_BASELINE) as usize;
+    let top = bottom.saturating_sub(height);
+    let black = Rgba([0, 0, 0, 255]);
+    let white = Rgba([255, 255, 255, 255]);
+    // The edge first, then the letters on top of it: what is left of the edge is the outline.
+    ink(&mut picture, &letters, left, top, edge, black);
+    ink(&mut picture, &letters, left, top, 0, white);
+    picture
+}
+
+/// How many picture pixels one font pixel is worth here.
+fn letter_scale(height: u32) -> Option<usize> {
+    let wanted = f64::from(height) * WORDMARK_HEIGHT / GLYPH_SIDE as f64;
+    let scale = wanted.round();
+    (scale >= 1.0).then_some(scale as usize)
+}
+
+/// The wordmark in ink: one row of booleans per picture pixel row, one column per pixel.
+fn letters(text: &str, scale: usize) -> Vec<Vec<bool>> {
+    let advance = GLYPH_SIDE * scale;
+    let mut rows = vec![vec![false; text.chars().count() * advance]; advance];
+    for (index, letter) in text.chars().enumerate() {
+        let Some(glyph) = BASIC_FONTS.get(letter) else {
+            continue;
+        };
+        for (line, bits) in glyph.iter().enumerate() {
+            for column in 0..GLYPH_SIDE {
+                if bits & (1 << column) == 0 {
+                    continue;
+                }
+                for down in 0..scale {
+                    for across in 0..scale {
+                        let y = line * scale + down;
+                        let x = index * advance + column * scale + across;
+                        if let Some(cell) = rows.get_mut(y).and_then(|row| row.get_mut(x)) {
+                            *cell = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// Paints every ink of `mask` at `(left, top)`, grown by `edge` picture pixels.
+fn ink(
+    picture: &mut RgbaImage,
+    mask: &[Vec<bool>],
+    left: usize,
+    top: usize,
+    edge: usize,
+    colour: Rgba<u8>,
+) {
+    let width = picture.width() as usize;
+    let height = picture.height() as usize;
+    for (row, line) in mask.iter().enumerate() {
+        for (column, painted) in line.iter().enumerate() {
+            if !painted {
+                continue;
+            }
+            let x = left + column;
+            let y = top + row;
+            if x >= width || y >= height {
+                continue;
+            }
+            let from_x = x.saturating_sub(edge);
+            let to_x = (x + edge).min(width - 1);
+            let from_y = y.saturating_sub(edge);
+            let to_y = (y + edge).min(height - 1);
+            for py in from_y..=to_y {
+                for px in from_x..=to_x {
+                    picture.put_pixel(px as u32, py as u32, colour);
+                }
+            }
         }
     }
 }
 
-/// Width divided by height for one terminal cell, when the terminal reports pixels.
-fn cell_aspect() -> f64 {
-    let Ok(size) = window_size() else {
-        return DEFAULT_CELL_ASPECT;
-    };
-    if size.width == 0 || size.height == 0 || size.columns == 0 || size.rows == 0 {
-        return DEFAULT_CELL_ASPECT;
-    }
-    let cell_width = f64::from(size.width) / f64::from(size.columns);
-    let cell_height = f64::from(size.height) / f64::from(size.rows);
-    let aspect = cell_width / cell_height;
-    if aspect.is_finite() && aspect > 0.0 {
-        aspect
+/// Rounds a count of cells into the room there is for it, never below one.
+fn cells(count: f64, room: u16) -> u16 {
+    let room = u32::from(room);
+    let rounded = count.round();
+    if rounded.is_finite() && rounded >= 1.0 {
+        (rounded as u32).min(room) as u16
     } else {
-        DEFAULT_CELL_ASPECT
+        1.min(room) as u16
     }
 }
 
-fn luminance(rgb: [u8; 3]) -> u8 {
-    ((u32::from(rgb[0]) * 2126 + u32::from(rgb[1]) * 7152 + u32::from(rgb[2]) * 722) / 10000) as u8
-}
-
-/// The nearer of the xterm color cube and its grayscale ramp.
-fn ansi256(rgb: [u8; 3]) -> Color {
-    let [red, green, blue] = rgb.map(nearest_cube_level);
-    let cube = [red.1, green.1, blue.1];
-    let cube_index = 16 + 36 * red.0 + 6 * green.0 + blue.0;
-    let average = (u16::from(rgb[0]) + u16::from(rgb[1]) + u16::from(rgb[2])) / 3;
-    let gray_index = if average <= 8 {
-        0
-    } else {
-        ((average - 3) / 10).min(23) as u8
-    };
-    let gray = 8 + gray_index * 10;
-    if distance(rgb, [gray; 3]) < distance(rgb, cube) {
-        Color::Indexed(232 + gray_index)
-    } else {
-        Color::Indexed(cube_index)
+/// Darkens the picture towards black where it meets its own border.
+///
+/// # Invariant
+///
+/// The picture has no frame, so its rectangle would meet the black around it along a hard
+/// line. Each pixel is multiplied by a fade reaching full brightness one
+/// [`FEATHER_FRACTION`] of the short side in, leaving the edge itself black.
+///
+/// The same pass composites onto black and makes the pixel opaque: a protocol padding a
+/// transparent pixel would otherwise show what lies behind it.
+fn feather(mut picture: RgbaImage) -> RgbaImage {
+    let width = f64::from(picture.width());
+    let height = f64::from(picture.height());
+    if !(width > 0.0 && height > 0.0) {
+        return picture;
     }
+    let reach = FEATHER_FRACTION * width.min(height);
+    if !(reach > 0.0) {
+        return picture;
+    }
+    for (x, y, pixel) in picture.enumerate_pixels_mut() {
+        let (fx, fy) = (f64::from(x), f64::from(y));
+        let border = fx.min(fy).min(width - 1.0 - fx).min(height - 1.0 - fy);
+        let curve = smootherstep((border / reach).clamp(0.0, 1.0));
+        // Grain, strongest at the edge: the fade breaks into speckle, not a smooth band.
+        let grain = (noise(x, y) - 0.5) * GRAIN * (1.0 - curve);
+        let fade = (curve + grain).clamp(0.0, 1.0);
+        let alpha = f64::from(pixel[3]) / 255.0;
+        for channel in 0..3 {
+            pixel[channel] = (f64::from(pixel[channel]) * alpha * fade).round() as u8;
+        }
+        pixel[3] = 255;
+    }
+    picture
 }
 
-fn nearest_cube_level(value: u8) -> (u8, u8) {
-    CUBE_LEVELS
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(index, level)| (index as u8, level, value.abs_diff(level)))
-        .min_by_key(|(_, _, distance)| *distance)
-        .map(|(index, level, _)| (index, level))
-        .unwrap_or((0, 0))
+/// A reproducible value in `[0, 1)` for one pixel, so the grain is the same on every run.
+fn noise(x: u32, y: u32) -> f64 {
+    let mut hash = x.wrapping_mul(0x9E37_79B9) ^ y.wrapping_mul(0x85EB_CA6B);
+    hash ^= hash >> 15;
+    hash = hash.wrapping_mul(0x2545_F491);
+    hash ^= hash >> 13;
+    f64::from(hash & 0xFFFF) / 65536.0
 }
 
-fn ansi16(rgb: [u8; 3]) -> Color {
-    ANSI16
-        .iter()
-        .min_by_key(|(_, candidate)| distance(rgb, *candidate))
-        .map(|(color, _)| *color)
-        .unwrap_or(Color::Gray)
-}
-
-fn distance(left: [u8; 3], right: [u8; 3]) -> u32 {
-    left.into_iter()
-        .zip(right)
-        .map(|(a, b)| {
-            let difference = i32::from(a) - i32::from(b);
-            (difference * difference) as u32
-        })
-        .sum()
+/// The flat middle and the round ends: a fade whose ends leave no visible seam.
+fn smootherstep(position: f64) -> f64 {
+    position * position * position * (position * (position * 6.0 - 15.0) + 10.0)
 }

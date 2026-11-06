@@ -31,7 +31,14 @@ tokio = { workspace = true }
 futures-util = "0.3"
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
-# 0.25.10 raises its minimum Rust above this workspace's 1.85; only the cover's PNG is decoded.
+# The cover is drawn as pixels, not as cells: the crate asks the terminal which picture
+# protocol it answers and falls back to half blocks for the ones that answer none.
+# Default features are off because they probe for the chafa C library at build time; the
+# half-block fallback they would swap in is the crate's own Rust one without them.
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+# The wordmark is a bitmap font, so its letters are the same pixels on every terminal.
+font8x8 = "0.3"
+# 0.25.10 raises its minimum Rust above this workspace's 1.86; only the cover's PNG is decoded.
 image = { version = "=0.25.9", default-features = false, features = ["png"] }
 unicode-width = "0.2"
 # The input line's grammar: `/cmd` has to be split into tokens. Nothing else in

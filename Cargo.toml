@@ -18,7 +18,7 @@ default-members = ["crates/protocol", "crates/skill", "crates/link", "crates/con
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.86"
 license = "MIT"
 authors = ["gongga contributors"]
 
