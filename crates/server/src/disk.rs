@@ -102,8 +102,7 @@ pub async fn note_tool_end(
     if watcher.threshold == 0 {
         return;
     }
-    // The machine the call ran on first, then this one: a session whose shells are
-    // on a peer writes there, and its `cwd` is that machine's path.
+    // The machine the call ran on first, then this one.
     let mut machines: Vec<(String, Vec<Volume>)> = Vec::new();
     if let Some(peer) = peer {
         machines.push((peer.machine, peer.volumes));

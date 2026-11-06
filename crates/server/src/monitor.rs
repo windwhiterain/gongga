@@ -387,15 +387,12 @@ fn disk_report(home: &Path, payload: &str) -> String {
         .unwrap_or_else(|| "  (nothing was measured)".to_string());
     let machine = text("machine");
     let elsewhere = machine != crate::disk::LOCAL;
-    // A peer's disk is cleaned through the `remote` skill: the cleaner this machine
-    // has is a file on this machine, and the disk that is full is not.
+    // A peer's disk is cleaned through `remote`: the cleaner is a file here.
     let prefix = protocol::Reference::Skill.prefix();
     let skills = if elsewhere {
-        // A peer's disk is cleaned through `remote`: the cleaner this machine has is
-        // a file on this machine, and the disk that is full is not.
-        format!("{prefix}{}\n{prefix}remote", DISK.skill)
+        format!("{prefix}{})\n{prefix}remote)", DISK.skill)
     } else {
-        format!("{prefix}{}", DISK.skill)
+        format!("{prefix}{})", DISK.skill)
     };
     let mut out = format!(
         "{skills}\n\n\

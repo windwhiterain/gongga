@@ -1869,8 +1869,7 @@ pub(crate) async fn invoke(
     ctx: &ToolContext,
 ) -> ToolOutcome {
     let outcome = waited(&tool, &args, ctx).await;
-    // The machine this call ran on reports its own room: a session whose shells are
-    // on a peer writes there, and a full disk there is that machine's to answer for.
+    // The machine this call ran on reports its own room.
     let peer = match (&ctx.remote, &ctx.reader) {
         (Some(machine), reader) => Some(crate::disk::Peer {
             machine: machine.clone(),

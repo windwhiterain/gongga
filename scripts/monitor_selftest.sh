@@ -221,7 +221,7 @@ row = c.execute("""select m.display from messages m join sessions s on s.id = m.
 assert row, 'the monitor session has no prompt row'
 prompt = json.loads(row[0])
 rooted = prompt.get('rooted') or []
-assert '@skill:monitor' in rooted, f'the skill is not an index root: {rooted}'
+assert '@skill(monitor)' in rooted, f'the skill is not an index root: {rooted}'
 body = prompt.get('index') or ''
 assert 'provider 4xx' in body or 'providers' in body, 'the skill body is not in the index'
 assert 'The text of every reference' in body
@@ -236,7 +236,7 @@ first = c.execute("""select m.display from messages m join sessions s on s.id = 
                      where s.name = '@monitor/error' and m.kind = 'text'
                      order by m.seq limit 1""").fetchone()[0]
 text = json.loads(first).get('text', '')
-assert text.startswith('@skill: monitor'), text[:80]
+assert text.startswith('@skill(monitor)'), text[:80]
 assert 'A gongga session stopped with an error' in text
 assert 'session: broken' in text, 'the report names the session that failed'
 assert 'harness build:' in text and 'home:' in text

@@ -224,7 +224,7 @@ row = c.execute("""select m.display from messages m join sessions s on s.id = m.
 assert row, "the disk monitor has no prompt row"
 prompt = json.loads(row[0])
 rooted = prompt.get("rooted") or []
-assert "@skill:clean-disk" in rooted, f"the skill is not an index root: {rooted}"
+assert "@skill(clean-disk)" in rooted, f"the skill is not an index root: {rooted}"
 body = prompt.get("index") or ""
 assert "DryRun" in body or "clean-disk" in body, "the skill body is not in the index"
 INNER
@@ -237,7 +237,7 @@ first = c.execute("""select m.display from messages m join sessions s on s.id = 
                      where s.name = '@monitor/disk' and m.kind = 'text'
                      order by m.seq limit 1""").fetchone()[0]
 text = json.loads(first).get("text", "")
-assert text.startswith("@skill: clean-disk"), text[:80]
+assert text.startswith("@skill(clean-disk)"), text[:80]
 assert "has less disk room left" in text, text[:400]
 assert "Nothing has failed yet" in text, text[:400]
 assert "(in session spill, which succeeded)" in text, text[:900]

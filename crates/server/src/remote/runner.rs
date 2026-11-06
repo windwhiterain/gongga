@@ -632,7 +632,6 @@ async fn send(pid: u32, signal: &str) -> bool {
     }
 }
 
-/// Whether `path` is there, and what it is; `exists: false` is an answer, not an error.
 /// The peer's own disk, read by the peer.
 ///
 /// # Invariant
@@ -652,6 +651,7 @@ fn space(path: &str) -> Result<Value, String> {
     }))
 }
 
+/// Whether `path` is there, and what it is; `exists: false` is an answer, not an error.
 fn stat(path: &str) -> Result<Value, String> {
     let given = Path::new(path);
     match std::fs::metadata(given) {

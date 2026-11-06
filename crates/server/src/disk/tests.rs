@@ -55,8 +55,7 @@ async fn a_low_disk_is_reported_once_and_again_after_recovering() {
     note_tool_end(&store, "work", "bash", cwd, true, None).await;
     assert_eq!(events(&store).len(), 2, "the next fall is a new episode");
 
-    // A peer's disk is its own episode, and its row names the machine: one full
-    // disk must not hide the other, and a report must know where to send a monitor.
+    // A peer's disk is its own episode, named: one full disk must not hide the other.
     let peer = Some(super::Peer {
         machine: "build-box".to_string(),
         volumes: vec![super::Volume {
@@ -65,7 +64,11 @@ async fn a_low_disk_is_reported_once_and_again_after_recovering() {
         }],
     });
     note_tool_end(&store, "work", "bash", cwd, true, peer.clone()).await;
-    assert_eq!(events(&store).len(), 3, "the peer's disk is news of its own");
+    assert_eq!(
+        events(&store).len(),
+        3,
+        "the peer's disk is news of its own"
+    );
     let peer_row: serde_json::Value =
         serde_json::from_str(&events(&store)[2].payload).expect("a payload");
     assert_eq!(peer_row["machine"], "build-box");
