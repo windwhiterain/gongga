@@ -8,6 +8,16 @@
   compaction delivery. Existing transcript rows remain untouched.
 - The compaction schema is never in the ordinary tool list. It is added only to a request
   made while a durable compaction request is outstanding, and withdrawn after its commit.
+- Planning is explore mode's job. The first-round PLAN_NOTICE injection, its harness
+  marker, and the user_texts harness filter are gone; appending a user row never
+  establishes compaction state.
+- The starting checkpoint opens at plan finish — the explore -> work transition — not at
+  a turn end. With live compaction enabled, `start_live_compact` runs in that act, one
+  transaction: refuse a running turn (a measurement is in flight) and a lineage with no
+  real operator row; otherwise set `origin` at the first real operator row (the permanent
+  prefix) and the baseline at the latest `context_tokens`. Failure refuses the mode
+  change. With no origin yet, interval requests cannot be delivered, so a session that
+  never planned is never asked to compact.
 
 ## Initial contract (historical)
 
