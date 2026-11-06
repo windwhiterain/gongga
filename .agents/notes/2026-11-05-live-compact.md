@@ -2,7 +2,8 @@
 
 ## Current opt-in contract
 
-- Live compact is disabled by default. Only an explicit nonzero interval enables it.
+- Live compact is disabled by default. The opt-in is an independent boolean,
+  `live_compact_enabled` (env `GONGGA_LIVE_COMPACT_ENABLED`), never a token count.
 - Disabled sessions receive no plan request, no compaction tool schema, and no pending
   compaction delivery. Existing transcript rows remain untouched.
 - The compaction schema is never in the ordinary tool list. It is added only to a request
@@ -35,9 +36,10 @@ per-run homes and run-ID container namespaces; the original Claw checkout was no
 
 ## Implementation WIP
 
-- The initial implementation defaulted `live_compact_interval_tokens` to 20,000. The current
-  opt-in contract above supersedes it. File configuration overrides the default and the
-  environment variable overrides file configuration.
+- `live_compact_interval_tokens` is the threshold only: it defaults to 20,000 and a
+  zero interval is refused while the feature is enabled, so 0 never doubles as the
+  switch. File configuration overrides the default and the environment variable
+  overrides file configuration.
 - `begin_turn` owns the genuine-message origin. Existing histories are not scanned or
   backfilled; an empty transcript after heir starts a fresh origin on its next begin turn.
 - Delivery computes the newest complete ordinary round before appending the compaction

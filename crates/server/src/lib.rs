@@ -222,7 +222,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     let store = store::Store::open(&cfg.db_path)?;
-    store.set_live_compact_enabled(cfg.agent.live_compact_interval_tokens > 0);
+    store.set_live_compact_enabled(cfg.agent.live_compact_enabled);
     // Read after every tool call, before a full disk takes the room to report it.
     disk::install(cfg.disk_low, cfg.home.clone());
     if cfg.disk_low == 0 {
@@ -325,7 +325,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
             )
-            .with_live_compact(cfg.agent.live_compact_interval_tokens > 0)
+            .with_live_compact(cfg.agent.live_compact_enabled)
             .with_python(cfg.python.clone(), skill_lib.clone())
             .with_skills(
                 tools::skill::programs(&cfg),
@@ -336,6 +336,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         ),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,
+        live_compact_enabled: cfg.agent.live_compact_enabled,
         live_compact_interval_tokens: cfg.agent.live_compact_interval_tokens,
         cache_invalid_rate: cfg.agent.cache_invalid_rate,
         cache_ttl_ms: (cfg.agent.cache_ttl_secs > 0)

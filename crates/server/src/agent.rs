@@ -66,7 +66,11 @@ pub struct Agent {
     pub context_limit_percent: u8,
     /// The home this call belongs to: what a worker needs to be started.
     pub home: PathBuf,
-    /// Input-token growth between agent-written checkpoints; 0 disables live compact.
+    /// Whether the agent is asked to write checkpoint summaries; the switch, not the
+    /// threshold, is the opt-in.
+    pub live_compact_enabled: bool,
+    /// Input-token growth between agent-written checkpoints; the threshold the
+    /// enabled feature measures against.
     pub live_compact_interval_tokens: u64,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
@@ -465,10 +469,10 @@ impl Agent {
 
     /// Queues one durable agent-written checkpoint request for this token interval.
     fn maybe_request_live_compact(&self, id: i64, name: &str) {
-        let interval = self.live_compact_interval_tokens;
-        if interval == 0 {
+        if !self.live_compact_enabled {
             return;
         }
+        let interval = self.live_compact_interval_tokens;
         let Ok(measurement) = self.store.live_compact_measurement(id) else {
             return;
         };
@@ -846,7 +850,7 @@ impl Agent {
         let phase_started = std::time::Instant::now();
         let mut definitions = self.tools.definitions(session.on_remote());
         // A durable request alone makes the compaction schema visible to the model.
-        if self.live_compact_interval_tokens > 0
+        if self.live_compact_enabled
             && self
                 .store
                 .live_compact_measurement(id)

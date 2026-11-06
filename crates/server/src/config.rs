@@ -35,6 +35,9 @@ pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 8_000;
 /// Input-token ceiling that triggers the context notice; fallback with no roster window.
 pub const DEFAULT_COMPRESS_ABOVE_TOKENS: u64 = 40_000;
 
+/// The token growth an enabled live compact measures against when no interval is stated.
+pub const DEFAULT_LIVE_COMPACT_INTERVAL_TOKENS: u64 = 20_000;
+
 /// How often a prefix the provider once held is assumed to be gone.
 ///
 /// # Invariant
@@ -275,8 +278,11 @@ pub fn detect_python() -> Option<PathBuf> {
 pub struct AgentConfig {
     /// Input tokens above which the agent is told to fold its own context.
     pub compress_above_tokens: u64,
-    /// Input-token growth between agent-written checkpoints.
-    /// Disabled by default; an explicit nonzero interval opts in.
+    /// Whether the agent is asked to write checkpoint summaries; the opt-in is a
+    /// switch of its own, never a token count.
+    pub live_compact_enabled: bool,
+    /// Input-token growth between agent-written checkpoints; only the threshold an
+    /// enabled live compact measures against.
     pub live_compact_interval_tokens: u64,
     /// The chance a cached prefix is gone by the next request, `0.0..=1.0`.
     pub cache_invalid_rate: f64,
@@ -371,6 +377,7 @@ struct FileScripts {
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileAgent {
     compress_above_tokens: Option<u64>,
+    live_compact_enabled: Option<bool>,
     live_compact_interval_tokens: Option<u64>,
     cache_invalid_rate: Option<f64>,
     cache_ttl_secs: Option<u64>,
@@ -640,6 +647,12 @@ impl Config {
                 .and_then(|a| a.compress_above_tokens)
                 .or_else(|| env_or("GONGGA_COMPRESS_ABOVE_TOKENS").and_then(|v| v.parse().ok()))
                 .unwrap_or(DEFAULT_COMPRESS_ABOVE_TOKENS),
+            live_compact_enabled: file
+                .agent
+                .as_ref()
+                .and_then(|a| a.live_compact_enabled)
+                .or_else(|| env_or("GONGGA_LIVE_COMPACT_ENABLED").and_then(|v| v.parse().ok()))
+                .unwrap_or(false),
             live_compact_interval_tokens: file
                 .agent
                 .as_ref()
@@ -647,7 +660,7 @@ impl Config {
                 .or_else(|| {
                     env_or("GONGGA_LIVE_COMPACT_INTERVAL_TOKENS").and_then(|v| v.parse().ok())
                 })
-                .unwrap_or(0),
+                .unwrap_or(DEFAULT_LIVE_COMPACT_INTERVAL_TOKENS),
             cache_invalid_rate: file
                 .agent
                 .as_ref()
@@ -677,6 +690,14 @@ impl Config {
                 .unwrap_or(DEFAULT_CONTEXT_LIMIT_PERCENT)
                 .min(100),
         };
+        // Zero would ask about every step; the opt-in must not double as the interval.
+        if agent.live_compact_enabled && agent.live_compact_interval_tokens == 0 {
+            anyhow::bail!(
+                "live_compact is enabled but live_compact_interval_tokens is 0; the interval \
+                 is the threshold, not the switch -- set a positive interval or disable \
+                 live_compact"
+            );
+        }
 
         let transport = file.transport.unwrap_or_default();
         let transport = TransportConfig {
