@@ -1047,9 +1047,10 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
         // The gate is claimed before the durable write, so a second sender can only
         // inject, never spawn a competing turn.
         match d.store.begin_turn(session.id(), name, &message) {
-            Ok((task, seq)) => {
-                // A row like any other: windows draw it from their own echo.
-                d.agent.announce_row(name, Ok(seq));
+            Ok((task, rows)) => {
+                // Both rows are published before their position: the operator's line
+                // and the plan notice behind it, if one landed.
+                d.agent.announce_operator_rows(name, rows);
                 spawn_turn(
                     d,
                     TurnWork {

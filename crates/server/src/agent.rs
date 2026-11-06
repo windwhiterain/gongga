@@ -394,9 +394,9 @@ impl Agent {
         match self.store.deliver_pending(id, name) {
             // `waited` is the "no answer yet" number: a message written mid-step lands
             // only here.
-            Ok((delivered, waited_ms, last)) => {
+            Ok((delivered, waited_ms, written)) => {
                 if delivered > 0 {
-                    self.announce_row(name, Ok(last));
+                    self.announce_operator_rows(name, written);
                     tracing::info!(
                         session = %name,
                         delivered,
@@ -1605,15 +1605,35 @@ impl Agent {
         session.open_done(item_id);
     }
 
+    /// Publishes the operator's own lines, then where the transcript now ends.
+    ///
+    /// # Invariant
+    ///
+    /// The lines come before the announcement: a window reads that as "this row is
+    /// drawn", so a row announced first is one it never fetches. `Input` is the
+    /// shape `commands::row_event` replays, so live and refilled agree.
+    /// See `docs/notes/server-agent.md`.
+    pub(crate) fn announce_operator_rows(&self, session: &str, rows: crate::store::OperatorRows) {
+        for line in &rows.lines {
+            self.bus.publish(Event::Response(ResponseEvent {
+                session: session.to_string(),
+                turn: protocol::REPLAY_TURN,
+                part: ResponsePart::Input,
+                text: line.clone(),
+                done: true,
+                call_id: None,
+            }));
+        }
+        self.announce_row(session, Ok(rows.seq));
+    }
+
     /// Publishes where a session's transcript now ends, after a row was written.
     ///
     /// # Invariant
     ///
-    /// Every stored row is followed by its position, so a client's watermark is
-    /// a statement about what it drew rather than a guess about what the server
-    /// might have written. Nothing is announced for a row that was not written:
-    /// a position that names no row is a position a client cannot check.
-    /// See `docs/notes/protocol-message.md`.
+    /// Nothing is announced for a row that was not written: a position that names
+    /// no row is a position a client cannot check. See
+    /// `docs/notes/protocol-message.md`.
     pub(crate) fn announce_row(&self, session: &str, written: anyhow::Result<i64>) {
         match written {
             Ok(seq) => {

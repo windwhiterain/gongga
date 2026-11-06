@@ -2020,12 +2020,18 @@ impl Store {
     /// the in-flight call and its result, and its lesson lands as an injection —
     /// so "fresh" means no `text` row survives, never a physically empty table,
     /// and the reset and plan request live here rather than on `begin_turn`.
+    ///
+    /// # Invariant
+    ///
+    /// Answers where the transcript ends and the notice written behind the message,
+    /// because the caller publishes both: a row nobody publishes is a row a window
+    /// never draws. See `docs/notes/server-store.md`.
     fn append_user_conn(
         &self,
         tx: &rusqlite::Transaction<'_>,
         session_id: i64,
         expanded: &crate::meta::Expanded,
-    ) -> anyhow::Result<i64> {
+    ) -> anyhow::Result<(i64, Option<String>)> {
         let no_text = tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM messages
                  WHERE session_id = ?1 AND kind = 'text')",
@@ -2065,7 +2071,7 @@ impl Store {
         )?;
         if origin_was_null && self.live_compact_is_enabled() {
             // SPEC: the first true user message is asked for a plan, one row behind it.
-            return Self::append_message_conn(
+            let notice = Self::append_message_conn(
                 tx,
                 session_id,
                 "text",
@@ -2074,23 +2080,25 @@ impl Store {
                     "text": crate::live_compact::PLAN_NOTICE,
                     "harness": "live_compact_plan",
                 }),
-            );
+            )?;
+            return Ok((notice, Some(crate::live_compact::PLAN_NOTICE.to_string())));
         }
-        Ok(seq)
+        Ok((seq, None))
     }
 
     /// Accepts an idle session's first message and its turn obligation together.
     ///
     /// # Invariant
     ///
-    /// Answers the task and the last message seq: the caller announces where the
-    /// transcript now ends, including the plan row. See `docs/notes/server-store.md`.
+    /// Answers the task and the rows it wrote, in the order they landed: the caller
+    /// publishes them before it announces where the transcript now ends, including
+    /// the plan row. See `docs/notes/server-store.md`.
     pub fn begin_turn(
         &self,
         session_id: i64,
         session: &str,
         expanded: &crate::meta::Expanded,
-    ) -> anyhow::Result<(i64, i64)> {
+    ) -> anyhow::Result<(i64, OperatorRows)> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
@@ -2103,9 +2111,11 @@ impl Store {
             ],
         )?;
         let id = tx.last_insert_rowid();
-        let seq = self.append_user_conn(&tx, session_id, expanded)?;
+        let (seq, notice) = self.append_user_conn(&tx, session_id, expanded)?;
+        let mut lines = vec![expanded.text.clone()];
+        lines.extend(notice);
         tx.commit()?;
-        Ok((id, seq))
+        Ok((id, OperatorRows { lines, seq }))
     }
 
     /// The newest copy this home holds for `path`, and the type it was read as.
@@ -2158,12 +2168,17 @@ impl Store {
         }
     }
 
-    /// Delivers the inbox in one transaction: how many, the longest wait, the last seq.
+    /// Delivers the inbox in one transaction: how many, the longest wait, the rows.
+    ///
+    /// # Invariant
+    ///
+    /// Answers the operator's lines the same way `begin_turn` does, so the caller
+    /// publishes them instead of announcing a position over rows nobody drew.
     pub fn deliver_pending(
         &self,
         session_id: i64,
         session: &str,
-    ) -> anyhow::Result<(usize, i64, i64)> {
+    ) -> anyhow::Result<(usize, i64, OperatorRows)> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         let tasks = {
@@ -2182,8 +2197,8 @@ impl Store {
         };
         let mut waited = 0;
         let mut delivered = 0;
-        // The watermark the caller announces: the last row this transaction wrote.
-        let mut last = 0;
+        // The watermark the caller announces, and the lines it publishes first.
+        let mut written = OperatorRows::default();
         for (id, payload, written_at) in tasks {
             let payload: serde_json::Value = serde_json::from_str(&payload)?;
             if let Some(notice) = payload.get("context_notice") {
@@ -2261,10 +2276,13 @@ impl Store {
 
             let expanded = crate::meta::Expanded::from_json(&payload)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
-            last = self.append_user_conn(&tx, session_id, &expanded)?;
+            let (seq, notice) = self.append_user_conn(&tx, session_id, &expanded)?;
+            written.lines.push(expanded.text.clone());
+            written.lines.extend(notice);
+            written.seq = seq;
             if let Some((round, segment_after, generation)) = compact_round {
                 let request = crate::live_compact::Request {
-                    request_seq: last,
+                    request_seq: seq,
                     segment_after_seq: segment_after,
                     round_start_seq: round.start_seq,
                     cutoff_seq: round.cutoff_seq,
@@ -2286,7 +2304,7 @@ impl Store {
             delivered += 1;
         }
         tx.commit()?;
-        Ok((delivered, waited, last))
+        Ok((delivered, waited, written))
     }
 
     /// Commits the terminal status and the fate of this turn's durable obligations together.
@@ -2736,6 +2754,21 @@ pub struct SubscriptionRow {
     pub python: Option<String>,
     /// The Python code run on a match.
     pub code: Option<String>,
+}
+
+/// The operator's own lines a transaction wrote, and where the transcript ended.
+///
+/// # Invariant
+///
+/// One publisher for both live and replayed rows: `commands::row_event` draws such
+/// a row as `ResponsePart::Input`, so a caller publishes these lines and only then
+/// announces `seq`. A window reads the announcement as "this row is drawn".
+#[derive(Debug, Clone, Default)]
+pub struct OperatorRows {
+    /// The lines, in the order they landed.
+    pub lines: Vec<String>,
+    /// The seq of the last row this transaction wrote.
+    pub seq: i64,
 }
 
 /// A row of unfinished work, replayed on the next start.

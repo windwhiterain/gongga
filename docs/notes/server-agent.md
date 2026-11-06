@@ -212,6 +212,15 @@ process dies in between.
 A row with no message cannot be delivered; leaving it would block the queue
 forever, and its kind is not one this loop knows how to replay.
 
+## Agent::announce_operator_rows
+
+The operator's own lines go out as `ResponsePart::Input`, the shape
+`commands::row_event` replays, and they go out *before* the position that accounts
+for them. A window treats `Event::Transcript` as "I have drawn up to here": a line
+published after its own announcement is a line every current window has already
+declared, and none of them ever fetches it. That is how a message could be stored,
+announced, and never drawn.
+
 How long a boundary takes to arrive is not up to this loop. `run_one_call` hands
 each call a fresh `inbox_signal`, so whichever call is waiting when the operator
 speaks can end its wait instead of sitting out the command -- see
