@@ -45,7 +45,7 @@ use ratatui::backend::ClearType;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui_image::FontSize;
-use ratatui_image::picker::Picker;
+use ratatui_image::picker::{Picker, ProtocolType};
 
 pub use crate::input::{InputLine, apply_completion};
 pub use crate::log::Log;
@@ -595,19 +595,50 @@ pub struct Tui {
 ///
 /// # Invariant
 ///
-/// The protocol is the terminal's to name -- it is the one that paints. The cell
-/// geometry is not taken on faith: `Cover::rect` counts the picture in cells from it,
-/// and a number that is not a cell (a window's pixel size is what a terminal sends by
-/// mistake) leaves a dot of picture on a black page that says nothing about why.
-/// See `docs/notes/tui-cover.md`.
+/// Sixel and kitty are answers to a query and are taken. iTerm2 is a variable the
+/// crate read, and its list includes `vscode`, which paints no picture: an iTerm2
+/// escape there costs the whole picture. The cell geometry is checked the same way --
+/// `Cover::rect` counts the picture in cells from it. See `docs/notes/tui-cover.md`.
 fn picker() -> Picker {
     let queried = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    if !paints_what_it_named(&queried) {
+        return Picker::halfblocks();
+    }
     if cell_shaped(queried.font_size()) {
         return queried;
     }
     let mut fallback = Picker::halfblocks();
     fallback.set_protocol_type(queried.protocol_type());
     fallback
+}
+
+/// Whether the protocol this picker named is one the terminal really paints.
+///
+/// # Invariant
+///
+/// Measured twice: sixel and kitty are the terminal's answers to a question, so they
+/// are taken. iTerm2 is only a variable the crate read, and the terminals it reads it
+/// off do not all paint one -- so this asks the variable again, for the name that
+/// protocol belongs to.
+fn paints_what_it_named(picker: &Picker) -> bool {
+    match picker.protocol_type() {
+        ProtocolType::Iterm2 => names_iterm2(),
+        ProtocolType::Halfblocks | ProtocolType::Sixel | ProtocolType::Kitty => true,
+    }
+}
+
+/// Whether this is a terminal whose own picture protocol is iTerm2's.
+///
+/// # Invariant
+///
+/// The two that paint one: iTerm2 itself, and WezTerm, which speaks the protocol on
+/// purpose. The crate's list also counts `vscode`, `mintty`, `Tabby`, `Hyper`, `rio`,
+/// `Bobcat` and `WarpTerminal`, and those are Electron shells and Windows consoles
+/// that carry cells and nothing else. See `docs/notes/tui-cover.md`.
+fn names_iterm2() -> bool {
+    let paints = |value: &str| value.contains("iTerm") || value.contains("WezTerm");
+    std::env::var("TERM_PROGRAM").is_ok_and(|program| paints(&program))
+        || std::env::var("LC_TERMINAL").is_ok_and(|terminal| paints(&terminal))
 }
 
 /// Whether this measures a character cell: a few pixels across, about twice as tall.

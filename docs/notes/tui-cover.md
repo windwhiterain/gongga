@@ -24,8 +24,16 @@ for the terminals that answer none. So the same build is sharp in a terminal tha
 and still shows the picture in one that does not.
 
 The question is put to the terminal once, at startup, after the alternate screen is entered and
-before the event stream takes stdin, because that is where the answer arrives. Nothing here
-overrides the protocol: a terminal that reports one gets it. The *cell geometry* is the half of
+before the event stream takes stdin, because that is where the answer arrives. Sixel and kitty
+are answers to that question and are taken as such.
+
+iTerm2 is not: the crate reads it off `TERM_PROGRAM`, and its list of terminals that "support"
+it includes `vscode`, `mintty`, `Tabby`, `Hyper`, `rio`, `Bobcat` and `WarpTerminal` -- Electron
+shells and consoles that carry cells and no pictures. VS Code's own terminal is the one the
+operator of this program uses, and an iTerm2 escape costs the whole picture there while the rest
+of the cover draws, which is a black page with a hint and no way to see why. So the hint is
+believed only for a terminal that names iTerm2 or WezTerm, the two that paint the protocol; every
+other name means half blocks. The *cell geometry* is the half of
 the answer that is checked, because the picture's rectangle is counted in cells from it and a
 number that is not a cell -- a window's pixel size is what a terminal sends by mistake -- turns
 the picture into a dot without saying anything about why. A geometry with a side of zero, more
