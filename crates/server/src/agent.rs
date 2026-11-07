@@ -1543,31 +1543,51 @@ impl Agent {
                     "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
         let mut checkpointed = false;
         let mut checkpoint_error = None;
+        // Unasked-for call: a no-op, not an error (an error invites a retry loop).
+        // See `docs/notes/server-live-compact.md`.
+        let mut unrequested = false;
         if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && outcome.ok {
-            match self
+            if self
                 .store
-                .append_live_compact_result(id, &call_id, &content)
+                .live_compact_measurement(id)
+                .is_ok_and(|measurement| !measurement.requested)
             {
-                Ok(committed) => {
-                    checkpointed = true;
-                    self.announce_row(name, Ok(committed.result_seq));
-                    self.log_event(
-                        Some(id),
-                        "live_compact",
-                        &json!({
-                            "checkpoint": committed.checkpoint_id,
-                            "result_seq": committed.result_seq,
-                            "generation": committed.generation,
-                        }),
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
-                    checkpoint_error = Some(format!("{e:#}"));
+                unrequested = true;
+            } else {
+                match self
+                    .store
+                    .append_live_compact_result(id, &call_id, &content)
+                {
+                    Ok(committed) => {
+                        checkpointed = true;
+                        self.announce_row(name, Ok(committed.result_seq));
+                        self.log_event(
+                            Some(id),
+                            "live_compact",
+                            &json!({
+                                "checkpoint": committed.checkpoint_id,
+                                "result_seq": committed.result_seq,
+                                "generation": committed.generation,
+                            }),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
+                        checkpoint_error = Some(format!("{e:#}"));
+                    }
                 }
             }
         }
-        if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
+        if unrequested {
+            output = concat!(
+                "No checkpoint was outstanding: nothing was compacted, ",
+                "and the history is untouched."
+            )
+            .to_string();
+            content["output"] = json!(output.clone());
+            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            tail = output.clone();
+        } else if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
             status = "error";
             let reason = checkpoint_error.unwrap_or_else(|| output.clone());
             output = format!("ERROR: live_compact checkpoint was not committed: {reason}");
