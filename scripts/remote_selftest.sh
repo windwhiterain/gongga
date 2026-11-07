@@ -230,7 +230,8 @@ ok "a session is created on $peer_name" $?
 # The boundary: a remote left in the home's `config.toml` is refused, not honoured --
 # it is the merged file, and a host name in it would be published by a pin move.
 probe=$("${cli[@]}" set_session probe fake/flash-fake --remote ghost 2>&1)
-[[ "$probe" == *'no remote named "ghost"'* ]]
+# The answer is compact JSON, so the name's own quotes arrive escaped.
+[[ "$probe" == *'no remote named \"ghost\"'* ]]
 ok "a remote named only in config.toml does not exist" $?
 grep -q 'these remotes are in config.toml' "$log"
 ok "and startup says so, with the migrator that moves them" $?
