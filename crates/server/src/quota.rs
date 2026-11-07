@@ -35,6 +35,9 @@ struct Last {
     by_provider: std::collections::HashMap<String, Quota>,
     /// One read at a time: a step end inside a slow read starts no second child.
     reading_now: AtomicBool,
+    /// Invariant: one wake per distinct reason, never one per step.
+    /// See `docs/notes/server-monitor.md`.
+    announced: std::collections::HashMap<String, String>,
 }
 
 fn state() -> &'static Mutex<Last> {
@@ -44,6 +47,7 @@ fn state() -> &'static Mutex<Last> {
             reading: None,
             by_provider: std::collections::HashMap::new(),
             reading_now: AtomicBool::new(false),
+            announced: std::collections::HashMap::new(),
         })
     })
 }
@@ -64,7 +68,10 @@ pub fn of(provider: &str) -> Option<Quota> {
 ///
 /// Never on the turn's path: the read is a network call through a child process,
 /// so it is spawned and the step goes on. See `docs/notes/server-quota.md`.
-pub fn publish(bus: EventBus, provider: Option<String>) {
+/// The event a provider's unreadable allowance is logged as, for the monitor.
+pub const EVENT: &str = "quota";
+
+pub fn publish(bus: EventBus, store: crate::store::Store, provider: Option<String>) {
     let Some(provider) = provider else {
         return;
     };
@@ -78,6 +85,33 @@ pub fn publish(bus: EventBus, provider: Option<String>) {
     }
     tokio::spawn(async move {
         let reading = read(&provider).await;
+        // A note with no numbers: see `docs/notes/server-monitor.md`.
+        if let Some(failed) = &reading
+            && let Some(note) = &failed.note
+            && failed.month_percent.is_none()
+            && failed.week_percent.is_none()
+            && failed.five_hour_percent.is_none()
+            && failed.credit.is_none()
+            && failed.money.is_none()
+        {
+            let fresh = match state().lock() {
+                Ok(mut state) => {
+                    let fresh = state.announced.get(&provider) != Some(note);
+                    if fresh {
+                        state.announced.insert(provider.clone(), note.clone());
+                    }
+                    fresh
+                }
+                Err(_) => false,
+            };
+            if fresh {
+                let _ = store.append_event_row(
+                    None,
+                    EVENT,
+                    &serde_json::json!({"provider": provider, "note": note}),
+                );
+            }
+        }
         if let Ok(mut state) = state().lock() {
             state.reading_now.store(false, Ordering::SeqCst);
             if let Some(reading) = &reading {

@@ -1223,6 +1223,7 @@ impl Agent {
                     // path, because reading an allowance is a network call.
                     crate::quota::publish(
                         self.bus.clone(),
+                        self.store.clone(),
                         attempt.llm.provider().map(str::to_string),
                     );
                     // A delta, not a whole list: republishing that every step

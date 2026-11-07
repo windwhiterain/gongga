@@ -82,6 +82,16 @@ const DISK_EVENT_ATTEMPTS: &str = "disk.attempts";
 /// The row the last disk report became: a monitor in `error` has written past it.
 const DISK_WAKE_ROW: &str = "disk.wake";
 
+/// The quota event already handed over, how many models that took, and the row the
+/// last such report became.
+const QUOTA_EVENT_CURSOR: &str = "quota.event";
+const QUOTA_EVENT_ATTEMPTS: &str = "quota.attempts";
+const QUOTA_WAKE_ROW: &str = "quota.wake";
+
+/// What a report is about, in one line: the monitor reads the same skill either way.
+const SESSION_WHAT: &str = "A gongga session stopped because a provider would not serve it";
+const QUOTA_WHAT: &str = "This machine could not read a provider's allowance";
+
 /// Hands every unwatched trigger to the monitor of its kind.
 ///
 /// # Invariant
@@ -94,6 +104,7 @@ pub async fn sweep(d: &Arc<Dispatch>, home: &Path) {
         return;
     }
     sweep_errors(d, home).await;
+    sweep_quota(d, home).await;
     sweep_disk(d, home).await;
 }
 
@@ -147,6 +158,127 @@ async fn report_failure(d: &Arc<Dispatch>, home: &Path, failure: &Failure, self_
             tracing::warn!(session = %failure.name, why, "the monitor did not take the report");
         }
     }
+}
+
+/// Every allowance this machine could not read, and the report a monitor that failed
+/// on its model is owed.
+///
+/// # Invariant
+///
+/// Same shape as the disk sweep: one wake per event row, the row is the whole
+/// memory, and a monitor that died on its model is given the same report again on
+/// the next one. The event is written once per distinct reason (`quota::publish`),
+/// so a provider that keeps failing is one wake and not one per step.
+async fn sweep_quota(d: &Arc<Dispatch>, home: &Path) {
+    let cursor = d.store.monitor_value(QUOTA_EVENT_CURSOR).unwrap_or(0);
+    let attempts = d
+        .store
+        .monitor_value(QUOTA_EVENT_ATTEMPTS)
+        .unwrap_or(0)
+        .max(0) as u32;
+    let wake = d.store.monitor_value(QUOTA_WAKE_ROW).unwrap_or(0);
+    if wake > 0
+        && cursor > 0
+        && let Ok(Some(row)) = d.store.event_row(cursor)
+        && let Ok(Some(session)) = d.store.get_session(PROVIDERS.session)
+        && session.status == SessionStatus::Error
+    {
+        give_quota(d, home, &row, attempts.saturating_add(1)).await;
+        return;
+    }
+    let Ok(rows) = d
+        .store
+        .events_after(cursor, Some(crate::quota::EVENT), None, 8)
+    else {
+        return;
+    };
+    for row in rows {
+        give_quota(d, home, &row, attempts).await;
+    }
+}
+
+/// Hands one unreadable allowance to the monitor, and records what came of it.
+async fn give_quota(d: &Arc<Dispatch>, home: &Path, row: &crate::store::EventRow, attempts: u32) {
+    let payload = row.payload.clone();
+    match hand_over(d, PROVIDERS, attempts, move |_| {
+        Ok(quota_report(home, &payload))
+    })
+    .await
+    {
+        Handed::Accepted(model) => {
+            tracing::info!(
+                event = row.id,
+                model = %model,
+                attempt = attempts.saturating_add(1),
+                "handed an unreadable allowance to the monitor"
+            );
+            let _ = d.store.set_monitor_value(QUOTA_EVENT_CURSOR, row.id);
+            let _ = d.store.set_monitor_value(QUOTA_EVENT_ATTEMPTS, 0);
+            if let Ok(Some(session)) = d.store.get_session(PROVIDERS.session)
+                && let Ok(seq) = d.store.last_message_seq(session.id)
+            {
+                let _ = d.store.set_monitor_value(QUOTA_WAKE_ROW, seq);
+            }
+        }
+        Handed::GivenUp(why) => {
+            d.bus.publish(protocol::Event::Log {
+                level: LogLevel::Error,
+                message: why,
+            });
+            let _ = d.store.set_monitor_value(QUOTA_EVENT_CURSOR, row.id);
+            let _ = d.store.set_monitor_value(QUOTA_EVENT_ATTEMPTS, 0);
+            let _ = d.store.set_monitor_value(QUOTA_WAKE_ROW, 0);
+        }
+        Handed::Refused(why) => {
+            tracing::warn!(
+                event = row.id,
+                why,
+                "the monitor did not take the quota report"
+            );
+            let _ = d
+                .store
+                .set_monitor_value(QUOTA_EVENT_ATTEMPTS, i64::from(attempts.saturating_add(1)));
+        }
+    }
+}
+
+/// The report for one `crate::quota::EVENT`; the prompt carries the rules.
+fn quota_report(home: &Path, payload: &str) -> String {
+    let facts: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::Value::Null);
+    let text = |key: &str| {
+        facts
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let provider = text("provider");
+    crate::prompts::shared().render(
+        crate::prompts::MONITOR_PROVIDERS,
+        &[
+            ("what", QUOTA_WHAT),
+            ("session", &format!("quota:{provider}")),
+            ("model", &provider),
+            (
+                "rows",
+                "(no transcript: nothing ran, the allowance could not be read)",
+            ),
+            ("build", &protocol::version_line()),
+            ("home", &home.display().to_string()),
+            ("pid", &std::process::id().to_string()),
+            (
+                "cwd",
+                &std::env::current_dir()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            ),
+            ("mine", ""),
+            (
+                "noted",
+                &format!("\nWhat the reader said:\n\n{}\n", text("note")),
+            ),
+        ],
+    )
 }
 
 /// Every disk event no monitor has been told about yet, and the report a monitor
@@ -332,6 +464,7 @@ fn report(
     Ok(prompts.render(
         crate::prompts::MONITOR_PROVIDERS,
         &[
+            ("what", SESSION_WHAT),
             ("session", &failure.name),
             ("model", &failure.model),
             (
