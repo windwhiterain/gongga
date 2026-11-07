@@ -99,6 +99,9 @@ pub enum Origin {
     },
     /// No client asked: a signal reached this process, or the process it follows ended.
     Signal { reason: String },
+    /// A tool ran it: `new` with a name the config calls a cmd. See `SPEC`'s
+    /// `GONGGA_CLI`, and the `self-control` skill -- what a person may do, a tool may.
+    Tool { session: String },
 }
 
 impl Origin {
@@ -106,6 +109,7 @@ impl Origin {
     pub fn session(&self) -> Option<&str> {
         match self {
             Origin::Client { session, .. } => session.as_deref(),
+            Origin::Tool { session } => Some(session.as_str()),
             Origin::Signal { .. } => None,
         }
     }
@@ -124,6 +128,7 @@ impl Origin {
                 _ => format!("{label} at {peer}"),
             },
             Origin::Signal { reason } => reason.clone(),
+            Origin::Tool { session } => format!("a tool in session {session}"),
         }
     }
 }
@@ -969,6 +974,34 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
 /// while the origin is who asked. `subscribe` needs the session the command was
 /// run *from*, and `cancel` needs to be able to say who asked, which is the
 /// difference between a window's own goodbye and somebody else's.
+/// What a tool can ask the command layer to do: `new` with a name that is a cmd.
+///
+/// # Invariant
+///
+/// A trait object, installed once, holding a weak reference to the dispatch: the
+/// dispatch owns the agent, and the agent's tools are what call this, so a strong
+/// reference would keep the two alive for the life of the process.
+pub trait CmdLayer: Send + Sync {
+    fn run<'a>(
+        &'a self,
+        session: &'a str,
+        name: &'a str,
+        args: Args,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Outcome> + Send + 'a>>;
+}
+
+static LAYER: std::sync::OnceLock<std::sync::Arc<dyn CmdLayer>> = std::sync::OnceLock::new();
+
+/// Points this process at the command layer. Called once, after the dispatch exists.
+pub fn install_layer(layer: std::sync::Arc<dyn CmdLayer>) -> bool {
+    LAYER.set(layer).is_ok()
+}
+
+/// The command layer, when this process has one: a worker has none, and says so.
+pub fn layer() -> Option<std::sync::Arc<dyn CmdLayer>> {
+    LAYER.get().cloned()
+}
+
 pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) -> Outcome {
     // One catalog decides existence, runner and required args, for every kind.
     let spec = match resolve(&d.catalog().await, name, args) {
@@ -2376,7 +2409,10 @@ pub fn cancel_lets_go() -> bool {
 /// name -- see `docs/notes/server-commands.md`.
 async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
     // Set first: a tool whose process outlives its call reads it to tell the stops apart.
-    CANCEL_LETS_GO.store(matches!(origin, Origin::Client { .. }), Ordering::SeqCst);
+    CANCEL_LETS_GO.store(
+        matches!(origin, Origin::Client { .. } | Origin::Tool { .. }),
+        Ordering::SeqCst,
+    );
     // The listen loop keeps dispatching through the notice window.
     d.shutting_down.store(true, Ordering::SeqCst);
     let running = d.sessions.live_sessions();
@@ -2387,7 +2423,11 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
     }
     // Only a protocol `cancel` lets jobs go; every other stop ends them here.
     let (released, killed) = match origin {
-        Origin::Client { .. } => (crate::tools::detached::release_detached(), 0),
+        // A tool is a person's hands in the session (the `self-control` skill), so its
+        // `cancel` lets jobs go exactly as a client's does.
+        Origin::Client { .. } | Origin::Tool { .. } => {
+            (crate::tools::detached::release_detached(), 0)
+        }
         Origin::Signal { .. } => (0, d.sessions.detached().stop_all().await),
     };
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
@@ -2410,7 +2450,7 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
         shutdown.cancel();
     });
     let jobs = match origin {
-        Origin::Client { .. } => format!(
+        Origin::Client { .. } | Origin::Tool { .. } => format!(
             "{} background job(s) keep running -- they are processes of their own, outlive \
              this server and are adopted on the next start",
             released

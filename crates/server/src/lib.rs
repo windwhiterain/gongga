@@ -466,6 +466,48 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
 
     // A detached bash that ends while this server runs is news for its session.
+    // The command layer, for a tool that runs one: `new` with a name the config calls a
+    // cmd. Weak, because the dispatch owns the agent whose tools are what call it.
+    struct Layer(std::sync::Weak<Dispatch>);
+    impl crate::commands::CmdLayer for Layer {
+        fn run<'a>(
+            &'a self,
+            session: &'a str,
+            name: &'a str,
+            mut args: protocol::Args,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::commands::Outcome> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let Some(dispatch) = self.0.upgrade() else {
+                    return crate::commands::Outcome::err("the server is stopping");
+                };
+                // The caller's session fills the first argument the target declares as a
+                // session, and only when the call did not name one.
+                if let Some(spec) = dispatch
+                    .catalog()
+                    .await
+                    .into_iter()
+                    .find(|spec| spec.name == name)
+                    && let Some(argument) = spec
+                        .args
+                        .iter()
+                        .find(|argument| argument.kind.as_deref() == Some("session"))
+                {
+                    args.entry(argument.name.clone())
+                        .or_insert_with(|| session.to_string());
+                }
+                let origin = crate::commands::Origin::Tool {
+                    session: session.to_string(),
+                };
+                crate::commands::dispatch(&dispatch, name, &args, &origin).await
+            })
+        }
+    }
+    if !crate::commands::install_layer(std::sync::Arc::new(Layer(Arc::downgrade(&dispatch)))) {
+        tracing::warn!("a command layer was already installed; a tool runs the first one");
+    }
+
     let detached_watch = detached.watch(dispatch.shutdown.clone());
     // A channel's end is news to its session while this server is up: the watcher is
     // what reads `status`, so a program that ends with nobody looking is still told.

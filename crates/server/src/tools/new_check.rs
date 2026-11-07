@@ -35,11 +35,26 @@ impl Cmd for NewTool {
         ctx: &'a ToolContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
+            let mut args = args;
+            // An operator spells a list or a table as JSON on one line; the model sends
+            // the shape itself. Both reach here as whatever the layer could carry.
+            if let Some(spelled) = args.get("args").and_then(Value::as_str)
+                && let Ok(parsed) = serde_json::from_str::<Value>(spelled)
+            {
+                args["args"] = parsed;
+            }
             let Some(name) = args.get("name").and_then(Value::as_str) else {
                 return ToolOutcome::err("`new` needs the `name` of the program to start");
             };
-            // A list is argv; an object is a cmd's named arguments, and no name is
-            // routed to the command layer yet.
+            let name = name.to_string();
+            let name = name.as_str();
+            // A name the config calls a cmd is answered here, by the command layer, and
+            // never becomes a channel: `args` is that cmd's named arguments, with `cmd`
+            // naming it.
+            if ctx.channels.kind_of(name) == crate::tools::spec::Kind::Cmd {
+                return route(ctx, name, &args).await;
+            }
+            // A list is argv; an object is a cmd's named arguments.
             let words = match args.get("args") {
                 None | Some(Value::Null) => Vec::new(),
                 Some(Value::Array(words)) => {
@@ -131,6 +146,58 @@ impl Cmd for CheckTool {
                 .await;
             answer(outcome, self.wait.max_output_chars, ctx)
         })
+    }
+}
+
+/// Sends one call to the command layer, as `new` with a name the config calls a cmd.
+///
+/// # Invariant
+///
+/// The caller's session fills the first argument the target declares as a session, and
+/// only when the call did not name one: a command that moves a session elsewhere must
+/// not be pinned to the caller's.
+async fn route(ctx: &ToolContext, name: &str, args: &Value) -> ToolOutcome {
+    let Some(layer) = crate::commands::layer() else {
+        return ToolOutcome::err(format!(
+            "{name:?} is a cmd, and this process has no command layer: it runs one call and \
+             answers with a file"
+        ));
+    };
+    let Some(table) = args.get("args").and_then(Value::as_object) else {
+        return ToolOutcome::err(format!(
+            "{name:?} is a cmd: `args` is a table of its arguments, with `cmd` naming it, \
+             as in {{\"cmd\": \"send_message\", \"message\": \"hi\"}}"
+        ));
+    };
+    let mut words: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (key, value) in table {
+        if key == "cmd" {
+            continue;
+        }
+        let text = match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        words.insert(key.clone(), text);
+    }
+    let Some(cmd) = table.get("cmd").and_then(Value::as_str) else {
+        return ToolOutcome::err(format!(
+            "{name:?} needs `args.cmd`: the command to run, e.g. \"send_message\""
+        ));
+    };
+    let began = std::time::Instant::now();
+    let outcome = layer.run(&ctx.session, cmd, words).await;
+    let answer = json!({
+        "id": Value::Null,
+        "output": outcome.message,
+        "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
+        "matched": false,
+        "exit": if outcome.ok { 0 } else { 1 },
+    });
+    if outcome.ok {
+        ToolOutcome::ok(answer.to_string())
+    } else {
+        ToolOutcome::err(answer.to_string())
     }
 }
 

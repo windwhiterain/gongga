@@ -107,8 +107,12 @@ to lose it: the cursor moves when someone asks, not when the program ends.
 
 ## Still owed
 
-- A `cmd` name (`GONGGA_CLI`): `new` refuses it today, because routing to the command
-  layer with the caller's session is not wired.
+- A `cmd` name (`GONGGA_CLI`) reaches the command layer through `commands::layer()`, a
+  trait object installed once, holding a weak dispatch: the dispatch owns the agent
+  whose tools call it, so a strong one would keep both alive. The caller's session fills
+  the first argument the target declares as a session, and only when the call named
+  none. A `cancel` a tool runs is a client's: the `self-control` skill is what says a
+  tool may do what a person may.
 - The old eighteen tools are rows marked `offered = false`: the model is told about
   `new`, `check` and `skill` only, and the rest answer to their names for the command
   layer (`gongga-cli bash …`) and for a subscription action. They are deleted -- not
