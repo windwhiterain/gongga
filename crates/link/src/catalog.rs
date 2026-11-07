@@ -737,6 +737,11 @@ fn resolve(
             token,
             "model",
         ),
+        // The machines this server knows, as the catalog's own `--remote` lists them.
+        CompletionSource::Remotes => {
+            let catalog = ctx.catalog.read();
+            pick(catalog.remotes.iter().map(String::as_str), token, "remote")
+        }
         CompletionSource::Skills => pick(
             ctx.catalog
                 .skill_names(&ctx.place)
