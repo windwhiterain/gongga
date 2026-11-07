@@ -137,7 +137,7 @@ async fn call(request: &Request) -> Answer {
             cfg.bash.timeout,
             cfg.bash.max_output_chars,
         )
-        .build(&cfg.tools.rows),
+        .build(&cfg.tools.rows, &cfg.tools.arguments),
     );
     let program = cfg.bash.program.clone().unwrap_or_default();
     let ctx = crate::tools::ToolContext {

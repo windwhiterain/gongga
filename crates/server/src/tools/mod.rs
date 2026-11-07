@@ -22,6 +22,7 @@ use crate::tools::bash::{BashChunk, BashStream};
 use crate::tools::detached::DetachedRegistry;
 
 pub mod bash;
+pub mod channel;
 pub mod detached;
 pub mod exec;
 pub mod exec_remote;
@@ -525,6 +526,49 @@ impl Tool for Specd {
     }
 }
 
+/// A row with the tunnel's own arguments added, worded once for every tool that
+/// takes them.
+///
+/// # Invariant
+///
+/// A row that declares one of them keeps its own: these are what the tunnel offers,
+/// and a tool that words `background` for itself is saying what the shared sentence
+/// does not.
+fn with_tunnel_arguments(
+    row: &spec::ToolSpec,
+    tunnel: &std::collections::BTreeMap<String, String>,
+) -> spec::ToolSpec {
+    let mut row = row.clone();
+    if !row.tunneled {
+        return row;
+    }
+    for name in GENERAL_ARGS {
+        if row.parameters.iter().any(|argument| argument.name == *name) {
+            continue;
+        }
+        let Some(sentence) = tunnel.get(*name) else {
+            continue;
+        };
+        // `max_output` and `timeout_ms` are counts; the other two are not.
+        let kind = match *name {
+            "max_output" | "timeout_ms" => "integer",
+            "background" => "boolean",
+            _ => "string",
+        };
+        row.parameters.push(spec::Argument {
+            name: (*name).to_string(),
+            kind: kind.to_string(),
+            items: None,
+            required: false,
+            positional: None,
+            hint: None,
+            completion: spec::Completion::None,
+            sentence: Some(sentence.clone()),
+        });
+    }
+    row
+}
+
 pub struct ToolRegistry {
     tools: Vec<Arc<dyn Tool>>,
     /// The longest one call may wait for its answer. See `tunnel::resolve`.
@@ -617,11 +661,17 @@ impl ToolRegistry {
     /// or one whose setting is missing, is not carried and the reason is kept in
     /// [`Self::problems`]: a tool that vanished quietly is a model calling what is not
     /// there.
-    pub fn build(mut self, rows: &std::collections::BTreeMap<String, spec::ToolSpec>) -> Self {
+    pub fn build(
+        mut self,
+        rows: &std::collections::BTreeMap<String, spec::ToolSpec>,
+        tunnel: &std::collections::BTreeMap<String, String>,
+    ) -> Self {
         for (name, row) in rows {
             if row.cmd == live_compact::LIVE_COMPACT_TOOL && !self.settings.live_compact {
                 continue;
             }
+            // The tunnel's own arguments, in the words it words them once.
+            let row = &with_tunnel_arguments(row, tunnel);
             match self.command(row) {
                 Ok(work) => self
                     .tools

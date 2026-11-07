@@ -334,7 +334,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
             )
-            .build(&cfg.tools.rows),
+            .build(&cfg.tools.rows, &cfg.tools.arguments),
         ),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,

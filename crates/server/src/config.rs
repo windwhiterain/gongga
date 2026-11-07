@@ -250,6 +250,14 @@ pub struct ToolsConfig {
     /// this build carries are all read from here. See
     /// `docs/notes/server-tools-spec.md`.
     pub rows: std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>,
+    /// The tunnel's own arguments -- `description`, `max_output`, `timeout_ms`,
+    /// `background` -- in the words every tool that takes them shares.
+    ///
+    /// # Invariant
+    ///
+    /// Said once, because one tunnel offers them: a row that worded them again would
+    /// be a second answer to one question, and twenty rows would drift.
+    pub arguments: std::collections::BTreeMap<String, String>,
 }
 
 /// What a conversation with a peer costs when the peer is silent.
@@ -400,6 +408,9 @@ struct FileTools {
     bash: Option<FileBash>,
     python: Option<FilePython>,
     max_wait_ms: Option<u64>,
+    /// `[tools.arguments]`: what the tunnel's own arguments are for, said once for
+    /// every tool that takes them.
+    arguments: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -684,6 +695,7 @@ impl Config {
                     .unwrap_or(DEFAULT_TOOL_MAX_WAIT_MS),
             ),
             rows: file.tool.unwrap_or_default(),
+            arguments: tools_file.arguments.clone().unwrap_or_default(),
         };
 
         let scripts_file = file.scripts.unwrap_or_default();
