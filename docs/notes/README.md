@@ -155,6 +155,7 @@ with it. The binary target is not built yet -- this crate still ships as a libra
 | [`client-catalog.md`](client-catalog.md) | `crates/client/src/catalog.rs` |
 | [`client-complete.md`](client-complete.md) | `crates/client/src/complete.rs` |
 | [`client-commands.md`](client-commands.md) | `crates/client/src/commands.rs` |
+| [`client-runtime.md`](client-runtime.md) | `crates/client/src/runtime.rs` |
 | [`client-render-wire.md`](client-render-wire.md) | `crates/client/src/render_wire.rs` |
 | [`client-skill-command.md`](client-skill-command.md) | `crates/client/src/skill_command.rs` |
 | [`tui-state.md`](tui-state.md) | `crates/client/src/window_state.rs` |

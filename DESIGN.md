@@ -289,10 +289,18 @@ server + client + TUI，WebUI 等自行分发；若指的是别的，说一声�
 一次性 `gongga-cli` 零状态；不新增第二套协议。
 
 分步（每步跑门禁）：① 词汇表 + serde（已完成）；② `client.toml` 与 `UiIntent` 统一
-（已完成）；③ client bin target 的管道骨架（stdin 读 `UiIntent`、stdout 写
-`RenderMessage`、stderr 落日志，显式 argv 模式）；④ 连接循环与 journal 上提到 client；
-⑤ TUI 改为 spawn client 并只做绘制；⑥ bundle 布线（client 二进制进 payload）；
-⑦ 多 client 连同一 server L3（新脚本需用户许可）。
+（已完成）；③ 管道帧编解码（已完成）；④ 连接循环与 journal 上提到 client ——
+`crates/client/src/runtime.rs` 已上提重连阶梯、起 server 判定、单次拨号、所有权判定
+与 `Server` 枚举；`interactive` 主循环、输入翻译与窗口 journal 仍待；⑤ client bin
+target 接管道骨架（要等 ④ 的主循环，否则是空壳）；⑥ TUI 改为 spawn client 并只做
+绘制；⑦ bundle 布线（client 二进制进 payload）；⑧ 多 client 连同一 server L3
+（新脚本需用户许可）。
+
+**④ 里随 `--parent` 裁定修掉的一处**：`whose_server` 原先用 `std::process::id()`
+比对 server 的 `--parent`；client 成为 UI 的子进程后，这个值会是 client 自己的 pid，
+而 `--parent` 是 UI pid，handover 会被误判成「别人的 server」。上提时把 owner pid
+改成了显式参数，`interactive` 当前传本进程 id（UI 还没拆出去），拆分后从 argv 取。
+见 `docs/notes/client-runtime.md`。
 
 ## 2. 传输层：可靠 UDP
 

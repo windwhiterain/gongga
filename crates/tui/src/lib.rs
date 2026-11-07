@@ -51,6 +51,7 @@ pub use crate::input::{InputLine, apply_completion};
 pub use crate::log::Log;
 pub use crate::panes::Panes;
 pub use crate::run::interactive;
+pub use client::runtime::Server;
 
 /// The modifiers a terminal forwards with a mouse event, as a gesture's own.
 ///
@@ -177,50 +178,6 @@ struct PaneCell {
     row: usize,
     /// The cell's column inside the window, for the margin a box leaves each side.
     column: usize,
-}
-
-/// Whose server the window is talking to, which the header says beside the status.
-///
-/// # Invariant
-///
-/// A server's lifetime belongs to whoever *started* it, never to whoever
-/// connects: dialling is reading. Two facts make one ours -- the pid `spawn`
-/// answered, and the pid the server follows (`--parent`) being this window's,
-/// which is how a handover keeps the lifetime it had. Anything else outlives the
-/// window. See `docs/notes/tui-run.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Server {
-    /// This window started it, so it goes when the window does.
-    Ours { pid: u32 },
-    /// A handover of this window's server: a newer build in its place, carrying
-    /// the same `--parent`, so it goes too.
-    Handover { pid: u32 },
-    /// Another window started it: this one reads it and cannot stop it.
-    Another { pid: u32 },
-    /// Nobody started it for a window: it outlives every window that reads it.
-    Unowned { pid: u32 },
-}
-
-impl Server {
-    /// Whether closing this window stops this server.
-    ///
-    /// # Invariant
-    ///
-    /// One answer for two readers: the header draws it and the way out acts on
-    /// it, so the bar cannot promise a lifetime the window does not honour.
-    pub fn is_ours(self) -> bool {
-        matches!(self, Server::Ours { .. } | Server::Handover { .. })
-    }
-
-    /// The words the header shows: whether it is own, why, and then its pid.
-    pub fn label(&self) -> String {
-        match self {
-            Server::Ours { pid } => format!("own #{pid}"),
-            Server::Handover { pid } => format!("own #{pid} (handover)"),
-            Server::Another { pid } => format!("not own #{pid} (another window)"),
-            Server::Unowned { pid } => format!("not own #{pid} (no owner)"),
-        }
-    }
 }
 
 /// Everything the renderer reads, separate from the terminal it draws to.

@@ -324,3 +324,25 @@ retry; first attempt 101 for the reason above) · `cargo fmt --check` 0 ·
 exit=1, the same external `origin/main` divergence as the previous turn.
 No L3 process test and no runtime frame round-trip: the two frame functions are
 pure and no runtime consumes them yet.
+
+## Stage 4, step 1: connection lifecycle lifted (2026-11-07, 20:59)
+
+The first slice of the 904-line `interactive` moved into
+`crates/client/src/runtime.rs`: `RECONNECT_MIN/MAX`, `SPAWN_POLL/ATTEMPTS`,
+`starts_a_server`, `whose_server`, `wait_for`, `dial_now`, and the `Server` enum
+with `is_ours` / `label`. `crates/tui/src/lib.rs` re-exports `Server`, so
+`Screen::server` and `Tui::set_server` are untouched. `run.rs` now calls them as
+`runtime::*`; 904 -> 835 lines. Behaviour is unchanged, with one deliberate
+interface change: `whose_server` takes `owner_pid` explicitly instead of reading
+`std::process::id()`. With `--parent` now naming the UI and the client a child
+process, the old comparison would misread a handover as somebody else's server.
+`interactive` passes its own pid today (the UI is still this process); argv will
+supply it after the split. See `docs/notes/client-runtime.md`.
+
+Verified: `cargo build` 0 (2m38s) · `cargo check -p gongga-tui` 0 (21.37s) ·
+`cargo fmt --check` 0 · `comments-check` 0 violations (first run failed: the
+two-line `owner_pid` preamble was 133/120 chars, shortened) ·
+`test-layout-check` 8 packages, 0 violations · `git diff --check` 0 ·
+`scripts/skill_contract.sh` PASS 8 · `scripts/ship.sh --check --local` in
+agreement · `scripts/ship.sh --check` exit=1, the same external `origin/main`
+divergence. No L3 process test: no runtime behaviour changed.

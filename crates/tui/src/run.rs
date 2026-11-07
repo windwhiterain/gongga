@@ -4,25 +4,12 @@ use std::future::Future;
 use std::pin::Pin;
 
 use client::render_wire::UiIntent;
+use client::runtime;
 use client::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
-use tokio::time::Duration;
 
 use crate::{Server, Tui, UiEvent, closing};
 use client::window_command::{self as command, Done};
 use client::window_state::State;
-
-/// First redial delay, doubling up to the cap; a cadence, not a budget.
-///
-/// # Invariant
-///
-/// Backing off never costs the window: history, input and scroll stay put, and
-/// Alt+Q still leaves. See `docs/notes/tui-run.md`.
-const RECONNECT_MIN: Duration = Duration::from_millis(250);
-const RECONNECT_MAX: Duration = Duration::from_secs(5);
-/// The wait between dials while a server this window started is coming up.
-const SPAWN_POLL: Duration = Duration::from_millis(50);
-/// How many of those are fast: past this it is not a start but a failure.
-const SPAWN_ATTEMPTS: u32 = 120;
 
 /// Renders the command layer's lines into the terminal.
 struct TuiSink<'a>(&'a mut Tui);
@@ -546,66 +533,6 @@ enum Step {
 /// A dial kept alive between loop iterations, boxed so the loop never blocks.
 type Dialing = Pin<Box<dyn Future<Output = Result<(Link, Greeting), DialFailure>>>>;
 
-/// Whether this window starts a server of its own.
-///
-/// # Invariant
-///
-/// Once, at the start, before any dial: asking first costs the first seconds of
-/// every launch. `--client_only` is the whole refusal, and nothing is restarted
-/// later -- a server that goes away is the operator's doing. See
-/// `docs/notes/tui-run.md`.
-fn starts_a_server(client_only: bool) -> bool {
-    !client_only
-}
-
-/// Whose server answered, from what this window knows about it.
-///
-/// # Invariant
-///
-/// Being told is not owning: only two facts count, and both were decided before
-/// any dial -- the pid `spawn` answered (the server, or the watchdog above it),
-/// and the pid the server follows being this window's own, which a handover
-/// carries in `--parent`. See `docs/notes/tui-run.md`.
-fn whose_server(spawned: Option<u32>, greeting: &Greeting) -> Server {
-    let pid = greeting.pid();
-    if spawned.is_some() && (spawned == Some(pid) || spawned == greeting.supervisor()) {
-        return Server::Ours { pid };
-    }
-    match greeting.owner() {
-        Some(owner) if owner == std::process::id() => Server::Handover { pid },
-        Some(_) => Server::Another { pid },
-        None => Server::Unowned { pid },
-    }
-}
-
-/// How long to wait before the next dial.
-///
-/// # Invariant
-///
-/// A server this window started is coming up, so its first seconds are worth
-/// [`SPAWN_POLL`] rather than the reconnect ladder, which exists for a server
-/// that went away. Only our own: somebody else's is not ours to hammer.
-fn wait_for(spawned: Option<u32>, attempts: u32, backoff: Duration) -> Duration {
-    if spawned.is_some() && attempts <= SPAWN_ATTEMPTS {
-        SPAWN_POLL
-    } else {
-        backoff
-    }
-}
-
-/// One attempt, resolving afresh: `connect_server` moves the address.
-///
-/// # Invariant
-///
-/// Nothing of this window goes on the wire as a claim: a server's lifetime is
-/// decided by whoever started it, so a window that merely dials -- into a home
-/// somebody serves by hand, or onto a `connect_server` -- reads it and leaves it
-/// running when it closes. See `docs/notes/tui-run.md`.
-async fn dial_now(conn: client::Connection) -> Result<(Link, Greeting), DialFailure> {
-    let endpoint = conn.endpoint().map_err(DialFailure::Temporary)?;
-    client::dial(endpoint).await
-}
-
 /// Gives the operator back the lines no server answered.
 ///
 /// # Invariant
@@ -626,6 +553,9 @@ fn give_back(ui: &mut Tui, lines: Vec<String>) {
 
 /// The interactive front-end: the window outlives the link. See `docs/notes/tui-run.md`.
 pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
+    // `--parent` names the UI, which is this process for now.
+    // See `docs/notes/client-runtime.md`.
+    let owner_pid = std::process::id();
     // The command an agent's shell types, installed before any shell exists.
     let home = client::home_of(args);
     // Both are this process's own: where a row lives never depends on a greeting.
@@ -653,11 +583,11 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
     let mut link: Option<client::Link> = None;
     let mut dialing: Option<Dialing> = None;
     let mut next_try = tokio::time::Instant::now();
-    let mut backoff = RECONNECT_MIN;
+    let mut backoff = runtime::RECONNECT_MIN;
     let mut attempts: u32 = 0;
     // Started once, before any dial; what it spawned is its to stop, so the
     // server on the address is stopped first.
-    let spawned: Option<u32> = match starts_a_server(args.client_only) {
+    let spawned: Option<u32> = match runtime::starts_a_server(args.client_only) {
         true => match client::server_of(&conn) {
             Ok(addr) => {
                 if let Some(old) = client::stop(&conn, &home, addr).await {
@@ -755,7 +685,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                     ui.repoint(&client_home, &endpoint);
                     link = None;
                     ui.set_server(None);
-                    backoff = RECONNECT_MIN;
+                    backoff = runtime::RECONNECT_MIN;
                     attempts = 0;
                     next_try = tokio::time::Instant::now();
                     let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
@@ -777,7 +707,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                                 // line goes back like any other unanswered one.
                                 link = None;
                                 ui.set_server(None);
-                                backoff = RECONNECT_MIN;
+                                backoff = runtime::RECONNECT_MIN;
                                 attempts = 0;
                                 next_try = tokio::time::Instant::now();
                                 let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
@@ -815,7 +745,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                 if client.take_hole() && link.is_some() {
                     link = None;
                     ui.set_server(None);
-                    backoff = RECONNECT_MIN;
+                    backoff = runtime::RECONNECT_MIN;
                     attempts = 0;
                     next_try = tokio::time::Instant::now();
                     let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
@@ -829,7 +759,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
             Step::Wire(None) => {
                 link = None;
                 ui.set_server(None);
-                backoff = RECONNECT_MIN;
+                backoff = runtime::RECONNECT_MIN;
                 attempts = 0;
                 next_try = tokio::time::Instant::now();
                 let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
@@ -838,20 +768,20 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
             }
             Step::Dial => {
                 attempts += 1;
-                dialing = Some(Box::pin(dial_now(conn.clone())));
+                dialing = Some(Box::pin(runtime::dial_now(conn.clone())));
             }
             Step::Dialed(outcome) => {
                 // Finished either way: clear it, or a later poll of a dead future panics.
                 drop(dialing.take());
                 match outcome {
                     Ok((open, greeting)) => {
-                        ui.set_server(Some(whose_server(spawned, &greeting)));
+                        ui.set_server(Some(runtime::whose_server(spawned, &greeting, owner_pid)));
                         // Applying the greeting is what the server says; what
                         // this window kept is the other half of the comparison.
                         greeting.apply(&mut client, &mut TuiSink(&mut ui));
                         declare(&mut client, &ui);
                         link = Some(open);
-                        backoff = RECONNECT_MIN;
+                        backoff = runtime::RECONNECT_MIN;
                     }
                     Err(failure) if failure.is_fatal() => break Err(failure.into_error()),
                     Err(failure) => {
@@ -871,9 +801,9 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                                 ),
                             );
                         }
-                        backoff = (backoff * 2).min(RECONNECT_MAX);
-                        next_try =
-                            tokio::time::Instant::now() + wait_for(spawned, attempts, backoff);
+                        backoff = (backoff * 2).min(runtime::RECONNECT_MAX);
+                        next_try = tokio::time::Instant::now()
+                            + runtime::wait_for(spawned, attempts, backoff);
                     }
                 }
             }

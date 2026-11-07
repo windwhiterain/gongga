@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod commands;
 pub mod complete;
 pub mod render_wire;
+pub mod runtime;
 pub mod server;
 pub mod skill_command;
 pub mod window_command;
