@@ -580,50 +580,113 @@ pub struct Tui {
 ///
 /// # Invariant
 ///
-/// Sixel and kitty are answers to a query and are taken. iTerm2 is a variable the
-/// crate read, and its list includes `vscode`, which paints no picture: an iTerm2
-/// escape there costs the whole picture. The cell geometry is checked the same way --
-/// `Cover::rect` counts the picture in cells from it. See `docs/notes/tui-cover.md`.
+/// The environment decides first: it is the only evidence that describes the terminal
+/// and not the pty under it, and the query adds what the environment leaves unnamed.
+/// The measured cell is kept whatever the protocol becomes -- `Cover::rect` counts the
+/// picture in cells from it. See `docs/notes/tui-cover.md`.
 fn picker() -> Picker {
     let queried = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    if !paints_what_it_named(&queried) {
-        return Picker::halfblocks();
-    }
+    let pictured = named_protocol()
+        .or_else(|| answered_pictures(&queried))
+        .unwrap_or(ProtocolType::Halfblocks);
     if cell_shaped(queried.font_size()) {
-        return queried;
+        let mut picker = queried;
+        picker.set_protocol_type(pictured);
+        return picker;
     }
     let mut fallback = Picker::halfblocks();
-    fallback.set_protocol_type(queried.protocol_type());
+    fallback.set_protocol_type(pictured);
     fallback
 }
 
-/// Whether the protocol this picker named is one the terminal really paints.
+/// The protocol this environment names, including the ones that name cells only.
 ///
 /// # Invariant
 ///
-/// Measured twice: sixel and kitty are the terminal's answers to a question, so they
-/// are taken. iTerm2 is only a variable the crate read, and the terminals it reads it
-/// off do not all paint one -- so this asks the variable again, for the name that
-/// protocol belongs to.
-fn paints_what_it_named(picker: &Picker) -> bool {
-    match picker.protocol_type() {
-        ProtocolType::Iterm2 => names_iterm2(),
-        ProtocolType::Halfblocks | ProtocolType::Sixel | ProtocolType::Kitty => true,
+/// A name is the only evidence that describes the terminal rather than the pty under
+/// it, so a named protocol is taken before the query is even consulted. Every row and
+/// the reason for it are in `docs/notes/tui-cover.md`.
+fn named_protocol() -> Option<ProtocolType> {
+    named_protocol_where(|name| std::env::var(name).ok())
+}
+
+/// The same table read through `get`, so a test can hand it its own environment.
+///
+/// # Invariant
+///
+/// Ported from `supports-terminal-graphics`, with its `vscode` row changed: that row
+/// says sixel from 1.80, and this terminal answers sixel and paints none. Terms are
+/// lowercase, as that library reads them.
+fn named_protocol_where(get: impl Fn(&str) -> Option<String>) -> Option<ProtocolType> {
+    let value = |name: &str| get(name).unwrap_or_default().to_lowercase();
+    let term = value("TERM");
+    let program = value("TERM_PROGRAM");
+    // Shells that draw their terminal in a DOM: cells, and no picture of their own.
+    if matches!(
+        program.as_str(),
+        "vscode" | "tabby" | "hyper" | "bobcat" | "apple_terminal"
+    ) {
+        return Some(ProtocolType::Halfblocks);
+    }
+    let wezterm = get("WEZTERM_PANE").is_some()
+        || get("WEZTERM_UNIX_SOCKET").is_some()
+        || program == "wezterm"
+        || value("LC_TERMINAL") == "wezterm";
+    if wezterm
+        || get("KITTY_WINDOW_ID").is_some()
+        || get("KITTY_PID").is_some()
+        || get("GHOSTTY_RESOURCES_DIR").is_some()
+        || matches!(
+            program.as_str(),
+            "kitty" | "ghostty" | "rio" | "warpterminal"
+        )
+        || term.contains("kitty")
+        || term == "xterm-ghostty"
+    {
+        return Some(ProtocolType::Kitty);
+    }
+    if matches!(program.as_str(), "iterm.app" | "mintty") || value("LC_TERMINAL") == "iterm2" {
+        return Some(ProtocolType::Iterm2);
+    }
+    if get("KONSOLE_VERSION").is_some_and(|version| !version.is_empty())
+        || term.starts_with("mlterm")
+    {
+        return Some(ProtocolType::Sixel);
+    }
+    // Sixel reached Windows Terminal in 1.22; before that it paints none of it.
+    if program == "windows_terminal" {
+        let after = at_least(&value("TERM_PROGRAM_VERSION"), 1, 22);
+        return Some(match after {
+            true => ProtocolType::Sixel,
+            false => ProtocolType::Halfblocks,
+        });
+    }
+    None
+}
+
+/// Whether a `major.minor.patch` string names a version at least `major.minor`.
+fn at_least(version: &str, major: u32, minor: u32) -> bool {
+    let mut parts = version
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    match (parts.next(), parts.next()) {
+        (Some(found_major), Some(found_minor)) => (found_major, found_minor) >= (major, minor),
+        _ => false,
     }
 }
 
-/// Whether this is a terminal whose own picture protocol is iTerm2's.
+/// The protocol the terminal's own answer named, where that answer can be believed.
 ///
 /// # Invariant
 ///
-/// The two that paint one: iTerm2 itself, and WezTerm, which speaks the protocol on
-/// purpose. The crate's list also counts `vscode`, `mintty`, `Tabby`, `Hyper`, `rio`,
-/// `Bobcat` and `WarpTerminal`, and those are Electron shells and Windows consoles
-/// that carry cells and nothing else. See `docs/notes/tui-cover.md`.
-fn names_iterm2() -> bool {
-    let paints = |value: &str| value.contains("iTerm") || value.contains("WezTerm");
-    std::env::var("TERM_PROGRAM").is_ok_and(|program| paints(&program))
-        || std::env::var("LC_TERMINAL").is_ok_and(|terminal| paints(&terminal))
+/// Sixel and kitty are answers to a question, and the names that lie about them are
+/// settled before this runs. iTerm2 is only a variable the crate read, so it is never
+/// taken here: the table is the one place a name decides.
+fn answered_pictures(queried: &Picker) -> Option<ProtocolType> {
+    match queried.protocol_type() {
+        ProtocolType::Halfblocks | ProtocolType::Iterm2 => None,
+        other => Some(other),
+    }
 }
 
 /// Whether this measures a character cell: a few pixels across, about twice as tall.
@@ -2101,4 +2164,77 @@ fn pasted(keys: &[KeyEvent]) -> Option<String> {
         }
     }
     Some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// One environment, as the table reads it.
+    fn named(pairs: &[(&str, &str)]) -> Option<ProtocolType> {
+        let environment: HashMap<&str, &str> = pairs.iter().copied().collect();
+        named_protocol_where(|name| environment.get(name).map(|value| value.to_string()))
+    }
+
+    /// The terminals this window is actually opened in.
+    #[test]
+    fn what_the_environment_names() {
+        let cells = Some(ProtocolType::Halfblocks);
+        assert_eq!(named(&[("TERM_PROGRAM", "vscode")]), cells);
+        assert_eq!(named(&[("TERM_PROGRAM", "Apple_Terminal")]), cells);
+        assert_eq!(
+            named(&[
+                ("TERM_PROGRAM", "Windows_Terminal"),
+                ("TERM_PROGRAM_VERSION", "1.24.12741.0"),
+            ]),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(
+            named(&[
+                ("TERM_PROGRAM", "Windows_Terminal"),
+                ("TERM_PROGRAM_VERSION", "1.21.2911.0"),
+            ]),
+            cells
+        );
+        assert_eq!(
+            named(&[("KONSOLE_VERSION", "220400")]),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(
+            named(&[("TERM_PROGRAM", "iTerm.app")]),
+            Some(ProtocolType::Iterm2)
+        );
+        assert_eq!(named(&[("TERM", "xterm-256color")]), None);
+    }
+
+    /// The signals that still arrive through tmux and ssh, where no name is left.
+    #[test]
+    fn what_survives_a_wrapper() {
+        let kitty = Some(ProtocolType::Kitty);
+        assert_eq!(named(&[("WEZTERM_PANE", "3")]), kitty);
+        assert_eq!(named(&[("KITTY_WINDOW_ID", "1")]), kitty);
+        assert_eq!(named(&[("GHOSTTY_RESOURCES_DIR", "/opt/ghostty")]), kitty);
+        assert_eq!(named(&[("TERM", "xterm-kitty")]), kitty);
+        assert_eq!(
+            named(&[("LC_TERMINAL", "iTerm2")]),
+            Some(ProtocolType::Iterm2)
+        );
+        assert_eq!(
+            named(&[("TERM", "mlterm-256color")]),
+            Some(ProtocolType::Sixel)
+        );
+    }
+
+    /// A version is compared by its numbers, not by its text.
+    #[test]
+    fn versions_are_numbers() {
+        assert!(at_least("1.22.0.0", 1, 22));
+        assert!(at_least("1.24.12741.0", 1, 22));
+        assert!(at_least("2.0", 1, 22));
+        assert!(!at_least("1.9.9999.0", 1, 22));
+        assert!(!at_least("1.21", 1, 22));
+        assert!(!at_least("", 1, 22));
+    }
 }

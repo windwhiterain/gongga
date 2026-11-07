@@ -24,21 +24,43 @@ for the terminals that answer none. So the same build is sharp in a terminal tha
 and still shows the picture in one that does not.
 
 The question is put to the terminal once, at startup, after the alternate screen is entered and
-before the event stream takes stdin, because that is where the answer arrives. Sixel and kitty
-are answers to that question and are taken as such.
+before the event stream takes stdin, because that is where the answer arrives. Sixel and kitty are
+answers to that question -- but an answer that arrives through a Chromium shell describes the pty
+under it, not the painter above it. VS Code's terminal answers Device Attributes with attribute 4,
+sixel, and paints no sixel; taken at its word, the whole picture went out as one escape that was
+discarded, and the cover was black with a hint on it. Measured 2026-11-07 from that terminal:
+`\x1b[?61;4c\x1b[6;18;8t\x1b[0n` -- sixel, and a cell of eight by eighteen. Put the same bytes in a
+pseudo-console whose host never reads or answers and conhost replies `\x1b[?1;0c\x1b[0n` by itself.
+An answer says what the layer that caught the question can carry; only a name says who paints.
 
-iTerm2 is not: the crate reads it off `TERM_PROGRAM`, and its list of terminals that "support"
-it includes `vscode`, `mintty`, `Tabby`, `Hyper`, `rio`, `Bobcat` and `WarpTerminal` -- Electron
-shells and consoles that carry cells and no pictures. VS Code's own terminal is the one the
-operator of this program uses, and an iTerm2 escape costs the whole picture there while the rest
-of the cover draws, which is a black page with a hint and no way to see why. So the hint is
-believed only for a terminal that names iTerm2 or WezTerm, the two that paint the protocol; every
-other name means half blocks. The *cell geometry* is the half of
-the answer that is checked, because the picture's rectangle is counted in cells from it and a
-number that is not a cell -- a window's pixel size is what a terminal sends by mistake -- turns
-the picture into a dot without saying anything about why. A geometry with a side of zero, more
-pixels than a cell can be, or a width larger than its height is not believed: the terminal's
-protocol is kept and the crate's own cell (ten by twenty) is used in its place.
+So the name decides first, from a table ported out of `supports-terminal-graphics` and kept here:
+the table is data that goes stale, and correcting one row should not wait for someone's release.
+
+- Half blocks: `vscode`, `Tabby`, `Hyper`, `Bobcat`, and `Apple_Terminal`, which paints no picture
+  protocol at all. A Device Attributes answer out of one of those is the pty's.
+- Kitty: `kitty`, `ghostty`, `WezTerm`, `rio`, `WarpTerminal`, and the variables that survive tmux
+  and ssh -- `KITTY_WINDOW_ID`, `KITTY_PID`, `GHOSTTY_RESOURCES_DIR`, `WEZTERM_PANE`,
+  `WEZTERM_UNIX_SOCKET`, `TERM=xterm-kitty`, `TERM=xterm-ghostty`.
+- iTerm2: `iTerm.app`, `mintty`, `LC_TERMINAL=iTerm2`.
+- Sixel: `KONSOLE_VERSION`, `mlterm`, and `Windows_Terminal` from version 1.22, which is where
+  sixel arrived there; an older build is cells.
+
+A terminal the table does not name is left to the query, which can still say sixel or kitty. What
+the answer measured is kept whatever the protocol becomes: the cell above is a real one, and it is
+what the picture's rectangle is counted from. Only a reply whose number is not a cell is dropped
+along with the protocol.
+
+Writing a picture is not the same as painting one. Measured 2026-11-07: the cover leaves this
+process as 863,069 bytes carrying one `\x1bP`, and a pseudo-console whose host carries no sixel
+keeps every one of them -- the layer in between forwards what it forwards. That is the black page
+again by another route, so a terminal is only named for sixel where the protocol reaches the
+screen: Windows Terminal from 1.22, Konsole, mlterm.
+
+iTerm2 is never taken from the query: the crate reads it off `TERM_PROGRAM`, and its list includes
+`vscode`, `Tabby`, `Hyper`, `rio`, `Bobcat` and `WarpTerminal` -- shells that carry cells and no
+pictures. A geometry with a side of zero, more pixels than a cell can be, or a width larger than its
+height is not believed either: the protocol stands and the crate's own cell (ten by twenty) is used
+in its place.
 
 The protocol encodes the picture once per size and keeps it, so a repaint at an unchanged size
 re-sends the escape it already built rather than encoding again.
