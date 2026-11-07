@@ -1940,8 +1940,22 @@ fn context_notice(
     )
 }
 
+/// What the server asks for when the interval elapses.
+///
+/// # Invariant
+///
+/// It asks for what a later turn cannot recover and nothing else: the round the
+/// server keeps verbatim is not restated, a file is cited rather than pasted, and
+/// the answer stays short -- every word here is paid again on every later request,
+/// because a summary is never a cache hit. See `docs/notes/server-live-compact.md`.
 fn live_compact_notice() -> String {
-    "The live-compaction token interval has elapsed. Call `live_compact` now with a      `summary` of everything since the previous checkpoint, including the latest complete      ordinary tool-call round. The server retains that round and every checkpoint summary;      do not use heir or delete any transcript rows."
+    "The live-compaction interval has elapsed. Call `live_compact` with a summary of \
+what a later turn cannot recover from the transcript: the decisions taken, the paths \
+and identifiers the next step needs, the open question, and the facts it depends on. \
+The server keeps the latest complete tool-call round and every earlier summary \
+verbatim, so do not restate them; cite a file as @file(<path>) instead of pasting it. \
+Keep it short: it is sent again with every later request. Do not use heir and do not \
+delete transcript rows."
         .to_string()
 }
 
