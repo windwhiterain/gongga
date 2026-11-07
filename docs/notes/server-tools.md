@@ -37,9 +37,8 @@ stored facts and appends a row only when one differs:
   must not keep advertising a schema this server no longer has.
 
 A transient flag, a command, a tool or a skill cannot change a head. The
-`live_compact` schema used to be added to a request while a durable request was
-outstanding and withdrawn after its commit; that entry and exit sat inside the
-cached prefix and invalidated the whole conversation at every checkpoint.
+`live_compact` schema used to enter and leave the tool list per request; that is
+gone, and `docs/notes/server-live-compact.md` says why.
 
 ## Cost
 

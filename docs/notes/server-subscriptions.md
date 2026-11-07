@@ -18,7 +18,9 @@ not this module's. The pattern is a regex, matched against an
 event's name -- which for a log row is its `kind`, and for any other event is its
 own (`status`, `usage`, `sessions`, `log`, ...). When the event is about a session,
 the pattern is matched against `name:session` too, so `turn_end:child/2` is one
-session's turn ending and `^turn_end$` is any session's. `trigger_event <name>`
+session's turn ending and `^turn_end$` is any session's. A turn that was cut
+publishes `turn_interrupted`, not `turn_end` (see `server-agent.md`), so a
+subscriber that must hear every ending writes `^turn_(end|interrupted)$`. `trigger_event <name>`
 publishes an event under a chosen name, so a subscription can be fired by hand.
 
 The same language `del_bash` and `list_bash` speak, for the same reason: a name

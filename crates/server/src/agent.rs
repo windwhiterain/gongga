@@ -171,19 +171,23 @@ impl Agent {
             });
         // The turn's outcome as a row, not only a line: a reader with the database need
         // not match prose.
-        self.log_event(
-            Some(session.id()),
-            "turn_end",
-            &serde_json::json!({
-                "outcome": outcome,
-                "steps": steps,
-                // Why it failed, for the monitor that reads this row back: a
-                // provider's refusal is the `providers` monitor's business.
-                "origin": origin,
-                "elapsed_ms": started.elapsed().as_millis() as u64,
-                "answer": answer,
-            }),
-        );
+        let mut row = serde_json::json!({
+            "outcome": outcome,
+            "steps": steps,
+            // Why it failed, for the monitor that reads this row back: a
+            // provider's refusal is the `providers` monitor's business.
+            "origin": origin,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+        });
+        // A cut turn did not end, so it does not say it did: see server-agent.md.
+        let kind = match outcome {
+            TurnOutcome::Cancelled => "turn_interrupted",
+            _ => {
+                row["answer"] = serde_json::json!(answer);
+                "turn_end"
+            }
+        };
+        self.log_event(Some(session.id()), kind, &row);
         let (status, detail) = match outcome {
             TurnOutcome::Done => (SessionStatus::Idle, None),
             TurnOutcome::Cancelled => (SessionStatus::Idle, Some("cancelled".to_string())),
@@ -1543,31 +1547,51 @@ impl Agent {
                     "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
         let mut checkpointed = false;
         let mut checkpoint_error = None;
+        // Unasked-for call: a no-op, not an error (an error invites a retry loop).
+        // See `docs/notes/server-live-compact.md`.
+        let mut unrequested = false;
         if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && outcome.ok {
-            match self
+            if self
                 .store
-                .append_live_compact_result(id, &call_id, &content)
+                .live_compact_measurement(id)
+                .is_ok_and(|measurement| !measurement.requested)
             {
-                Ok(committed) => {
-                    checkpointed = true;
-                    self.announce_row(name, Ok(committed.result_seq));
-                    self.log_event(
-                        Some(id),
-                        "live_compact",
-                        &json!({
-                            "checkpoint": committed.checkpoint_id,
-                            "result_seq": committed.result_seq,
-                            "generation": committed.generation,
-                        }),
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
-                    checkpoint_error = Some(format!("{e:#}"));
+                unrequested = true;
+            } else {
+                match self
+                    .store
+                    .append_live_compact_result(id, &call_id, &content)
+                {
+                    Ok(committed) => {
+                        checkpointed = true;
+                        self.announce_row(name, Ok(committed.result_seq));
+                        self.log_event(
+                            Some(id),
+                            "live_compact",
+                            &json!({
+                                "checkpoint": committed.checkpoint_id,
+                                "result_seq": committed.result_seq,
+                                "generation": committed.generation,
+                            }),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
+                        checkpoint_error = Some(format!("{e:#}"));
+                    }
                 }
             }
         }
-        if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
+        if unrequested {
+            output = concat!(
+                "No checkpoint was outstanding: nothing was compacted, ",
+                "and the history is untouched."
+            )
+            .to_string();
+            content["output"] = json!(output.clone());
+            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            tail = output.clone();
+        } else if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
             status = "error";
             let reason = checkpoint_error.unwrap_or_else(|| output.clone());
             output = format!("ERROR: live_compact checkpoint was not committed: {reason}");
@@ -1920,8 +1944,23 @@ fn context_notice(
     )
 }
 
+/// What the server asks for when the interval elapses.
+///
+/// # Invariant
+///
+/// It asks for what a later turn cannot recover and nothing else: the round the
+/// server keeps verbatim is not restated, a file is cited rather than pasted, and
+/// the answer stays short -- every word here is paid again on every later request,
+/// because a summary is never a cache hit. See `docs/notes/server-live-compact.md`.
 fn live_compact_notice() -> String {
-    "The live-compaction token interval has elapsed. Call `live_compact` now with a      `summary` of everything since the previous checkpoint, including the latest complete      ordinary tool-call round. The server retains that round and every checkpoint summary;      do not use heir or delete any transcript rows."
+    "The live-compaction interval has elapsed. Call `live_compact` with a summary of \
+what a later turn cannot recover from the transcript: the decisions taken, the paths \
+and identifiers the next step needs, the open question, and the facts it depends on. \
+The server keeps the latest complete tool-call round and every earlier summary \
+verbatim, so do not restate them. Do not cite a file you have already read: \
+`@file(<path>)` embeds that file's whole content into the summary, and the summary is \
+sent again with every later request. Keep it short. Do not use heir and do not delete \
+transcript rows."
         .to_string()
 }
 
