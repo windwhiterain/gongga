@@ -27,17 +27,26 @@ returns a successful result saying no checkpoint was outstanding, appends no
 checkpoint row, bumps no generation, resets no baseline, and writes no message
 beyond that result (`docs/notes/server-live-compact.md`).
 
-## The guidance: a citation embeds, so do not cite what you just read
+## The guidance, and a suppression that was reverted
 
-The first wording told the model to cite a file as `@file(<path>)` instead of
-pasting it. In the A/B the model cited `@file(evidence.txt)` -- the file it had
-just read -- and clause 4 embedded that file's whole content into the summary:
-97,404 characters against an 878-character summary, re-sent with every later
-request. The arm measured 424,275 uncached tokens against the disabled arm's
-180,798, and 1.33 CNY against 0.91: the opposite of the intent.
+The wording now asks for what a later turn cannot recover and states what a
+citation does, permissively: the summary may cite a file as `@file(<path>)`,
+which embeds that file whole into the summary and so saves a later turn from
+opening it -- at the cost of carrying its content in every later request. Clause
+4 is a capability, and nothing in the notice or in the parameter tells the model
+not to use it. What must not be restated is the tool-call round the server keeps
+verbatim, and the earlier summaries.
 
-The wording now says what the embedding does. Summaries fell to a mean of 154
-tokens per checkpoint, against the 722 the earlier run recorded.
+For a while the text said the opposite ("do not cite a file you have already
+read"), approved on the strength of one arm of the synthetic bench. The user
+reverted it, and the reason is worth keeping: that workload reads the same
+200-line file ten times, so citing the file it had just read is what the model
+would do there -- an artifact of the script, not a fact about real work. What the
+run measured is real but narrow: with a citation of that file in every summary,
+the arm carried 97,404-character artifacts against 878-character summaries,
+424,275 uncached tokens against the disabled arm's 180,798, and 1.33 CNY against
+0.91. That is what a summary costs when it embeds a large file it did not need to
+embed; it is not evidence that citing is wrong.
 
 ## Only explore-born sessions compact
 

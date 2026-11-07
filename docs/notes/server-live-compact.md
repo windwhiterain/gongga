@@ -34,6 +34,14 @@ summary, and never carries the `live_compact` schema, whatever it does. An origi
 opened on the first operator row instead would give such a session a baseline
 taken from inside turn one, which is not the boundary clause 2 names.
 
+## A summary may cite a file
+
+Clause 4 is a capability: a summary may carry `@file(<path>)`, and the citation
+embeds that file whole into the summary, so a later turn reads the content
+without opening it again. It is the agent's call, and the notice and the tool's
+parameter description say what it costs rather than whether to use it: an
+embedded file travels in every later request, and a summary is never a cache hit.
+
 ## The schema is stored, not offered per request
 
 See `docs/notes/server-tools.md`: the tool list is a stored row, so the

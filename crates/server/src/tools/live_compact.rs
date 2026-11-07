@@ -22,9 +22,10 @@ impl Tool for LiveCompactTool {
                     "description": "What a later turn cannot recover from the transcript: \
         the decisions, the paths and identifiers the next step needs, the open question, and \
         the facts it depends on. The server keeps the latest complete tool-call round and every \
-        earlier summary verbatim, so do not restate them. Do not cite a file you have already \
-        read: @file(<path>) embeds that file's whole content here, and the summary is sent \
-        again with every later request. Keep it short."
+        earlier summary verbatim, so do not restate them. The summary may also cite a file as \
+        @file(<path>): the citation embeds that file whole into the summary, so a later turn \
+        reads the content without opening it again -- at the cost of carrying it in every later \
+        request. Keep it short."
                 }
             },
             "required": ["summary"],
