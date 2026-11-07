@@ -251,3 +251,43 @@ blocks it). An isolated export of the staged tree (`git write-tree` ->
 `git archive`, its own `CARGO_TARGET_DIR`) checked out cleanly: `cargo check
 --offline -p gongga-client -p gongga-tui` 0 (1m25s) · `cargo fmt --check` 0.
 The committed tree therefore stands without the concurrent picker work.
+
+## Process topology clarified (2026-11-07, 20:21)
+
+Two further user rulings plus one clarification:
+
+- The UI spawns the client binary; the client's lifetime is bound to that UI.
+  The client is **not** a resident daemon.
+- Only UI <-> client is one-to-one, so a subprocess pipe can replace the local
+  socket. Explicitly: **client <-> server is not one-to-one and must be remote**.
+  A server serves many clients and may live on another machine; that link stays
+  SPEC's reliable UDP. A pipe replaces only the local UI link.
+
+`DESIGN.md` §1 now draws the two links separately and drops the earlier
+"stdio derived, 【待确认】" note. Four hazards are recorded: stderr must be
+drained or logged (`NullSink::note` uses `eprintln!`); a spawned server already
+has its stdio redirected to a log file (`client/server.rs:258`); a synchronous
+`WireSink` needs a writer task with a bounded queue, not a blocking write in
+the main loop; and the client crate has no TTY probes, so crossterm's real
+terminal in the UI cannot collide with the child's pipes.
+
+Existing wheels found, not re-invented: `server/src/remote/transport.rs:334`
+(three piped streams + `kill_on_drop`) and `:815-850` (line writer,
+`lines().next_line()` reader); `tools/bash.rs`, `tools/python.rs`, `script.rs`
+share the shape. `client/server.rs:101` already returns early for a
+non-loopback address (`starts_here`, `:205`), so "client spawns server" never
+applies to a remote shared server. SPEC still says the *window* spawns and
+cancels the server; that wording is the user's file and was not edited.
+
+Open 【待确认】: whose pid goes into `--parent` now that the server is a
+grandchild -- the UI's (preferred, keeps the lifetime bound to the UI) or the
+client's. No Rust code changed in this turn; documentation only.
+
+Verified (documentation only, no Rust): `cargo build` 0 (1m49s, standing
+Windows incremental-lock warnings) · `cargo fmt --check` 0 · `comments-check` 0
+violations · `test-layout-check` 8 packages, 0 violations · `git diff --check` 0
+· `scripts/skill_contract.sh` PASS 8 · `scripts/ship.sh --check --local` in
+agreement. `scripts/ship.sh --check` still exit=1 on the same external
+`origin/main` divergence reported in the previous turn (`de61d29a...` remote vs
+`9dfad435...` local); no ship file was touched and no fetch/rebase was run.
+No L3 process test: no runtime behaviour changed.

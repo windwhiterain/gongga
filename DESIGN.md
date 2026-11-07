@@ -15,8 +15,8 @@
 [server]    binary   —— 定义并发布 cmd schema
 rpc         层       —— 按 schema 校验后向服务端发命令
   [cli]     python   —— 命令行客户端
-[client]    binary   —— client daemon：收 delta、重连时校验、维护自身状态、产出可渲染的行
-  [tui]     binary   —— 终端前端，经序列化渲染协议连 daemon
+[client]    binary   —— client 子进程（UI 起它、生命周期绑定 UI）：收 delta、校验、维护状态、产出行
+  [tui]     binary   —— 终端前端，经管道连 client
   [webui]   binary   —— 浏览器前端（待新增），与 tui 平级
 [bundle]    binary   —— 打包与路由
 ```
@@ -36,7 +36,7 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` binary（daemon） | `crates/client`（`gongga-client`）仍是 library crate；窗口状态与六条 client 命令已从 `tui` 上提；`render_wire.rs` 已定义序列化词汇表 | 给它加 bin target 并成为常驻进程；`run.rs` 的连接循环与输入行翻译上提 |
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）仍是 library crate；窗口状态与六条 client 命令已从 `tui` 上提；`render_wire.rs` 已定义序列化词汇表 | 给它加 bin target，由 UI 用管道拉起；`run.rs` 的连接循环、输入翻译与 journal 上提 |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
 | `[tui]` binary | `crates/tui`，`run.rs` 仍装着连接循环与输入行翻译 | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
@@ -50,7 +50,9 @@ crates/bundle    gongga-bundle     别名 bundle
 binary 做（`crates/client/src/lib.rs:424-526` 已是这套不带终端类型的词汇）。依赖方向仍是单向：
 `tui → client`，`server` 不依赖任何客户端 crate。
 
-2026-11-07 追加裁定：前端与 client **跨进程、跨语言**（下称形态 2）。`render` 因此不只是
+2026-11-07 追加裁定：前端与 client **跨进程、跨语言**（下称形态 2）。client 是 UI 起的
+子进程、生命周期绑定 UI；client↔server 仍是多对一且可远程的 UDP（见形态 2 小节）。
+`render` 因此不只是
 「产出 `Sink` 事件」，还要把事件序列化到线上；`RenderMessage` / `UiIntent` 就是这套词汇表
 （`crates/client/src/render_wire.rs`）。一个 crate 同时是 library 与 binary 并不违背 SPEC 的
 `binary`：SPEC 说的是交付形态，`crates/client` 目前仍只交付 library，bin target 待补。
@@ -193,24 +195,64 @@ pub enum UiEvent { Submit(String), Quit }
 ③ `crates/webui` 实现 `Sink` → JSON 与 WS 广播；④ bundle 布线 `gongga webui`；
 ⑤ 双前端并存 L3（新脚本需用户许可）。
 
-### 形态 2：client daemon 与跨语言渲染协议（2026-11-07 已裁定）
+### 形态 2：client 子进程与跨语言渲染协议（2026-11-07 已裁定）
 
-2026-11-07 选定形态 2，并把 SPEC 的 `[client]` 改为 binary：client 是独立进程，UI 用
-任意语言连它。**一个 client 只服务一个 UI；要多个 UI 就起多个 client**（裁定 3），
-于是不需要广播、不需要多连接管理、不需要给新连接补快照：
+2026-11-07 选定形态 2：`[client]` 是独立 binary，但**不是常驻 daemon** —— UI 自动起它，
+client 的生命周期绑定 UI。只有 **UI ↔ client 一对一**；**client ↔ server 是多对一且可
+跨机**（用户 20:21 澄清）。两段连接因此是两种传输：
 
 ```text
-[一个 UI] --UiIntent------> [一个 gongga-client] --protocol--> [gongga-server]
-[一个 UI] <--RenderMessage--  [一个 gongga-client] <--deltas--- [gongga-server]
-                                       |
-                                 CursorMessage（自己消费，不过线）
-
-多个 UI = 多个上面的三元组，各自一份状态、各自补洞与补拉。
+   [一个 UI]                    [一个 client]                 [一个 server]
+       |  stdin  UiIntent (JSONL)     |                           |
+       |----------------------------->|  SPEC 的可靠 UDP + key    |
+       |  stdout RenderMessage/JSONL  |-------------------------->|  远程，多个 client 共享
+       |<-----------------------------|<--------------------------|
+       |                              |  CursorMessage（自己消费） |
+       |                              |                           |
+  UI 是父进程，client 是子进程；       只在本地且无 server 时才 spawn；
+  client 退出即 UI 退出（绑定）。      远程地址不 spawn、不 cancel。
 ```
 
-传输按「单 UI」推导为 **stdio JSON Lines**（无端口、无回环鉴权、一对一）；若以后要跨机
-或浏览器，改为 WS 单连接即可，协议层不用动。**【待确认】** 这是从裁定 3 推导的，不是你
-直接指定的；若要的是 WS，说一声我按 WS 布线。
+**UI ↔ client 用 subprocess 管道，不用 socket**（用户裁定）：一对一、本机，没有端口、
+监听、回环鉴权，也省掉 WS/TCP 那一层流量。**client ↔ server 仍走 SPEC 的可靠 UDP**，
+这段是远程且多对一的，不能换成管道；一个 server 同时服务多个 client，每个 client 各自
+拨号、各自补洞、各自补拉。
+
+现成轮子，不另发明传输：`crates/server/src/remote/transport.rs:334-345` 用
+`stdin/stdout/stderr(Stdio::piped())` + `kill_on_drop(true)` 起子进程，`:815-850` 的
+`write_loop` 整行写、`read_loop` 按 `lines().next_line()` 读一帧 JSON；
+`server/src/tools/{bash,python}.rs`、`script.rs` 同构。协议就是 JSON Lines：
+`serde_json` 会转义字符串里的换行，所以 `UiIntent::Submit { line }` 带段落也安全。
+
+**四个硬点**：
+
+1. **stderr 必须单独 drain 或落盘**。`NullSink::note` 走 `eprintln!`
+   （`crates/client/src/lib.rs:552`），一次性 CLI 的错误也在 stderr；父端若
+   `Stdio::piped()` 却不读，管道写满会阻塞 client 主循环。建议 client 的 stderr
+   重定向到 home 日志（复用 `server.rs` 的 `log_path`），UI 只管 stdin/stdout。
+2. **孙进程不会串进协议流**：`crates/client/src/server.rs:258-260` 起 server 时已把
+   它的 stdin 设 null、stdout/stderr 指向同一日志文件。client 的 stdout 因此干净。
+3. **背压**：`WireSink` 是同步 `&mut`，不能在 client 主循环里同步写管道；要一个写 task
+   + 有界队列 `try_send`。UI 侧同样要持续 drain stdout，不能等有空才读。这就是
+   「`Sink` 同步、adapter 不能 await」那条不变式的具体形状。
+4. **TTY 不冲突**：`crates/client/src/` 里没有任何 `is_terminal` / `IsTerminal` 探测，
+   TUI 自己持有真实终端（crossterm raw mode），client 子进程的 stdin/stdout 是管道。
+
+**「client spawn server」与远程共享 server 不矛盾，现有代码已经分开**：
+`crates/client/src/server.rs:101` 的 `spawn()` 第一句是
+`if !starts_here(&addr) { return Ok(None); }`，`starts_here` 就是
+`addr.ip().is_loopback()`（`:205-207`）；`--client_only` 再抑制一次本地 spawn。
+SPEC 原话也是 cancel "the server it spawn" —— 只 cancel 自己起的那个。连远程 server
+时既不 spawn 也不 cancel。SPEC 里「窗口起 server、退出 cancel」的措辞要改成 client。
+
+**【待确认】`--parent` 归谁**：server 是 client spawn 的孙进程，`server.rs:275` 把 owner
+pid 传下去，`run.rs:568` 的 `whose_server` 认「`--parent` 等于本窗口 pid」为 handover。
+传 UI pid（UI 退出 → server 停；client 崩了 UI 还在则 server 继续）还是传 client pid
+（client 崩 → server 停）？我倾向前者，但它改的是所有权语义，要你拍板。
+
+**一次性入口不混**：`gongga-cli` 现在由 `crates/tui/src/main.rs` 分派，stdout 打 JSON
+lines；UI 起的 client 是协议模式，两者都占 stdout 但互不冲突（不同进程、不同模式）。
+按显式 argv 标志区分，不靠「stdin 是不是 TTY」猜。
 
 已落地：`crates/client/src/render_wire.rs` 把 `Sink` 全部 17 个方法写成可序列化的
 `RenderMessage`（12 个绘制）/ `CursorMessage`（5 个 journal），反向 `UiIntent` 四种手势；
@@ -221,31 +263,35 @@ pub enum UiEvent { Submit(String), Quit }
 
 | # | 裁定 | 落点 |
 |---|---|---|
-| 1 | **client spawn server**：起 server、`--parent`、退出时 cancel 全归 client daemon | 与 SPEC 的 `tui [--client_only]` 冲突，SPEC 要你改（见下） |
-| 2 | **TUI 进 bundle，其他 UI 不进**；`gongga tui` 变成「起 daemon + 起 TUI」两步 | daemon 二进制必须进 bundle，否则 TUI 无法被拉起 |
+| 1 | **client spawn server**：只在本地无 server 时起，`--parent`、退出时 cancel 归 client | 远程地址由 `starts_here` 挡住；SPEC 的措辞要你改（见下） |
+| 2 | **TUI 进 bundle，其他 UI 不进**；UI 起 client 子进程 | client 二进制必须进 bundle，否则 UI 无法拉起它 |
 | 3 | **单 UI**：一个 client 一个 UI，否则应当是多 client | 删掉广播与多连接快照；传输简化 |
 | 4 | **窗口 journal 归 client** | `log.rs` / `cache.rs` / `panes.rs` 约 3800 行搬到 daemon |
 | 5 | **状态文件改为 `client.toml`** | 11-05 裁定「只有 TUI 允许 client 状态」由 daemon 继承；一次性 cli 仍零状态 |
 | 6 | **统一 `UiIntent` 与 `UiEvent`** | 本轮已落地：`UiIntent` 是唯一手势定义，`tui::UiEvent` = `Intent(UiIntent)` 或 `Recomplete` |
 
 裁定 1 与 SPEC 当前的 `tui [--client_only]`（窗口自动起 server、退出 cancel 它起的那个）
-不一致；SPEC 是唯一真相源且 agent 不得未经许可编辑，**这一处要你改或授权我改**。
-裁定 2 里「其他 UI 不进」我读作：bundle 只装 server + client daemon + TUI，WebUI 等自行
-分发；若指的是别的，说一声。
+不一致：起 server 的现在是 client，且只在本地地址。SPEC 是唯一真相源且 agent 不得未经
+许可编辑，**这一处要你改或授权我改**。裁定 2 里「其他 UI 不进」我读作：bundle 只装
+server + client + TUI，WebUI 等自行分发；若指的是别的，说一声。远程 server 不在 bundle
+的分发范围里，它按 SPEC 的 `--bind` / key 由 client 拨号连过去。
 
 **这一轮落地的两小步**：`client.toml`（源码、L3 脚本、当前文档同步；带日期的历史笔记
 保留 `cli.toml` 旧名，不改写记录）、`UiIntent` / `UiEvent` 统一（`Recomplete` 留在 tui
 且不过线）。都不碰连接循环、不起进程。
 
-**不变式（按裁定 3 重写）**：一个 client 进程只有一个 `Client` + 一个 `Link` + 一个 UI；
-`Sink` 同步 `&mut`，adapter 只能 `try_send`、不能 await；不静默丢帧，每个事件一个 seq、
-greeting 才给全量；`RenderMessage` 是语义级，颜色、列宽、折行归 UI；`CursorMessage` 只在
-daemon 内消费；一次性 `gongga-cli` 零状态；不新增第二套协议。
+**不变式（按裁定 3 + 20:21 澄清重写）**：一个 client 进程只有一个 `Client` + 一个
+`Link` + 一个 UI；一个 server 可以被多个 client 连接，且可以在另一台机器上 —— client
+不拥有它，除非那个 server 是它自己起的；`Sink` 同步 `&mut`，adapter 只能 `try_send`、
+不能 await，管道两端都要持续 drain；不静默丢帧，每个事件一个 seq、greeting 才给全量；
+`RenderMessage` 是语义级，颜色、列宽、折行归 UI；`CursorMessage` 只在 client 内消费；
+一次性 `gongga-cli` 零状态；不新增第二套协议。
 
 分步（每步跑门禁）：① 词汇表 + serde（已完成）；② `client.toml` 与 `UiIntent` 统一
-（本轮已完成）；③ daemon bin target + stdio 传输骨架（裁定 1 的 spawn/cancel 一起搬）；
-④ 窗口 journal 上提；⑤ TUI 退为协议客户端；⑥ bundle 布线 `gongga tui`；
-⑦ 多 client 并存 L3（新脚本需用户许可）。
+（已完成）；③ client bin target 的管道骨架（stdin 读 `UiIntent`、stdout 写
+`RenderMessage`、stderr 落日志，显式 argv 模式）；④ 连接循环与 journal 上提到 client；
+⑤ TUI 改为 spawn client 并只做绘制；⑥ bundle 布线（client 二进制进 payload）；
+⑦ 多 client 连同一 server L3（新脚本需用户许可）。
 
 ## 2. 传输层：可靠 UDP
 

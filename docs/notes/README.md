@@ -142,8 +142,9 @@ commands. The crate rename has landed:
 `crates/client` is the client side: one wire client, one command surface, and the
 lines a front-end draws. `crates/tui` is one front-end; `client::run` (NullSink, JSON
 lines) is another. As of 2026-11-07 `SPEC.md` names this unit `[client]` and calls
-it a **binary**: the chosen shape is a daemon that front-ends in any language reach
-over a serialized rendering protocol. `rpc` is the layer that checks and sends
+it a **binary**: the UI spawns it as a child process over a pipe and its lifetime
+is bound to that UI. Only UI <-> client is one-to-one; client <-> server is
+many-to-one and may be remote. `rpc` is the layer that checks and sends
 commands; `crates/link` was renamed to `crates/client` and the `link-*.md` notes
 with it. The binary target is not built yet -- this crate still ships as a library.
 
