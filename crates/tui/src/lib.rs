@@ -8,6 +8,7 @@
 
 mod cache;
 mod clipboard;
+mod closing;
 mod cover;
 mod fold;
 mod input;
@@ -660,6 +661,9 @@ impl Tui {
         endpoint: &str,
     ) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
+        // Before the alternate screen: the ask arrives on a thread of the
+        // platform's, and that thread gives back what this line takes away.
+        let watched = closing::watch();
         let initialized = (|| {
             let mut out = stdout();
             // Capture makes the wheel a scroll key; Alt+M gives it back. Bracketed
@@ -719,6 +723,14 @@ impl Tui {
             settled: None,
             stashed: None,
         };
+        // Said once, before the first frame: a window that cannot hear the
+        // console closing keeps the terminal in raw mode when it goes.
+        if !watched {
+            window.say(
+                LineKind::Error,
+                "no console handler: a window closed from outside will not be seen",
+            );
+        }
         // Dialing can win the first select, so the cover cannot wait for next_event.
         window.draw()?;
         Ok(window)

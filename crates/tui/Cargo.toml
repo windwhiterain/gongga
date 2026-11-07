@@ -49,3 +49,9 @@ shell-words = "1"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 # The toast's script travels as `-EncodedCommand` wants it: UTF-16LE, base64.
 base64 = "0.23"
+
+[target.'cfg(windows)'.dependencies]
+# A console that closes asks this window to leave, and only this handler hears
+# it: without it the window parks on an event that never comes and holds its own
+# executable open. See `docs/notes/tui-closing.md`.
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
