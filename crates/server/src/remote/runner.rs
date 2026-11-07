@@ -666,8 +666,8 @@ fn relay(dir: &str, cwd: Option<&str>) -> Result<Value, String> {
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
-    // Out of every job this connection is in: the runner is the only process that
-    // can ask for that, and a channel that stayed in one would end with the ssh.
+    // Out of every job this connection is in: a channel that stayed would end with
+    // the ssh.
     #[cfg(windows)]
     let child = {
         const BREAKAWAY: u32 = 0x0100_0000;

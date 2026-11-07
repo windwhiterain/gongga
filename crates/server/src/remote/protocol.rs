@@ -9,12 +9,8 @@ use serde_json::Value;
 ///
 /// # Invariant
 ///
-/// Raised when a request gains a meaning an older runner would silently ignore: a
-/// runner that dropped `args` would run the program it was given with a shell's
-/// flags, which is a wrong answer rather than a missing one. 2 added `args` to
-/// `Open`, which is how a program other than a shell is started; 3 added `Append`,
-/// which is how a channel's two files are written on a peer; 4 added `Relay`, which
-/// is how a channel's program is started so that it outlives the connection.
+/// Raised when a request gains a meaning an older runner would ignore: 2 `Open.args`,
+/// 3 `Append`, 4 `Relay`.
 pub const PROTOCOL: u32 = 4;
 
 /// One request; `id` is the client's, and the reply repeats it.
