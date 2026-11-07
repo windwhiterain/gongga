@@ -644,9 +644,8 @@ async fn send(pid: u32, signal: &str) -> bool {
 ///
 /// # Invariant
 ///
-/// The relay must outlive this connection: it is started out of every job this
-/// process is in, with its own stream to a log. It is what makes a channel on a peer
-/// mean what a channel here means -- a program a restart does not end.
+/// The relay outlives this connection: it is started out of every job this process
+/// is in, so a channel on a peer means what one here means.
 fn relay(dir: &str, cwd: Option<&str>) -> Result<Value, String> {
     let server = beside("server")?;
     let log = Path::new(dir).join("relay.log");
