@@ -1957,9 +1957,10 @@ fn live_compact_notice() -> String {
 what a later turn cannot recover from the transcript: the decisions taken, the paths \
 and identifiers the next step needs, the open question, and the facts it depends on. \
 The server keeps the latest complete tool-call round and every earlier summary \
-verbatim, so do not restate them; cite a file as @file(<path>) instead of pasting it. \
-Keep it short: it is sent again with every later request. Do not use heir and do not \
-delete transcript rows."
+verbatim, so do not restate them. Do not cite a file you have already read: \
+`@file(<path>)` embeds that file's whole content into the summary, and the summary is \
+sent again with every later request. Keep it short. Do not use heir and do not delete \
+transcript rows."
         .to_string()
 }
 
