@@ -304,10 +304,10 @@ fn submission(
 /// # Invariant
 ///
 /// A value lands on a slot that is still empty, and only through the argument
-/// whose `kind` names it; what the caller typed wins. A filled value the
-/// published `accepts` refuses is left out *and said*, and so is one the line has
-/// no claim to: the entries describe this window's session, so a line about
-/// another one takes only what the command requires. See `docs/notes/tui-run.md`.
+/// whose `kind` names it; what the caller typed wins. Nothing filled may change
+/// what an existing session holds -- a fill that disagrees with the row is left
+/// out *and said*, like one the published `accepts` refuses. A session the line
+/// creates takes the entries as they stand. See `docs/notes/tui-run.md`.
 fn filled(
     client: &link::Client,
     state: &State,
@@ -326,12 +326,10 @@ fn filled(
     state.sticky().fill(Some(&spec), &mut merged);
     // Which session this line acts on, entries and all: the answer `follow` keeps.
     let acting = client.session_named(&head, &merged).map(str::to_string);
-    let own = state.sticky().get("session").map(str::to_string);
-    // The entries are this session's, and the line is about that one only.
-    let elsewhere = match (&acting, &own) {
-        (Some(acting), Some(own)) if acting != own => Some(acting.clone()),
-        _ => None,
-    };
+    // Its row, when it already exists: the one thing a fill has to agree with.
+    let existing = acting
+        .as_deref()
+        .and_then(|name| client.sessions().iter().find(|info| info.name == name));
     let line = format!("/{}", tokens.join(" "));
     let mut filled = tokens;
     let mut left = Vec::new();
@@ -343,8 +341,11 @@ fn filled(
         let Some(value) = merged.get(&arg.name).cloned() else {
             continue;
         };
-        // An entry about this window's session, on a line about another one.
-        if elsewhere.is_some() && !arg.required {
+        // An entry that would change what the session already holds.
+        if !arg.required
+            && let Some(info) = existing
+            && !restates(info, arg.kind.as_deref(), &value)
+        {
             left.push(arg.kind.clone().unwrap_or_else(|| arg.name.clone()));
             continue;
         }
@@ -366,19 +367,38 @@ fn filled(
         filled.push(format!("--{}", arg.name));
         filled.push(value);
     }
-    if let (Some(acting), Some(own)) = (elsewhere, own)
-        && !left.is_empty()
-    {
+    if let (Some(acting), false) = (acting, left.is_empty()) {
         sink.note(
             LineKind::System,
             &format!(
-                "sticky {} left off: {} is what they describe, and this line is about {acting}",
+                "sticky {} left off: {acting} does not hold {}",
                 left.join(", "),
-                own
+                if left.len() == 1 { "it" } else { "them" }
             ),
         );
     }
     filled
+}
+
+/// Whether an entry restates what a session's row already says.
+///
+/// # Invariant
+///
+/// Only a restatement is filled into a line about a session that exists: an entry
+/// that disagrees would rewrite a setting nobody stated on this line. A kind this
+/// function does not know answers `false` -- filling it would change something it
+/// cannot check.
+fn restates(info: &link::protocol::SessionInfo, kind: Option<&str>, value: &str) -> bool {
+    match kind {
+        Some("model") => info.model.as_deref() == Some(value),
+        Some("thinking") => info.thinking_effort.as_deref() == Some(value),
+        // The row holds the percentage, the entry spells it `50%`.
+        Some("ctx_limit") => {
+            let percent = value.trim_end_matches('%').parse::<u8>().ok();
+            info.context_limit == percent
+        }
+        _ => false,
+    }
 }
 
 /// Tells the view and the completion what the window's own state is now.

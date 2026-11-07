@@ -275,11 +275,10 @@ impl Screen {
     ///
     /// # Invariant
     ///
-    /// The status line, and nowhere else. Not the command row, which SPEC gives to
-    /// `cmd` and `cmd_result`; and not a session's lines, which are that session's
-    /// events -- "nothing is listening" is not something a session said. A note
-    /// replaces the previous one, so the line always reads as the newest thing
-    /// this window knows. See `docs/notes/tui-lib.md`.
+    /// The status line shows the newest and replaces the one before it; the journal
+    /// keeps them all, which is what `Tui::say` writes. Neither is a session's
+    /// lines: "nothing is listening" is not something a session said.
+    /// See `docs/notes/tui-lib.md`.
     pub fn note(&mut self, kind: LineKind, text: impl Into<String>) {
         self.status_kind = kind;
         self.status = text.into();
@@ -589,6 +588,15 @@ pub struct Tui {
     /// cannot write still draws. See `docs/notes/tui-roster.md`.
     roster: roster::Roster,
     roster_failed: bool,
+    /// The window a note about this front-end is written down in.
+    ///
+    /// # Invariant
+    ///
+    /// The command window's own name, off the layout, so a note and the row it
+    /// explains share one journal: the server decides that name (a session may take
+    /// `cmd`), so the link's answer is the only one that can be right.
+    /// See `docs/notes/tui-cache.md`.
+    note_window: String,
 }
 
 /// The terminal's own answer about the pictures it can be drawn with.
@@ -672,6 +680,7 @@ impl Tui {
             answers: Vec::new(),
             roster: roster::Roster::new(client_home, endpoint),
             roster_failed: false,
+            note_window: link::COMMAND_WINDOW.to_string(),
             events: EventStream::new(),
             mouse_captured: true,
             restored: false,
@@ -691,9 +700,18 @@ impl Tui {
     }
 
     /// Sets the status text, asking for a frame only when it actually changed.
+    ///
+    /// # Invariant
+    ///
+    /// A change is a record as well as a line: what the window said it is doing is
+    /// what a reader compares a later silence with. Unchanged text writes nothing,
+    /// so a refresh that says the same thing costs no record.
     pub fn set_status(&mut self, status: impl Into<String>) {
         let status = status.into();
         if status != self.screen.status {
+            self.screen
+                .panes
+                .note(&self.note_window, LineKind::System, &status);
             self.screen.status = status;
             self.dirty = true;
         }
@@ -749,6 +767,9 @@ impl Tui {
 
     /// How the events area is divided, as the command layer last said.
     pub fn set_layout(&mut self, layout: &Layout) {
+        if !layout.command.is_empty() {
+            self.note_window = layout.command.clone();
+        }
         self.screen.panes.layout(layout);
         // One file, written by the frames that drew a list.
         if let Err(e) = self.roster.know(&layout.listed)
@@ -818,6 +839,9 @@ impl Tui {
     /// commands the operator typed -- which is how "starting one" came to sit
     /// where an input line is expected. See `docs/notes/tui-lib.md`.
     pub fn say(&mut self, kind: LineKind, text: impl Into<String>) {
+        let text = text.into();
+        // A record whether or not a row draws it: the line keeps the newest.
+        self.screen.panes.note(&self.note_window, kind, &text);
         self.screen.note(kind, text);
         self.dirty = true;
     }
@@ -978,7 +1002,7 @@ impl Tui {
             // Abandoned, not fatal: the screen is cleared, and the row says why.
             Err(payload) => {
                 let _ = self.terminal.clear();
-                self.screen.note(LineKind::Error, frame_failed(&payload));
+                self.say(LineKind::Error, frame_failed(&payload));
             }
         }
         // Cleared only after the frame landed, so a failed paint is retried.
@@ -1593,15 +1617,15 @@ impl Tui {
                 // An empty clipboard is silence, unless the image read refused:
                 // then the refusal is the only thing there is to say.
                 if let Some(why) = image_failure {
-                    self.screen.note(LineKind::Error, format!("paste: {why}"));
+                    self.say(LineKind::Error, format!("paste: {why}"));
                 }
             }
-            clipboard::FromClipboard::NoTool => self.screen.note(
+            clipboard::FromClipboard::NoTool => self.say(
                 LineKind::Error,
                 "paste: no clipboard tool here; the terminal's own paste still works",
             ),
             clipboard::FromClipboard::Failed(why) => {
-                self.screen.note(LineKind::Error, format!("paste: {why}"))
+                self.say(LineKind::Error, format!("paste: {why}"))
             }
         }
         self.dirty = true;

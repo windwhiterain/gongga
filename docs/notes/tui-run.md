@@ -33,13 +33,21 @@ the argument's published `accepts` refuses is left out *and said*: a default is 
 something the operator stated, so it is not worth a refusal -- but silently dropping it
 would hide that the entry is still in the file, and a later model may well take it.
 
+What the window says about a line it filled -- a refusal, or an entry it left off --
+is a `Note` record in the journal as well as a line on the status row: see
+`docs/notes/tui-cache.md`.
+
 Which session the line acts on is read off the line *after* the entries are in it --
-`Client::session_named`, the same answer `follow` keeps -- and the entries describe
-this window's session, so a line about another one takes only what the command
-requires. Filling `--model` into `set_session --name other` would rewrite a setting
-nobody configured here, and would refuse a value stated for that line: `--cache_tier
-1h` is a tier of the model this window runs, not of that one. The entries left out are
-said, in the status row, like the ones `accepts` refuses.
+`Client::session_named`, the same answer `follow` keeps -- and an entry is filled into
+a line about a session that already exists only when that session's row already says
+the same thing (`restates`): `--model`, `--thinking` and `--ctx_limit` are compared with
+the published model, level and share, and a kind the client cannot check is not filled.
+A fill that disagrees would rewrite a setting nobody stated on this line, and would
+refuse a value stated on it -- the window's `--cache_tier 1h` is a tier of the model
+the *window* runs, so filling `--model` into a session on another model fails the line
+for a model the operator never typed. What is left out is said, in the status line,
+like the values `accepts` refuses. A session the line creates has no row to agree
+with, so it takes the entries as they stand: that is what the entries are for.
 
 ## the gesture branch
 

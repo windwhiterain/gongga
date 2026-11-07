@@ -543,6 +543,11 @@ impl Panes {
         self.log.push(name, kind, text);
     }
 
+    /// Writes down what a window said about itself, which no frame draws as a row.
+    pub fn note(&mut self, name: &str, kind: LineKind, text: &str) {
+        self.log.note(name, kind, text);
+    }
+
     pub fn stream(
         &mut self,
         name: &str,

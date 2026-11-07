@@ -64,6 +64,23 @@ pub enum Record {
     /// window: a restart mid-refill neither loses the rows below the stamp nor keeps
     /// the half-written block it replaced.
     Rewind,
+    /// What the window said about itself: the words no frame drew as a row.
+    ///
+    /// # Invariant
+    ///
+    /// A record and not a block, so replaying a window never draws it: keeping what
+    /// the window said apart from what it showed is what lets a note be written
+    /// down without changing the window. See `docs/notes/tui-cache.md`.
+    Note { kind: LineKind, text: String },
+    /// Everything this window showed above this record is history: its view starts
+    /// empty from here on.
+    ///
+    /// # Invariant
+    ///
+    /// Written instead of emptying the file: what a window drew is a record, and a
+    /// record is what a reader reads back. A window cleared twice keeps both cuts,
+    /// and reading it back stops at the newest one. See `docs/notes/tui-cache.md`.
+    Clear,
     /// The blocks after this record are the transcript's rows from `seq` up.
     ///
     /// # Invariant
@@ -319,6 +336,31 @@ impl Cache {
         })
     }
 
+    /// Writes down that this window's view holds nothing from here on.
+    ///
+    /// # Invariant
+    ///
+    /// The file keeps what the window drew; only the `Clear` is added. A view that
+    /// dropped the rows and a file that dropped them too would leave the operator
+    /// with no record of either.
+    pub fn clear(&self, window: &str) {
+        self.append(window, &Record::Clear);
+        if let Some(path) = self.path(window) {
+            self.forget_abandoned(window, &path);
+        }
+    }
+
+    /// Writes down what the window said about itself, which no frame drew as a row.
+    pub fn note(&self, window: &str, kind: LineKind, text: &str) {
+        self.append(
+            window,
+            &Record::Note {
+                kind,
+                text: text.to_string(),
+            },
+        );
+    }
+
     /// Writes down that the window has drawn up to `seq` of the session.
     pub fn stamp(&self, window: &str, created: i64, seq: i64) {
         self.append(window, &Record::Stamp { created, seq });
@@ -505,27 +547,6 @@ impl Cache {
             return None;
         }
         serde_json::from_slice(json).ok()
-    }
-
-    /// Forgets everything this window drew.
-    ///
-    /// # Invariant
-    ///
-    /// This process's file, and every abandoned one: the window's history *is* the
-    /// file, so emptying it is the statement `clear` makes. A file another live
-    /// client is writing is left alone -- it is that client's record.
-    pub fn reset(&self, window: &str) {
-        let Some(path) = self.path(window) else {
-            return;
-        };
-        // Closed first: a truncate behind an open handle is a write at the wrong offset.
-        self.close(window);
-        let _ = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&path);
-        self.forget_abandoned(window, &path);
     }
 
     /// Drops a window's journals: the session it belonged to is gone.

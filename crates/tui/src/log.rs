@@ -995,6 +995,16 @@ impl Log {
         }
     }
 
+    /// Writes down what a window said about itself: a record, never a row.
+    ///
+    /// # Invariant
+    ///
+    /// Nothing is added to the log, so what a note costs the frame is nothing, and
+    /// replaying the window draws what it drew. See `docs/notes/tui-cache.md`.
+    pub fn note(&mut self, window: &str, kind: LineKind, text: &str) {
+        self.cache.note(window, kind, text);
+    }
+
     /// Caps how tall a block may get: `0` caps nothing, and a block past its cap
     /// keeps its newest rows.
     pub fn set_block_size(&mut self, lines: usize) {
@@ -1418,18 +1428,28 @@ impl Log {
         self.entries.iter().rposition(|entry| entry.key == key)
     }
 
-    /// Drops every block of one window, keeping the window itself.
+    /// Drops every block of one window, keeping the window and its journal.
     ///
     /// # Invariant
     ///
-    /// Only the blocks: SPEC's command row shows the last `cmd` or `cmd_result`, so
-    /// the previous one is dropped rather than kept out of sight -- there is no way
-    /// to scroll back to it, and holding it would be holding what cannot be read.
+    /// The view alone: SPEC's command row shows the last `cmd` or `cmd_result`, so
+    /// the previous one leaves the screen, and it stays in the file -- a `Clear`
+    /// record says where the view was cut. See `docs/notes/tui-cache.md`.
     pub fn clear(&mut self, window: &str) {
-        // The file holds what this window drew; `clear` says it holds nothing.
-        self.cache.reset(window);
+        // The view forgets it; the journal keeps it. See `docs/notes/tui-cache.md`.
+        self.cache.clear(window);
         // The next beginning is whatever arrives from here, not what was read.
         self.seeded.remove(window);
+        self.forget_blocks(window);
+    }
+
+    /// Drops every block this window holds, in memory only.
+    ///
+    /// # Invariant
+    ///
+    /// The journal is not touched: what the window drew is a record, and dropping a
+    /// block from the view is not a reason to make it unreadable.
+    fn forget_blocks(&mut self, window: &str) {
         if !self
             .entries
             .iter()
@@ -1437,17 +1457,23 @@ impl Log {
         {
             return;
         }
-        self.entries.retain(|entry| entry.window.as_ref() != window);
+        let mut moved = Vec::with_capacity(self.entries.len());
+        let mut kept = Vec::with_capacity(self.entries.len());
+        for entry in std::mem::take(&mut self.entries) {
+            let mine = entry.window.as_ref() != window;
+            moved.push(mine.then_some(kept.len()));
+            if mine {
+                kept.push(entry);
+            }
+        }
+        self.entries = kept;
         // The open map points at indexes that have moved: re-derive it from the
         // blocks that are still streaming.
-        let open: Vec<(String, usize)> = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| !entry.sealed && !entry.key.is_empty())
-            .map(|(at, entry)| (entry.key.clone(), at))
+        self.open = self
+            .open
+            .drain()
+            .filter_map(|(key, at)| moved.get(at).copied().flatten().map(|at| (key, at)))
             .collect();
-        self.open = open.into_iter().collect();
         self.reindex();
     }
 
@@ -2177,6 +2203,14 @@ impl Log {
             },
             // Not a block: it says where a later `Rewind` cuts.
             Record::Stamp { .. } => *cut = Some(at),
+            // Not a block either: what the window said about itself, which no frame
+            // drew as a row, so reading it back draws nothing.
+            Record::Note { .. } => {}
+            // Where the view was cut: whatever this pass adopted is above the cut.
+            Record::Clear => {
+                self.forget_blocks(window);
+                ids.clear();
+            }
             // Not a block either: it opens a page, and the block after it is the one
             // the page begins with.
             Record::Floor { seq } => {
@@ -2421,7 +2455,12 @@ fn whole(record: Record, window: &str, width: usize) -> Option<Entry> {
         }
         // Neither is a block: one says where the transcript stands, the other
         // says what to throw away.
-        Record::Delta { .. } | Record::Stamp { .. } | Record::Floor { .. } | Record::Rewind => {
+        Record::Delta { .. }
+        | Record::Stamp { .. }
+        | Record::Floor { .. }
+        | Record::Rewind
+        | Record::Note { .. }
+        | Record::Clear => {
             return None;
         }
     };

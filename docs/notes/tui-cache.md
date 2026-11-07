@@ -99,6 +99,28 @@ Both changed the journal's shape, so `VERSION` is 2: an older build cannot name 
 before this are therefore not read — a window's scrollback from an older build is
 lost once, and what it draws from then on is stamped.
 
+## Record::Note and Record::Clear — what the window said, and where its view starts
+
+A `Note` is not a block either: it is what the window said about itself — a sticky
+entry it left off a line, a paste that failed, a frame that could not be painted —
+with the kind the status line showed it in. `Tui::say` writes one before the status
+line takes the words, so the journal holds every note and the row keeps only the
+newest. A replay draws nothing for it: what a window *said* and what it *showed*
+are two records, and only the second one is a block.
+
+A `Clear` says the window's view holds nothing above this record. `Log::clear` used
+to empty the window's file instead — which made "the view forgot it" and "the record
+never existed" the same act, so a command row, a `/set_sticky` answer or a session
+that was reseeded took its own history with it. Now the file only grows: the view
+drops its blocks in memory, the `Clear` marks the cut, and a replay applies it in
+place — everything the window drew before it is read and then dropped, so the rows a
+window shows after a restart are the rows it showed before one.
+
+Neither is a block, so both ride the framing the journal already carries and
+`VERSION` stays 2: bumping it would make every journal already on disk unreadable,
+which is a larger loss than a build older than this one stopping at the first record
+it cannot name — it loses the scrollback above that record and nothing below it.
+
 ## A stream is written once, not once per chunk
 
 A block that is still growing keeps its text in memory and lands in the journal when
