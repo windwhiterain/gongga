@@ -35,9 +35,10 @@ serving_home() {
     2>/dev/null | tr -d '\r' | tr '\n' ' '
 }
 fresh_home() {
-  python -c 'import os,shutil,sys
-shutil.rmtree(sys.argv[1], ignore_errors=True)
-os.makedirs(sys.argv[1], exist_ok=True)' "$1"
+  # `rm -rf`, not shutil.rmtree: a copied .git holds read-only objects, and
+  # ignore_errors left them behind for the next run's `cp -r` to nest inside.
+  rm -rf "$1" || echo "note: $1 is still held by a process" >&2
+  mkdir -p "$1"
 }
 
 port=$(free_port); fake_port=$(free_port); fake_pid=""
