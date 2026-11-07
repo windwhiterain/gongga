@@ -692,6 +692,15 @@ impl ToolRegistry {
                 ),
             }
         }
+        // Said once, at startup: which rows the model reads, and which answer only to a
+        // name. Two lists, because they are two audiences.
+        let offered: Vec<&str> = self
+            .tools
+            .iter()
+            .filter(|tool| tool.offered())
+            .map(|tool| tool.name())
+            .collect();
+        tracing::info!(tools = ?offered, "tools the model is offered");
         self
     }
 

@@ -109,7 +109,12 @@ to lose it: the cursor moves when someone asks, not when the program ends.
 
 - A `cmd` name (`GONGGA_CLI`): `new` refuses it today, because routing to the command
   layer with the caller's session is not wired.
-- The old twenty tools are still rows beside `new` and `check`; they go when these
-  prove themselves end to end.
+- The old eighteen tools are rows marked `offered = false`: the model is told about
+  `new`, `check` and `skill` only, and the rest answer to their names for the command
+  layer (`gongga-cli bash …`) and for a subscription action. They are deleted -- not
+  merely unoffered -- when a name routes to the command layer (`GONGGA_CLI`) and those
+  actions move onto channels of their own. Deleting them first was tried and reverted:
+  each removal takes the helpers a *live* path also uses (`cancel_lets_go`,
+  `ToolContext::peek`, `Shells::names`, the job view), so the two go together.
 - An automatic id carries the program's name (`main/bash/2`). It does not have to: the
   counter alone would do, and the name is the one thing a rename makes wrong.
