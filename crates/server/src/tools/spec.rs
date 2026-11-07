@@ -208,6 +208,10 @@ pub struct ToolSpec {
     /// Whether this tool's wait is its own, so the tunnel's clock does not end it.
     #[serde(default)]
     pub owns_its_wait: bool,
+    /// Whether the model is offered this tool. One only the command layer reaches says
+    /// `false`: a model must not see two ways to do one thing.
+    #[serde(default = "yes")]
+    pub offered: bool,
     /// Whether the tunnel's shared arguments (`description`, `max_output`,
     /// `timeout_ms`, `background`) belong to it.
     #[serde(default = "yes")]

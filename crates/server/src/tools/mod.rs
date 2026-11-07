@@ -286,6 +286,9 @@ pub trait Tool: Send + Sync {
     /// the whole of "whose file is this".
     fn machine(&self, _args: &Value, ctx: &ToolContext) -> Machine;
 
+    /// Whether the model is offered this tool at all: a row may say it is not.
+    fn offered(&self) -> bool;
+
     /// Whether this tool drives the session's remote.
     ///
     /// # Invariant
@@ -480,6 +483,10 @@ impl Tool for Specd {
         self.work
             .machine(args, ctx)
             .unwrap_or_else(|| self.spec.machine.machine())
+    }
+
+    fn offered(&self) -> bool {
+        self.spec.offered
     }
 
     fn is_remote(&self) -> bool {
@@ -822,6 +829,7 @@ impl ToolRegistry {
     pub fn definitions(&self, has_remote: bool) -> Vec<crate::llm::ToolDefinition> {
         self.tools
             .iter()
+            .filter(|t| t.offered())
             .filter(|t| t.name() != live_compact::LIVE_COMPACT_TOOL)
             .filter(|t| has_remote || !t.is_remote())
             .map(|t| Self::definition_of(t, has_remote))
