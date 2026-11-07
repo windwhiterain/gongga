@@ -131,8 +131,9 @@ stop
 
 say "== a settled home is not rewritten"
 start
+saw=$(echo "$report" | head -c 120)
 echo "$report" | grep -Eq 'written=0 updated=0 merged=0 removed=0 rebased=\[\] conflicts=\[\]'
-ok "a second start changes nothing (saw: $(echo "$report" | head -c 120))" $?
+ok "a second start changes nothing (saw: $saw)" $?
 [[ "$(cat "$home/.ship-pin")" == "$pin" ]]; ok "and leaves the pin where it was" $?
 stop
 

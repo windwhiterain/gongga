@@ -8,7 +8,7 @@
 #   B  a taken name becomes a new segment, never somebody else's transcript
 #   C  a multi-segment role is refused, and nothing is created
 #   D  no `GONGGA_SESSION` is refused
-#   E  a failed subscription leaves nothing behind (the session it made is gone)
+#   E  a caller that is not a session is refused, and nothing is left behind
 #   F  the child's brief keeps its `@file:`/`@skill:` spellings, in its first row
 #   G  the child's turn end reaches the parent's transcript as a subscription notice
 #   H  a later message's reference does not join the stamped head
@@ -18,6 +18,10 @@
 # One server lifecycle, one fake endpoint, one temporary home. `--keep` leaves the
 # home for a failing run; the default removes it.
 set -uo pipefail
+# This run owns its session names. An agent's shell exports its own `GONGGA_SESSION`,
+# and a script that inherits it asks *this* home's server about a session it has
+# never heard of -- which reads as a broken `skill ls`, not as a leaked variable.
+unset GONGGA_SESSION
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="$root/target/debug"
@@ -220,36 +224,48 @@ armed=$(query "select session, pattern, persistent from subscriptions")
 ok "A and arms ^turn_end:probe/impl\$ for probe, persistently: $armed" $?
 [[ "$(query "select count(*) from sessions where name='probe/impl'")" == "1" ]]
 ok "A the session exists once" $?
-[[ "$(query "select context_limit from sessions where name='probe/impl'")" == "20" ]]
-ok "A its --context_limit was taken: $(query "select context_limit from sessions where name='probe/impl'")" $?
+taken_ctx=$(query "select context_limit from sessions where name='probe/impl'")
+[[ "$taken_ctx" == "20" ]]
+ok "A its --context_limit was taken: $taken_ctx" $?
 
 # --- B: the same role twice is a new segment, never a shared transcript ----------
 GONGGA_SESSION=probe "${cli[@]}" skill subagent spawn impl --model fake/flash-fake \
   >"$work/spawn-b.out" 2>"$work/spawn-b.err"
 second=$(cat "$work/spawn-b.out")
+# The label is built before the check, never inside it: a command substitution
+# among `ok`'s arguments runs first and leaves its own status where the check's
+# was, so every check below reads `$?` into a variable and prints that.
+b_said=$(head -2 "$work/spawn-b.err" | tr '\n' ' ')
 [[ "$second" == "probe/impl/2" ]]
-ok "B a taken name becomes a new segment: $second $(head -2 "$work/spawn-b.err" | tr '\n' ' ')" $?
+ok "B a taken name becomes a new segment: $second $b_said" $?
 [[ "$(query "select count(*) from subscriptions where session='probe'")" == "2" ]]
 ok "B and it is separately subscribed" $?
 
 # --- C and D: the two refusals ------------------------------------------------
 GONGGA_SESSION=probe "${cli[@]}" skill subagent spawn a/b >/dev/null 2>"$work/spawn-c.err"; c=$?
+c_said=$(head -1 "$work/spawn-c.err")
 [[ $c == 2 && "$(grep -c 'one segment' "$work/spawn-c.err")" -ge 1 ]]
-ok "C a multi-segment role is refused: $(head -1 "$work/spawn-c.err")" $?
+ok "C a multi-segment role is refused: $c_said" $?
 [[ "$(query "select count(*) from sessions where name like 'probe/a%'")" == "0" ]]
 ok "C and nothing is created" $?
 env -u GONGGA_SESSION "${cli[@]}" skill subagent spawn lost >/dev/null 2>"$work/spawn-d.err"; d=$?
+d_said=$(head -1 "$work/spawn-d.err")
 [[ $d == 2 && "$(grep -c 'GONGGA_SESSION is not set' "$work/spawn-d.err")" -ge 1 ]]
-ok "D no GONGGA_SESSION is refused: $(head -1 "$work/spawn-d.err")" $?
+ok "D no GONGGA_SESSION is refused: $d_said" $?
 
-# --- E: a subscription that fails leaves nothing behind ------------------------
-# `ghost` is not a session, so the server refuses to notice it -- the one real way
-# to make the second step fail after the first one worked.
+# --- E: a caller that is not a session is refused, and nothing is left ----------
+# The child's configuration is copied from the caller's own row, so a caller that
+# is no session has nothing to copy from: the first step is refused, before any
+# session exists. What this check still asserts is the property it always did --
+# nothing half-made is left behind. (The create-then-subscribe rollback has no
+# reachable trigger left: with the caller's row present, only the server can make
+# `subscribe` fail, and `spawn` names every argument it passes.)
 GONGGA_SESSION=ghost "${cli[@]}" skill subagent spawn lost --model fake/flash-fake >/dev/null 2>"$work/spawn-e.err"; e=$?
-[[ $e == 2 && "$(grep -c 'could not subscribe' "$work/spawn-e.err")" -ge 1 ]]
-ok "E a refused subscription fails the spawn: $(tail -1 "$work/spawn-e.err")" $?
+e_said=$(tail -1 "$work/spawn-e.err")
+[[ $e == 2 && "$(grep -c 'no session named' "$work/spawn-e.err")" -ge 1 ]]
+ok "E a caller that is not a session is refused: $e_said" $?
 [[ "$(query "select count(*) from sessions where name='ghost/lost'")" == "0" ]]
-ok "E and the session it had already made is gone" $?
+ok "E and nothing was created" $?
 
 # --- F and G: the brief, and the child's turn end reaching the parent ----------
 "${cli[@]}" send_message --name probe/impl \
@@ -317,8 +333,9 @@ ok "J and the grandparent is not told at all" $?
 "${cli[@]}" del_session probe/impl >"$work/del.out" 2>&1
 [[ "$(query "select count(*) from subscriptions where session='probe/impl'")" == "0" ]]
 ok "K the deleted session's subscriptions go with it" $?
+kept=$(query "select group_concat(pattern,' ') from subscriptions where session='probe'")
 [[ "$(query "select count(*) from subscriptions where session='probe'")" == "2" ]]
-ok "K the parent's own two stay: $(query "select group_concat(pattern,' ') from subscriptions where session='probe'")" $?
+ok "K the parent's own two stay: $kept" $?
 [[ "$(query "select count(*) from sessions where name='probe/impl/review'")" == "1" ]]
 ok "K and its child session is still there, now unheard" $?
 
