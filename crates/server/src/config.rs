@@ -257,8 +257,7 @@ pub struct ToolsConfig {
     /// A name absent here is a program started with the call's own words: the table
     /// says what is *not* raw, and nothing else.
     pub channels: std::collections::BTreeMap<String, crate::tools::spec::ChannelSpec>,
-    /// The tunnel's own arguments -- `description`, `max_output`, `timeout_ms`,
-    /// `background` -- in the words every tool that takes them shares.
+    /// The tunnel's own arguments, in the words every tool that takes them shares.
     ///
     /// # Invariant
     ///
@@ -352,14 +351,11 @@ struct FileConfig {
     #[serde(alias = "provider")]
     model: Option<FileModel>,
     tools: Option<FileTools>,
-    /// `[tool.<name>]`: one row per tool this home declares, by the name the model
-    /// calls it. See `docs/notes/server-tools-spec.md`.
+    /// `[tool.<name>]`: one row per tool this home declares. See `server-tools-spec`.
     tool: Option<std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>>,
-    /// `[channel.<name>]`: what a name is, as `new` reads it -- a program it starts,
-    /// or a cmd it answers. See `docs/notes/server-channel.md`.
+    /// `[channel.<name>]`: what a name is, as `new` reads it. See `server-channel`.
     channel: Option<std::collections::BTreeMap<String, crate::tools::spec::ChannelSpec>>,
-    /// Where the rows used to live: the words alone, under `[tool_text.<name>]`.
-    /// Read for nothing, so a home that still has it is not refused.
+    /// Where the rows used to live. Read for nothing, so an old home is not refused.
     tool_text: Option<toml::Table>,
     /// Never honoured: `crate::remotes` reads them from the machine.
     #[serde(alias = "targets")]

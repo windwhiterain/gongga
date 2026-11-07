@@ -315,8 +315,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(problem = %problem, "a script could not be read");
     }
 
-    // The channels `new` and `check` speak to. A relay answers them, so this is the
-    // table of names they live under, not a process of theirs.
+    // The channels `new` and `check` speak to: a table of names, not processes.
     let channels = Arc::new(crate::tools::channel::Channels::for_home(
         &cfg,
         store.clone(),
@@ -333,8 +332,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     None => "ended, though its exit status could not be read".to_string(),
                 };
                 let ran = crate::agent::spent(end.time.as_millis() as u64);
-                // A preview, not the window: `check` still holds all of it, because a
-                // notice that consumed the output would be the one way to lose it.
+                // A preview: `check` still holds the window, because a notice that
+                // consumed it would be the one way to lose the output.
                 let said = if end.output.trim().is_empty() {
                     String::new()
                 } else {
@@ -465,9 +464,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         "detached jobs adopted from the previous run"
     );
 
-    // A detached bash that ends while this server runs is news for its session.
-    // The command layer, for a tool that runs one: `new` with a name the config calls a
-    // cmd. Weak, because the dispatch owns the agent whose tools are what call it.
+    // The command layer a tool reaches. Weak: the dispatch owns the agent.
     struct Layer(std::sync::Weak<Dispatch>);
     impl crate::commands::CmdLayer for Layer {
         fn run<'a>(
@@ -482,8 +479,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 let Some(dispatch) = self.0.upgrade() else {
                     return crate::commands::Outcome::err("the server is stopping");
                 };
-                // The caller's session fills the first argument the target declares as a
-                // session, and only when the call did not name one.
+                // The caller's session fills the first argument the target declares as
+                // one, and only when the call did not name it.
                 if let Some(spec) = dispatch
                     .catalog()
                     .await
@@ -509,9 +506,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
 
     let detached_watch = detached.watch(dispatch.shutdown.clone());
-    // A channel's end is news to its session while this server is up: the watcher is
-    // what reads `status`, so a program that ends with nobody looking is still told.
-    // The token is what ends it: a cancelled server announces nothing it just ended.
+    // A channel's end is news while this server is up; the token ends the watching.
     let _channels_watch = channels.watch(dispatch.shutdown.clone());
 
     // Alive until the drain ends. See `docs/notes/server-subscriptions.md`.

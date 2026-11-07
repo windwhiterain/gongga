@@ -1,6 +1,6 @@
 //! `new` and `check`: a program a session starts, and what it has said since.
 //!
-//! See `docs/notes/server-channel.md` and `SPEC.md`, "Tool".
+//! See `docs/notes/server-channel.md`.
 
 use std::time::Duration;
 
@@ -18,8 +18,7 @@ use crate::tools::{Cmd, ToolContext, ToolOutcome};
 #[derive(Debug, Clone, Copy)]
 pub struct Wait {
     pub default: Duration,
-    /// Output longer than this is capped for the answer, with the whole of it kept in
-    /// the home's output directory. `0` disables the cap.
+    /// Output longer than this is capped, the whole of it kept on disk. `0` is no cap.
     pub max_output_chars: usize,
 }
 
@@ -36,8 +35,7 @@ impl Cmd for NewTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             let mut args = args;
-            // An operator spells a list or a table as JSON on one line; the model sends
-            // the shape itself. Both reach here as whatever the layer could carry.
+            // An operator spells a list or a table as JSON on one line.
             if let Some(spelled) = args.get("args").and_then(Value::as_str)
                 && let Ok(parsed) = serde_json::from_str::<Value>(spelled)
             {
@@ -48,9 +46,7 @@ impl Cmd for NewTool {
             };
             let name = name.to_string();
             let name = name.as_str();
-            // A name the config calls a cmd is answered here, by the command layer, and
-            // never becomes a channel: `args` is that cmd's named arguments, with `cmd`
-            // naming it.
+            // A name the config calls a cmd is answered by the command layer.
             if ctx.channels.kind_of(name) == crate::tools::spec::Kind::Cmd {
                 return route(ctx, name, &args).await;
             }

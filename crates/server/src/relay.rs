@@ -4,14 +4,9 @@
 //!
 //! # Invariant
 //!
-//! This process is what makes a channel outlive the server. It holds the child's
-//! stdin -- which no other process can re-open once the server that spawned it is
-//! gone -- and it appends the child's output to a file. So the server may die and
-//! come back: `out` keeps growing, `status` says what became of the program, and
-//! `in` is still a file anyone may append to.
-//!
-//! It is started detached (`DetachedJob::launch_program`), so it is not in the
-//! server's job object and a `cancel` does not end it.
+//! This process is what makes a channel outlive the server: it holds the child's
+//! stdin, which nobody can re-open, and appends the child's output to a file. It is
+//! started detached, so a `cancel` does not end it.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -29,12 +24,11 @@ pub struct Words {
     pub env: Vec<(String, String)>,
 }
 
-/// What `status` says: enough for the server to know a channel without this process.
+/// What `status` says: enough to know a channel without this process.
 ///
 /// # Invariant
 ///
-/// Rewritten whole, by a rename, so a reader never sees half of it -- the server
-/// reads it precisely when the relay cannot be asked anything.
+/// Rewritten whole by a rename: the server reads it when the relay cannot be asked.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Status {
     /// The program's pid, so `del_job` can end a tree the relay no longer holds.
@@ -69,10 +63,8 @@ pub fn run(dir: &Path) -> anyhow::Result<()> {
         .spawn()
         .map_err(|e| anyhow::anyhow!("starting {:?}: {e}", words.program))?;
     let pid = child.id();
-    // Its two streams are pumped into `out` by this process, not inherited as a file
-    // handle: a program that cannot write to an inherited handle (Git's bash on this
-    // machine is one) would otherwise say nothing at all, and its status would be the
-    // only sign it ran.
+    // Its streams are pumped into `out` here: Git's bash cannot write to an inherited
+    // handle.
     let log = std::sync::Arc::new(std::sync::Mutex::new(append(&dir.join("out"))?));
     if let Some(pipe) = child.stdout.take() {
         let log = std::sync::Arc::clone(&log);
@@ -101,8 +93,7 @@ pub fn run(dir: &Path) -> anyhow::Result<()> {
             ended_at: None,
         },
     )?;
-    // The command file is the server's to create: it appends to the same file this
-    // reads, so its first line must not be missed.
+    // The command file is the server's to create: its first line must not be missed.
     let commands = dir.join("in");
     let mut offset: u64 = 0;
     loop {
@@ -119,8 +110,7 @@ pub fn run(dir: &Path) -> anyhow::Result<()> {
             if let Some(chair) = chair.take() {
                 chair.release();
             }
-            // What it printed after its last command is written by its own handles:
-            // closing them is the writer's job, and it is done.
+            // What it printed is in `out` already: its own handles wrote it.
             return Ok(());
         }
         std::thread::sleep(POLL);
@@ -156,13 +146,11 @@ fn pump<R: Read>(mut pipe: R, log: std::sync::Arc<std::sync::Mutex<std::fs::File
     }
 }
 
-/// Applies every command appended to `in` since `offset`, and answers the new offset.
+/// Applies every command appended to `in` since `offset`.
 ///
 /// # Invariant
 ///
-/// One line, one command: `input <base64>` writes bytes to the program's stdin, and
-/// `kill` ends it. Base64 because an input may hold newlines of its own, and a
-/// command may not.
+/// One line, one command: `input <base64>` writes to stdin, `kill` ends the program.
 fn drain(path: &Path, offset: u64, child: &mut Child) -> anyhow::Result<u64> {
     let Ok(mut file) = std::fs::File::open(path) else {
         return Ok(offset);

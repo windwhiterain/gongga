@@ -188,8 +188,7 @@ impl Subscriptions {
     ) {
         let _slot = crate::commands::ActiveGuard::new(self.active.clone());
         let stated = event_prefix(&event);
-        // The action runs in a channel the session owns, named after its row: a second
-        // match finds the same one, so what one action set up is there for the next.
+        // The action runs in a channel named after its row: a second match finds it.
         let (program, line) = match &action {
             Action::Bash { cmd, .. } => ("bash", format!("( {stated}{cmd} )")),
             // A python action carries no event: assignments would stay in the REPL

@@ -23,9 +23,7 @@ use crate::tools::spec;
 ///
 /// # Invariant
 ///
-/// `output` is the window nobody has read yet, and taking it is what advances the
-/// cursor: two calls never see the same bytes twice, and a notice carries the same
-/// window as a `check` would have.
+/// `output` is the window nobody has read: taking it advances the cursor.
 #[derive(Debug, Clone)]
 pub struct Outcome {
     pub id: String,
@@ -76,11 +74,10 @@ use std::sync::Arc;
 /// only how often the file is re-read while it lasts.
 const LOOK: Duration = Duration::from_millis(25);
 
-/// How long a channel's first `status` may take. A relay that cannot say who it
-/// started is a start that failed, not a call that waits forever.
+/// How long a channel's first `status` may take, before the start is a failure.
 const START_DEADLINE: Duration = Duration::from_secs(20);
 
-/// Every channel this server holds, by the name each session calls it.
+/// Every channel this server holds.
 pub struct Channels {
     store: Store,
     /// `<home>/channels`: one directory per channel, named by an opaque id.
@@ -128,8 +125,8 @@ impl Channels {
         )
     }
 
-    /// A `Channels` nobody speaks to: for a context that reads one answer and writes
-    /// one row, and for a build whose config names no program.
+    /// A `Channels` nobody speaks to: for a context that reads one answer, writes one
+    /// row.
     pub fn without_words(store: Store, root: PathBuf) -> Self {
         Self::new(
             store,
@@ -167,8 +164,7 @@ impl Channels {
         id: Option<String>,
     ) -> Result<ChannelRow, String> {
         let grammar = self.grammar_of(name);
-        // A cmd is answered by this server: there is no program to start, and saying
-        // so is what keeps one name from meaning two things.
+        // A cmd is answered by this server, so there is no program to start.
         if grammar.kind == spec::Kind::Cmd {
             return Err(format!(
                 "{name:?} is a cmd, not a program: `new` answers it through the command \
@@ -222,8 +218,7 @@ impl Channels {
             env,
         )
         .map_err(|e| format!("could not start a relay for {name:?}: {e}"))?;
-        // The relay is no part of this server's tree: it is what keeps the program
-        // alive after a `cancel`, and after this process is gone.
+        // The relay is no part of this tree: it keeps the program alive after us.
         crate::tools::job::release(relay.pid);
         let status = match self.await_status(&dir).await {
             Some(status) => status,
@@ -251,10 +246,7 @@ impl Channels {
     fn auto_name(&self, session: &str, name: &str) -> Result<String, String> {
         let taken = self.store.channels_of(session).map_err(quiet)?;
         for number in 1..=u32::MAX {
-            // No leading `/`: a path that does begins with the shell's root, and a
-            // caller on Git Bash has it rewritten into this machine's own path before
-            // the line ever reaches this server. Measured: `/main/bash/1` arrived as
-            // `C:/SoftWare/git/Git/main/bash/1`.
+            // No leading `/`: Git Bash rewrites such a word into this machine's path.
             let candidate = format!("{session}/{name}/{number}");
             if !taken.iter().any(|row| row.path == candidate) {
                 return Ok(candidate);
@@ -295,9 +287,8 @@ impl Channels {
         let row = self.row_of(session, id)?;
         let dir = PathBuf::from(&row.dir);
         let grammar = self.grammar_of(&row.program);
-        // A sentinel exists only where a reply has to be told apart from the next one:
-        // it is generated per write, and only for a write. A read alone has nothing to
-        // frame, so a grammar whose marker is a sentinel contributes no marker to it.
+        // A sentinel is generated per write, and only for a write: a read alone has
+        // nothing to frame.
         let sentinel = if input.is_some() && grammar.until.as_deref().is_some_and(has_sentinel) {
             Some(new_sentinel())
         } else {
@@ -308,8 +299,7 @@ impl Channels {
                 Some(spelled) => spelled
                     .replace("{{input}}", input)
                     .replace("{{sentinel}}", sentinel.as_deref().unwrap_or_default()),
-                // No spelling: the input is one line, and a shell reads a line as a
-                // command. This is what "raw" means for a name the table never named.
+                // No spelling: one line, which is what "raw" means for an unknown name.
                 None => format!("{input}\n"),
             };
             let mut command = String::from("input ");
@@ -330,9 +320,7 @@ impl Channels {
             let looked = look(&dir, row.upto, marker.as_deref(), &grammar);
             let ended = read_status(&dir).and_then(|status| status.exit);
             if looked.matched || ended.is_some() || wait.is_zero() {
-                // Two statuses, and they are not one fact: `looked.exit` is what the
-                // command said about itself, `ended` is the program being gone. Only the
-                // second ends the channel.
+                // Two statuses, not one fact: the command's, and the program's ending.
                 return self.answer(
                     row,
                     looked.window,
@@ -343,8 +331,7 @@ impl Channels {
                 );
             }
             if Instant::now() >= deadline {
-                // Nothing arrived within the wait: what is there is the answer, and the
-                // cursor moves past it so the next call is not told the same thing.
+                // Nothing arrived: what is there is the answer, and the cursor moves.
                 return self.answer(row, looked.window, false, looked.upto, None, ended);
             }
             tokio::time::sleep(LOOK).await;
@@ -536,9 +523,8 @@ impl Channels {
                     if channels.store.finish_channel(row.id, exit).is_err() {
                         continue;
                     }
-                    // The window is not taken here: what the program said is read by
-                    // whoever asks, and a notice that consumed it would be the one way
-                    // to lose it.
+                    // The window is not taken here: a notice that consumed it would be
+                    // the one way to lose it.
                     let looked = look(&dir, row.upto, None, &spec::ChannelSpec::default());
                     let output = looked.window;
                     (channels.notify)(ChannelEnd {
@@ -564,15 +550,13 @@ struct Looked {
     /// The window nobody has read, cut at the marker when it is there.
     window: String,
     matched: bool,
-    /// Where the next read starts: past the marker, and past the digits its own tail
-    /// carried when the grammar puts the status there.
+    /// Where the next read starts: past the marker, and past the status its tail held.
     upto: u64,
     /// The status the marker's tail carried, when it carried one.
     exit: Option<i32>,
 }
 
-/// Reads the file once, by hand: the relay may still be appending, so the answer is
-/// "what is there now", and the offset comes back so the caller can record it.
+/// Reads the file once: the relay may still be appending, so this is what is there now.
 fn look(dir: &Path, upto: u64, marker: Option<&str>, grammar: &spec::ChannelSpec) -> Looked {
     let path = dir.join("out");
     let bytes = std::fs::read(&path).unwrap_or_default();

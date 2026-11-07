@@ -90,8 +90,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 sticky_to: None,
                 sticky: false,
             }];
-            // The row's own order, with the object first: a bare word binds the first
-            // unfilled parameter at the line's cursor, so position reach is this order.
+            // The row's order, object first: a bare word binds the first unfilled one.
             let mut ordered: Vec<&crate::tools::spec::Argument> = row
                 .parameters
                 .iter()

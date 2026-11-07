@@ -1,15 +1,11 @@
-//! One tool as a home's config declares it: its name, its arguments, and the
-//! command that does the work.
+//! What a home's config declares: a tool's row, and what a channel's name is.
 //!
 //! See `docs/notes/server-tools-spec.md`.
 //!
 //! # Invariant
 //!
-//! Everything said *about* a tool is here and in the file it is read from: the name,
-//! the shape of the arguments, the sentence the model reads for each of them, which
-//! machine it drives, and whether its call writes, backgrounds, keeps its own clock
-//! and takes the tunnel's shared arguments. The code holds the command that runs and
-//! nothing else, so a tool is added, reworded or given an argument without a build.
+//! Everything said about a tool is here: its name, its arguments, their sentences,
+//! and every flag the call layer obeys. The code holds the command that runs.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -142,11 +138,8 @@ impl Carrier {
 ///
 /// # Invariant
 ///
-/// The one place a name is known. `new` reads this table and nothing else about a
-/// name: whether it starts a program or routes to a cmd, the words it starts with,
-/// how an input reaches it, and what ends a reply. A name the table does not mention
-/// is a program started with the call's own words and framed by the call's own
-/// `until`, which is what "raw" means. See `docs/notes/server-channel.md`.
+/// The one place a name is known: whether it is a program or a cmd, how it starts and
+/// how a reply is framed. A name absent here is raw.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelSpec {
@@ -183,15 +176,12 @@ pub enum Kind {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSpec {
-    /// The command this tool hands its arguments to: the one implementation that
-    /// knows how to do the work. A row naming no command this build carries is
-    /// refused at startup, by name.
+    /// The command this row hands its arguments to, by name.
     pub cmd: String,
     /// Which machine its paths belong to, and which twin it is.
     #[serde(default)]
     pub machine: Side,
-    /// What the tool is, in the one sentence the model reads. Written here and
-    /// nowhere else: a schema with an argument and no sentence is a model guessing.
+    /// What the tool is, in the one sentence the model reads.
     #[serde(default)]
     pub summary: Option<String>,
     /// Its arguments, in the order an operator spells them.
@@ -201,15 +191,13 @@ pub struct ToolSpec {
     /// a session that only looks refuses.
     #[serde(default)]
     pub writes: bool,
-    /// Whether `background` is this tool's own work: a job of a shell or an
-    /// interpreter, read back by that one's reading tool.
+    /// Whether `background` is this tool's own work.
     #[serde(default)]
     pub handles_background: bool,
     /// Whether this tool's wait is its own, so the tunnel's clock does not end it.
     #[serde(default)]
     pub owns_its_wait: bool,
-    /// Whether the model is offered this tool. One only the command layer reaches says
-    /// `false`: a model must not see two ways to do one thing.
+    /// Whether the model is offered this tool; the command layer reaches all of them.
     #[serde(default = "yes")]
     pub offered: bool,
     /// Whether the tunnel's shared arguments (`description`, `max_output`,
@@ -229,9 +217,6 @@ pub struct ToolSpec {
 
 impl ToolSpec {
     /// The model-facing schema: what the row declares, and nothing else.
-    ///
-    /// The tunnel's own arguments are added by [`crate::tools::general_parameters`],
-    /// which is the one place that knows every call may carry them.
     pub fn schema(&self) -> Value {
         let mut properties = serde_json::Map::new();
         let mut required: Vec<String> = Vec::new();

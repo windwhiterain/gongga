@@ -99,8 +99,11 @@ pub enum Origin {
     },
     /// No client asked: a signal reached this process, or the process it follows ended.
     Signal { reason: String },
-    /// A tool ran it: `new` with a name the config calls a cmd. See `SPEC`'s
-    /// `GONGGA_CLI`, and the `self-control` skill -- what a person may do, a tool may.
+    /// A tool ran it: `new` with a name the config calls a cmd (`GONGGA_CLI`).
+    ///
+    /// # Invariant
+    ///
+    /// What a person may do, a tool may: the `self-control` skill is that promise.
     Tool { session: String },
 }
 
@@ -2242,8 +2245,7 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
         Some(session) => Some(session.claim().await),
         None => None,
     };
-    // Its channels are programs it started: each one is told to end, and the row goes
-    // with it, so a name this session had is not left pointing at a dead directory.
+    // Its channels are programs it started: each is told to end, and its row goes.
     let channels = d.agent.channels.stop_session(name).await;
     if channels > 0 {
         tracing::info!(session = %name, channels, "channels ended with their session");
@@ -2423,8 +2425,7 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
     }
     // Only a protocol `cancel` lets jobs go; every other stop ends them here.
     let (released, killed) = match origin {
-        // A tool is a person's hands in the session (the `self-control` skill), so its
-        // `cancel` lets jobs go exactly as a client's does.
+        // A tool is a person's hands: its `cancel` lets jobs go as a client's does.
         Origin::Client { .. } | Origin::Tool { .. } => {
             (crate::tools::detached::release_detached(), 0)
         }

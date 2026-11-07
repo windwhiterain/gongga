@@ -692,8 +692,7 @@ impl ToolRegistry {
                 ),
             }
         }
-        // Said once, at startup: which rows the model reads, and which answer only to a
-        // name. Two lists, because they are two audiences.
+        // Said once: the rows the model reads.
         let offered: Vec<&str> = self
             .tools
             .iter()
@@ -787,11 +786,7 @@ impl ToolRegistry {
                 })
             }
             "new" | "check" => {
-                // The channels are the call's own, from the session it runs as: a tool
-                // carries no table of them, so two of them cannot disagree.
-                // How long a call that states no `wait` waits is the row's, because the
-                // two tools answer different questions: starting a program rarely has
-                // output ready, and reading one nearly always does.
+                // The channels are the call's own, and the default wait is the row's.
                 let wait = new_check::Wait {
                     default: row
                         .timeout_ms
@@ -888,8 +883,7 @@ impl ToolRegistry {
                 self.names().join(", ")
             ));
         };
-        // The name this call was made under: a command says its own name in what it
-        // answers, and a row renamed in the config names itself the new way.
+        // The name this call was made under, as the row spells it now.
         let mut named = ctx.clone();
         named.tool = name.to_string();
         let ctx = &named;
