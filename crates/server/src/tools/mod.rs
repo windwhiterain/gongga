@@ -773,8 +773,14 @@ impl ToolRegistry {
             "new" | "check" => {
                 // The channels are the call's own, from the session it runs as: a tool
                 // carries no table of them, so two of them cannot disagree.
+                // How long a call that states no `wait` waits is the row's, because the
+                // two tools answer different questions: starting a program rarely has
+                // output ready, and reading one nearly always does.
                 let wait = new_check::Wait {
-                    default: bash_timeout,
+                    default: row
+                        .timeout_ms
+                        .map(Duration::from_millis)
+                        .unwrap_or(bash_timeout),
                     max_output_chars,
                 };
                 if row.cmd == "new" {

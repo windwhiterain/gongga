@@ -246,7 +246,11 @@ impl Channels {
     fn auto_name(&self, session: &str, name: &str) -> Result<String, String> {
         let taken = self.store.channels_of(session).map_err(quiet)?;
         for number in 1..=u32::MAX {
-            let candidate = format!("/{session}/{name}/{number}");
+            // No leading `/`: a path that does begins with the shell's root, and a
+            // caller on Git Bash has it rewritten into this machine's own path before
+            // the line ever reaches this server. Measured: `/main/bash/1` arrived as
+            // `C:/SoftWare/git/Git/main/bash/1`.
+            let candidate = format!("{session}/{name}/{number}");
             if !taken.iter().any(|row| row.path == candidate) {
                 return Ok(candidate);
             }
