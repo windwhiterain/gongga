@@ -187,6 +187,7 @@ impl Runner {
             Op::Read { path, offset } => read(&path, offset).await,
             Op::List { path } => list(&path),
             Op::Space { path } => space(&path),
+            Op::Append { path, data } => append(&path, &data),
         };
         self.reply(id, result).await;
     }
@@ -638,6 +639,31 @@ async fn send(pid: u32, signal: &str) -> bool {
 ///
 /// Answered where the shells run: the machine that fills up is the only one that can
 /// report how much it has left, and a server asking its own `statvfs` would answer
+/// Appends bytes to a file, creating it and its parents.
+///
+/// # Invariant
+///
+/// Append, never rewrite: a channel's `in` is written by whoever speaks to it, and a
+/// rewrite would drop the line another writer put there between two reads.
+fn append(path: &str, data: &str) -> Result<Value, String> {
+    let Some(bytes) = crate::base64::decode(data) else {
+        return Err("append data is not base64".to_string());
+    };
+    let path = Path::new(path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(json!({"bytes": bytes.len()}))
+}
+
 /// for the wrong machine. See `docs/notes/server-disk.md`.
 fn space(path: &str) -> Result<Value, String> {
     let volumes = crate::disk::volumes(Path::new(path));

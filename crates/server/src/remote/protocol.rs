@@ -12,8 +12,9 @@ use serde_json::Value;
 /// Raised when a request gains a meaning an older runner would silently ignore: a
 /// runner that dropped `args` would run the program it was given with a shell's
 /// flags, which is a wrong answer rather than a missing one. 2 added `args` to
-/// `Open`, which is how a program other than a shell is started.
-pub const PROTOCOL: u32 = 2;
+/// `Open`, which is how a program other than a shell is started; 3 added `Append`,
+/// which is how a channel's two files are written on a peer.
+pub const PROTOCOL: u32 = 3;
 
 /// One request; `id` is the client's, and the reply repeats it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +81,16 @@ pub enum Op {
     Space {
         path: String,
     },
+    /// Bytes for the end of a file, created with its parents when it is not there.
+    ///
+    /// # Invariant
+    ///
+    /// Append, never rewrite: two writers to one command file interleave, which is
+    /// what a channel's `in` is. `data` is base64 because a line has no binary.
+    Append {
+        path: String,
+        data: String,
+    },
 }
 
 impl Op {
@@ -101,6 +112,7 @@ impl Op {
             Op::Read { .. } => "read",
             Op::List { .. } => "list",
             Op::Space { .. } => "space",
+            Op::Append { .. } => "append",
         }
     }
 }
