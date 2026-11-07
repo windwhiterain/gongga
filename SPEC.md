@@ -7,7 +7,7 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - [server]: binary, define the cmd schema.
 - rpc: sending server cmd checked under schema.
   - [cli]: python.
-- [client]: libary, receive delta from server, validate at reconnect, update self state and render.
+- [client]: binary, receive delta from server, validate at reconnect, update self state and render.
   - [tui]: binary.
 - [bundle]: binary, bundle server/cli/tui's binary, route the cmd.
   - `tui [--client_only]`: `bundle server` and connected to it, kill/exit will cancel the server it spawn.

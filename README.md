@@ -1,6 +1,9 @@
-# Gongga Harness
+<div align="center">
+  <img src="logo.png" alt="Gongga Harness" width="320">
+  <h1>Gongga Harness</h1>
+</div>
 
-_Post Modern Agent Harness_
+
 
 ## Features
 
