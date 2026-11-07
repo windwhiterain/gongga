@@ -42,8 +42,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command \
 `Win32Exception: The system cannot find the path specified`（回收站里的路径 shell API
 枚举不了），而错误被 `-ErrorAction SilentlyContinue` 吃掉。
 
-**后果**：回收站常常是最大的一块（实测单次 16 GiB ~ 52 GiB），脚本报「已清空」而
-文件还在。**不要相信那行输出，要自己量。** 清它要用脚本自己的 robocopy 空目录镜像
+**后果**：回收站常常是最大的一块（实测单次 16 GiB ~ 68 GiB），脚本报「已清空」而
+文件还在。**不要相信那行输出，要自己量。**
+
+回收站有几十万文件时它还会**挂死**在这一步（实测 68 GiB / 45 万文件挂了 20 分钟，
+既不报错也不返回汇总）。所以：脚本跑到第 11 步就别等它——先并行跑下面的镜像，
+镜像跑完脚本那一步也不会有用了，按 pid 把它收掉（pid 从 `Get-CimInstance` 的
+`CommandLine` 认，不要按名字杀）。
+
+清它要用脚本自己的 robocopy 空目录镜像
 （长路径和 ACL 都吃得下），路径里的 `$` 要防 shell 吃掉：
 
 ```powershell
