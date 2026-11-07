@@ -37,37 +37,26 @@ standard OpenAI Response API/Anthropic API.
 path, rendered in hierarchy.
 
 ## Tool
-tool provide a tunnel of cmd that agents can directly call to avoid escape.
+result := {id, output, time, mactehd: bool, exit: int|none}
+new(name: str, args: list[str] | dict[str], input: optional[str], id: optional[path], wait: optional[time], until: optional[str]) -> result:
+  create a new channel.
+  - if name is "GONGGA_CLI", route to cmd with session arg sticky to caller.
+check(id: path, input: optional[str], wait: optional[time], until: optional[str]) -> result
 
-most tools have optional `description`, `max_output`, `timeout_ms`, `background` argument that the tunnel consume.
-- `max_output`: in chars, if exceeded, save to temp file and return the file metadata {path, chars, line count}
-- foreground job running over timeout become background.
-- background job is a process of its own, can live across server cancel, adopted when server restart.
-- kill server kills all jobs.
-- background job finish will notice caller session, missing background job, likely finished or killed when the server is down, will also notice. unread answer is collected by check_job.
+chennel finished in backgrpund will also notice caller with result.
 
-wait is the special tool that treated internally.
+- wait: if none, wait default time, if 0, return immediately.
+- util: use corresponding sticky value according to name, e.g. "python"/"bash".
+- id: auto generate if not provided.
+- output: new output since last read.
+- time: total time cost since the job start.
 
-use `which("bash")` as bash.
-- bash{command, name = "default", background = false}:
-  cwd is session's cwd if session has no remote.
-  runs in the persistent shell `name`
-  - key = {session_name, bash_name}.
-- exec{command}: so shell to avoid escape.
-- python{code, ...}: mirror bash, persistant REPL.
-- list_bash{name_regex}: list matched bash with the caller session's name in key.
-- list_python{...}: mirror list_bash.
-- check_bash{name = "default", wait_ms = 0}: return bash's output that hasn't been read by the caller session. With `wait_ms > 0` and background jobs still running, wait until they finish or the wait expires, then return the unread output: a timeout leaves the jobs running.
-- check_python{...}: mirror check_bash.
-- del_bash{name_regex}: delete matched bash with the caller sessions' name in key.
-- del_python{...}: mirror del_bash.
-- remote_bash{command, name, target = <session's remote>}:
-  cwd is session's cwd if session's remote is target.
-  non-meta reference the remote skill.
-- remote_exec{command}: mirror exec.
-- remote_python{code, ...}: mirror remote_bash.
-- read_file/write_file/replace{remote = none}:
-- wait{}: if interrupted, the call end. can wait across server cancel, keep waiting when server restart.
+
+## Cmd(refactor version)
+- rename_job(id: path, new_id: path, session: path) -> result
+- ls_job(path: path, session: path) -> list[job]
+- del_job(path: path, session: path) -> result
+
 
 ## Server State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
@@ -96,8 +85,7 @@ a cache tree is simulated for each model or (model, some config) that shares pre
 for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
 
 ## Live Compact
-- after first true user message, inject prompt to ask agent to give a plan.
-- after the first turn end, set the starting checkpoint of compaction.
+- when agent switch from explore to build, set the starting checkpoint of compaction.
 - after the starting checkpoint, every time reach a context increase limit, ask the agent to call live compact to compact the history since the last checkpoint.
 - live compact summary can reference meta that directly embed in the summary, creating a new checkpoint.
 
