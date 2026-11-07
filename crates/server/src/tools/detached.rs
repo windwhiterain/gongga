@@ -228,38 +228,19 @@ impl DetachedJob {
         // The job object is the tree: it ends every member, which the walk approximates.
         disarm_detached(self.pid);
         if let Some(child) = &mut self.child {
-            // A dead leader proves nothing about its group: terminate the group
-            // first, then reap or kill the leader.
-            let tree_stopped = match child.id() {
-                Some(pid) => {
-                    if matches!(child.try_wait(), Ok(Some(_))) {
-                        // The handle covers reuse while the leader lives; see
-                        // `docs/notes/server-tools-detached.md`.
-                        match process_started_at(pid) {
-                            Ok(None) => {}
-                            Ok(Some(actual)) => {
-                                tracing::warn!(
-                                    pid,
-                                    actual_started_at = actual,
-                                    "refusing to signal a reused detached process group"
-                                );
-                                return false;
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    pid,
-                                    "could not verify an exited leader's group: {e}"
-                                );
-                                return false;
-                            }
-                        }
-                    }
-                    kill_tree(pid).await
+            // An id is ours only while its handle lives: see
+            // `docs/notes/server-tools-detached.md`.
+            return match child.try_wait() {
+                Ok(None) => kill_tree(self.pid).await && reap_child(child).await,
+                Ok(Some(_)) => true,
+                Err(e) => {
+                    tracing::warn!(
+                        pid = self.pid,
+                        "could not ask whether a detached bash ended: {e}"
+                    );
+                    false
                 }
-                None => false,
             };
-            let leader_stopped = reap_child(child).await;
-            return tree_stopped && leader_stopped;
         }
         if is_self_or_ancestor(self.pid) {
             // A row from before `adopt` refused ancestors: killing the tree would kill us.

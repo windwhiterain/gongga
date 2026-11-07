@@ -75,10 +75,19 @@ worse than a stale entry.
 ## DetachedJob::stop (an exited leader)
 
 The handle is what rules out PID reuse, and it only rules it out while the leader
-lives. Once the leader has exited, a new group could hold the same id, so the id
-is safe to signal only when the lookup says the leader is absent -- and even then
-the group may still hold descendants, which is why the tree goes first and the
-leader is only reaped afterwards.
+lives. A leader that died while we held it is the "already gone" case, answered
+without a lookup of its id at all.
+
+The watcher is what makes this the common case rather than a corner: it calls
+`try_wait` on every job it holds, and a job it saw end has its handle spent, so
+the id is `None` and the number belongs to whoever took it next. Reporting that
+as "not stopped" made the job undeletable -- and with it the session the job
+belongs to, since `del_session` keeps a session whose jobs it could not stop.
+
+What the leader left behind is `release_ended`'s answer, not this call's: a
+leader that ended takes its job with it, so its descendants were released when
+it ended. The `disarm_detached` before it still ends them when this server has
+not noticed that end yet -- the job object is then still this call's to end.
 
 ## DetachedJob::stop (a row naming an ancestor)
 
