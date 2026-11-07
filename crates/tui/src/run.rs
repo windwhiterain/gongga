@@ -305,9 +305,9 @@ fn submission(
 ///
 /// A value lands on a slot that is still empty, and only through the argument
 /// whose `kind` names it; what the caller typed wins. A filled value the
-/// published `accepts` refuses is left out *and said*, because a default is not
-/// something the operator stated: sending it would be refused for a value nobody
-/// typed, and dropping it silently would hide that the entry is still in the file.
+/// published `accepts` refuses is left out *and said*, and so is one the line has
+/// no claim to: the entries describe this window's session, so a line about
+/// another one takes only what the command requires. See `docs/notes/tui-run.md`.
 fn filled(
     client: &link::Client,
     state: &State,
@@ -324,8 +324,17 @@ fn filled(
     };
     let mut merged = args.clone();
     state.sticky().fill(Some(&spec), &mut merged);
+    // Which session this line acts on, entries and all: the answer `follow` keeps.
+    let acting = client.session_named(&head, &merged).map(str::to_string);
+    let own = state.sticky().get("session").map(str::to_string);
+    // The entries are this session's, and the line is about that one only.
+    let elsewhere = match (&acting, &own) {
+        (Some(acting), Some(own)) if acting != own => Some(acting.clone()),
+        _ => None,
+    };
     let line = format!("/{}", tokens.join(" "));
     let mut filled = tokens;
+    let mut left = Vec::new();
     for arg in &spec.args {
         // Typed, or no entry names it: nothing to add.
         if args.contains_key(&arg.name) {
@@ -334,6 +343,11 @@ fn filled(
         let Some(value) = merged.get(&arg.name).cloned() else {
             continue;
         };
+        // An entry about this window's session, on a line about another one.
+        if elsewhere.is_some() && !arg.required {
+            left.push(arg.kind.clone().unwrap_or_else(|| arg.name.clone()));
+            continue;
+        }
         if client
             .refused_values(&line, &merged)
             .iter()
@@ -351,6 +365,18 @@ fn filled(
         // A flag, whatever its position: filled, not re-ordered, and one token.
         filled.push(format!("--{}", arg.name));
         filled.push(value);
+    }
+    if let (Some(acting), Some(own)) = (elsewhere, own)
+        && !left.is_empty()
+    {
+        sink.note(
+            LineKind::System,
+            &format!(
+                "sticky {} left off: {} is what they describe, and this line is about {acting}",
+                left.join(", "),
+                own
+            ),
+        );
     }
     filled
 }

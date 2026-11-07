@@ -33,6 +33,14 @@ the argument's published `accepts` refuses is left out *and said*: a default is 
 something the operator stated, so it is not worth a refusal -- but silently dropping it
 would hide that the entry is still in the file, and a later model may well take it.
 
+Which session the line acts on is read off the line *after* the entries are in it --
+`Client::session_named`, the same answer `follow` keeps -- and the entries describe
+this window's session, so a line about another one takes only what the command
+requires. Filling `--model` into `set_session --name other` would rewrite a setting
+nobody configured here, and would refuse a value stated for that line: `--cache_tier
+1h` is a tier of the model this window runs, not of that one. The entries left out are
+said, in the status row, like the ones `accepts` refuses.
+
 ## the gesture branch
 
 `UiEvent::Operate` is the window's own gesture, and it takes one step the typed
