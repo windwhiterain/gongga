@@ -163,6 +163,14 @@ ok "a failing command answers 127" "$([[ "$(field "$bad" exit)" == 127 ]] && ech
 third=$("${cli[@]}" check main "$shell_id" --input 'echo three' --wait 5000 2>&1)
 ok "the channel still answers after a failure" "$([[ "$(field "$third" output | tr -d '\n')" == three ]] && echo 0 || echo 1)"
 
+# 3b. A command that takes longer than the client's own patience. The server retires
+#     a frame only when the peer acknowledges it, and gives up on a connection that
+#     never does -- so this is the one scenario where a silent client loses its answer.
+slow=$("${cli[@]}" check main "$shell_id" --input 'sleep 2; echo slow-said' --wait 15000 2>&1)
+say "$slow"
+ok "a command slower than a second still answers" \
+  "$([[ "$(field "$slow" output | tr -d '\n')" == slow-said ]] && echo 0 || echo 1)"
+
 # 4. The window moves: what one call took, the next does not see.
 empty=$("${cli[@]}" check main "$shell_id" --wait 0 2>&1)
 say "$empty"
@@ -187,7 +195,7 @@ ok "new --cwd starts the program there" "$([[ "$(field "$in_dir" output)" == *"$
 rmdir "$elsewhere" 2>/dev/null
 refused=$("${cli[@]}" new main bash --remote nowhere-named 2>&1)
 say "$refused"
-ok "a machine that cannot be reached is refused, not run here" "$([[ "$(field "$refused" id)" == "" ]] && has "$refused" 'not wired' && echo 0 || echo 1)"
+ok "a machine that cannot be reached is refused, not run here" "$([[ "$(field "$refused" id)" == "" ]] && has "$refused" 'no remote named' && echo 0 || echo 1)"
 
 # 7. A cmd through the same door: `GONGGA_CLI` with the caller's session filled in.
 cloned=$("${cli[@]}" new main GONGGA_CLI --args '{"cmd": "clone_session", "name": "copy"}' 2>&1)

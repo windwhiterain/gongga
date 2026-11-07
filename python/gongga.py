@@ -108,7 +108,10 @@ class Client:
         self._connection = 0
         self._sequence = 0
         self._message = 0
-        self._peer = 0
+        # The next sequence this side expects, and the ones that arrived past a gap.
+        # A cumulative ack is the next one expected, never the highest number seen.
+        self._expected = 1
+        self._ahead = set()
         self._next_id = 1
         self._greeted = False
 
@@ -260,7 +263,7 @@ class Client:
         self._sequence += 1
         self._message += 1
         self._sock.send(_frame(DATA | ACK, self._connection, self._sequence,
-                               self._peer, self._message, 0, 1, payload))
+                               self._expected, self._message, 0, 1, payload))
 
     @staticmethod
     def _decode(data):
@@ -268,13 +271,35 @@ class Client:
             return None
         return struct.unpack(">HBBIIIIHHH", data[:HEADER])
 
+    def _acknowledge(self, sequence):
+        """Books one received sequence and tells the peer how far this side has it.
+
+        # Invariant
+
+        `_expected` is the next sequence expected, so the ack is cumulative and an
+        out-of-order frame retires nothing. The channel retransmits what is not
+        acknowledged and gives up when it has retransmitted enough, so a client
+        waiting with nothing to send -- one command in flight, no reply yet -- must
+        still answer: without this its connection dies after about a second and a
+        slow command loses the answer it was waiting for.
+        """
+        if sequence == self._expected:
+            self._expected = (self._expected + 1) & 0xFFFFFFFF
+            while self._expected in self._ahead:
+                self._ahead.discard(self._expected)
+                self._expected = (self._expected + 1) & 0xFFFFFFFF
+        elif (sequence - self._expected) & 0xFFFFFFFF < 0x80000000:
+            # Past a gap: remembered, not acknowledged.
+            self._ahead.add(sequence)
+        self._sock.send(_frame(ACK, self._connection, 0, self._expected, 0, 0, 1))
+
     def _whole(self, data, parts):
         """One frame in, one whole message out when its fragments are in."""
         (magic, version, flags, connection, sequence, _ack, message_id,
          index, count, _window) = struct.unpack(">HBBIIIIHHH", data[:HEADER])
-        self._peer = sequence
         if magic != MAGIC or version != VERSION or not flags & DATA:
             return None
+        self._acknowledge(sequence)
         piece = parts.setdefault(message_id, {})
         piece[index] = data[HEADER:]
         if len(piece) < count:
