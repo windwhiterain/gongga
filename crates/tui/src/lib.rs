@@ -661,8 +661,7 @@ impl Tui {
         endpoint: &str,
     ) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
-        // Before the alternate screen: the ask arrives on a thread of the
-        // platform's, and that thread gives back what this line takes away.
+        // Before the alternate screen: the platform's thread must find it here.
         let watched = closing::watch();
         let initialized = (|| {
             let mut out = stdout();
@@ -723,8 +722,8 @@ impl Tui {
             settled: None,
             stashed: None,
         };
-        // Said once, before the first frame: a window that cannot hear the
-        // console closing keeps the terminal in raw mode when it goes.
+        // Said once: a window that cannot hear the console closing leaves
+        // it in raw mode when it goes.
         if !watched {
             window.say(
                 LineKind::Error,

@@ -66,8 +66,7 @@ unsafe extern "system" fn handle(event: u32) -> i32 {
     ) {
         return 0;
     }
-    // Nothing is written and nothing waits: this thread belongs to the platform,
-    // and the loop is the one that owns the way out.
+    // Nothing is written and nothing waits: the loop owns the way out.
     if let Some(wake) = WAKE.get() {
         wake.notify_one();
     }
@@ -77,7 +76,6 @@ unsafe extern "system" fn handle(event: u32) -> i32 {
 /// A closed console already ends this process on the platforms without one.
 #[cfg(not(windows))]
 fn install() -> bool {
-    // A console that closes sends `SIGHUP`, whose default action is to end this
-    // process: there is nothing to install, and nothing missing.
+    // A closed console sends `SIGHUP`, whose default action ends this process.
     true
 }
