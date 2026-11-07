@@ -895,8 +895,7 @@ impl Agent {
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
-        // The tool set is a stored row, read beside the stored prompt: a request
-        // assembles no part of its own head. See `docs/notes/server-tools.md`.
+        // Read beside the stored prompt; a request assembles no part of its head.
         let tools = self.tool_set_in_force(session, id, llm.model(), llm)?;
         let reader = session.reader();
         let source = match (&reader, session.owner()) {

@@ -499,8 +499,7 @@ impl LlmClient {
         // See `docs/reference/prefix-cache.md`.
         let index = index.filter(|index| !index.is_empty());
         if self.face == Face::Anthropic {
-            // The block is the stored row's, byte for byte: a request assembles no
-            // part of its own head. See `docs/notes/server-tools.md`.
+            // The stored row's bytes; a request assembles no part of its head.
             let offered: &[Value] = tools.as_array().map(Vec::as_slice).unwrap_or(&[]);
             return crate::anthropic::head(
                 &self.model_name,

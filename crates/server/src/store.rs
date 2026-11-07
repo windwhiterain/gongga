@@ -3173,8 +3173,8 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
     };
     // Pictures stay in `display` and resolve per request.
     match kind {
-        // A record a request reads, not a message it sends: the prompt and the tool
-        // set in force keep their payload in `display` alone.
+        // Records a request reads, not messages it sends: the prompt and the tool
+        // set in force keep their payload in `display`.
         "system" | "tools" => None,
         "text" => {
             let role = text_of("role");

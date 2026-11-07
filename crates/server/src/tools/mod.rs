@@ -541,10 +541,8 @@ impl ToolRegistry {
     ///
     /// # Invariant
     ///
-    /// This is the only function that renders a schema, and it is called only from
-    /// a stored change event -- never while a request is being built. What is sent
-    /// is the context, and the context is append-only, so the tool list is a stored
-    /// row and not something a request assembles. See `docs/notes/server-tools.md`.
+    /// The only renderer of a schema, called only from a stored change -- never
+    /// while a request is built. See `docs/notes/server-tools.md`.
     ///
     /// A tool that drives a machine this session does not have is not in the set at
     /// all, and neither is an argument that names one: a model can call what it is
@@ -563,9 +561,7 @@ impl ToolRegistry {
             .collect();
         // Once a lineage has a compaction origin the schema stays for its life, so
         // the head stops moving twice per cycle.
-        if with_live_compact
-            && let Some(tool) = self.get(live_compact::LIVE_COMPACT_TOOL)
-        {
+        if with_live_compact && let Some(tool) = self.get(live_compact::LIVE_COMPACT_TOOL) {
             definitions.push(Self::definition_of(&tool, has_remote));
         }
         definitions
