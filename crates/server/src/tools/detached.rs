@@ -1034,7 +1034,7 @@ async fn wait_windows_tree_gone(pid: u32, within: Duration) -> anyhow::Result<bo
 
 /// Reaps without an unbounded wait; a leader that escaped its group is killed by
 /// the handle after group cleanup.
-async fn reap_child(child: &mut Child) -> bool {
+pub(crate) async fn reap_child(child: &mut Child) -> bool {
     match child.try_wait() {
         Ok(Some(_)) => return true,
         Ok(None) => {}

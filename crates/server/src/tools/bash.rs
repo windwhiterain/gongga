@@ -529,8 +529,8 @@ impl BashShell {
         }
     }
 
-    /// Ends the shell and everything it started, then reaps the leader.
-    pub async fn kill(&mut self) {
+    /// Ends the shell and everything it started, and says whether the leader is gone.
+    pub async fn kill(&mut self) -> bool {
         // Kept-handle callers must not read what is left in the pipes as their own output.
         self.out_of_sync = true;
         // The tree, not the shell: a surviving grandchild holds the pipe open at shutdown.
@@ -549,8 +549,7 @@ impl BashShell {
                 crate::tools::detached::kill_tree(pid).await;
             }
         }
-        let _ = self.child.start_kill();
-        let _ = self.child.wait().await;
+        crate::tools::detached::reap_child(&mut self.child).await
     }
 
     /// Resolves the shell's current directory to a native path.

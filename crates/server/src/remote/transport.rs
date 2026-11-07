@@ -447,13 +447,21 @@ impl Runner {
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, sender);
         let line = serde_json::to_string(&Request::new(id, op))?;
-        if self.inner.writer.send(line).await.is_err() {
+        // A full writer channel is a peer that stopped reading: the link's clock bounds the send too.
+        let sent = tokio::time::timeout(self.inner.answer, self.inner.writer.send(line)).await;
+        if !matches!(sent.as_ref(), Ok(Ok(()))) {
             self.inner
                 .pending
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&id);
-            return Err(self.inner.lost());
+            return match sent {
+                Ok(Err(_)) => Err(self.inner.lost()),
+                _ => Err(anyhow::Error::new(Unanswered {
+                    op: named,
+                    waited: self.inner.answer,
+                })),
+            };
         }
         let reply = match tokio::time::timeout(self.inner.answer, answer_rx).await {
             Ok(Ok(reply)) => reply,

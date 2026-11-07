@@ -162,13 +162,7 @@ impl Shell {
     /// Ends the shell and everything it started, reporting what could be proved.
     pub async fn kill(&mut self) -> CloseReport {
         match self {
-            Shell::Local(shell) => {
-                shell.kill().await;
-                CloseReport {
-                    confirmed: true,
-                    unknown: None,
-                }
-            }
+            Shell::Local(shell) => confirmed(shell.kill().await),
             Shell::Remote(shell) => shell.kill().await,
         }
     }
