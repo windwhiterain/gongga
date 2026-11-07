@@ -281,7 +281,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         detached.clone(),
         shell_env,
         script_env.clone(),
-        crate::remotes::load(),
+        crate::remotes::load(cfg.endpoint.answer_timeout),
     );
     let bus = EventBus::new(4096);
 

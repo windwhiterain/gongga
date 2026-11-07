@@ -20,8 +20,15 @@ use crate::remote::protocol::{Event, Frame, Op, PROTOCOL, Reply, Request};
 /// See `docs/notes/server-remote.md`.
 const WINDOW: usize = 8;
 
-/// How long a runner has to greet, so a wrong program is refused, not waited on.
-const GREETING: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a peer's silence is waited on when this machine states no other number.
+///
+/// # Invariant
+///
+/// One clock on the connection, and the only one: it bounds the greeting and every
+/// answer, and what it ends is the request, with an error that says which one. It is
+/// not the clock a call goes to the background on -- that one is the caller's own
+/// `timeout_ms`, measured on this machine alone. See `docs/notes/server-remote.md`.
+pub const DEFAULT_ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How long a dropped transport waits for its runner to end its own shells.
 const DISCONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -193,6 +200,32 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// The endpoint was asked something and did not answer in time.
+///
+/// # Invariant
+///
+/// An error, never a background: this is the network clock, and what it ends is the
+/// request. The clock that hands a call to the background is the caller's own.
+#[derive(Debug)]
+pub struct Unanswered {
+    /// The operation the peer was silent about.
+    pub op: &'static str,
+    /// How long it was waited on.
+    pub waited: std::time::Duration,
+}
+
+impl std::fmt::Display for Unanswered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the endpoint did not answer `{}` within {:?}",
+            self.op, self.waited
+        )
+    }
+}
+
+impl std::error::Error for Unanswered {}
+
 /// The connection itself is gone; what ran is not knowable from here.
 #[derive(Debug)]
 pub struct Lost(pub String);
@@ -223,6 +256,8 @@ struct Inner {
     next_shell: AtomicU64,
     /// The runner's own pid on the peer, as its greeting said.
     pid: AtomicU32,
+    /// The longest this peer may stay silent, at its greeting and at every answer.
+    answer: std::time::Duration,
     /// Cancelled by the last owner, which is what ends the child process.
     shutdown: CancellationToken,
 }
@@ -289,7 +324,12 @@ impl Drop for Inner {
 impl Runner {
     /// Starts `command` and waits for its greeting, so a peer this client cannot
     /// speak to is refused first.
-    pub async fn spawn(mut command: Command) -> anyhow::Result<Self> {
+    ///
+    /// # Invariant
+    ///
+    /// `answer` bounds the greeting and every answer after it: a peer that never
+    /// speaks is refused here, and one that stops speaking is an error there.
+    pub async fn spawn(mut command: Command, answer: std::time::Duration) -> anyhow::Result<Self> {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -320,6 +360,7 @@ impl Runner {
             next_id: AtomicU64::new(1),
             next_shell: AtomicU64::new(1),
             pid: AtomicU32::new(0),
+            answer,
             shutdown: shutdown.clone(),
         });
 
@@ -333,7 +374,7 @@ impl Runner {
         tokio::spawn(reap(child, Arc::downgrade(&inner), shutdown));
 
         // A peer that neither greets nor exits would otherwise be waited on forever.
-        let first = match tokio::time::timeout(GREETING, hello).await {
+        let first = match tokio::time::timeout(answer, hello).await {
             Ok(Ok(first)) => first,
             Ok(Err(_)) => {
                 let reason = inner
@@ -345,7 +386,7 @@ impl Runner {
                 anyhow::bail!("the endpoint's runner did not answer: {reason}");
             }
             Err(_) => anyhow::bail!(
-                "the endpoint's runner did not greet within {GREETING:?}; is that program \
+                "the endpoint's runner did not greet within {answer:?}; is that program \
                  really the runner?"
             ),
         };
@@ -389,10 +430,17 @@ impl Runner {
     }
 
     /// One request, one answer; ids are what let a signal overtake a busy command.
+    ///
+    /// # Invariant
+    ///
+    /// No request waits on this peer's silence for ever: `answer` ends it with an
+    /// error naming the operation. The connection is not closed by that -- a peer
+    /// that was slow for one request may still answer the next one.
     pub async fn request(&self, op: Op) -> anyhow::Result<Value> {
         self.inner.check_open()?;
         let id = self.inner.next_id.fetch_add(1, Ordering::SeqCst);
-        let (sender, answer) = oneshot::channel();
+        let named = op.label();
+        let (sender, answer_rx) = oneshot::channel();
         self.inner
             .pending
             .lock()
@@ -407,9 +455,21 @@ impl Runner {
                 .remove(&id);
             return Err(self.inner.lost());
         }
-        let reply = match answer.await {
-            Ok(reply) => reply,
-            Err(_) => return Err(self.inner.lost()),
+        let reply = match tokio::time::timeout(self.inner.answer, answer_rx).await {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(_)) => return Err(self.inner.lost()),
+            Err(_) => {
+                // Nobody is waiting for this answer any more, so nothing may keep its slot.
+                self.inner
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&id);
+                return Err(anyhow::Error::new(Unanswered {
+                    op: named,
+                    waited: self.inner.answer,
+                }));
+            }
         };
         match (reply.ok, reply.err) {
             (Some(value), _) => Ok(value),

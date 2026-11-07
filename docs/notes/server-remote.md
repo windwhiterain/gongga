@@ -194,6 +194,27 @@ task, a reader task, a stderr task, and a reaper.
   handle's lock — which is what a background job's tailer needs while its shell is
   busy running something else.
 
+### Invariant: two clocks, and neither is the other's
+
+There are exactly two, and they answer different questions:
+
+| clock | starts | ends with | on expiry |
+| --- | --- | --- | --- |
+| the call's own `timeout_ms` | the tool call, on this machine | the call's command running | a background job: the command keeps running and its output is posted later |
+| `[remote] answer_timeout_ms` | a request (or a greeting) sent to a peer | the peer's silence | an error naming the operation -- never a background |
+
+Neither may move the other. The background clock is measured on this machine alone:
+a peer that answers nothing does not delay it, and the turn stops waiting on
+schedule. The answer clock is the only thing a `request` may wait on, so no round
+trip is unbounded -- `Open`, `Write`, `Stat`, `Read`, `List`, `Space`, `Signal` and
+`Close` alike, and `ShellHandle::write` with them.
+
+Measured, before this invariant: a `remote_bash` carrying `timeout_ms: 60000`
+was still `running` two hours later, because its deadline covered `pump` and
+nothing before it -- `connect` and `Op::Write` each waited for an answer that
+never came, no clock was on either, and no promotion is possible for a call that
+never reached its own deadline.
+
 `DISCONNECT_GRACE` is the one place this file waits on purpose: when the last
 owner drops, the child is *not* killed at once. The runner learns of the end from
 EOF on its own stdin and ends its shells itself; killing it first would abandon
@@ -204,7 +225,7 @@ them, which is the silence a disconnect must not produce.
 Three kinds of endpoint, and only one of them can come from a config file:
 
 - `Local { program }` — a shell here, exactly as before;
-- `Remote { transport, runner }` — `ssh -o BatchMode=yes [-p port] [-i key] host --
+- `Remote { transport, runner, answer }` — `ssh -o BatchMode=yes [-p port] [-i key] host --
   runner`. Nothing weakens host key checking: `BatchMode` only stops a password
   prompt from hanging a turn, and a host that is not in `known_hosts` is refused by
   `ssh` itself, which is the answer a caller wants.
@@ -213,6 +234,12 @@ Three kinds of endpoint, and only one of them can come from a config file:
   `identity` and `runner`, and parsing can only produce `Endpoint::Remote`, so no
   TOML file reaches `Direct`; `local`, `none` and hostless entries are refused at load
   (`docs/notes/server-remotes.md`).
+
+`answer` is the link's clock, carried here because it belongs to the reach and not
+to a tool: `Endpoint::answer_timeout` is what every runner spawn and every request on
+this endpoint is bounded by. `Local` and `Direct` answer with
+`DEFAULT_ANSWER_TIMEOUT`, since a runner this machine started itself can be silent
+too.
 
 A remote directory is the endpoint's to accept: `open` canonicalises it on the peer
 and an unknown one is a hard error, never a substitution of this machine's.
@@ -474,7 +501,7 @@ The flakiness did not disappear -- this machine's tunnel is 750-1030ms per ssh -
 but a stall is now a recoverable event instead of a connection nothing can detect
 and nothing can wake.
 
-### Waiting is not dying, so a listing keeps no clock
+### Waiting is not dying, so a listing keeps no clock of its own
 
 A listing used to give up after 8s and call that a stall. That budget was the only
 thing telling "still working" from "gone", and it was wrong in both directions: a
@@ -491,9 +518,13 @@ replaces the shell. A command that is merely slow is neither: `sleep 12` measure
 3s deadline still answers `still_running` -- that deadline is the caller's own
 (`bash --timeout_ms`), not this one's guess.
 
-So `list_paths` waits until the peer answers or the shell is gone, and a shell it
-lost is redialled once. Measured on the deadline-free listing: six consecutive
-listings of `C:/Windows/System32`, 6.6s cold then 1.7s each, none cut off.
+So `list_paths` waits until the peer answers, the shell is gone, or the link's own
+ceiling (`[remote] answer_timeout_ms`) has passed with nothing said -- and a shell it
+lost is redialled once. That ceiling is not a stall verdict about the command: it says
+this peer has not spoken for that long, which on a listing of any size is a dead link
+rather than a slow one (6.6-8.7s was the slowest cold listing measured). Measured on
+the deadline-free listing: six consecutive listings of `C:/Windows/System32`, 6.6s
+cold then 1.7s each, none cut off.
 
 ## The shell on the peer gets a console nobody sees
 

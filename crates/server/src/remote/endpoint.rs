@@ -3,6 +3,7 @@
 //! See `docs/notes/server-remote.md`.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use tokio::process::Command;
 
@@ -36,6 +37,15 @@ pub enum Endpoint {
         transport: Reach,
         /// The runner program, spelled for the peer.
         runner: String,
+        /// The longest this peer may stay silent, at its greeting and at every answer.
+        ///
+        /// # Invariant
+        ///
+        /// The network clock, and the reason it is carried here: it belongs to the
+        /// link, not to a tool. What it ends is a request, with an error; the clock
+        /// a call goes to the background on is the caller's own, measured locally.
+        /// See `docs/notes/server-remote.md`.
+        answer: Duration,
     },
     /// A runner on this machine, which is how a peer is exercised without ssh.
     Direct { runner: PathBuf },
@@ -58,6 +68,21 @@ impl Endpoint {
         Self::Local { program }
     }
 
+    /// How long this endpoint's peer may stay silent before an answer is an error.
+    ///
+    /// # Invariant
+    ///
+    /// Never unbounded, even on a runner this machine starts itself: a silence that
+    /// no clock ends is a call that never returns.
+    pub fn answer_timeout(&self) -> Duration {
+        match self {
+            Self::Remote { answer, .. } => *answer,
+            Self::Local { .. } | Self::Direct { .. } => {
+                crate::remote::transport::DEFAULT_ANSWER_TIMEOUT
+            }
+        }
+    }
+
     /// True when the shells are not this machine's.
     pub fn is_remote(&self) -> bool {
         !matches!(self, Self::Local { .. })
@@ -71,6 +96,7 @@ impl Endpoint {
             Self::Remote {
                 transport: Reach::Ssh { host, port, .. },
                 runner,
+                ..
             } => match port {
                 Some(port) => format!("ssh {host}:{port} ({runner})"),
                 None => format!("ssh {host} ({runner})"),
@@ -163,6 +189,7 @@ impl Endpoint {
                         identity,
                     },
                 runner,
+                ..
             } => {
                 let mut command = Command::new("ssh");
                 // Host key checking stays ssh's own; BatchMode only stops a hang.
@@ -218,7 +245,9 @@ impl Endpoint {
         args: Option<&[String]>,
     ) -> anyhow::Result<ShellHandle> {
         let command = self.runner_command()?;
-        let runner = Runner::spawn(command).await.map_err(|e| self.explain(e))?;
+        let runner = Runner::spawn(command, self.answer_timeout())
+            .await
+            .map_err(|e| self.explain(e))?;
         runner
             .open_with(cwd, program, args)
             .await

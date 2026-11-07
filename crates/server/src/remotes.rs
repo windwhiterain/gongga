@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -50,12 +51,17 @@ pub fn path() -> PathBuf {
 
 /// Every remote this machine configures; a table that cannot be used is dropped
 /// with a line saying why.
-pub fn load() -> Vec<RemoteConfig> {
-    read(&path())
+///
+/// # Invariant
+///
+/// `answer_timeout` is this home's `[remote] answer_timeout_ms`, handed to every
+/// table here: a peer's silence is bounded, and what outlives it is an error.
+pub fn load(answer_timeout: Duration) -> Vec<RemoteConfig> {
+    read(&path(), answer_timeout)
 }
 
 /// The remotes in `file`, in the order the file writes them.
-pub fn read(file: &Path) -> Vec<RemoteConfig> {
+pub fn read(file: &Path, answer_timeout: Duration) -> Vec<RemoteConfig> {
     let text = match std::fs::read_to_string(file) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -74,7 +80,7 @@ pub fn read(file: &Path) -> Vec<RemoteConfig> {
     parsed
         .remotes
         .into_iter()
-        .filter_map(|(name, one)| one.into_config(name.trim().to_string()))
+        .filter_map(|(name, one)| one.into_config(name.trim().to_string(), answer_timeout))
         .collect()
 }
 
@@ -85,7 +91,7 @@ impl FileRemote {
     ///
     /// A refused table is absent, never a local fallback: a session that asked for a
     /// peer must not quietly get this machine. See `docs/notes/server-remote.md`.
-    fn into_config(self, name: String) -> Option<RemoteConfig> {
+    fn into_config(self, name: String, answer_timeout: Duration) -> Option<RemoteConfig> {
         if name.is_empty() || name == "local" || name.eq_ignore_ascii_case("none") {
             tracing::warn!(
                 %name,
@@ -116,6 +122,7 @@ impl FileRemote {
                     identity: self.identity,
                 },
                 runner,
+                answer: answer_timeout,
             },
         })
     }

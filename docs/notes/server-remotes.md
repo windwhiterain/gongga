@@ -31,6 +31,11 @@ The home already draws this line elsewhere, and this file joins it:
 `path` is the override, then the machine's own directory. `read` is one file: every
 `[remotes.<name>]` table, in file order, each judged by `FileRemote::into_config`.
 
+What a table cannot say is how long its peer may stay silent: that number is the
+home's, `[remote] answer_timeout_ms` in `config.toml`, and it is handed to every table
+this function loads. It bounds the link and not a call, so it is one number for every
+peer rather than a field an operator repeats. See `docs/notes/server-remote.md`.
+
 A table this build cannot use is **absent, with a line saying why** — never a fallback
 to this machine. An unknown name is already refused by `SessionManager::endpoint_for`,
 and the pair together is the invariant: a session that asked for a peer never quietly

@@ -162,6 +162,15 @@ fact, and this file is the merged one. So the list is read from
 warned about at startup rather than honoured. The reasoning is the key's, one section
 up, and the file is `docs/notes/server-remotes.md`.
 
+## Config::load_with_home (`[remote] answer_timeout_ms`)
+
+The longest a peer may stay silent, at its greeting and at every answer, default 30s.
+It is the network clock: on expiry the request is an error naming the operation. It is
+**not** the clock a call goes to the background on -- that one is the call's own
+`timeout_ms`, measured on this machine -- and the two are deliberately not one number,
+because a peer that never answers must not be able to keep a turn waiting. See
+`docs/notes/server-remote.md`, "two clocks, and neither is the other's".
+
 ## Config::load_with_home (roster)
 
 The roster (`~/.agents/gongga-agents/providers.toml`) is the machine's own list of

@@ -116,8 +116,9 @@ impl Shell {
     ///
     /// # Invariant
     ///
-    /// No clock: it ends when the sentinel arrives or the shell does, so a caller
-    /// with nothing to gain from a partial answer never guesses.
+    /// Ends when the sentinel arrives, the shell does, or the link's ceiling runs
+    /// out: a caller with nothing to gain from a partial answer is given an error.
+    /// See `docs/notes/server-remote.md`.
     pub async fn run_until_settled(&mut self, command: &str) -> anyhow::Result<BashOutcome> {
         match self {
             Shell::Local(shell) => shell.run_until_settled(command).await,

@@ -71,6 +71,15 @@ pub const DEFAULT_DISK_LOW_MB: u64 = 1024;
 /// How long one call waits when nothing states one.
 pub const DEFAULT_TOOL_MAX_WAIT_MS: u64 = 60_000;
 
+/// How long a peer may stay silent when `[remote] answer_timeout_ms` states nothing.
+///
+/// # Invariant
+///
+/// A ceiling on one answer, never on a command: what it ends is the request, with an
+/// error. The clock a call goes to the background on is its own `timeout_ms`,
+/// measured on this machine, and no network number may move it.
+pub const DEFAULT_ANSWER_TIMEOUT_MS: u64 = 30_000;
+
 /// Share of a model's window `--context_limit` starts at; see `docs/notes/server-config.md`.
 pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
 /// Everything the server needs to boot.
@@ -93,6 +102,8 @@ pub struct Config {
     pub scripts: ScriptConfig,
     pub agent: AgentConfig,
     pub transport: TransportConfig,
+    /// What a conversation with a peer may cost in silence.
+    pub endpoint: EndpointConfig,
     /// Room left below which this server says the disk is out of room. See
     /// `docs/notes/server-disk.md`.
     pub disk_low: u64,
@@ -233,6 +244,19 @@ pub struct ToolsConfig {
     pub max_wait: Duration,
 }
 
+/// What a conversation with a peer costs when the peer is silent.
+///
+/// # Invariant
+///
+/// Not a wait, and not a budget: this is the network clock, and it ends a request
+/// with an error. A call that runs long becomes a background job on its own clock,
+/// which this number never touches. See `docs/notes/server-remote.md`.
+#[derive(Debug, Clone)]
+pub struct EndpointConfig {
+    /// The longest a peer may stay silent, at its greeting and at every answer.
+    pub answer_timeout: Duration,
+}
+
 /// Where commands registered by Python scripts live.
 #[derive(Debug, Clone)]
 pub struct ScriptConfig {
@@ -312,6 +336,7 @@ struct FileConfig {
     ship: Option<FileShip>,
     agent: Option<FileAgent>,
     transport: Option<FileTransport>,
+    endpoint: Option<FileEndpoint>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -393,6 +418,11 @@ struct FileAgent {
     cache_ttl_secs: Option<u64>,
     index_change_tolerance: Option<f64>,
     context_limit_percent: Option<u8>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct FileEndpoint {
+    answer_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -723,6 +753,16 @@ impl Config {
                 .unwrap_or(Duration::from_secs(60)),
         };
 
+        let endpoint_file = file.endpoint.unwrap_or_default();
+        let endpoint = EndpointConfig {
+            answer_timeout: Duration::from_millis(
+                endpoint_file
+                    .answer_timeout_ms
+                    .or_else(|| env_or("GONGGA_ANSWER_TIMEOUT_MS").and_then(|v| v.parse().ok()))
+                    .unwrap_or(DEFAULT_ANSWER_TIMEOUT_MS),
+            ),
+        };
+
         let disk_low = file
             .server
             .as_ref()
@@ -751,6 +791,7 @@ impl Config {
             scripts,
             agent,
             transport,
+            endpoint,
             disk_low,
             ship_url,
         })

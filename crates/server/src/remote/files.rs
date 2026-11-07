@@ -110,7 +110,7 @@ impl Reader {
         };
         drop(held);
         let command: Command = self.endpoint.runner_command()?;
-        let fresh = Runner::spawn(command)
+        let fresh = Runner::spawn(command, self.endpoint.answer_timeout())
             .await
             .map_err(|e| anyhow::anyhow!("{}: {e}", self.describe()))?;
         *self.runner.lock().unwrap_or_else(|e| e.into_inner()) = Some(fresh.clone());

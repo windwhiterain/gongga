@@ -82,6 +82,29 @@ pub enum Op {
     },
 }
 
+impl Op {
+    /// What this request asks, as the wire spells it.
+    ///
+    /// # Invariant
+    ///
+    /// The same word as the tag `Op` serialises with: a timeout that named an
+    /// operation differently from the frame would send its reader to the wrong line.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Op::Open { .. } => "open",
+            Op::Write { .. } => "write",
+            Op::Signal { .. } => "signal",
+            Op::Pause { .. } => "pause",
+            Op::Resume { .. } => "resume",
+            Op::Close { .. } => "close",
+            Op::Stat { .. } => "stat",
+            Op::Read { .. } => "read",
+            Op::List { .. } => "list",
+            Op::Space { .. } => "space",
+        }
+    }
+}
+
 /// One answer. Exactly one of the two fields is set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reply {

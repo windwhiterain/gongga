@@ -370,14 +370,25 @@ impl RemoteShell {
             .await
     }
 
-    /// Runs one command and waits until it answers, however long that takes.
+    /// Runs one command and waits until it answers.
     ///
     /// # Invariant
     ///
-    /// No clock: this returns when both sentinels arrive or the shell is gone, so a
-    /// caller with nothing to gain from a partial answer never guesses.
+    /// No *tool* deadline -- a caller with nothing to gain from a partial answer
+    /// never guesses -- but not no clock: the link's own ceiling ends a peer that
+    /// says nothing with an error, rather than a wait that never returns.
     pub async fn run_until_settled(&mut self, command: &str) -> anyhow::Result<BashOutcome> {
-        self.run_tracking_cwd(command, None, None, false).await
+        let ceiling = self.endpoint.answer_timeout();
+        let outcome = self
+            .run_tracking_cwd(command, Some(ceiling), None, false)
+            .await?;
+        if outcome.still_running {
+            anyhow::bail!(
+                "the endpoint did not answer within {ceiling:?}; the command is still \
+                 running there and its answer was not read"
+            );
+        }
+        Ok(outcome)
     }
 
     /// Runs one command without the `pwd` that keeps the directory in step.
@@ -593,8 +604,22 @@ impl RemoteShell {
         // Each pipe settles on its own, so a resuming wait must not read the old sentinel.
         self.stdout_state.settled = false;
         self.stderr_state.settled = false;
-        let shell = self.connect().await?;
-        shell.write(script.as_bytes()).await
+        let shell = match self.connect().await {
+            Ok(shell) => shell,
+            Err(e) => {
+                // Nothing was written, so this shell is only as good as its next connection.
+                self.out_of_sync = true;
+                return Err(e);
+            }
+        };
+        match shell.write(script.as_bytes()).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // The peer may hold this command and never answer for it: no second one here.
+                self.out_of_sync = true;
+                Err(e)
+            }
+        }
     }
 
     /// Drains both streams to their sentinels.
