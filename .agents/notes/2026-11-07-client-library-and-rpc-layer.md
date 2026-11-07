@@ -1,24 +1,29 @@
-# The client is a library, rpc is a layer
+# Client architecture: library, rpc layer, and daemon
 
-2026-11-07. The user rewrote `SPEC.md`'s `## Crate Structure` twice. Final shape,
-with brackets marking crates / executables:
+2026-11-07. The user rewrote `SPEC.md`'s `## Crate Structure` three times. The
+third changed `[client]` from `libary` to **binary**, and the user then picked
+shape 2: the client is a separate process, and front-ends in any language reach
+it over a serialized rendering protocol. Current shape, with brackets marking
+crates / executables:
 
 ```text
 [protocol]  library  -- cmd schema on the wire, semantic commands
 [server]    binary   -- defines and publishes the cmd schema
 rpc         layer    -- sending a server command checked under the schema
   [cli]     python
-[client]    library  -- receives deltas, validates at reconnect, updates its own
+[client]    binary   -- receives deltas, validates at reconnect, keeps its own
                         state, produces the lines a front-end renders
   [tui]     binary
 [bundle]    binary
 [...]       more crates may be added
 ```
 
-`rpc` is the only top-level entry without brackets: a responsibility, not a crate.
-That answered both questions left open by the WebUI plan: `client` is a library
-crate, and `[tui]` is one binary under it, so `[webui]` is the second binary, not
-a second client.
+`rpc` is the only top-level entry without brackets: a responsibility, not a
+crate. The first two revisions named `[client]` a library crate; that reading is
+kept below as history. Under the third, the client is a daemon and `[tui]` is one
+front-end beside a future `[webui]`, both speaking the wire instead of linking
+the library. `crates/client` still ships as a library today -- the binary target
+is owed. See `## Shape 2 verdict` at the end.
 
 ## Verdicts
 
@@ -162,3 +167,41 @@ The shared worktree compiles again: `cargo build` 0 (1m55s) · `cargo fmt --chec
 `comments-check` 1: three preamble sections over 120 chars, all in the
 concurrent agent's `closing.rs` (2) and the closing hunk of `lib.rs` (1); none
 belong to this split. No L3 process test was run (GitHub still blocked).
+
+## Shape 2 verdict (2026-11-07, third SPEC revision)
+
+The user's third revision changed `[client]` from `libary` to `binary`, then
+answered "2" to the shape question: the client is a standalone daemon and a UI
+in any language reaches it over a serialized rendering protocol. This supersedes
+the in-process `Frontend` trait (shape 1). `DESIGN.md` §1 keeps that design as
+history and adds the shape 2 contract; this note's title changed with the verdict.
+
+Landed this turn (stage 3, step 1): `crates/client/src/render_wire.rs` defines
+`RenderMessage` (the 12 drawing methods of `Sink`), `CursorMessage` (the 5
+journal methods, never sent to a front-end) and `UiIntent` (4 gestures), all
+serde internally tagged; `WireSink` implements every `Sink` method and overrides
+`tool_call` so a structured `Head` survives instead of being flattened to text;
+`Listed`, `Layout`, `QuotaRow` gained serde derives. No connection loop, process
+or ownership invariant was touched. `docs/notes/client-render-wire.md` is the new
+note; README and DESIGN §1 were synced.
+
+Six Invariant-level decisions are left for the user, listed as 【待确认】 in
+`DESIGN.md` §1: who spawns the server and what `--parent` binds to; bundle
+routing; WebSocket vs stdio; moving the window journal into the daemon; which
+instance owns `tui.toml` (the 2026-11-05 verdict); unifying `UiIntent` with
+`tui::UiEvent`. None was assumed or changed here.
+
+`SPEC.md` is the user's uncommitted working-tree edit (the third revision) and
+was not staged in any commit on this branch.
+
+Verified: `cargo build` 0 (1m45s, with the standing Windows incremental-lock
+warnings) · `cargo check -p gongga-client` 0 · `cargo fmt --check` 0 ·
+`comments-check` 0 violations · `test-layout-check` 8 packages, 0 violations ·
+`git diff --check` 0 · `scripts/skill_contract.sh` PASS 8 ·
+`scripts/ship.sh --check` in agreement · `gongga-tui --help` 0. The first
+compile failed on serde's internal tag `kind` colliding with a variant field
+named `kind`; the tag was renamed to `type`. No L3 process test was run: no
+runtime behaviour changed, and the existing L3 script is still blocked on a
+GitHub clone. The gates ran on the shared worktree, which also carries another
+agent's uncommitted picker changes in `crates/tui/src/lib.rs` and
+`docs/notes/tui-cover.md`; neither file was staged or touched by this turn.

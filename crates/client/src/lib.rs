@@ -5,6 +5,7 @@
 pub mod catalog;
 pub mod commands;
 pub mod complete;
+pub mod render_wire;
 pub mod server;
 pub mod skill_command;
 pub mod window_command;
@@ -369,7 +370,7 @@ pub enum LineKind {
 }
 
 /// One session in the list the window draws on the left.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Listed {
     pub name: String,
     /// The status word, spelled: `idle`, `running`, `error`. A front-end that
@@ -387,7 +388,7 @@ pub struct Listed {
 /// `shown` is the ones that also get a header and their events beside it. A name
 /// appears in both, because the list is where a session is clicked -- it is not a
 /// list of what is hidden.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     /// Every session the server knows, in its order.
     pub listed: Vec<Listed>,
@@ -411,7 +412,7 @@ pub struct Layout {
 /// Only the numbers the provider reported appear, in SPEC's own units, and a row
 /// with no figures says why: a balance nobody could read is not a zero balance.
 /// See `docs/notes/client-lib.md`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QuotaRow {
     pub text: String,
     /// Where the row is drawn: a fact, or the reason there is no fact.

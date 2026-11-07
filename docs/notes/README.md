@@ -28,12 +28,14 @@ you are about to touch.
 | change what a client sends or receives | [`client-lib.md`](client-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
 | rename the client library or add a front-end | `SPEC.md` `## Crate Structure`, [`client-lib.md`](client-lib.md), `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` |
+| change what crosses the language boundary | [`client-render-wire.md`](client-render-wire.md), `DESIGN.md` §1 "形态 2" |
 | change what the window remembers (`tui.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
 
 ## Naming debt (2026-11-07)
 
-`SPEC.md`'s `## Crate Structure` uses `[client]` for the library and `rpc` for the
-layer that checks and sends commands. The crate rename has landed:
+`SPEC.md`'s `## Crate Structure` uses `[client]` for the unit that owns the wire
+(and now calls it a binary) and `rpc` for the layer that checks and sends
+commands. The crate rename has landed:
 
 - `[client]` = `crates/client` (`gongga-client`), renamed from `crates/link`;
   `[tui]` = `crates/tui`. The `link-*.md` notes became `client-*.md`.
@@ -46,6 +48,9 @@ layer that checks and sends commands. The crate rename has landed:
 - Still owed: `DESIGN.md` §5's "CLI (command layer)" heading, the historical
   `link` references in `.agents/notes/2026-11-05-*`, `crates/bundle/src/main.rs`,
   and `crates/bundle/build.rs` (only `gongga-server` + `gongga-tui` are built).
+- `render_wire.rs`'s `UiIntent` and `tui::UiEvent` spell the same four gestures
+  twice. Unifying them means lifting `UiEvent` into `client` and leaving the
+  terminal-only `Recomplete` in `tui`. See `client-render-wire.md`.
 
 ## Index
 
@@ -132,11 +137,13 @@ layer that checks and sends commands. The crate rename has landed:
 
 ### client
 
-`crates/client` is the client library: one wire client, one command surface, and the
+`crates/client` is the client side: one wire client, one command surface, and the
 lines a front-end draws. `crates/tui` is one front-end; `client::run` (NullSink, JSON
-lines) is another. As of 2026-11-07 `SPEC.md` names this library `[client]`, with
-`rpc` as the layer that checks and sends commands; `crates/link` was renamed to
-`crates/client` and these notes were renamed from `link-*.md` with it.
+lines) is another. As of 2026-11-07 `SPEC.md` names this unit `[client]` and calls
+it a **binary**: the chosen shape is a daemon that front-ends in any language reach
+over a serialized rendering protocol. `rpc` is the layer that checks and sends
+commands; `crates/link` was renamed to `crates/client` and the `link-*.md` notes
+with it. The binary target is not built yet -- this crate still ships as a library.
 
 | note | source |
 | --- | --- |
@@ -145,6 +152,7 @@ lines) is another. As of 2026-11-07 `SPEC.md` names this library `[client]`, wit
 | [`client-catalog.md`](client-catalog.md) | `crates/client/src/catalog.rs` |
 | [`client-complete.md`](client-complete.md) | `crates/client/src/complete.rs` |
 | [`client-commands.md`](client-commands.md) | `crates/client/src/commands.rs` |
+| [`client-render-wire.md`](client-render-wire.md) | `crates/client/src/render_wire.rs` |
 | [`client-skill-command.md`](client-skill-command.md) | `crates/client/src/skill_command.rs` |
 | [`tui-state.md`](tui-state.md) | `crates/client/src/window_state.rs` |
 | [`tui-command.md`](tui-command.md) | `crates/client/src/window_command.rs` |
