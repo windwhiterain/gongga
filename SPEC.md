@@ -3,17 +3,17 @@
 
 ## Crate Structure
 all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, live inside directory "crates/xxx".
-- protocol
-- server: binary (the backend program; also a library for its own tests).
-- client: use protocal to send server cmd
-  - cli: python.
-    - cmd fully documented and diagnosed.
-  - tui: binary, receive delta from server, validate at reconnect, update self state and render.
-- bundle: binary, bundle server/cli/tui's binary, route the cmd.
+- [protocol]: library, define the cmd schema protocol, name some semantic cmd client use directly,
+- [server]: binary, define the cmd schema.
+- rpc: sending server cmd checked under schema.
+  - [cli]: python.
+- [client]: libary, receive delta from server, validate at reconnect, update self state and render.
+  - [tui]: binary.
+- [bundle]: binary, bundle server/cli/tui's binary, route the cmd.
   - `tui [--client_only]`: `bundle server` and connected to it, kill/exit will cancel the server it spawn.
     - `--client_only`: suppress auto spawn server.
   - `server (route to server: [--home <path>])`: extract server/cli into `<home>/bin/`, if previous binary exists and are running and version does not match, cancel server, skill cli, then replace.
-- ...: more crates may be added, with the same naming and layout.
+- [...]: more crates may be added, with the same naming and layout.
 
 ## Server Client Connection
 - UDP.
@@ -141,6 +141,7 @@ for the first user message to a empty session, find all meta references recursiv
   - Alt+V: paste (text/image).
   - Alt+C: copy the selection.
   - Shift+Up/Down: last/next cmd input.
+  - Alt+Q: exit.
 
 ## Sticky
 stikcy argument will auto fill:
@@ -159,7 +160,7 @@ all named argument's name can be ommited via argument order.
   - `del_session --name <session>(sticky)`: also delete all bash with the session name in key.
   - `send_message --message <message> --name <session>(sticky)`: inject message instantly, turn waiting bash to backgound.
   - `interrupt_session --name <session>(sticky)`
-  - `cancel`: interrupt every session, make every job background, release every job then quit, retart will adopt realeased jobs.
+  - `cancel --keep_alive <keep_alive>`: interrupt every session then quit, by default kill all channel, optionally make every channel background, keep them alive so retart will adopt them.
   - `trigger_event --event <event>`
   - `subscribe --name <subscription> --pattern <pattern> [--persistant <bool>] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
     when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.
