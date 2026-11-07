@@ -274,3 +274,18 @@ impl Sink for WireSink {
         });
     }
 }
+
+/// One JSON value per line: a frame ends at the newline, never inside a string.
+///
+/// # Invariant
+///
+/// `serde_json` escapes a newline inside a string, so a submitted line holding
+/// paragraphs is still one frame. See `docs/notes/client-render-wire.md`.
+pub fn encode_frame(message: &RenderMessage) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(message)? + "\n")
+}
+
+/// Reads one intent from a line the front-end wrote.
+pub fn decode_intent(line: &str) -> anyhow::Result<UiIntent> {
+    Ok(serde_json::from_str(line)?)
+}

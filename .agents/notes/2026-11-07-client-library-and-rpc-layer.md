@@ -291,3 +291,36 @@ agreement. `scripts/ship.sh --check` still exit=1 on the same external
 `origin/main` divergence reported in the previous turn (`de61d29a...` remote vs
 `9dfad435...` local); no ship file was touched and no fetch/rebase was run.
 No L3 process test: no runtime behaviour changed.
+
+## --parent confirmed, pipe frames landed (2026-11-07, 20:34)
+
+"confirm" settled the open question: `--parent` carries the **UI pid**, not the
+client pid. `DESIGN.md` §1 records it. The client will take the UI pid from argv
+and pass it through `spawn()`, so `whose_server`'s "that window" reading still
+holds -- the window is now the parent process.
+
+Landed: `encode_frame` / `decode_intent` in `crates/client/src/render_wire.rs`
+-- one JSON value per line, the newline outside the value, both returning a
+`Result`. `docs/notes/client-render-wire.md` adds "Frames on the pipe", which
+explains why the writer is not a `Sink` (a synchronous `&mut` blocking write
+would stall the state machine) and that the runtime needs a bounded queue with
+`try_send`. No binary target yet: the frame functions are complete on their own,
+but a bin that cannot reach a `Runtime` would be an empty shell.
+
+Disk: the clean-disk script could not be run. Bash -> powershell was blocked by
+the tool's security policy ("Invoking PowerShell from Bash bypasses PowerShell
+security checks"); the PowerShell tool then blocked `Invoke-Expression`
+("executes arbitrary code"). Per the standing rule no equivalent retry was
+attempted. C: fell from 3.4G to 0 during the turn and recovered to 20G after a
+concurrent build finished. That transient exhaustion made the first
+`cargo build` exit=101 with `failed to remove file ... 拒绝访问 (os error 5)`
+on `libgongga_protocol-*.rlib`; a retry once space returned passed.
+
+Verified: `cargo check -p gongga-client` 0 (6.29s) · `cargo build` 0 (5m51s on
+retry; first attempt 101 for the reason above) · `cargo fmt --check` 0 ·
+`comments-check` 0 violations · `test-layout-check` 8 packages, 0 violations ·
+`git diff --check` 0 · `scripts/skill_contract.sh` PASS 8 ·
+`scripts/ship.sh --check --local` in agreement · `scripts/ship.sh --check`
+exit=1, the same external `origin/main` divergence as the previous turn.
+No L3 process test and no runtime frame round-trip: the two frame functions are
+pure and no runtime consumes them yet.

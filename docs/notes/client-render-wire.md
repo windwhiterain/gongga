@@ -54,12 +54,27 @@ The Rust types with serde derives are the only definition. TypeScript and Python
 types are generated from them; hand-writing a parallel schema would recreate the
 duplication `crates/client` exists to prevent.
 
+## Frames on the pipe
+
+`encode_frame` writes one `RenderMessage` as one JSON line, with the newline
+outside the value; `decode_intent` reads one `UiIntent` from a line the UI wrote.
+`serde_json` escapes newlines inside strings, so `Submit { line }` holding
+paragraphs is still a single frame. Both return a `Result` rather than panicking
+on a malformed value.
+
+These are pure functions on purpose. The writer is **not** a `Sink`: `Sink` is
+synchronous `&mut`, and a blocking `write_all` to a pipe whose reader is slow
+would stall the client's state machine. The runtime sends encoded frames to a
+writer task over a bounded queue with `try_send`, and the UI drains stdout
+continuously. `WireSink` collects the messages; this module only spells them.
+
 ## Not done yet
 
-`WireSink` is not connected to any runtime. Missing, in order: a binary target
-for `crates/client` that the UI spawns over pipes, a `Runtime` that owns one
-`Client`, the window journal's move into the client (`log.rs`, `cache.rs`,
-`panes.rs`), a TUI reduced to a protocol client, and bundle routing.
+`WireSink` and the two frame functions are not connected to any runtime.
+Missing, in order: a binary target for `crates/client` that the UI spawns over
+pipes, a `Runtime` that owns one `Client`, the window journal's move into the
+client (`log.rs`, `cache.rs`, `panes.rs`), a TUI reduced to a protocol client,
+and bundle routing.
 
 Two different links, two different transports. UI <-> client is one-to-one and
 local: stdin carries `UiIntent`, stdout carries `RenderMessage`, one JSON value

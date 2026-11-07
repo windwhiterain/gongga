@@ -245,10 +245,11 @@ client 的生命周期绑定 UI。只有 **UI ↔ client 一对一**；**client 
 SPEC 原话也是 cancel "the server it spawn" —— 只 cancel 自己起的那个。连远程 server
 时既不 spawn 也不 cancel。SPEC 里「窗口起 server、退出 cancel」的措辞要改成 client。
 
-**【待确认】`--parent` 归谁**：server 是 client spawn 的孙进程，`server.rs:275` 把 owner
-pid 传下去，`run.rs:568` 的 `whose_server` 认「`--parent` 等于本窗口 pid」为 handover。
-传 UI pid（UI 退出 → server 停；client 崩了 UI 还在则 server 继续）还是传 client pid
-（client 崩 → server 停）？我倾向前者，但它改的是所有权语义，要你拍板。
+**`--parent` 归 UI（2026-11-07 确认）**：server 是 client spawn 的孙进程，`server.rs:275`
+把 owner pid 传下去，`run.rs:568` 的 `whose_server` 认「`--parent` 等于本窗口 pid」为
+handover。裁定传 **UI 的 pid**：UI 退出 → server 停；client 单独崩掉而 UI 还在时 server
+继续，因为所有权绑的是 UI 而不是 client。client 从 argv 拿到 UI pid 后透传给 `spawn()`，
+`whose_server` 的判定语义不变 —— 它认的仍然是「那个窗口」，只是现在窗口是父进程。
 
 **一次性入口不混**：`gongga-cli` 现在由 `crates/tui/src/main.rs` 分派，stdout 打 JSON
 lines；UI 起的 client 是协议模式，两者都占 stdout 但互不冲突（不同进程、不同模式）。
