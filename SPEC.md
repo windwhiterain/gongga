@@ -76,7 +76,8 @@ everything in database (sqlite) under a home directory, structured for agentic r
 after the system prompt, before the first user message, inject one message with useful information about session name, harness version (commit id), cwd, time. it is stamped once with the session's first prompt row and never re-rendered.
 
 ### Invariant
-transcript is append only, transcript that has been sent must not be change.
+context is append only, context that has been sent must not be change.
+
 ## Meta
 preprocess before saving to transcripts.
 - `@image(<path>)` , append id to it `@image(<path>) (id)`.
@@ -188,18 +189,9 @@ all named argument's name can be ommited via argument order.
       the turn they belong to. The result states `last_seq` and `as_of`; `as_of` is
       the stream position the answer is a picture of.
   - `clone_session --session <session> --name <name>`
-- command layer, without a server:
-  - `skill ls` | `skill run <name>` | `skill <name> [args...]`: the same entry, run on
-    this disk and not on a server -- why a machine with no server still runs a skill.
-    `argv` after the name is the entry's, unparsed, so a flag spelled there is the script's
-    and not this layer's; the entry's exit code is this process's. `run` reaches a skill
-    whose own name is `ls` or `run`.
-    - what leaves this layer: `ls` (its answer is the session's, so it is asked of the
-      server when the shell names one) and `--name`/`--args`, which spell the server's own
-      form, `skill <session> --name <n> --args <json>`. A skill that must receive `--name`
-      itself is `skill run <name> --name …`.
-    - what a skill runs is its `SKILL.md`'s `metadata.entry`, and `skill ls` gives that
-      `SKILL.md`; there is no verb for "which file", since reading the body says it.
+  - `skill --name <skill> --action <action>`
+    `--action run --entry <entry> <args...>`: run a python function the skill provide as cmd
+    `--action ls`: list all skills' metadata.
 - client:
   - `set_sticky --type <type> --value <value>`:
   - `del_sticky --type <type>`
@@ -212,7 +204,7 @@ all named argument's name can be ommited via argument order.
   - `serve --port <port> [--home <home>](default: "~/.gongga")`
 
 ## Git Managed Config
-personal(local) change always rebase on official(remote).
+auto choose the latest commit within same protocol, personal(local) change rebase on official(remote).
 
 ## Skill
 provider uv python package, API can be called by harness cmd or python import.
