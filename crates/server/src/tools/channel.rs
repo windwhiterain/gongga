@@ -19,6 +19,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+use crate::tools::spec;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, Notify};
@@ -179,33 +181,12 @@ fn trim_newline(window: &mut String) {
 /// What a call says when it will wait for nothing.
 const NO_WAIT: Duration = Duration::ZERO;
 
-/// How a program is started: what an input line becomes, and what ends a reply.
-///
-/// # Invariant
-///
-/// The one place a name is known. `bash` frames a reply with a sentinel and takes the
-/// status out of it; `python` speaks a request and one reply; a name no row speaks of
-/// is raw words, and a call that asked for `until` gets what arrives. See the `util`
-/// table in `docs/notes/server-channel.md`.
-#[derive(Debug, Clone, Default)]
-pub struct Util {
-    /// The words the program is started with, when a call gives no `args` of its own.
-    pub spawn: Vec<String>,
-    /// How an `input` is spelled: `{{input}}` stands where the input goes, and
-    /// `{{sentinel}}` where this frame's marker goes.
-    pub write: Option<String>,
-    /// What ends a reply, when the call states no `until`.
-    pub until: Option<String>,
-    /// Whether the sentinel's own tail carries the status, which is then dropped
-    /// from the window.
-    pub exit_from_marker: bool,
-}
-
 /// Every channel this server holds, by id.
 pub struct Channels {
     open: Mutex<HashMap<String, Arc<Channel>>>,
-    /// What the config says each known name is.
-    util: HashMap<String, Util>,
+    /// What `[channel.<name>]` says each known name is: how it starts, how it is
+    /// spoken to, and whether it is a program at all.
+    grammar: HashMap<String, spec::ChannelSpec>,
     /// Where a finished channel is announced.
     notify: Notifier,
     /// The chair this home's children sit in, so none is left behind.
@@ -215,23 +196,23 @@ pub struct Channels {
 
 impl Channels {
     pub fn new(
-        util: HashMap<String, Util>,
+        grammar: HashMap<String, spec::ChannelSpec>,
         notify: Notifier,
         home: PathBuf,
         cancel: CancellationToken,
     ) -> Self {
         Self {
             open: Mutex::new(HashMap::new()),
-            util,
+            grammar,
             notify,
             home,
             cancel,
         }
     }
 
-    /// The frames a name is spoken in.
-    fn util_of(&self, name: &str) -> Util {
-        self.util.get(name).cloned().unwrap_or_default()
+    /// What the config says a name is; a name it does not mention is raw.
+    fn grammar_of(&self, name: &str) -> spec::ChannelSpec {
+        self.grammar.get(name).cloned().unwrap_or_default()
     }
 
     /// Starts a program as a channel, or says why it could not.
@@ -249,7 +230,15 @@ impl Channels {
         env: &[(String, String)],
         id: Option<String>,
     ) -> Result<Arc<Channel>, String> {
-        let util = self.util_of(name);
+        let grammar = self.grammar_of(name);
+        // A cmd is answered by this server, so there is no program to start: saying so
+        // is what keeps a name from meaning two things at once.
+        if grammar.kind == spec::Kind::Cmd {
+            return Err(format!(
+                "{name:?} is a cmd, not a program: `new` answers it through the command \
+                 layer, with no channel of its own"
+            ));
+        }
         let id = id.unwrap_or_else(|| self.auto_id(session, name));
         {
             let open = self.open.lock().await;
@@ -260,7 +249,7 @@ impl Channels {
             }
         }
         let words: Vec<String> = if args.is_empty() {
-            util.spawn.clone()
+            grammar.spawn.clone()
         } else {
             args.to_vec()
         };

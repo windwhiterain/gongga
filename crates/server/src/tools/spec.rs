@@ -138,6 +138,47 @@ impl Carrier {
     }
 }
 
+/// What a name is, as `[channel.<name>]` declares it.
+///
+/// # Invariant
+///
+/// The one place a name is known. `new` reads this table and nothing else about a
+/// name: whether it starts a program or routes to a cmd, the words it starts with,
+/// how an input reaches it, and what ends a reply. A name the table does not mention
+/// is a program started with the call's own words and framed by the call's own
+/// `until`, which is what "raw" means. See `docs/notes/server-channel.md`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelSpec {
+    #[serde(default)]
+    pub kind: Kind,
+    /// The words the program is started with, when a call gives no `args` of its own.
+    #[serde(default)]
+    pub spawn: Vec<String>,
+    /// How an `input` is spelled: `{{input}}` stands where the input goes, and
+    /// `{{sentinel}}` where this frame's marker goes.
+    #[serde(default)]
+    pub write: Option<String>,
+    /// What ends a reply, when the call states no `until`.
+    #[serde(default)]
+    pub until: Option<String>,
+    /// Whether the marker's own tail carries the status, which is then dropped from
+    /// the window.
+    #[serde(default)]
+    pub exit_from_marker: bool,
+}
+
+/// What a name is: a program this server starts, or a cmd it answers itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    /// A program on the session's machine, started and relayed.
+    #[default]
+    Program,
+    /// A cmd of this server, answered in this process: no program, no pipes.
+    Cmd,
+}
+
 /// One tool, exactly as one row under `[tools]` declares it.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

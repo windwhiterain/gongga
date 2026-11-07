@@ -58,15 +58,38 @@ is the server's own, per session, and taking the window is what advances it — 
 finished channel's notice and a `check` never hand the same bytes over twice.
 
 `until` is the caller's marker: the window is cut at it and the marker is not
-returned, because `matched` is the answer to "was it there". A `util` row may name a
-default marker for a program whose replies are framed (`bash`'s sentinel, `python`'s
-prompt), which is how the framing stays a table rather than something the model
-carries.
+returned, because `matched` is the answer to "was it there".
+
+## `[channel.<name>]`: what a name is
+
+One section per name `new` knows, and nothing there is about a tool:
+
+```toml
+[channel.bash]
+spawn = ["--norc", "--noprofile"]
+write = "{{input}}\n"
+
+[channel.GONGGA_CLI]
+kind = "cmd"
+```
+
+`kind` is `program` unless it says `cmd`; `spawn` is what the program starts with when
+a call gives no words of its own; `write` and `until` are the framing, and
+`exit_from_marker` says the marker's tail carries the status. The table is named for
+the noun it describes, not for a category of helper: an earlier draft called it `util`,
+which said nothing about what it held, and `[channel.*]` is also what makes a `cmd`
+entry honest -- a `cmd` is a channel this server answers itself, so it belongs beside
+the ones it starts.
+
+A name the table does not mention is raw: started with the call's own words, framed by
+the call's own `until`. That is why `bash` has no `until`: its sentinel is the caller's
+business and the model never carries it.
 
 ## Still owed
 
 - `new` and `check` as rows of the config, over `Channels`.
-- The `util` table: `spawn`, `write`, `until`, `exit_from_marker`, read by name.
+- `write`/`until`/`exit_from_marker` read where a call names none: the framing a
+  `[channel.<name>]` row declares, and the sentinel that carries `bash`'s status.
 - The notice a finished channel owes its session, and the offset it reads from.
 - `ls_job`, `del_job`, `rename_job`: `ls` of the session's channels, `kill` in `in`,
   and a renamed namespace key.

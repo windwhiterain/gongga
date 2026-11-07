@@ -250,6 +250,13 @@ pub struct ToolsConfig {
     /// this build carries are all read from here. See
     /// `docs/notes/server-tools-spec.md`.
     pub rows: std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>,
+    /// Every name `new` knows: what it starts, and how a reply of it is framed.
+    ///
+    /// # Invariant
+    ///
+    /// A name absent here is a program started with the call's own words: the table
+    /// says what is *not* raw, and nothing else.
+    pub channels: std::collections::BTreeMap<String, crate::tools::spec::ChannelSpec>,
     /// The tunnel's own arguments -- `description`, `max_output`, `timeout_ms`,
     /// `background` -- in the words every tool that takes them shares.
     ///
@@ -348,6 +355,9 @@ struct FileConfig {
     /// `[tool.<name>]`: one row per tool this home declares, by the name the model
     /// calls it. See `docs/notes/server-tools-spec.md`.
     tool: Option<std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>>,
+    /// `[channel.<name>]`: what a name is, as `new` reads it -- a program it starts,
+    /// or a cmd it answers. See `docs/notes/server-channel.md`.
+    channel: Option<std::collections::BTreeMap<String, crate::tools::spec::ChannelSpec>>,
     /// Where the rows used to live: the words alone, under `[tool_text.<name>]`.
     /// Read for nothing, so a home that still has it is not refused.
     tool_text: Option<toml::Table>,
@@ -695,6 +705,7 @@ impl Config {
                     .unwrap_or(DEFAULT_TOOL_MAX_WAIT_MS),
             ),
             rows: file.tool.unwrap_or_default(),
+            channels: file.channel.unwrap_or_default(),
             arguments: tools_file.arguments.clone().unwrap_or_default(),
         };
 
