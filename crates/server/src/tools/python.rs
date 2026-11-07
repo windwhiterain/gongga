@@ -405,52 +405,50 @@ pub struct PythonTool {
     pub lib: Option<PathBuf>,
 }
 
-impl Tool for PythonTool {
-    fn name(&self) -> &'static str {
-        match self.machine {
-            Machine::Local => "python",
-            Machine::Remote => "remote_python",
-        }
-    }
-
-    fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Machine {
-        self.machine
-    }
-
-    fn is_remote(&self) -> bool {
-        self.machine == Machine::Remote
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    /// An interpreter's `background` is a call of that interpreter, read by
-    /// `check_python`.
-    fn handles_background(&self) -> bool {
-        true
-    }
-
-    /// An interpreter turns a long wait into its own background call: the clock is its own.
-    fn owns_its_wait(&self) -> bool {
-        true
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "code": {"type": "string"},
-                "name": {"type": "string"},
-                "description": {"type": "string"},
-                "timeout_ms": {"type": "integer"},
-                "restart": {"type": "boolean"},
-                "background": {"type": "boolean"}
-            },
-            "required": ["code"]
+impl Cmd for PythonTool {
+    /// The interpreter ends with the call whose reply nobody is left to read.
+    ///
+    /// # Invariant
+    ///
+    /// A foreground call reads its own reply line under the interpreter's lock, so a
+    /// call that returns without reading it would hand that line to the next caller
+    /// as the answer to another question. Ending the interpreter keeps "one name, one
+    /// interpreter" true. See `docs/notes/server-tools-python.md`.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = args["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(DEFAULT_NAME)
+                .to_string();
+            let handle = ctx.pythons.lock().await.get(&name).cloned();
+            if let Some(handle) = handle {
+                handle.kill().await;
+                let mut pythons = ctx.pythons.lock().await;
+                if pythons
+                    .get(&name)
+                    .is_some_and(|current| Arc::ptr_eq(current, &handle))
+                {
+                    pythons.remove(&name);
+                }
+            }
+            ToolOutcome::err(format!(
+                "the call in interpreter {name:?} was stopped: {why}. An interpreter reads one \
+                 call's reply at a time, and nobody was left to read this one, so {name:?} was \
+                 ended -- what it was running is gone and its output with it. The next `{}` \
+                 call to that name starts with a fresh namespace.",
+                self.name(),
+                why = why.because()
+            ))
         })
     }
-
     fn run<'a>(
         &'a self,
         args: Value,
@@ -552,6 +550,27 @@ impl Tool for PythonTool {
                     self.name()
                 ));
             }
+    /// A read never stopped anything: the calls it was waiting for are still there.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = args["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(DEFAULT_NAME);
+            ToolOutcome::err(format!(
+                "check_python stopped waiting for {name}: {}. The calls it was waiting for are \
+                 still running, and `check_python` reads what they print.",
+                why.because()
+            ))
+        })
+    }
             let mut repl = handle.inner.lock().await;
             match repl.run_request(&request, timeout).await {
                 Ok(reply) => {
@@ -588,67 +607,13 @@ impl Tool for PythonTool {
     /// call that returns without reading it would hand that line to the next caller
     /// as the answer to another question. Ending the interpreter keeps "one name, one
     /// interpreter" true. See `docs/notes/server-tools-python.md`.
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let name = args["name"]
-                .as_str()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .unwrap_or(DEFAULT_NAME)
-                .to_string();
-            let handle = ctx.pythons.lock().await.get(&name).cloned();
-            if let Some(handle) = handle {
-                handle.kill().await;
-                let mut pythons = ctx.pythons.lock().await;
-                if pythons
-                    .get(&name)
-                    .is_some_and(|current| Arc::ptr_eq(current, &handle))
-                {
-                    pythons.remove(&name);
-                }
-            }
-            ToolOutcome::err(format!(
-                "the call in interpreter {name:?} was stopped: {why}. An interpreter reads one \
-                 call's reply at a time, and nobody was left to read this one, so {name:?} was \
-                 ended -- what it was running is gone and its output with it. The next `{}` \
-                 call to that name starts with a fresh namespace.",
-                self.name(),
-                why = why.because()
-            ))
-        })
-    }
+}
 }
 
 /// The collector for interpreters: `check_bash`'s shape, for `python`.
 pub struct CheckPythonTool;
 
-impl Tool for CheckPythonTool {
-    fn name(&self) -> &'static str {
-        "check_python"
-    }
-
-    /// The read waits for `wait_ms`; that wait is the whole work.
-    fn owns_its_wait(&self) -> bool {
-        true
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "wait_ms": {"type": "integer"}
-            },
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for CheckPythonTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -691,46 +656,12 @@ impl Tool for CheckPythonTool {
     }
 
     /// A read never stopped anything: the calls it was waiting for are still there.
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        _ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let name = args["name"]
-                .as_str()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .unwrap_or(DEFAULT_NAME);
-            ToolOutcome::err(format!(
-                "check_python stopped waiting for {name}: {}. The calls it was waiting for are \
-                 still running, and `check_python` reads what they print.",
-                why.because()
-            ))
-        })
-    }
+}
 }
 
 pub struct DelPythonTool;
 
-impl Tool for DelPythonTool {
-    fn name(&self) -> &'static str {
-        "del_python"
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name_regex": {"type": "string"},
-                "description": {"type": "string"}
-            },
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for DelPythonTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -768,25 +699,11 @@ impl Tool for DelPythonTool {
         })
     }
 }
+}
 
 pub struct ListPythonTool;
 
-impl Tool for ListPythonTool {
-    fn name(&self) -> &'static str {
-        "list_python"
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name_regex": {"type": "string"},
-                "description": {"type": "string"}
-            },
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for ListPythonTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -838,6 +755,7 @@ impl Tool for ListPythonTool {
             )
         })
     }
+}
 }
 
 /// One file operation: a fresh driver, one request, one answer. File state is
@@ -964,38 +882,7 @@ pub struct ReadFileTool {
     pub max_output_chars: usize,
 }
 
-impl Tool for ReadFileTool {
-    /// One file, read or written, is a one-shot a worker can own.
-    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
-        crate::tools::tunnel::Carried::Worker
-    }
-
-    fn name(&self) -> &'static str {
-        "read_file"
-    }
-
-    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
-        file_machine(args, ctx)
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", },
-                "remote": remote_arg(),
-                "offset": {"type": "integer"},
-                "limit": {"type": "integer"},
-                "description": {"type": "string"}
-            },
-            "required": ["path"]
-        })
-    }
-
+impl Cmd for ReadFileTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1066,6 +953,7 @@ impl Tool for ReadFileTool {
         })
     }
 }
+}
 
 pub struct WriteFileTool {
     pub program: Option<PathBuf>,
@@ -1074,42 +962,7 @@ pub struct WriteFileTool {
     pub max_output_chars: usize,
 }
 
-impl Tool for WriteFileTool {
-    /// One file, read or written, is a one-shot a worker can own.
-    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
-        crate::tools::tunnel::Carried::Worker
-    }
-
-    /// The arguments are the write, so there is nothing to weigh.
-    fn writes(&self) -> bool {
-        true
-    }
-
-    fn name(&self) -> &'static str {
-        "write_file"
-    }
-
-    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
-        file_machine(args, ctx)
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", },
-                "remote": remote_arg(),
-                "content": {"type": "string"},
-                "description": {"type": "string"}
-            },
-            "required": ["path", "content"]
-        })
-    }
-
+impl Cmd for WriteFileTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1169,6 +1022,7 @@ impl Tool for WriteFileTool {
         })
     }
 }
+}
 
 pub struct ReplaceTool {
     pub program: Option<PathBuf>,
@@ -1177,44 +1031,7 @@ pub struct ReplaceTool {
     pub max_output_chars: usize,
 }
 
-impl Tool for ReplaceTool {
-    /// One file, read or written, is a one-shot a worker can own.
-    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
-        crate::tools::tunnel::Carried::Worker
-    }
-
-    /// The arguments are the write, so there is nothing to weigh.
-    fn writes(&self) -> bool {
-        true
-    }
-
-    fn name(&self) -> &'static str {
-        "replace"
-    }
-
-    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
-        file_machine(args, ctx)
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", },
-                "remote": remote_arg(),
-                "old": {"type": "string", },
-                "new": {"type": "string", },
-                "all": {"type": "boolean"},
-                "description": {"type": "string"}
-            },
-            "required": ["path", "old", "new"]
-        })
-    }
-
+impl Cmd for ReplaceTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1285,4 +1102,5 @@ impl Tool for ReplaceTool {
             }
         })
     }
+}
 }

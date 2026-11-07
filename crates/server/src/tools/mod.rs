@@ -1218,69 +1218,77 @@ pub struct BashTool {
     pub max_output_chars: usize,
 }
 
-impl Tool for BashTool {
-    fn name(&self) -> &'static str {
-        match self.machine {
-            Machine::Local => "bash",
-            Machine::Remote => REMOTE_BASH,
-        }
-    }
-
-    fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Machine {
-        self.machine
-    }
-
-    fn is_remote(&self) -> bool {
-        self.machine == Machine::Remote
-    }
-
-    /// A detached `bash` is a process of this machine's registry, not a job of the server.
-    fn detached_carrier(&self) -> tunnel::Carried {
-        match self.machine {
-            // A peer's detached bash would have to run on the peer: refused here.
-            Machine::Local => tunnel::Carried::Process,
-            Machine::Remote => tunnel::Carried::Here,
-        }
-    }
-
-    /// Both machines' `background` is a job of that shell, read by `check_bash`.
-    fn handles_background(&self) -> bool {
-        true
-    }
-
-    /// A shell turns a long wait into its own background job: the clock is its own.
-    fn owns_its_wait(&self) -> bool {
-        true
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn parameters(&self) -> Value {
-        let mut properties = json!({
-            "name": {"type": "string"},
-            "command": {"type": "string"},
-            "description": {"type": "string"},
-            "timeout_ms": {"type": "integer"}
-        });
-        // A job of a shell is that shell's on either machine; only `bash` declares one.
-        properties["background"] = json!({
-            "type": "boolean"
-        });
-        if self.machine == Machine::Remote {
-            properties["target"] = json!({
-                "type": "string"
-            });
-        }
-        json!({
-            "type": "object",
-            "properties": properties,
-            "required": ["command"],
-            "additionalProperties": false
+impl Cmd for BashTool {
+    /// A command in a shell outlives the wait: it is handed to the background, and
+    /// a fresh shell takes its name.
+    ///
+    /// # Invariant
+    ///
+    /// Runs after the call's own future is gone: the task it spawns takes this
+    /// shell's lock. See `docs/notes/server-tools-mod.md`.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = shell_name(args);
+            // Only ever a title: the spill file a cut writes is named the same way.
+            let description = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let Some((machine, handle)) = ctx.find(name) else {
+                return ToolOutcome::err(format!(
+                    "the wait for shell `{name}` ended ({}), and the shell is already gone: \
+                     what the command printed after this call is lost with it",
+                    why.because()
+                ));
+            };
+            match why {
+                Cut::Message => {
+                    // Already streamed to the window: the notice carries the rest.
+                    let _ = handle.lock().await.take_partial_output();
+                    leave_running(
+                        ctx,
+                        machine,
+                        name,
+                        &handle,
+                        description,
+                        self.max_output_chars,
+                        started,
+                        why.because(),
+                    )
+                    .await
+                }
+                Cut::Cancelled => {
+                    // Stopped, not abandoned: leftovers would answer the next command.
+                    handle.lock().await.kill().await;
+                    let replaced = ctx.replace_shell(machine, name, &handle);
+                    ToolOutcome::err(format!(
+                        "cancelled: the turn was interrupted and this command was stopped. \
+                         What it printed above (if anything) is all there is, and its exit \
+                         status is unknown. {}",
+                        if replaced {
+                            format!(
+                                "Shell `{name}` was replaced with a fresh one in the session's \
+                                 working directory, so `cd` and exports from earlier calls are \
+                                 gone."
+                            )
+                        } else {
+                            format!(
+                                "A fresh shell could not be put in place under `{name}`, so use \
+                                 another name or `del_bash` it."
+                            )
+                        }
+                    ))
+                }
+            }
         })
     }
-
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1469,6 +1477,23 @@ impl Tool for BashTool {
                              child can cause. {}. Anything above may be truncated.]",
                             if replaced {
                                 "It has been replaced with a fresh shell in the session's \
+    /// A read never stopped anything: its jobs are still there to read.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = shell_name(args);
+            ToolOutcome::err(format!(
+                "check_bash stopped waiting for {name}: {}. The jobs it was waiting for were \
+                 not stopped, and `check_bash` reads what they printed.",
+                why.because()
+            ))
+        })
+    }
                                  working directory, so `cd` and exports from earlier calls are \
                                  gone"
                             } else {
@@ -1521,72 +1546,31 @@ impl Tool for BashTool {
     /// a fresh shell takes its name.
     ///
     /// # Invariant
-    ///
-    /// Runs after the call's own future is gone: the task it spawns takes this
-    /// shell's lock. See `docs/notes/server-tools-mod.md`.
+    /// A job that ended does not stop: it has said all it will say.
     fn cut<'a>(
         &'a self,
         args: &'a Value,
-        ctx: &'a ToolContext,
+        _ctx: &'a ToolContext,
         why: Cut,
-        started: std::time::Instant,
+        _started: std::time::Instant,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let name = shell_name(args);
-            // Only ever a title: the spill file a cut writes is named the same way.
-            let description = args
-                .get("description")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let Some((machine, handle)) = ctx.find(name) else {
-                return ToolOutcome::err(format!(
-                    "the wait for shell `{name}` ended ({}), and the shell is already gone: \
-                     what the command printed after this call is lost with it",
-                    why.because()
-                ));
-            };
-            match why {
-                Cut::Message => {
-                    // Already streamed to the window: the notice carries the rest.
-                    let _ = handle.lock().await.take_partial_output();
-                    leave_running(
-                        ctx,
-                        machine,
-                        name,
-                        &handle,
-                        description,
-                        self.max_output_chars,
-                        started,
-                        why.because(),
-                    )
-                    .await
-                }
-                Cut::Cancelled => {
-                    // Stopped, not abandoned: leftovers would answer the next command.
-                    handle.lock().await.kill().await;
-                    let replaced = ctx.replace_shell(machine, name, &handle);
-                    ToolOutcome::err(format!(
-                        "cancelled: the turn was interrupted and this command was stopped. \
-                         What it printed above (if anything) is all there is, and its exit \
-                         status is unknown. {}",
-                        if replaced {
-                            format!(
-                                "Shell `{name}` was replaced with a fresh one in the session's \
-                                 working directory, so `cd` and exports from earlier calls are \
-                                 gone."
-                            )
-                        } else {
-                            format!(
-                                "A fresh shell could not be put in place under `{name}`, so use \
-                                 another name or `del_bash` it."
-                            )
-                        }
-                    ))
-                }
-            }
+            let id = args
+                .get("job_id")
+                .and_then(Value::as_u64)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            ToolOutcome::err(format!(
+                "check_job stopped waiting for job {id}: {}. The job was not stopped, and \
+                 `check_job` reads what it answered.",
+                why.because()
+            ))
         })
     }
+    ///
+    /// Runs after the call's own future is gone: the task it spawns takes this
+    /// shell's lock. See `docs/notes/server-tools-mod.md`.
+}
 }
 
 // ------------------------------- check_bash --------------------------------
@@ -1600,27 +1584,7 @@ const WAIT_POLL: Duration = Duration::from_millis(100);
 /// A wait is a tool call, not a turn: beyond this it is better to come back later.
 const MAX_WAIT: Duration = Duration::from_secs(600);
 
-impl Tool for CheckBashTool {
-    fn name(&self) -> &'static str {
-        "check_bash"
-    }
-
-    /// The read waits for `wait_ms`; that wait is the whole work.
-    fn owns_its_wait(&self) -> bool {
-        true
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "wait_ms": {"type": "integer"}
-            },
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for CheckBashTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1679,22 +1643,7 @@ impl Tool for CheckBashTool {
     }
 
     /// A read never stopped anything: its jobs are still there to read.
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        _ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let name = shell_name(args);
-            ToolOutcome::err(format!(
-                "check_bash stopped waiting for {name}: {}. The jobs it was waiting for were \
-                 not stopped, and `check_bash` reads what they printed.",
-                why.because()
-            ))
-        })
-    }
+}
 }
 
 // -------------------------------- check_job --------------------------------
@@ -1704,28 +1653,7 @@ pub struct CheckJobTool {
     pub max_output_chars: usize,
 }
 
-impl Tool for CheckJobTool {
-    fn name(&self) -> &'static str {
-        "check_job"
-    }
-
-    /// The read waits for `wait_ms`; that wait is the whole work.
-    fn owns_its_wait(&self) -> bool {
-        true
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "job_id": {"type": "integer"},
-                "wait_ms": {"type": "integer"}
-            },
-            "required": ["job_id"],
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for CheckJobTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1784,30 +1712,35 @@ impl Tool for CheckJobTool {
     }
 
     /// A job that ended does not stop: it has said all it will say.
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        _ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let id = args
-                .get("job_id")
-                .and_then(Value::as_u64)
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            ToolOutcome::err(format!(
-                "check_job stopped waiting for job {id}: {}. The job was not stopped, and \
-                 `check_job` reads what it answered.",
-                why.because()
-            ))
-        })
-    }
+}
 }
 
 impl CheckJobTool {
     /// What one job says about itself, and whether that answer is still unread.
+    /// The one tool whose whole point is the wait: being cut by the news is its answer.
+    fn cut<'a>(
+        &'a self,
+        _args: &Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            match why {
+                Cut::Message => ToolOutcome::ok(
+                    "a message arrived for this session while this call waited; it is \
+                     delivered at the next step boundary",
+                ),
+                // A `cancel` marks the turn before it fires the token, so the answer
+                // says which stop this was rather than guessing.
+                Cut::Cancelled if ctx.stop.resumable() => ToolOutcome::ok(
+                    "the server is stopping: this wait ends here, but the turn is kept and \
+                     the next start resumes it.",
+                ),
+                Cut::Cancelled => ToolOutcome::err("wait stopped: this turn was cancelled"),
+            }
+        })
+    }
     fn answer(&self, ctx: &ToolContext, row: &crate::store::JobRow) -> String {
         let ran = row
             .finished_at
@@ -1915,29 +1848,7 @@ pub struct WaitTool {
     pub timeout: Duration,
 }
 
-impl Tool for WaitTool {
-    fn name(&self) -> &'static str {
-        "wait"
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn tunneled(&self) -> bool {
-        false
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "timeout_ms": {"type": "integer"}
-            },
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for WaitTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1986,29 +1897,7 @@ impl Tool for WaitTool {
     }
 
     /// The one tool whose whole point is the wait: being cut by the news is its answer.
-    fn cut<'a>(
-        &'a self,
-        _args: &Value,
-        ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            match why {
-                Cut::Message => ToolOutcome::ok(
-                    "a message arrived for this session while this call waited; it is \
-                     delivered at the next step boundary",
-                ),
-                // A `cancel` marks the turn before it fires the token, so the answer
-                // says which stop this was rather than guessing.
-                Cut::Cancelled if ctx.stop.resumable() => ToolOutcome::ok(
-                    "the server is stopping: this wait ends here, but the turn is kept and \
-                     the next start resumes it.",
-                ),
-                Cut::Cancelled => ToolOutcome::err("wait stopped: this turn was cancelled"),
-            }
-        })
-    }
+}
 }
 
 /// What one queued row is, in the few words a summary can carry.
@@ -2030,22 +1919,7 @@ fn arrival(row: &crate::store::PendingTask) -> String {
 /// SPEC's `del_job`: forget a job, and stop it if it is still running.
 pub struct DelJobTool;
 
-impl Tool for DelJobTool {
-    fn name(&self) -> &'static str {
-        "del_job"
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "job_id": {"type": "integer"}
-            },
-            "required": ["job_id"],
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for DelJobTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -2089,26 +1963,13 @@ impl Tool for DelJobTool {
         })
     }
 }
+}
 
 // -------------------------------- list_bash --------------------------------
 
 pub struct ListBashTool;
 
-impl Tool for ListBashTool {
-    fn name(&self) -> &'static str {
-        "list_bash"
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name_regex": {"type": "string"}
-            },
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for ListBashTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -2169,26 +2030,13 @@ impl Tool for ListBashTool {
         })
     }
 }
+}
 
 // -------------------------------- del_bash ---------------------------------
 
 pub struct DelBashTool;
 
-impl Tool for DelBashTool {
-    fn name(&self) -> &'static str {
-        "del_bash"
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name_regex": {"type": "string"}
-            },
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for DelBashTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -2257,6 +2105,7 @@ impl Tool for DelBashTool {
             ToolOutcome::ok(format!("discarded shell(s) {list}{kept}{unconfirmed}"))
         })
     }
+}
 }
 
 /// How a spill file is named: `session-shell-description-callid`, the same for both paths.

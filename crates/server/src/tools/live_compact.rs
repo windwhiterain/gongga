@@ -8,25 +8,7 @@ pub const LIVE_COMPACT_TOOL: &str = "live_compact";
 
 pub struct LiveCompactTool;
 
-impl Tool for LiveCompactTool {
-    fn name(&self) -> &'static str {
-        LIVE_COMPACT_TOOL
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "The agent-written summary of the segment since the previous checkpoint."
-                }
-            },
-            "required": ["summary"],
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for LiveCompactTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -52,4 +34,5 @@ impl Tool for LiveCompactTool {
             ToolOutcome::ok(crate::meta::embed(source, &ctx.cwd, summary).await)
         })
     }
+}
 }

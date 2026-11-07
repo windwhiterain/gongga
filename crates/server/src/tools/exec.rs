@@ -24,50 +24,56 @@ pub struct ExecTool {
     pub max_output_chars: usize,
 }
 
-impl Tool for ExecTool {
-    /// A program with its words runs anywhere: a worker of its own can own it.
-    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
-        match self.machine {
-            Machine::Local => crate::tools::tunnel::Carried::Worker,
-            Machine::Remote => crate::tools::tunnel::Carried::Here,
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        match self.machine {
-            Machine::Local => "exec",
-            Machine::Remote => "remote_exec",
-        }
-    }
-
-    fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Machine {
-        self.machine
-    }
-
-    fn is_remote(&self) -> bool {
-        self.machine == Machine::Remote
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "array",
-                    "items": {"type": "string"},
-
-                },
-                "description": {"type": "string"},
-                "timeout_ms": {"type": "integer"}
-            },
-            "required": ["command"]
+impl Cmd for ExecTool {
+    /// A program run this way has no shell to be left in.
+    ///
+    /// # Invariant
+    ///
+    /// The wait is dropped with the call. A local program is a process of its own, so a
+    /// stop that lets jobs go leaves it running and the row carries it; every other cut
+    /// ends it, and what is left to say is that it was stopped rather than finished.
+    /// See `docs/notes/server-tools-exec.md`.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            // Named only if the words could be read: a cut is not where a bad
+            // argument is reported.
+            let program = match command_of(args, ctx) {
+                Ok(command) => format!("`{}`", command.program),
+                Err(_) => "the program".to_string(),
+            };
+            if crate::commands::cancel_lets_go()
+                && let Ok(Some(id)) = ctx.store.job_of_call(&ctx.session, &ctx.call_id)
+            {
+                return ToolOutcome::err(format!(
+                    "{program} was still running: {why}. This stop lets background jobs go, so \
+                     it runs on in a process of its own as job {id}: `check_job` with `job_id: \
+                     {id}` collects what it prints, and the next start adopts it.",
+                    why = why.because()
+                ));
+            }
+            ToolOutcome::err(format!(
+                "{program} was stopped: {why}. A program started with `{}` has no shell to be \
+                 left running in, so it ends with the call -- what it printed after this point \
+                 is lost, and its exit status is unknown.",
+                self.name(),
+                why = why.because()
+            ))
         })
     }
 
+    /// The program's own clock ends the wait by handing it to the job table.
+    ///
+    /// # Invariant
+    ///
+    /// A local call that waits: the tunnel's clock would otherwise fire at the same
+    /// instant and record a second job for one call. A peer's program has no row this
+    /// server could adopt, so it keeps the tunnel's clock and ends with the call.
     fn run<'a>(
         &'a self,
         args: Value,
@@ -186,50 +192,7 @@ impl Tool for ExecTool {
     /// stop that lets jobs go leaves it running and the row carries it; every other cut
     /// ends it, and what is left to say is that it was stopped rather than finished.
     /// See `docs/notes/server-tools-exec.md`.
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            // Named only if the words could be read: a cut is not where a bad
-            // argument is reported.
-            let program = match command_of(args, ctx) {
-                Ok(command) => format!("`{}`", command.program),
-                Err(_) => "the program".to_string(),
-            };
-            if crate::commands::cancel_lets_go()
-                && let Ok(Some(id)) = ctx.store.job_of_call(&ctx.session, &ctx.call_id)
-            {
-                return ToolOutcome::err(format!(
-                    "{program} was still running: {why}. This stop lets background jobs go, so \
-                     it runs on in a process of its own as job {id}: `check_job` with `job_id: \
-                     {id}` collects what it prints, and the next start adopts it.",
-                    why = why.because()
-                ));
-            }
-            ToolOutcome::err(format!(
-                "{program} was stopped: {why}. A program started with `{}` has no shell to be \
-                 left running in, so it ends with the call -- what it printed after this point \
-                 is lost, and its exit status is unknown.",
-                self.name(),
-                why = why.because()
-            ))
-        })
-    }
-
-    /// The program's own clock ends the wait by handing it to the job table.
-    ///
-    /// # Invariant
-    ///
-    /// A local call that waits: the tunnel's clock would otherwise fire at the same
-    /// instant and record a second job for one call. A peer's program has no row this
-    /// server could adopt, so it keeps the tunnel's clock and ends with the call.
-    fn owns_its_wait(&self) -> bool {
-        self.machine == Machine::Local
-    }
+}
 }
 
 fn command_of(args: &Value, ctx: &ToolContext) -> Result<ExecCommand, String> {

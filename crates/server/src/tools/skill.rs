@@ -21,35 +21,7 @@ pub struct SkillTool {
     pub max_output_chars: usize,
 }
 
-impl Tool for SkillTool {
-    /// A skill entry is a program of its own, so a worker can own it.
-    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
-        crate::tools::tunnel::Carried::Worker
-    }
-
-    fn name(&self) -> &'static str {
-        "skill"
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "args": {
-                    "type": "array",
-                    "items": {"type": "string"},
-
-                }
-            },
-            "required": []
-        })
-    }
-
+impl Cmd for SkillTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -153,6 +125,7 @@ impl Tool for SkillTool {
             }
         })
     }
+}
 }
 
 /// The entry's argv, as the caller gave it: words, and never a command line.
