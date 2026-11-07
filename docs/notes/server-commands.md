@@ -410,6 +410,14 @@ Deleting a session is the one thing that means "the work it started is not wante
 either". `cancel` disagrees on purpose: background jobs exist to outlive a cancel,
 and a delete is not one.
 
+Nothing in a delete waits for a process. What a session owned is taken out of its
+hands -- its tool jobs cancelled, its detached bash taken off the registry, its
+shells handed to a task that closes them -- and the rows go in one transaction
+with the session. What stays is a log line per process that would not stop: an
+answer that waited for `kill_tree` to confirm a tree could be delayed by any job
+that refused to die, and a delete that refuses is a session the operator cannot
+get rid of.
+
 ## interrupt
 
 Stop one session's turn, and drop what it still owed.

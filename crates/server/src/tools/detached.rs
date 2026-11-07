@@ -626,22 +626,17 @@ impl DetachedRegistry {
         out
     }
 
-    /// Stops every job of a session that is being deleted; `cancel` leaves them alone.
-    pub async fn stop_session(&self, session: &str) -> Stopped {
-        let (jobs, names, store) = {
-            let mut registry = self.inner.lock().await;
-            let jobs = registry.jobs.remove(session).unwrap_or_default();
-            let names: Vec<String> = jobs.iter().map(|j| j.name.clone()).collect();
-            for name in &names {
-                registry
-                    .stopping
-                    .insert((session.to_string(), name.clone()));
-            }
-            (jobs, names, registry.store.clone())
-        };
-        let (out, retry) = stop_and_forget(&store, jobs).await;
-        self.restore(session, names, retry).await;
-        out
+    /// Takes the jobs of a deleted session out of the registry, without ending them.
+    ///
+    /// # Invariant
+    ///
+    /// A delete waits for nothing, so what it cannot wait for it hands on: the caller
+    /// spawns the stop, and the rows are already gone by then -- which leaves that task
+    /// the only holder of what the session started, and nothing to retry for.
+    /// See `docs/notes/server-tools-detached.md`.
+    pub async fn detach_session(&self, session: &str) -> Vec<DetachedJob> {
+        let mut registry = self.inner.lock().await;
+        registry.jobs.remove(session).unwrap_or_default()
     }
 
     /// Ends every background job; a stop that is not a `cancel` owns this.
@@ -1126,6 +1121,17 @@ pub(crate) fn arm_adopted(pid: u32) {
     }
     #[cfg(not(windows))]
     let _ = pid;
+}
+
+/// Ends a process named only by its pid, and says whether it is gone.
+///
+/// # Invariant
+///
+/// The job object first (it ends every member exactly), then the walk, which is what
+/// is left when nothing armed the tree. See `docs/notes/server-tools-detached.md`.
+pub(crate) async fn stop_process(pid: u32) -> bool {
+    let exact = disarm_detached(pid);
+    kill_tree(pid).await || exact
 }
 
 /// Ends a detached tree now, when this server holds a job for it.

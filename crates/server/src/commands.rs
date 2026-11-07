@@ -2090,22 +2090,38 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
     };
     // A job of this session is work it started: it goes the way its bash goes.
     let jobs = d.store.jobs_of(name).unwrap_or_default();
-    let mut stopped_jobs = 0;
+    let mut workers = Vec::new();
     for job in jobs {
-        if d.agent.jobs.stop(job) {
-            stopped_jobs += 1;
+        d.agent.jobs.stop(job);
+        // A background call runs in a process of its own, and the row names it.
+        if let Ok(Some(row)) = d.store.job(job)
+            && let Some(pid) = row.pid.and_then(|pid| u32::try_from(pid).ok())
+        {
+            workers.push(pid);
         }
         let _ = d.store.delete_job(job);
     }
-    let stopped = d.sessions.detached().stop_session(name).await;
-    if stopped.failed > 0 {
-        return Outcome::err(format!(
-            "could not stop {} background bash(es) for {name}; session kept for retry",
-            stopped.failed
-        ));
-    }
-    if let Some(session) = &session {
-        session.close_shells().await;
+    // A delete waits for no process: what it cannot wait for is ended by one task.
+    let bash = d.sessions.detached().detach_session(name).await;
+    let (stopping_bash, stopping_jobs) = (bash.len(), workers.len());
+    let shells = session.clone();
+    if stopping_bash > 0 || stopping_jobs > 0 || shells.is_some() {
+        tokio::spawn(async move {
+            for mut job in bash {
+                if !job.stop().await {
+                    tracing::warn!(pid = job.pid, name = %job.name,
+                        "a deleted session's background bash did not stop");
+                }
+            }
+            for pid in workers {
+                if !crate::tools::detached::stop_process(pid).await {
+                    tracing::warn!(pid, "a deleted session's job did not stop");
+                }
+            }
+            if let Some(shells) = shells {
+                shells.close_shells().await;
+            }
+        });
     }
     match d.sessions.delete(name) {
         Ok(true) => {
@@ -2114,14 +2130,11 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
             let forgotten = d.subscriptions.forget_session(name).await;
             publish_sessions(d);
             let mut message = format!("deleted session {name}");
-            if stopped.stopped > 0 {
-                message.push_str(&format!(
-                    " and stopped {} background bash(es)",
-                    stopped.stopped
-                ));
+            if stopping_bash > 0 {
+                message.push_str(&format!("; stopping {stopping_bash} background bash(es)"));
             }
-            if stopped_jobs > 0 {
-                message.push_str(&format!(" and {stopped_jobs} job(s)"));
+            if stopping_jobs > 0 {
+                message.push_str(&format!("; stopping {stopping_jobs} job(s)"));
             }
             if was_busy {
                 message.push_str(" (interrupted the running turn)");

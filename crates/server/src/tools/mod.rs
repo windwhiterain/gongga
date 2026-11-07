@@ -2073,11 +2073,8 @@ impl Tool for DelJobTool {
                 return ToolOutcome::err(format!("could not delete job {id}: {e}"));
             }
             let stopped = match row.pid {
-                Some(pid) => {
-                    // Armed: the job object ends the tree exactly. Unarmed: the walk.
-                    let exact = crate::tools::detached::disarm_detached(pid as u32);
-                    crate::tools::detached::kill_tree(pid as u32).await || exact
-                }
+                // Armed: the job object ends the tree exactly. Unarmed: the walk.
+                Some(pid) => crate::tools::detached::stop_process(pid as u32).await,
                 None => ctx.jobs.stop(id),
             };
             let what = named(&row);

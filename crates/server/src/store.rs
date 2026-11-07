@@ -780,10 +780,15 @@ impl Store {
         };
         // These tables have no session foreign key; none may leak into a reused name.
         tx.execute("DELETE FROM events WHERE session_id = ?1", params![id])?;
-        tx.execute(
-            "DELETE FROM pending_tasks WHERE session = ?1",
-            params![name],
-        )?;
+        // A draft left behind is settled at the next start into a row of a dead session.
+        tx.execute("DELETE FROM drafts WHERE session_id = ?1", params![id])?;
+        // The work it was owed, the jobs it started, and the answers it never read.
+        for table in ["pending_tasks", "detached_jobs", "tool_jobs"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE session = ?1"),
+                params![name],
+            )?;
+        }
         let n = tx.execute("DELETE FROM sessions WHERE name = ?1", params![name])?;
         tx.commit()?;
         Ok(n > 0)

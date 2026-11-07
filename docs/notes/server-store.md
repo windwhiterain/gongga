@@ -125,6 +125,17 @@ layout part of what a database transaction means.
 worse than a leak: SQLite hands a freed id out again, and the dead session's
 events then pose as the new session's history.
 
+The same rule for every row keyed by the session's *name* rather than its id --
+`pending_tasks`, `detached_jobs`, `tool_jobs` -- and for `drafts`, whose id-keyed
+row would otherwise be settled at the next start into a message for a session
+that no longer exists. One transaction, because a delete that half-happened is a
+session whose name is free and whose rows are not.
+
+The rows of a detached job are the last handle on its process, so deleting a
+session drops that handle before the process is confirmed gone: the stop carries
+the job in hand instead, and a job whose stop fails is only a warning now. There
+is no session left to retry for. See `docs/notes/server-tools-detached.md`.
+
 ## Store::list_sessions
 
 The order is the turn that ended last, newest first: `COALESCE(ended_at, created_at)`

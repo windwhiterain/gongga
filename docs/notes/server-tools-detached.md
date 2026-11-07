@@ -129,10 +129,18 @@ it is a blocking call, so it must not run while the lock is held either.
 Stopped jobs leave the registry either way: what is left is the log file on
 disk, which is the record the model asked for.
 
-## DetachedRegistry::stop_session
+## DetachedRegistry::abandon_session
 
 `cancel` lets detached work go on purpose; deleting the session is the one
 place that means "this work is not wanted either", so it ends it.
+
+What it does not do is wait. A delete is answered in milliseconds and a stop
+takes as long as `kill_tree` needs to *see* a tree gone, so the jobs leave the
+registry here and end in a task of their own: the session's rows, its job rows
+included, are already gone by the time that task runs, which leaves it the only
+holder of what the session started. Nothing is put back on failure -- there is
+no session to retry for, and a row restored under a deleted name would be a
+process nobody can ever name again.
 
 ## DetachedRegistry::adopt
 
