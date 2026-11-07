@@ -115,21 +115,28 @@ still parsed by the window and never reach the command layer. The notes keep
 their `tui-*.md` names -- they are about the window's state, not a crate -- but
 the README index now points at their new source paths.
 
-This commit is WIP saved while the tree was red (the standing rule: commit each
-small step, even red). Another agent was editing the same worktree at the same
-time: it added `crates/tui/src/closing.rs`, `docs/notes/tui-closing.md`, a
-`windows-sys` dependency, and closing-related hunks in `crates/tui/src/lib.rs`.
-Those files were NOT staged here and were not edited by me. They are why the
-gates below are red.
+Another agent was editing the same worktree at the same time: it added
+`crates/tui/src/closing.rs`, `docs/notes/tui-closing.md`, a `windows-sys`
+dependency, and closing-related hunks in both `crates/tui/src/lib.rs` and
+`crates/tui/src/run.rs`. Staging `run.rs` whole swept those hunks into
+`735cc41`, while `lib.rs` deliberately had no `mod closing;` -- an inconsistent
+tree. An isolated `git archive` + `cargo check` caught it (E0432 unresolved
+`crate::closing`). The follow-up commit rebuilt `run.rs` from `e20b741` with
+only the three import changes, leaving the concurrent agent's work in the
+working tree untouched. Neither of its new files was ever staged here.
 
-Verified: `cargo build` 1 (E0433 x2 / E0408 x3, all five in `closing.rs`;
-`windows_sys` unresolved) · `cargo fmt --check` 0 · `comments-check` 1 (three
+The working tree is still red from that concurrent WIP: `cargo build` 1
+(E0433 x2 / E0408 x3, all in `closing.rs`) and `comments-check` 1 (three
 preamble sections over 120 chars, all in `closing.rs` or the closing hunk of
-`lib.rs`) · `test-layout-check` 8 packages, 0 violations · `git diff --check`
-0 · `scripts/skill_contract.sh` PASS 8 · `scripts/ship.sh --check` in agreement.
-No L3 process test was run: the tree does not build, and the L3 script was
-already blocked by a network failure in the previous turn.
+`lib.rs`). Neither failure belongs to this split.
 
-Owed: re-run `cargo build` and `comments-check` once the concurrent change is
-complete, then run `scripts/client_state_selftest.sh` to prove the one-shot cli
-still reads no window state.
+Verified on an isolated export of the corrected tree (`git write-tree` ->
+`git archive`, its own `CARGO_TARGET_DIR`): `cargo build` 0 (53.56s) ·
+`cargo check -p gongga-client -p gongga-tui` 0 · `cargo fmt --check` 0 ·
+`comments-check` 0 · `test-layout-check` 8 packages, 0 violations ·
+`gongga-tui --help` 0. In the working tree: `scripts/skill_contract.sh` PASS 8 ·
+`scripts/ship.sh --check` in agreement · `git diff --check` 0.
+
+Owed: once the concurrent change lands, re-run the gates on the real tree and
+run `scripts/client_state_selftest.sh` (blocked on GitHub so far) to prove a
+one-shot `gongga-cli` still reads no window state.

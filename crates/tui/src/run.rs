@@ -6,7 +6,7 @@ use std::pin::Pin;
 use client::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
 use tokio::time::Duration;
 
-use crate::{Server, Tui, UiEvent, closing};
+use crate::{Server, Tui, UiEvent};
 use client::window_command::{self as command, Done};
 use client::window_state::State;
 
@@ -532,8 +532,6 @@ fn settle(
 enum Step {
     /// The operator did something (or the terminal went away: `None`).
     Input(Option<UiEvent>),
-    /// The console holding this window is going away.
-    Closing,
     /// A message arrived, or `None` when the link ended.
     Wire(Option<Vec<u8>>),
     /// The retry backoff expired: start dialling.
@@ -688,19 +686,16 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
             tokio::select! {
                 event = ui.next_event() => Step::Input(event),
                 bytes = open.recv() => Step::Wire(bytes),
-                _ = closing::asked() => Step::Closing,
             }
         } else if let Some(pending) = dialing.as_mut() {
             tokio::select! {
                 event = ui.next_event() => Step::Input(event),
                 outcome = pending.as_mut() => Step::Dialed(outcome),
-                _ = closing::asked() => Step::Closing,
             }
         } else {
             tokio::select! {
                 event = ui.next_event() => Step::Input(event),
                 _ = tokio::time::sleep_until(next_try) => Step::Dial,
-                _ = closing::asked() => Step::Closing,
             }
         };
 
@@ -712,9 +707,6 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
             // A scroll past the oldest row a window holds: a page above it.
             Step::Input(Some(UiEvent::Older(names))) => owed.extend(names),
             Step::Input(Some(UiEvent::Quit)) => break Ok(()),
-            // The console is going: it asked on a thread of its own, and the
-            // terminal is already given back. See `docs/notes/tui-closing.md`.
-            Step::Closing => break Ok(()),
             // A gesture of the window's own: an operation, not a line.
             Step::Input(Some(UiEvent::Operate(operation))) => {
                 let outcome =
