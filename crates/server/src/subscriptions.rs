@@ -188,32 +188,72 @@ impl Subscriptions {
     ) {
         let _slot = crate::commands::ActiveGuard::new(self.active.clone());
         let stated = event_prefix(&event);
-        let (tool, args) = match &action {
-            Action::Bash { name, cmd } => (
-                "bash",
-                json!({"name": name, "command": format!("( {stated}{cmd} )")}),
-            ),
+        // The action runs in a channel the session owns, named after its row: a second
+        // match finds the same one, so what one action set up is there for the next.
+        let (program, line) = match &action {
+            Action::Bash { cmd, .. } => ("bash", format!("( {stated}{cmd} )")),
             // A python action carries no event: assignments would stay in the REPL
             // afterwards, so the row is what it reads.
-            Action::Python { name, code } => ("python", json!({"name": name, "code": code})),
+            Action::Python { code, .. } => ("python", code.to_string()),
         };
-        let outcome = crate::tool_cmd::run(
-            &self.agent,
-            &self.sessions,
-            &self.store,
-            &row.session,
-            tool,
-            args,
-        )
-        .await;
+        let name = match &action {
+            Action::Bash { name, .. } | Action::Python { name, .. } => name.clone(),
+        };
+        let outcome = self
+            .run_in_channel(&row.session, program, &name, &line)
+            .await;
+        let (ok, said) = match outcome {
+            Ok(outcome) => (outcome.exit.unwrap_or(0) == 0, outcome.output),
+            Err(why) => (false, why),
+        };
         let payload = json!({
             "subscription": row.name,
             "session": row.session,
             "event": event.name(),
-            "ok": outcome.ok,
-            "output": outcome.message,
+            "ok": ok,
+            "output": said,
         });
         self.log(&row, &payload);
+    }
+
+    /// Runs one line in a channel of the session's, starting it if it is not there.
+    ///
+    /// # Invariant
+    ///
+    /// The channel is the named one the row gives, under the session: a subscription
+    /// that fires twice writes into the same shell, which is what "the subscriber's own
+    /// interpreter" means now that a shell is a channel.
+    async fn run_in_channel(
+        &self,
+        session: &str,
+        program: &str,
+        name: &str,
+        line: &str,
+    ) -> Result<crate::tools::channel::Outcome, String> {
+        let channels = &self.agent.channels;
+        let id = format!("{session}/{name}");
+        if channels.live(session, &id).is_none() {
+            let handle = self.sessions.get(session).map_err(|e| e.to_string())?;
+            channels
+                .start(
+                    session,
+                    program,
+                    &[],
+                    &handle.cwd(),
+                    &handle.env(),
+                    Some(id.clone()),
+                )
+                .await?;
+        }
+        channels
+            .talk(
+                session,
+                &id,
+                Some(line),
+                std::time::Duration::from_secs(30),
+                None,
+            )
+            .await
     }
 
     /// Writes one outcome row and announces it, in that order.
