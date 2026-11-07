@@ -50,10 +50,10 @@ pub const TAIL_REMOTE_UNSTATED: &str = "dynamic_tail_remote_unstated";
 pub const SYSTEM: &str = "instructions";
 
 /// What a monitor session is handed when a turn failed. See `docs/notes/server-prompts.md`.
-pub const MONITOR_ERROR: &str = "monitor_error";
+pub const MONITOR_PROVIDERS: &str = "monitor_error";
 
 /// The same report again, for the next model, after the monitor itself failed.
-pub const MONITOR_ERROR_AGAIN: &str = "monitor_error_again";
+pub const MONITOR_PROVIDERS_AGAIN: &str = "monitor_error_again";
 
 /// What a cleaner session is handed when a disk is under this machine's floor.
 pub const MONITOR_DISK: &str = "monitor_disk";
@@ -80,8 +80,8 @@ pub const REQUIRED: &[&str] = &[
     "output_omitted",
     INDEX_OPENING,
     INDEX_SEPARATOR,
-    MONITOR_ERROR,
-    MONITOR_ERROR_AGAIN,
+    MONITOR_PROVIDERS,
+    MONITOR_PROVIDERS_AGAIN,
     MONITOR_DISK,
 ];
 

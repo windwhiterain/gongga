@@ -11,8 +11,16 @@ delivery through `commands::deliver` -- is one implementation.
 
 | kind | session | watches | skill |
 | --- | --- | --- | --- |
-| error | `@monitor/error` | `sessions.status = 'error'` | `monitor` |
+| providers | `@monitor/providers` | a turn whose `turn_end` says `origin: provider` | `providers` |
 | disk | `@monitor/disk` | the room left, read after every tool call | `clean-disk` |
+
+The trigger is narrower than "a session is in error", and deliberately so: SPEC's
+monitor watches this machine's **providers**. A turn that failed because the model
+refused the request, never finished its stream, or could not be resolved at all
+writes `origin: provider` into its `turn_end` row, and only that origin is handed
+over. A session that broke anywhere else stays in `error` and is nobody's report --
+which is why the origin travels on the failure rather than being read back out of
+the wording of a log line.
 
 `Kind` in `monitor.rs` is that table. The disk kind's trigger is a free space
 reading compared against a threshold, and it has its own note: `server-disk.md`.
@@ -50,20 +58,20 @@ order loses one.
 
 ## One session per kind, under a name nobody else may take
 
-The sessions are `@monitor/error` and `@monitor/disk`. A leading `@` is the
+The sessions are `@monitor/providers` and `@monitor/disk`. A leading `@` is the
 harness's namespace, and `set_session` refuses it -- whole or by segment -- with a
 sentence saying so. This is why the reservation is worth having at all: the harness
 never has to look at a session and decide whether it is its own, and a person's
 session called `monitor` -- which 2026-11-02 showed is a name people do use -- is
 simply their session. The slash is the same hierarchy every session name has, so
-`@monitor/error` sorts and nests like any other name, and a monitor of our own can
+`@monitor/providers` sorts and nests like any other name, and a monitor of our own can
 still be a child of another. Deleting one is allowed, because a monitor that cannot
 work has to be removable; the next trigger creates it again.
 
 `@` rather than `#` because a `#` that opens a word is a comment to
 `shell_words::split`, so `--session=@monitor/error` is what a hand types and nothing
 needs quoting. The references a message carries are `@image:`, `@skill:`,
-`@file:` -- prefixes with a colon -- so a bare `@monitor/error` is not one of them,
+`@file:` -- prefixes with a colon -- so a bare `@monitor/providers` is not one of them,
 and the report a monitor is given never names itself anyway.
 
 The session is created with no `--cwd`, so `SessionManager` gives it the server's
@@ -101,7 +109,7 @@ the report is delivered, so the turn cannot start on the model that just failed.
 A monitor is an ordinary session, so its own failure is an ordinary
 `sessions.status = 'error'` row -- `self_failed` is "the name starts with
 `@monitor/`", which is now a fact rather than a guess. It goes to
-`@monitor/error`, because "why does this session keep failing" is that kind's
+`@monitor/providers`, because "why does this session keep failing" is that kind's
 question whatever the failing session was.
 
 `sessions.monitor_attempts` counts the attempts made for this failure, so it is
@@ -131,7 +139,7 @@ hang them on: `monitor_state` holds the event it last handed over
 (`disk.attempts`), and the row the last report became (`disk.wake`). While that
 row's session is in `error`, the same event is handed over again on the next
 candidate -- a disk whose first choice of model is refused is still cleaned, and
-the error kind is told about the failing monitor in parallel.
+the providers kind is told about the failing monitor in parallel.
 
 ## What the report says, and what the skill says
 
@@ -223,7 +231,7 @@ whole chain:
 | --- | --- |
 | `set_session '@mine'` | refused: the `@` prefix belongs to the harness |
 | a session on the refused model | `turn end … outcome=Failed`, `status='error'` |
-| the handover | `handed a failure to the monitor session=broken model=dead/flash-dead`, `@monitor/error` created, `monitor_seq` past the transcript |
+| the handover | `handed a failure to the monitor session=broken model=dead/flash-dead`, `@monitor/providers` created, `monitor_seq` past the transcript |
 | the monitor's own turn | `turn end session=@monitor/error outcome=Failed`, then `model=fake/flash-fake attempt=2`, and that turn ends `Done` |
 | the retry's transcript | the original report, unchanged, behind a preface naming the failed model |
 | six more seconds of ticks | no second report for the same failure |

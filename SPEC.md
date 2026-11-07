@@ -102,7 +102,9 @@ for the first user message to a empty session, find all meta references recursiv
 - live compact summary can reference meta that directly embed in the summary, creating a new checkpoint.
 
 ## monitor
-- session: spawn/notice when any session is error.
+- providers: spawn/notice when a session failed on an llm request (refused, or the
+  answer never finished). Reasons are the provider's, the roster's or the key's;
+  the session is handed the `providers` skill.
 - disk: spawn/notice when free space is under certain threshold.
 
 ## UI
@@ -171,17 +173,13 @@ all named argument's name can be ommited via argument order.
   - `interrupt_session --name <session>(sticky)`
   - `cancel`: interrupt every session, make every job background, release every job then quit, retart will adopt realeased jobs.
   - `trigger_event --event <event>`
-  - `subscribe --subscription <subscription> --pattern <pattern> [--persistant <bool>] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
+  - `subscribe --name <subscription> --pattern <pattern> [--persistant <bool>] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
     when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.
-  - `del_subscribe --subscription <subscription>`
-  - `skill --name <name> [--args <word list as JSON>]`: run the entry a skill declares,
-    resolved by the roots below, with the words as given and no shell between them. The
-    program that starts it is read off the file (`.sh` is bash, `.py` is python, `.ps1` is
-    powershell, `.cmd` is `cmd /c`, and no extension means its `#!` line), so the caller
-    names the script's arguments and not its interpreter. The entry's exit code is this
-    command's `ok`, and what it printed is what comes back. A skill with no entry is a body
-    and refuses, naming the `SKILL.md` to read instead. Published by the tool of the same
-    name, which is the one registration both surfaces come from.
+  - `ls_subscribe --name_regex <subscription>`
+  - `del_subscribe --name_regex <subscription>`
+  - `skill --name <skill> --action <action>`
+    `--action run --entry <entry> <args...>`: run a python function the skill provide as cmd
+    `--action ls`: list all skills' metadata.
 - server_script: that registered by external python scripts
   - `get_messages [--range <begin:end>] --session <session>(sticky) [--replay <bool>]`: return the items in closed range <begin:end> (negative number count from end, missing number means boundary).
     - `--replay true` answers as a window draws: only the rows a window shows, the
@@ -189,9 +187,6 @@ all named argument's name can be ommited via argument order.
       the turn they belong to. The result states `last_seq` and `as_of`; `as_of` is
       the stream position the answer is a picture of.
   - `clone_session --session <session> --name <name>`
-  - `skill --name <skill> --action <action>`
-    `--action run --entry <entry> <args...>`: run a python function the skill provide as cmd
-    `--action ls`: list all skills' metadata.
 - client:
   - `set_sticky --type <type> --value <value>`:
   - `del_sticky --type <type>`

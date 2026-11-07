@@ -124,6 +124,12 @@ patching when it is not -- the same answer a tolerance of `0` gives.
 
 ## monitor_error, monitor_error_again, monitor_disk
 
+`monitor_error` is the **providers** monitor's report: it is handed to
+`@monitor/providers` when another session's turn failed on its model request, and
+its first line is `@skill(providers)`. The name stayed `monitor_error` on purpose --
+a config's prompt names are content shape, and renaming one is a protocol bump --
+while the words inside it are what changed.
+
 The report the server hands a monitor session. It is a prompt like any other -- a model
 reads it and acts -- so its prose lives here rather than in `monitor.rs`, and the rules a
 monitor works under travel with it: which session failed, what the server last recorded

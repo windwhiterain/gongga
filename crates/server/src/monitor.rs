@@ -27,10 +27,17 @@ pub struct Kind {
     pub skill: &'static str,
 }
 
-/// A session stopped with an error.
-pub const ERROR: Kind = Kind {
-    session: "@monitor/error",
-    skill: "monitor",
+/// A session stopped because a provider refused, or stopped answering, its request.
+///
+/// # Invariant
+///
+/// This is the only error kind: SPEC's monitor watches the machine's providers, so
+/// a session that broke for any other reason is not handed to it. What it is told
+/// to reach is the `providers` skill -- the roster, the keys, the quota scripts and
+/// how to prove which of them is wrong.
+pub const PROVIDERS: Kind = Kind {
+    session: "@monitor/providers",
+    skill: "providers",
 };
 
 /// This device ran out of room.
@@ -51,9 +58,9 @@ pub fn reserved(name: &str) -> Option<String> {
     let taken = name.split('/').any(|segment| segment.starts_with('@'));
     taken.then(|| {
         format!(
-            "names beginning with `@` belong to the harness ({ERROR} and {DISK} are two), \
+            "names beginning with `@` belong to the harness ({PROVIDERS} and {DISK} are two), \
              whole or by segment; pick a name without it",
-            ERROR = ERROR.session,
+            PROVIDERS = PROVIDERS.session,
             DISK = DISK.session,
         )
     })
@@ -108,7 +115,7 @@ async fn sweep_errors(d: &Arc<Dispatch>, home: &Path) {
 async fn report_failure(d: &Arc<Dispatch>, home: &Path, failure: &Failure, self_failed: bool) {
     let attempts = failure.monitor_attempts;
     // The attempts made so far are also the index of the next candidate.
-    match hand_over(d, ERROR, attempts, |entry| {
+    match hand_over(d, PROVIDERS, attempts, |entry| {
         report(d, home, failure, self_failed, entry)
     })
     .await
@@ -301,7 +308,7 @@ fn report(
     if self_failed && let Some(again) = last_report(d, failure.id) {
         // The same report again: re-deriving it would lose what it was told.
         return Ok(prompts.render(
-            crate::prompts::MONITOR_ERROR_AGAIN,
+            crate::prompts::MONITOR_PROVIDERS_AGAIN,
             &[
                 ("model", &failure.model),
                 (
@@ -323,7 +330,7 @@ fn report(
         format!("\nThe last thing the server recorded for it:\n\n{written}\n")
     };
     Ok(prompts.render(
-        crate::prompts::MONITOR_ERROR,
+        crate::prompts::MONITOR_PROVIDERS,
         &[
             ("session", &failure.name),
             ("model", &failure.model),

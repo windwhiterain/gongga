@@ -859,22 +859,29 @@ impl Store {
                     s.cache_tier, s.cache_keepalive, s.ended_at, s.mode
              FROM sessions s";
 
-    /// Every session in `error`, with what a monitor turn still owes it.
+    /// Every session in `error` because of a provider, with what a monitor turn
+    /// still owes it.
     ///
     /// # Invariant
     ///
     /// The status is the trigger and the column is the memory, so a failure is
-    /// reported once and once only, across restarts: `monitor_seq` is the last
-    /// row a monitor turn was given, and a turn writes its user row before it
-    /// starts, so a later `last_seq` is a failure nobody has been told about.
-    /// See `docs/notes/server-monitor.md`.
+    /// reported once and once only, across restarts. See
+    /// `docs/notes/server-monitor.md`.
+    ///
+    /// The origin is the gate, read from the failed turn's end row: a session that
+    /// broke elsewhere stays in `error` and is nobody's report. A row predating
+    /// the origin counts as "not the provider's".
     pub fn failures(&self) -> anyhow::Result<Vec<Failure>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT s.id, s.name, COALESCE(s.model, s.model_name),
                     s.monitor_seq, s.monitor_attempts,
                     COALESCE((SELECT MAX(m.seq) FROM messages m WHERE m.session_id = s.id), 0)
-             FROM sessions s WHERE s.status = 'error' ORDER BY s.id",
+             FROM sessions s WHERE s.status = 'error'
+               AND COALESCE((SELECT json_extract(e.payload, '$.origin') FROM events e
+                             WHERE e.session_id = s.id AND e.kind = 'turn_end'
+                             ORDER BY e.id DESC LIMIT 1), '') = 'provider'
+             ORDER BY s.id",
         )?;
         let rows = stmt
             .query_map([], |r| {

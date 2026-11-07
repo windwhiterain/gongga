@@ -33,6 +33,25 @@ use crate::tools::{ToolContext, ToolRegistry};
 /// read again.
 const ANSWER_LIMIT: usize = 32_000;
 
+/// A turn that failed because the provider refused the request or stopped answering.
+///
+/// # Invariant
+///
+/// The origin of a failure rides the error, not its wording: the monitor that
+/// runs on a provider failure is the `providers` one, and the monitor that runs on
+/// anything else is none of its business. Reading the reason out of a message would
+/// make a wording change a routing change.
+#[derive(Debug)]
+pub struct ProviderFailure(pub String);
+
+impl std::fmt::Display for ProviderFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ProviderFailure {}
+
 pub struct Agent {
     pub store: Store,
     /// The machine's roster, which `--model` names resolve against. A live view:
@@ -123,8 +142,8 @@ impl Agent {
         let outcome = AssertUnwindSafe(self.turn_inner(session, epoch, gate))
             .catch_unwind()
             .await;
-        let (outcome, steps) = match outcome {
-            Ok(pair) => pair,
+        let (outcome, steps, origin) = match outcome {
+            Ok(triple) => triple,
             Err(payload) => {
                 let message = panic_message(&payload);
                 tracing::error!(session = %session.name(), "turn panicked: {message}");
@@ -132,7 +151,7 @@ impl Agent {
                     level: LogLevel::Error,
                     message: format!("{}: turn panicked: {message}", session.name()),
                 });
-                (TurnOutcome::Failed, 0)
+                (TurnOutcome::Failed, 0, Some("harness"))
             }
         };
         // No part outlives its turn: what is left is text whose row was never written.
@@ -158,6 +177,9 @@ impl Agent {
             &serde_json::json!({
                 "outcome": outcome,
                 "steps": steps,
+                // Why it failed, for the monitor that reads this row back: a
+                // provider's refusal is the `providers` monitor's business.
+                "origin": origin,
                 "elapsed_ms": started.elapsed().as_millis() as u64,
                 "answer": answer,
             }),
@@ -189,17 +211,17 @@ impl Agent {
         session: &SessionHandle,
         epoch: u64,
         _gate: tokio::sync::OwnedMutexGuard<()>,
-    ) -> (TurnOutcome, u32) {
+    ) -> (TurnOutcome, u32, Option<&'static str>) {
         let name = session.name().to_string();
         let id = session.id();
         if session.cancel_epoch() != epoch {
             // Cancelled while queued: running looks like the interrupt did nothing.
             tracing::info!(session = %name, "turn dropped: cancelled while queued");
-            return (TurnOutcome::Cancelled, 0);
+            return (TurnOutcome::Cancelled, 0, None);
         }
         if session.is_deleted() {
             tracing::info!(session = %name, "turn dropped: session was deleted before starting");
-            return (TurnOutcome::Cancelled, 0);
+            return (TurnOutcome::Cancelled, 0, None);
         }
         let (turn, cancel) = session.new_turn();
         let started = std::time::Instant::now();
@@ -223,7 +245,7 @@ impl Agent {
         let outcome = loop {
             // A `cancel` ends the turn here, where it can be stored whole.
             if cancel.is_cancelled() {
-                break (TurnOutcome::Cancelled, step);
+                break (TurnOutcome::Cancelled, step, None);
             }
             // Step boundary: a user line between a call and its result is rejected, so inject here.
             self.deliver_inbox(id, &name);
@@ -232,8 +254,10 @@ impl Agent {
             let (llm, effort, budget) = match self.settings(&name, session) {
                 Ok(settings) => settings,
                 Err(e) => {
+                    // A model that is not in the roster or has no key is the roster's
+                    // business, which is the same monitor as a refusal.
                     self.error(id, &name, "resolving the session's provider", e);
-                    break (TurnOutcome::Failed, step);
+                    break (TurnOutcome::Failed, step, Some("provider"));
                 }
             };
             if step == 0 {
@@ -270,10 +294,10 @@ impl Agent {
                         step = step.wrapping_add(1);
                         continue;
                     }
-                    break (TurnOutcome::Done, step);
+                    break (TurnOutcome::Done, step, None);
                 }
                 Ok(StepResult::RanTools) => {}
-                Ok(StepResult::Stopped) => break (TurnOutcome::Cancelled, step),
+                Ok(StepResult::Stopped) => break (TurnOutcome::Cancelled, step, None),
                 // A refusal a row can answer is answered once, then asked again.
                 Err(e)
                     if repaired != Some(step)
@@ -284,8 +308,13 @@ impl Agent {
                     continue;
                 }
                 Err(e) => {
+                    let origin = if e.downcast_ref::<ProviderFailure>().is_some() {
+                        "provider"
+                    } else {
+                        "harness"
+                    };
                     self.error(id, &name, "model request", e);
-                    break (TurnOutcome::Failed, step);
+                    break (TurnOutcome::Failed, step, Some(origin));
                 }
             }
             // Wrapping, not saturating: the counter is only a log label.
@@ -1256,10 +1285,14 @@ impl Agent {
                 level: LogLevel::Warn,
                 message: failed_warning(&name, &message, &said, discarded),
             });
-            anyhow::bail!("{message}");
+            return Err(anyhow::Error::new(ProviderFailure(message)));
         }
         if !saw_completion {
-            anyhow::bail!("model stream ended without completing");
+            // The provider opened a stream and never closed it: the request, not the
+            // harness, ended this step.
+            return Err(anyhow::Error::new(ProviderFailure(
+                "model stream ended without completing".to_string(),
+            )));
         }
         if cancel.is_cancelled() {
             self.keep_streamed(session, id, &name, turn, &mut streamed, &calls);

@@ -93,11 +93,33 @@ if [[ -n "${left// /}" ]]; then
   sleep 2
 fi
 rm -rf "$home"; mkdir -p "$home"
+# The installed content is the clone this home can resolve commits from; the prompt
+# words this checkout carries are laid over it below, because the binary under test
+# is built from this tree and the report's wording is what this run reads.
 cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 # This home watches no disk: the disk kind's own script states its threshold. The
 # shipped config is the base, because a home config that holds only this is a home
 # with no tool sentences, and the server refuses to start on it.
 cp "$HOME/.gongga/ship/config/config.toml" "$home/config.toml"
+python - "$root/ship/config/config.toml" "$home/config.toml" <<'OVERLAY'
+import re
+import sys
+
+carried = open(sys.argv[1], encoding="utf-8").read()
+target = sys.argv[2]
+installed = open(target, encoding="utf-8").read()
+for name in ("monitor_error", "monitor_error_again"):
+    found = re.search(rf"^{name} = '''.*?'''", carried, re.S | re.M)
+    if found is None:
+        sys.exit(f"the checkout's config carries no {name}")
+    installed = re.sub(rf"^{name} = '''.*?'''", found.group(0), installed, count=1, flags=re.S | re.M)
+open(target, "w", encoding="utf-8", newline="\n").write(installed)
+OVERLAY
+# The skill this checkout carries, installed where a home resolves it: publishing
+# does the same thing through the content repository, which this run does not reach.
+mkdir -p "$home/skills"
+rm -rf "$home/skills/providers"
+cp -r "$root/ship/skills/providers" "$home/skills/providers"
 python - "$home/config.toml" <<'PY'
 import sys
 path = sys.argv[1]
@@ -194,21 +216,21 @@ ok "a session whose model is refused ends in error" $?
 
 for _ in $(seq 1 100); do grep -q "handed a failure to the monitor" "$log" && break; sleep 0.5; done
 grep -q 'handed a failure to the monitor session=broken model=dead/flash-dead' "$log"
-ok "the failure is handed to @monitor/error, on the first usable flash model" $?
-rows | grep -q "'@monitor/error'"
-ok "@monitor/error exists as an ordinary session" $?
+ok "the failure is handed to @monitor/providers, on the first usable flash model" $?
+rows | grep -q "'@monitor/providers'"
+ok "@monitor/providers exists as an ordinary session" $?
 
-for _ in $(seq 1 100); do grep -q 'turn end session=@monitor/error outcome=Failed' "$log" && break; sleep 0.5; done
-grep -q 'turn end session=@monitor/error outcome=Failed' "$log"
+for _ in $(seq 1 100); do grep -q 'turn end session=@monitor/providers outcome=Failed' "$log" && break; sleep 0.5; done
+grep -q 'turn end session=@monitor/providers outcome=Failed' "$log"
 ok "the monitor's own turn failed too" $?
 # Waited for by its own line, not by "a second handover happened": the monitor's
 # failure and the retry are two handovers, and the second one lands after both.
-retry='handed a failure to the monitor session=@monitor/error model=fake/flash-fake attempt=2'
+retry='handed a failure to the monitor session=@monitor/providers model=fake/flash-fake attempt=2'
 for _ in $(seq 1 100); do grep -q "$retry" "$log" && break; sleep 0.5; done
 grep -q "$retry" "$log"
 ok "so the next model was tried" $?
-for _ in $(seq 1 100); do grep -q 'turn end session=@monitor/error outcome=Done' "$log" && break; sleep 0.5; done
-grep -q 'turn end session=@monitor/error outcome=Done' "$log"
+for _ in $(seq 1 100); do grep -q 'turn end session=@monitor/providers outcome=Done' "$log" && break; sleep 0.5; done
+grep -q 'turn end session=@monitor/providers outcome=Done' "$log"
 ok "and that attempt finished" $?
 
 echo "--- the standing knowledge is an index entry, not a message"
@@ -216,12 +238,12 @@ python - "$home" <<'INNER'
 import json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 row = c.execute("""select m.display from messages m join sessions s on s.id = m.session_id
-                   where s.name = '@monitor/error' and m.kind = 'system'
+                   where s.name = '@monitor/providers' and m.kind = 'system'
                    order by m.seq desc limit 1""").fetchone()
 assert row, 'the monitor session has no prompt row'
 prompt = json.loads(row[0])
 rooted = prompt.get('rooted') or []
-assert '@skill(monitor)' in rooted, f'the skill is not an index root: {rooted}'
+assert '@skill(providers)' in rooted, f'the skill is not an index root: {rooted}'
 body = prompt.get('index') or ''
 assert 'provider 4xx' in body or 'providers' in body, 'the skill body is not in the index'
 assert 'The text of every reference' in body
@@ -233,11 +255,11 @@ python - "$home" <<'INNER'
 import json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 first = c.execute("""select m.display from messages m join sessions s on s.id = m.session_id
-                     where s.name = '@monitor/error' and m.kind = 'text'
+                     where s.name = '@monitor/providers' and m.kind = 'text'
                      order by m.seq limit 1""").fetchone()[0]
 text = json.loads(first).get('text', '')
-assert text.startswith('@skill(monitor)'), text[:80]
-assert 'A gongga session stopped with an error' in text
+assert text.startswith('@skill(providers)'), text[:80]
+assert 'A gongga session stopped because a provider would not serve it' in text
 assert 'session: broken' in text, 'the report names the session that failed'
 assert 'harness build:' in text and 'home:' in text
 # The literal spelling stays in the message: the index carries the body instead.
@@ -250,8 +272,8 @@ import json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 texts = [json.loads(d).get("text", "") for (d,) in c.execute(
     """select m.display from messages m join sessions s on s.id = m.session_id
-       where s.name = '@monitor/error' order by m.seq""")]
-reports = [t for t in texts if "stopped with an error" in t]
+       where s.name = '@monitor/providers' order by m.seq""")]
+reports = [t for t in texts if "stopped because a provider would not serve it" in t]
 assert len(reports) >= 2, reports
 # The retry re-sends the first report unchanged, behind a preface naming the
 # model. It is the row that says so: a later failure of the same session earns
