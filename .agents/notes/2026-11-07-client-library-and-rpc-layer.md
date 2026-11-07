@@ -140,3 +140,25 @@ Verified on an isolated export of the corrected tree (`git write-tree` ->
 Owed: once the concurrent change lands, re-run the gates on the real tree and
 run `scripts/client_state_selftest.sh` (blocked on GitHub so far) to prove a
 one-shot `gongga-cli` still reads no window state.
+
+## Stage 3 design contract (pending approval)
+
+`DESIGN.md` §1 now carries the front-end-independent runtime design: what moves
+out of `crates/tui/src/run.rs` into `crates/client`, two candidate interface
+shapes (A: one `Frontend` trait owning the loop; B: only a shared connection
+state machine), the invariants a WebUI must keep, and a staged migration. Marked
+【待确认】 -- no Rust code was touched in this turn.
+
+Why no code: another agent still owns `crates/tui/src/run.rs` in this shared
+worktree (its console-closing work is uncommitted), and staging that file whole
+already corrupted one commit this session. C: has 13G free of 476G (98% used),
+so a new worktree with its own `CARGO_TARGET_DIR` was not created either. 19
+worktrees are registered; this is the one being written to concurrently. No
+disk cleanup was run: that needs the user's confirmation.
+
+The shared worktree compiles again: `cargo build` 0 (1m55s) · `cargo fmt --check`
+0 · `test-layout-check` 8 packages, 0 violations · `git diff --check` 0 ·
+`scripts/skill_contract.sh` PASS 8 · `scripts/ship.sh --check` in agreement.
+`comments-check` 1: three preamble sections over 120 chars, all in the
+concurrent agent's `closing.rs` (2) and the closing hunk of `lib.rs` (1); none
+belong to this split. No L3 process test was run (GitHub still blocked).

@@ -139,6 +139,46 @@ pub enum UiEvent { Submit(String), Quit }
 脚本和模型都没有。现在打断/停服都只是普通命令（`interrupt_session` / `cancel`），
 `UiEvent` 只剩下「提交一行」和「离开」（Alt+Q）。
 
+### 阶段 2 设计：前端无关的运行时【待确认】
+
+`crates/tui/src/run.rs` 的 `interactive`（885 行）同时握着两件事：窗口的键盘与屏幕，
+以及任何前端都需要的连接生命周期。WebUI 若另写一份，就会有两份拨号退避、两份 seq
+补洞、两份 transcript 补拉 —— 这正是 `crates/client` 当初存在要消灭的重复。
+
+要抽进 `client` 库的（与终端无关）：拨号与退避（`dial_now` / `wait_for`）、
+服务端生命周期（`starts_a_server` / `spawn` / `stop` / 退出时 `cancel` 判定）、
+握手与重连校验（`greeting.apply` / `declare` / `take_hole`）、
+补拉（`answer_completion` / `answer_transcripts` / `answer_older`）、
+输入翻译（`submission` / `filled`，依赖已上提的 `window_state` / `window_command`）。
+留在各前端 binary 的：键盘/鼠标事件、帧绘制、`Sink` 的实现、WS 帧的编码。
+
+两个候选形状：
+
+| | 做法 | 利 | 弊 |
+|---|---|---|---|
+| **A（推荐）** | 一个 `Frontend` trait（sink + 事件流 + 状态 + 绘制 + 补拉询问），`client::Runtime::run(frontend)` 拥有整个循环 | 拨号/重连/补拉/输入翻译只有一份，第三个前端几乎零重复 | trait 要暴露 `answer_*` 需要的窗口内部状态（completer / cache / panes），接口较大，改动集中在 885 行主循环 |
+| **B** | 只抽「连接生命周期」为一个 `Connection` 状态机；`interactive` 与 WebUI 各保留自己的循环，共享拨号与重连决策 | 改动小、可分步，回归面窄 | 循环仍有两份，补拉与输入翻译仍要各写一遍 |
+
+倾向 A，但 A 的验收依赖真进程 L3（`scripts/client_state_selftest.sh`、
+`tui_live.py`）；GitHub 未恢复之前不宜动主循环。
+
+不变式（两种形状都要守）：
+
+- 一个进程一个 `Client` + 一个 `Link`；多浏览器共享一个 `Sink` 广播，
+  不每个 WebSocket 连接各起一个 Client。
+- `Sink` 是同步 `&mut`，WebUI 的 adapter 只能 `try_send` 到广播队列、不能 await；
+  慢客户端靠「内存快照 + `get_messages --replay true`」补齐，不静默丢帧
+  （SPEC 的每个事件一个 seq）。
+- 状态按前端实例分文件（TUI 仍是 `tui.toml`），一次性 `gongga-cli` 零状态。
+- WebUI 默认 `--client_only`：不 spawn、不 cancel 别人的服务端；`--parent`
+  所有权模型不动。
+- 复用现有轮子：`Sink` / `NullSink`、`protocol::Operation`、
+  `get_messages --replay`（`REPLAY_TURN`）、`bridge` 的平级客户端模型。
+
+分步（每步各自跑门禁）：① 抽连接生命周期，TUI 行为不变；② 抽输入翻译与补拉；
+③ `crates/webui` 实现 `Sink` → JSON 与 WS 广播；④ bundle 布线 `gongga webui`；
+⑤ 双前端并存 L3（新脚本需用户许可）。
+
 ## 2. 传输层：可靠 UDP
 
 按你的选择走「跨机 + 自研轻量可靠层」。没有用 QUIC（强制 TLS，跨机自签证书很麻烦），
