@@ -320,18 +320,49 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let channels = Arc::new(crate::tools::channel::Channels::for_home(
         &cfg,
         store.clone(),
-        Arc::new(|end: crate::tools::channel::ChannelEnd| {
-            // Until the inbox has a row for it, a finished channel is a log line: what
-            // the session is owed is the next step, not a claim made here.
-            tracing::info!(
-                session = %end.session,
-                channel = %end.id,
-                exit = ?end.exit,
-                time = ?end.time,
-                output = end.output.len(),
-                "channel ended"
-            );
-        }),
+        {
+            let store = store.clone();
+            Arc::new(move |end: crate::tools::channel::ChannelEnd| {
+                // A deleted session owes nothing, and its rows would be stranded.
+                if matches!(store.get_session(&end.session), Ok(None)) {
+                    return;
+                }
+                let status = match end.exit {
+                    Some(0) => "finished successfully".to_string(),
+                    Some(code) => format!("finished with exit status {code}"),
+                    None => "ended, though its exit status could not be read".to_string(),
+                };
+                let ran = crate::agent::spent(end.time.as_millis() as u64);
+                // A preview, not the window: `check` still holds all of it, because a
+                // notice that consumed the output would be the one way to lose it.
+                let said = if end.output.trim().is_empty() {
+                    String::new()
+                } else {
+                    let preview: String = end.output.chars().take(500).collect();
+                    format!("\n\nWhat it said since you last read it:\n{preview}")
+                };
+                let message = format!(
+                    "The channel {:?} you started has {status} after {ran}. `check {}` reads \
+                     what it printed; `del_job {}` forgets it.{said}",
+                    end.id, end.id, end.id
+                );
+                // Marked: the server talking, so it must not wake an idle session.
+                if let Err(e) = store.add_pending_task(
+                    &end.session,
+                    "inject",
+                    &serde_json::json!({
+                        "session": end.session,
+                        "message": message,
+                        "notice": "channel",
+                    }),
+                ) {
+                    tracing::warn!(
+                        session = %end.session, channel = %end.id,
+                        error = %e, "could not notice a finished channel"
+                    );
+                }
+            })
+        },
     ));
 
     let agent = Arc::new(Agent {

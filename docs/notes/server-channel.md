@@ -97,15 +97,19 @@ channels its session started, so a name is never left pointing at a dead directo
 
 The watcher is what turns a program's end into a notice. It is a task on the server's
 shutdown token, so a `cancel` announces nothing it just ended; each pass reads `status`
-for every channel whose row says it has not ended, records the end, and hands the
-session the same window a `check` would have taken -- which is why a notice never
-hands over bytes the session already read.
+for every channel whose row says it has not ended, records the end, and queues an
+`inject` row marked `notice: "channel"` -- the same door a finished background job
+uses, and marked so it cannot wake an idle session.
+
+The notice does **not** take the window. It carries a preview for the reader and says
+`check` has the rest, because a notice that consumed the output would be the one way
+to lose it: the cursor moves when someone asks, not when the program ends.
 
 ## Still owed
 
-- The notice reaches the session as a log line; the inbox row it should become is the
-  next step.
 - A `cmd` name (`GONGGA_CLI`): `new` refuses it today, because routing to the command
   layer with the caller's session is not wired.
 - The old twenty tools are still rows beside `new` and `check`; they go when these
   prove themselves end to end.
+- An automatic id carries the program's name (`main/bash/2`). It does not have to: the
+  counter alone would do, and the name is the one thing a rename makes wrong.

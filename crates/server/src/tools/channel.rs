@@ -510,11 +510,11 @@ impl Channels {
                     if channels.store.finish_channel(row.id, exit).is_err() {
                         continue;
                     }
+                    // The window is not taken here: what the program said is read by
+                    // whoever asks, and a notice that consumed it would be the one way
+                    // to lose it.
                     let looked = look(&dir, row.upto, None, &spec::ChannelSpec::default());
-                    let (output, read_to) = (looked.window, looked.upto);
-                    if channels.store.set_channel_upto(row.id, read_to).is_err() {
-                        continue;
-                    }
+                    let output = looked.window;
                     (channels.notify)(ChannelEnd {
                         session: row.session.clone(),
                         id: row.path.clone(),
