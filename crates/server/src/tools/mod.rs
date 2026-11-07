@@ -35,6 +35,7 @@ pub mod python;
 pub mod python_remote;
 pub mod skill;
 pub mod spec;
+pub mod spill;
 pub mod tunnel;
 pub mod words;
 
@@ -243,7 +244,7 @@ impl ToolContext {
         // A cut on an endpoint session is not spilled here: a path on this machine
         // is not a path the reader can open.
         let dir = (!self.on_endpoint(machine)).then_some(self.output_dir.as_path());
-        crate::tools::bash::cap_output(crate::prompts::shared(), &text, max, dir, &label)
+        crate::tools::spill::cap_output(crate::prompts::shared(), &text, max, dir, &label)
     }
 }
 
@@ -1396,7 +1397,7 @@ async fn leave_running(
             }
             text.push_str(&stderr);
         }
-        let text = crate::tools::bash::cap_output(
+        let text = crate::tools::spill::cap_output(
             crate::prompts::shared(),
             &text,
             cap,
@@ -2407,7 +2408,7 @@ pub(crate) fn cap_max_output(
         return None;
     }
     let label = spill_label(&ctx.session, tool, description, call_id);
-    let path = crate::tools::bash::spill(&ctx.output_dir, &label, text)?;
+    let path = crate::tools::spill::spill(&ctx.output_dir, &label, text)?;
     Some(
         json!({
             "path": path,

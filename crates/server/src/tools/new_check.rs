@@ -216,7 +216,7 @@ fn answer(
         Ok(outcome) => {
             let mut answer = outcome.to_json();
             if let Some(window) = answer.get("output").and_then(Value::as_str) {
-                let capped = crate::tools::bash::cap_output(
+                let capped = crate::tools::spill::cap_output(
                     crate::prompts::shared(),
                     window,
                     max_output_chars,
