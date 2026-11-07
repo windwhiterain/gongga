@@ -315,12 +315,32 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(problem = %problem, "a script could not be read");
     }
 
+    // The channels `new` and `check` speak to. A relay answers them, so this is the
+    // table of names they live under, not a process of theirs.
+    let channels = Arc::new(crate::tools::channel::Channels::for_home(
+        &cfg,
+        store.clone(),
+        Arc::new(|end: crate::tools::channel::ChannelEnd| {
+            // Until the inbox has a row for it, a finished channel is a log line: what
+            // the session is owed is the next step, not a claim made here.
+            tracing::info!(
+                session = %end.session,
+                channel = %end.id,
+                exit = ?end.exit,
+                time = ?end.time,
+                output = end.output.len(),
+                "channel ended"
+            );
+        }),
+    ));
+
     let agent = Arc::new(Agent {
         store: store.clone(),
         providers: providers::Handle,
         model_config: cfg.model.clone(),
         clients: std::sync::Mutex::new(std::collections::HashMap::new()),
         default_context: cfg.model.context,
+        channels: channels.clone(),
         tools: Arc::new(
             ToolRegistry::settings(
                 cfg.tools.max_wait,
@@ -416,6 +436,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     // A detached bash that ends while this server runs is news for its session.
     let detached_watch = detached.watch(dispatch.shutdown.clone());
+    // A channel's end is news to its session while this server is up: the watcher is
+    // what reads `status`, so a program that ends with nobody looking is still told.
+    // The token is what ends it: a cancelled server announces nothing it just ended.
+    let _channels_watch = channels.watch(dispatch.shutdown.clone());
 
     // Alive until the drain ends. See `docs/notes/server-subscriptions.md`.
     let watching = subscriptions.clone();

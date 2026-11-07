@@ -297,6 +297,20 @@ CREATE INDEX IF NOT EXISTS subscriptions_by_session ON subscriptions(session);
 
 -- The pictures a message named, copied into this home: the row names the copy by
 -- id, and the bytes live beside the database. See `docs/notes/server-pictures.md`.
+CREATE TABLE IF NOT EXISTS channels (
+    id           INTEGER PRIMARY KEY,
+    session      TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    program      TEXT NOT NULL,
+    dir          TEXT NOT NULL,
+    pid          INTEGER NOT NULL,
+    started_at   INTEGER NOT NULL,
+    ended_at     INTEGER,
+    exit         INTEGER,
+    upto         INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (session, path)
+);
+
 CREATE TABLE IF NOT EXISTS pictures (
     id         INTEGER PRIMARY KEY,
     path       TEXT NOT NULL,
@@ -2602,6 +2616,109 @@ impl Store {
         Ok(())
     }
 
+    /// Records a channel this session started: its name, and where it lives.
+    pub fn add_channel(
+        &self,
+        session: &str,
+        path: &str,
+        program: &str,
+        dir: &std::path::Path,
+        pid: u32,
+    ) -> anyhow::Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO channels (session, path, program, dir, pid, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                session,
+                path,
+                program,
+                dir.display().to_string(),
+                i64::from(pid),
+                now_millis()
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Every channel a session has, alive or ended.
+    pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, path, program, dir, pid, started_at, ended_at, exit, upto
+             FROM channels WHERE session = ?1 ORDER BY path",
+        )?;
+        let rows = stmt
+            .query_map(params![session], channel_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Every channel whose program has not ended yet, across sessions: what a watcher
+    /// has to look at.
+    pub fn live_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, path, program, dir, pid, started_at, ended_at, exit, upto
+             FROM channels WHERE ended_at IS NULL ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], channel_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// One channel of one session, by the name it is called.
+    pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, path, program, dir, pid, started_at, ended_at, exit, upto
+             FROM channels WHERE session = ?1 AND path = ?2",
+        )?;
+        let mut rows = stmt.query(params![session, path])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(channel_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Where this reader has read to: taking the window is what advances it.
+    pub fn set_channel_upto(&self, id: i64, upto: u64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET upto = ?2 WHERE id = ?1",
+            params![id, i64::try_from(upto).unwrap_or(i64::MAX)],
+        )?;
+        Ok(())
+    }
+
+    /// Says what became of a channel that ended.
+    pub fn finish_channel(&self, id: i64, exit: i32) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET ended_at = ?2, exit = ?3 WHERE id = ?1 AND ended_at IS NULL",
+            params![id, now_millis(), exit],
+        )?;
+        Ok(())
+    }
+
+    /// Gives a channel another name. The directory does not move: the name is a key
+    /// of this table, not a place on disk.
+    pub fn rename_channel(&self, session: &str, path: &str, new_path: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET path = ?3 WHERE session = ?1 AND path = ?2",
+            params![session, path, new_path],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets one channel: the program is gone and nothing it said is left to read.
+    pub fn delete_channel(&self, session: &str, path: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "DELETE FROM channels WHERE session = ?1 AND path = ?2",
+            params![session, path],
+        )?;
+        Ok(())
+    }
+
     /// One job, if this home has it.
     pub fn job(&self, id: i64) -> anyhow::Result<Option<JobRow>> {
         let conn = self.lock();
@@ -2887,6 +3004,44 @@ pub struct JobRow {
     pub pid: Option<i64>,
     /// The file that process writes its answer to.
     pub answer: Option<String>,
+}
+
+/// One channel: the name a session calls it by, and what became of its program.
+///
+/// # Invariant
+///
+/// `path` is this table's key and `dir` is where the bytes are: the name is not a
+/// place on disk, so a rename moves one column and nothing else. See
+/// `docs/notes/server-channel.md`.
+#[derive(Debug, Clone)]
+pub struct ChannelRow {
+    pub id: i64,
+    pub session: String,
+    pub path: String,
+    /// The program it runs, as it was started: a name, not a path.
+    pub program: String,
+    pub dir: String,
+    pub pid: i64,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub exit: Option<i64>,
+    /// How far this reader has read: taking the window is what advances it.
+    pub upto: u64,
+}
+
+fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
+    Ok(ChannelRow {
+        id: row.get(0)?,
+        session: row.get(1)?,
+        path: row.get(2)?,
+        program: row.get(3)?,
+        dir: row.get(4)?,
+        pid: row.get(5)?,
+        started_at: row.get(6)?,
+        ended_at: row.get(7)?,
+        exit: row.get(8)?,
+        upto: row.get::<_, i64>(9)?.max(0) as u64,
+    })
 }
 
 fn job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {

@@ -30,6 +30,7 @@ pub mod interpreter;
 #[cfg(windows)]
 pub mod job;
 pub mod live_compact;
+pub mod new_check;
 pub mod python;
 pub mod python_remote;
 pub mod skill;
@@ -58,6 +59,8 @@ pub struct ToolContext {
     pub home: PathBuf,
     /// Where capped tool output is spilled, so nothing is lost by capping.
     pub output_dir: PathBuf,
+    /// The channels: programs this session started, by the name it calls them.
+    pub channels: Arc<crate::tools::channel::Channels>,
     /// The session's named shells, on this machine and -- when it names one --
     /// on its remote. See `crate::session::Shells`.
     pub shells: Arc<StdMutex<Shells>>,
@@ -766,6 +769,19 @@ impl ToolRegistry {
                     timeout: skill.timeout,
                     max_output_chars: max_output_chars.min(skill.max_output_chars),
                 })
+            }
+            "new" | "check" => {
+                // The channels are the call's own, from the session it runs as: a tool
+                // carries no table of them, so two of them cannot disagree.
+                let wait = new_check::Wait {
+                    default: bash_timeout,
+                    max_output_chars,
+                };
+                if row.cmd == "new" {
+                    Box::new(new_check::NewTool { wait })
+                } else {
+                    Box::new(new_check::CheckTool { wait })
+                }
             }
             "live_compact" => Box::new(live_compact::LiveCompactTool),
             other => return Err(format!("this build carries no command {other:?}")),

@@ -680,6 +680,10 @@ fn adopted(
         call_id: String::new(),
         // This context reads an answer and writes a row; it is no tool's own call.
         tool: String::new(),
+        channels: Arc::new(crate::tools::channel::Channels::without_words(
+            store.clone(),
+            cfg.home.join("channels"),
+        )),
         home: cfg.home.clone(),
         output_dir: output_dir.to_path_buf(),
         shells: Arc::new(std::sync::Mutex::new(crate::session::Shells::empty(

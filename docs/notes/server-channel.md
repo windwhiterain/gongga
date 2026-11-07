@@ -85,11 +85,27 @@ A name the table does not mention is raw: started with the call's own words, fra
 the call's own `until`. That is why `bash` has no `until`: its sentinel is the caller's
 business and the model never carries it.
 
+## Who reads what
+
+`new` and `check` are rows of `[tool.*]`, like every other tool, and both are
+`tunneled = false`: a channel already is what `background` used to mean, and `wait` is
+the call's own clock (`0` is no wait, absent is this server's default).
+
+`ls_job`, `del_job` and `rename_job` are commands, not tools: `ls` of a session's
+channels, `kill` in a channel's `in`, and one column renamed. `del_session` ends the
+channels its session started, so a name is never left pointing at a dead directory.
+
+The watcher is what turns a program's end into a notice. It is a task on the server's
+shutdown token, so a `cancel` announces nothing it just ended; each pass reads `status`
+for every channel whose row says it has not ended, records the end, and hands the
+session the same window a `check` would have taken -- which is why a notice never
+hands over bytes the session already read.
+
 ## Still owed
 
-- `new` and `check` as rows of the config, over `Channels`.
-- `write`/`until`/`exit_from_marker` read where a call names none: the framing a
-  `[channel.<name>]` row declares, and the sentinel that carries `bash`'s status.
-- The notice a finished channel owes its session, and the offset it reads from.
-- `ls_job`, `del_job`, `rename_job`: `ls` of the session's channels, `kill` in `in`,
-  and a renamed namespace key.
+- The notice reaches the session as a log line; the inbox row it should become is the
+  next step.
+- A `cmd` name (`GONGGA_CLI`): `new` refuses it today, because routing to the command
+  layer with the caller's session is not wired.
+- The old twenty tools are still rows beside `new` and `check`; they go when these
+  prove themselves end to end.

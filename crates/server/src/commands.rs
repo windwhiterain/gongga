@@ -716,6 +716,86 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
+            name: "ls_job".into(),
+            description: "List a session's channels: the name each one is called, what it \
+                      runs, and how much of what it said nobody has read."
+                .into(),
+            args: vec![
+                pos(
+                    "path",
+                    "The channels whose name starts this way. Omitted is every channel \
+                     the session has.",
+                    false,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "Session whose channels to list.",
+                    true,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "del_job".into(),
+            description: "End a channel's program and forget the name. A channel that \
+                      had already ended is only forgotten."
+                .into(),
+            args: vec![
+                pos(
+                    "path",
+                    "Channel to end.",
+                    true,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "Session that owns it.",
+                    true,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "rename_job".into(),
+            description: "Give a channel another name. Nothing on disk moves: the name \
+                      is this server's, not a path."
+                .into(),
+            args: vec![
+                pos(
+                    "path",
+                    "The name it has now.",
+                    true,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "new_path",
+                    "The name it takes.",
+                    true,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "Session that owns it.",
+                    true,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
             name: "get_messages".into(),
             description: "Read the transcript: a range of sequence numbers, oldest first. \
                      Each row arrives as the event it was published as, before the result."
@@ -906,6 +986,9 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d, origin).await,
         "get_messages" => get_messages(d, args).await,
+        "ls_job" => ls_job(d, args).await,
+        "del_job" => del_job(d, args).await,
+        "rename_job" => rename_job(d, args).await,
         "clone_session" => clone_session(d, args).await,
         "events" => events(d, args).await,
         "subscribe" => subscribe(d, args, origin.session()).await,
@@ -1583,6 +1666,44 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     Ok(SeqWindow { first, last })
 }
 
+async fn ls_job(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let prefix = args.get("path").cloned().unwrap_or_default();
+    match d.agent.channels.list(&session) {
+        Ok(rows) => {
+            let listed: Vec<serde_json::Value> = rows
+                .into_iter()
+                .filter(|row| row["id"].as_str().is_some_and(|id| id.starts_with(&prefix)))
+                .collect();
+            if listed.is_empty() {
+                return Outcome::ok(format!("{session}: no channel matches {prefix:?}"));
+            }
+            Outcome::ok(serde_json::Value::Array(listed).to_string())
+        }
+        Err(why) => Outcome::err(why),
+    }
+}
+
+async fn del_job(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let path = args["path"].clone();
+    match d.agent.channels.stop(&session, &path).await {
+        Ok(true) => Outcome::ok(format!("ended channel {path:?}")),
+        Ok(false) => Outcome::ok(format!("channel {path:?} had already ended; forgotten")),
+        Err(why) => Outcome::err(why),
+    }
+}
+
+async fn rename_job(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let path = args["path"].clone();
+    let new_path = args["new_path"].clone();
+    match d.agent.channels.rename(&session, &path, &new_path) {
+        Ok(()) => Outcome::ok(format!("{path:?} is now {new_path:?}")),
+        Err(why) => Outcome::err(why),
+    }
+}
+
 async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
     let name = args["session"].clone();
     let session = match d.sessions.get(&name) {
@@ -2088,6 +2209,12 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
         Some(session) => Some(session.claim().await),
         None => None,
     };
+    // Its channels are programs it started: each one is told to end, and the row goes
+    // with it, so a name this session had is not left pointing at a dead directory.
+    let channels = d.agent.channels.stop_session(name).await;
+    if channels > 0 {
+        tracing::info!(session = %name, channels, "channels ended with their session");
+    }
     // A job of this session is work it started: it goes the way its bash goes.
     let jobs = d.store.jobs_of(name).unwrap_or_default();
     let mut workers = Vec::new();

@@ -33,6 +33,7 @@ pub async fn run(
         session: session.to_string(),
         call_id: format!("cmd-{}", uuid::Uuid::new_v4().simple()),
         tool: tool.to_string(),
+        channels: agent.channels.clone(),
         home: agent.home.clone(),
         output_dir: agent.output_dir.clone(),
         shells: handle.shells(),

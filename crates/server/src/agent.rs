@@ -70,6 +70,8 @@ pub struct Agent {
     /// [`Self::llm`]'s context window, for a percentage set without naming a model.
     pub default_context: Option<u64>,
     pub tools: Arc<ToolRegistry>,
+    /// The channels `new` and `check` speak to, and what a context is built with.
+    pub channels: Arc<crate::tools::channel::Channels>,
     pub bus: EventBus,
     /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
     pub cache_invalid_rate: f64,
@@ -1413,6 +1415,7 @@ impl Agent {
             session: name.to_string(),
             call_id: call_id.clone(),
             tool: tool.clone(),
+            channels: self.channels.clone(),
             home: self.home.clone(),
             output_dir: self.output_dir.clone(),
             shells: session.shells(),
