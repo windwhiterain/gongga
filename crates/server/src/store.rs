@@ -2624,7 +2624,8 @@ impl Store {
         path: &str,
         program: &str,
         remote: Option<&str>,
-        dir: &std::path::Path,
+        // The machine's own spelling: a peer's directory is not a path this one has.
+        dir: &str,
         pid: u32,
     ) -> anyhow::Result<i64> {
         let conn = self.lock();
@@ -2636,7 +2637,7 @@ impl Store {
                 path,
                 program,
                 remote,
-                dir.display().to_string(),
+                dir,
                 i64::from(pid),
                 now_millis()
             ],

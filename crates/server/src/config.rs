@@ -940,7 +940,13 @@ fn read_file(path: &Path) -> anyhow::Result<FileConfig> {
     toml::from_str(&text).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
 }
 
-fn home_dir() -> PathBuf {
+/// The home this program has when nobody names one: `GONGGA_HOME`, else `~/.gongga`.
+///
+/// # Invariant
+///
+/// The one definition of it, so a runner on a peer keeps its channels where a
+/// server on that machine would. See `docs/notes/server-channel.md`.
+pub(crate) fn home_dir() -> PathBuf {
     env_path("GONGGA_HOME")
         .or_else(|| dirs::home_dir().map(|h| h.join(".gongga")))
         .unwrap_or_else(|| PathBuf::from(".gongga"))

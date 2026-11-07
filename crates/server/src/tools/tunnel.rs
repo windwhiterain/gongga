@@ -681,6 +681,7 @@ fn adopted(
         // This context reads an answer and writes a row; it is no tool's own call.
         tool: String::new(),
         channels: Arc::new(crate::tools::channel::Channels::without_words(
+            cfg,
             store.clone(),
             cfg.home.join("channels"),
         )),

@@ -120,6 +120,19 @@ whose read end is closed fails at once on unix, and was observed to *block* unde
 Windows. The closed-reader test is therefore unix-only; the Windows case is bounded
 backpressure, not a lost frame.
 
+## The channel operations
+
+`Relay` is the one operation that starts something: it is what makes a channel on a peer
+mean what one here means, and it is described in `docs/notes/server-channel.md`. In short:
+it carries the channel's `cmd` words rather than a directory, and answers the directory the
+peer chose and the pid it runs -- the peer is the only side that knows which home it has.
+`Append` and `Read` are what this process then speaks with, and both are ordinary file
+operations: append to `in`, read `out` from the row's cursor, read `status` whole.
+
+The protocol version was raised for each of them in turn -- `Append` is 3, `Relay` 4 and
+`Relay`'s words 5 -- so a client refuses a peer it cannot speak to instead of discovering it
+mid-command.
+
 ## Getting the runner onto a peer
 
 The runner ships inside the distribution, so there is nothing extra to build or

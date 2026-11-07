@@ -188,7 +188,7 @@ impl Runner {
             Op::List { path } => list(&path),
             Op::Space { path } => space(&path),
             Op::Append { path, data } => append(&path, &data),
-            Op::Relay { dir, cwd } => relay(&dir, cwd.as_deref()),
+            Op::Relay { cwd, words } => relay(cwd.as_deref(), &words),
         };
         self.reply(id, result).await;
     }
@@ -634,21 +634,28 @@ async fn send(pid: u32, signal: &str) -> bool {
     }
 }
 
-/// The peer's own disk, read by the peer.
-///
-/// # Invariant
-///
-/// Answered where the shells run: the machine that fills up is the only one that can
-/// report how much it has left, and a server asking its own `statvfs` would answer
-/// Starts this payload's relay for `dir`, detached, and answers its pid.
+/// Starts this payload's relay for one channel, detached, and answers where that
+/// channel lives and the pid it runs.
 ///
 /// # Invariant
 ///
 /// The relay outlives this connection: it is started out of every job this process
-/// is in, so a channel on a peer means what one here means.
-fn relay(dir: &str, cwd: Option<&str>) -> Result<Value, String> {
+/// is in, so a channel on a peer means what one here means. The directory is this
+/// machine's to choose, because only this machine knows which home it has.
+fn relay(cwd: Option<&str>, words: &str) -> Result<Value, String> {
+    let Some(words) = crate::base64::decode(words) else {
+        return Err("the channel's words are not base64".to_string());
+    };
+    let dir = crate::config::home_dir()
+        .join("channels")
+        .join(format!("ch-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Both files exist before the relay runs: it reads the words once, as it starts,
+    // and looks at `in` from its first pass.
+    std::fs::write(dir.join("cmd"), &words).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::write(dir.join("in"), b"").map_err(|e| format!("{}: {e}", dir.display()))?;
     let server = beside("server")?;
-    let log = Path::new(dir).join("relay.log");
+    let log = dir.join("relay.log");
     let out = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -658,7 +665,7 @@ fn relay(dir: &str, cwd: Option<&str>) -> Result<Value, String> {
     let mut command = Command::new(&server);
     command
         .arg("--relay")
-        .arg(dir)
+        .arg(&dir)
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err)
@@ -702,7 +709,13 @@ fn relay(dir: &str, cwd: Option<&str>) -> Result<Value, String> {
     // The child is this machine's now: this process must not wait for it, and must
     // not take it down on the way out.
     std::mem::drop(child);
-    Ok(json!({"pid": pid, "log": log.display().to_string()}))
+    // The path the client stores is spelled this endpoint's own way: the only one it
+    // can hand back to `read` and `append`.
+    Ok(json!({
+        "pid": pid,
+        "dir": spelling(&dir),
+        "log": log.display().to_string(),
+    }))
 }
 
 /// The program beside this one: the payload keeps them together.
@@ -747,6 +760,12 @@ fn append(path: &str, data: &str) -> Result<Value, String> {
     Ok(json!({"bytes": bytes.len()}))
 }
 
+/// The peer's own disk, read by the peer.
+///
+/// # Invariant
+///
+/// Answered where the shells run: the machine that fills up is the only one that can
+/// report how much it has left, and a server asking its own `statvfs` would answer
 /// for the wrong machine. See `docs/notes/server-disk.md`.
 fn space(path: &str) -> Result<Value, String> {
     let volumes = crate::disk::volumes(Path::new(path));

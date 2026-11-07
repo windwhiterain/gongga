@@ -85,6 +85,34 @@ A name the table does not mention is raw: started with the call's own words, fra
 the call's own `until`. That is why `bash` has no `until`: its sentinel is the caller's
 business and the model never carries it.
 
+## A channel on a peer
+
+`new --remote <name>` starts the program on that machine, and the channel means there what
+it means here: a directory, a relay that outlives this server, and two files this process
+talks to. Three things differ, and each has one reason.
+
+**The peer chooses the directory.** Only the peer knows which home it has -- `GONGGA_HOME`
+there, else `~/.gongga` -- so `Op::Relay` carries no path and answers one, the way `open`
+answers the directory it accepted. The client stores that spelling and hands it back for
+every read and append; it never builds a peer path of its own. The peer writes `cmd` and an
+empty `in` before it starts the relay, so no write races the relay's first look, and the
+words travel inside the relay request rather than as a file this side names.
+
+**The program runs with the peer's environment.** This machine's `PATH`, `GONGGA_HOME` and
+`GONGGA_CLI` name paths the peer does not have, so a channel there is started with no
+environment of ours -- the same rule a remote shell already follows.
+
+**The connection is the server's, one per peer name.** A channel is read on every look, so
+the runner is kept; a connection that has ended is not reused, because a peer that was
+restarted must not answer with the silence of the run before it. It is not a session's
+connection: the channel outlives the session's shells either way.
+
+Everything else is the same three files: `out` from the row's cursor, `status` whole, `in`
+appended. A relay started by a peer's runner leaves every job this connection is in, so a
+`cancel`, an ssh that drops and a server that restarts all leave the channel running --
+which is what `scripts/channel_remote_selftest.sh` proves by killing the server and asking
+the same channel again.
+
 ## Who reads what
 
 `new` and `check` are rows of `[tool.*]`, like every other tool, and both are

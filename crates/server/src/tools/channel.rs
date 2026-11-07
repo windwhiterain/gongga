@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
+use crate::remote::Endpoint;
+use crate::remote::transport::Runner;
 use crate::store::{ChannelRow, Store};
 use crate::tools::spec;
 
@@ -88,6 +90,15 @@ pub struct Channels {
     grammar: HashMap<String, spec::ChannelSpec>,
     /// Where a finished channel is announced.
     notify: Notifier,
+    /// The peers a call may name, as this machine's remotes file lists them.
+    remotes: HashMap<String, Endpoint>,
+    /// One connection per peer, kept because a channel is read on every look.
+    ///
+    /// # Invariant
+    ///
+    /// The server's own, not a session's: a channel outlives the session's shells,
+    /// and the relay it reads runs on the peer whether this process is here or not.
+    runners: tokio::sync::Mutex<HashMap<String, Arc<Runner>>>,
 }
 
 impl Channels {
@@ -97,6 +108,7 @@ impl Channels {
         server: PathBuf,
         grammar: HashMap<String, spec::ChannelSpec>,
         notify: Notifier,
+        remotes: HashMap<String, Endpoint>,
     ) -> Self {
         Self {
             store,
@@ -104,6 +116,8 @@ impl Channels {
             server,
             grammar,
             notify,
+            remotes,
+            runners: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -122,18 +136,25 @@ impl Channels {
             server,
             cfg.tools.channels.clone().into_iter().collect(),
             notify,
+            remotes_of(cfg),
         )
     }
 
     /// A `Channels` nobody speaks to: for a context that reads one answer, writes one
     /// row.
-    pub fn without_words(store: Store, root: PathBuf) -> Self {
+    ///
+    /// # Invariant
+    ///
+    /// The same peers as the server's own: a subscription's action calls `new` like
+    /// any other caller, and a name it cannot resolve would be a name nobody can.
+    pub fn without_words(cfg: &crate::config::Config, store: Store, root: PathBuf) -> Self {
         Self::new(
             store,
             root,
             PathBuf::from("gongga-server"),
             HashMap::new(),
             Arc::new(|_| {}),
+            remotes_of(cfg),
         )
     }
 
@@ -165,13 +186,6 @@ impl Channels {
         id: Option<String>,
     ) -> Result<ChannelRow, String> {
         let grammar = self.grammar_of(name);
-        // A channel runs where its call says, not where the session stands.
-        if let Some(machine) = remote {
-            return Err(format!(
-                "a channel on {machine:?} is not wired yet: this build starts programs on \
-                 this machine, and saying so is better than starting one on the wrong one"
-            ));
-        }
         // A cmd is answered by this server, so there is no program to start.
         if grammar.kind == spec::Kind::Cmd {
             return Err(format!(
@@ -196,22 +210,48 @@ impl Channels {
             }
             None => self.auto_name(session, name)?,
         };
+        let words = crate::relay::Words {
+            program: name.to_string(),
+            args: if args.is_empty() {
+                grammar.spawn.clone()
+            } else {
+                args.to_vec()
+            },
+            cwd: cwd.to_path_buf(),
+            env: env.to_vec(),
+        };
+        let started = match remote {
+            // A program there gets that machine's environment, not this one's.
+            Some(machine) => {
+                let there = crate::relay::Words {
+                    env: Vec::new(),
+                    ..words
+                };
+                self.start_there(machine, &there).await
+            }
+            None => self.start_here(&words).await,
+        }?;
+        let (place, pid) = started;
+        self.store
+            .add_channel(session, &path, name, remote, &place.dir(), pid)
+            .map_err(quiet)?;
+        let row = self
+            .store
+            .channel_of(session, &path)
+            .map_err(quiet)?
+            .ok_or_else(|| format!("channel {path:?} was written and cannot be read back"))?;
+        tracing::info!(channel = %path, dir = %place.dir(), pid, "channel started");
+        Ok(row)
+    }
+
+    /// A channel on this machine: its own directory, and a relay started beside us.
+    async fn start_here(&self, words: &crate::relay::Words) -> Result<(Where, u32), String> {
         let dir = self
             .root
             .join(format!("ch-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).map_err(|e| format!("could not make {dir:?}: {e}"))?;
-        let words = if args.is_empty() {
-            grammar.spawn.clone()
-        } else {
-            args.to_vec()
-        };
-        let written = serde_json::to_vec(&crate::relay::Words {
-            program: name.to_string(),
-            args: words,
-            cwd: cwd.to_path_buf(),
-            env: env.to_vec(),
-        })
-        .map_err(|e| format!("could not describe {name:?}: {e}"))?;
+        let written = serde_json::to_vec(words)
+            .map_err(|e| format!("could not describe {:?}: {e}", words.program))?;
         std::fs::write(dir.join("cmd"), written)
             .map_err(|e| format!("could not write {:?}: {e}", dir.join("cmd")))?;
         // The command file exists before the relay looks at it, so its first line is
@@ -223,30 +263,106 @@ impl Channels {
             &["--relay".to_string(), dir.display().to_string()],
             &self.root,
             &log,
-            env,
+            &words.env,
         )
-        .map_err(|e| format!("could not start a relay for {name:?}: {e}"))?;
+        .map_err(|e| format!("could not start a relay for {:?}: {e}", words.program))?;
         // The relay is no part of this tree: it keeps the program alive after us.
         crate::tools::job::release(relay.pid);
-        let status = match self.await_status(&dir).await {
-            Some(status) => status,
-            None => {
-                return Err(format!(
-                    "a relay for {name:?} started but never said who it started; its own \
-                     words are in {log:?}"
-                ));
+        let place = Where::Here(dir);
+        let pid = self
+            .await_status(&place, &log.display().to_string())
+            .await?;
+        Ok((place, pid))
+    }
+
+    /// A channel on a peer: it places its own directory, and its relay outlives us.
+    ///
+    /// # Invariant
+    ///
+    /// A directory the call names is the endpoint's to accept: one it does not have is
+    /// an error here, never a quiet substitution of a directory this machine has.
+    async fn start_there(
+        &self,
+        machine: &str,
+        words: &crate::relay::Words,
+    ) -> Result<(Where, u32), String> {
+        let runner = self.runner_for(machine).await?;
+        // `.` is the call naming no directory: the program then runs where the peer's
+        // own runner stands.
+        let named = words.cwd != Path::new(".");
+        if named {
+            let asked = words.cwd.display().to_string();
+            let there = runner
+                .stat(&asked)
+                .await
+                .map_err(|e| format!("{machine}: {e}"))?;
+            if !there.is_dir {
+                return Err(format!("{machine} has no directory {asked:?}"));
             }
+        }
+        let written = serde_json::to_vec(words)
+            .map_err(|e| format!("could not describe {:?}: {e}", words.program))?;
+        let cwd = named.then(|| words.cwd.display().to_string());
+        let started = runner
+            .relay(cwd.as_deref(), &written)
+            .await
+            .map_err(|e| format!("could not start a channel on {machine}: {e}"))?;
+        if started.dir.is_empty() {
+            return Err(format!("{machine} started a relay and named no directory"));
+        }
+        let place = Where::There {
+            runner,
+            dir: started.dir,
         };
-        self.store
-            .add_channel(session, &path, name, remote, &dir, status.pid)
-            .map_err(quiet)?;
-        let row = self
-            .store
-            .channel_of(session, &path)
-            .map_err(quiet)?
-            .ok_or_else(|| format!("channel {path:?} was written and cannot be read back"))?;
-        tracing::info!(channel = %path, dir = %dir.display(), pid = status.pid, "channel started");
-        Ok(row)
+        let pid = self.await_status(&place, &started.log).await?;
+        Ok((place, pid))
+    }
+
+    /// The connection a peer answers on, started once and kept.
+    ///
+    /// # Invariant
+    ///
+    /// One per peer name, and a connection that has ended is not reused: a peer that
+    /// was restarted must not answer with the silence of the run before it.
+    async fn runner_for(&self, machine: &str) -> Result<Arc<Runner>, String> {
+        let mut runners = self.runners.lock().await;
+        if let Some(runner) = runners.get(machine)
+            && runner.connected()
+        {
+            return Ok(Arc::clone(runner));
+        }
+        let Some(endpoint) = self.remotes.get(machine) else {
+            let mut known: Vec<&str> = self.remotes.keys().map(String::as_str).collect();
+            known.sort_unstable();
+            return Err(format!(
+                "no remote named {machine:?}; this machine's remotes are {}",
+                if known.is_empty() {
+                    "none".to_string()
+                } else {
+                    known.join(", ")
+                }
+            ));
+        };
+        let command = endpoint
+            .runner_command()
+            .map_err(|e| format!("{machine}: {e}"))?;
+        let spawned = Runner::spawn(command, endpoint.answer_timeout())
+            .await
+            .map_err(|e| format!("{}: {e}", endpoint.describe()))?;
+        let runner = Arc::new(spawned);
+        runners.insert(machine.to_string(), Arc::clone(&runner));
+        Ok(runner)
+    }
+
+    /// Where one channel's files are, for a call that has its row.
+    async fn place_of(&self, row: &ChannelRow) -> Result<Where, String> {
+        match &row.remote {
+            None => Ok(Where::Here(PathBuf::from(&row.dir))),
+            Some(machine) => Ok(Where::There {
+                runner: self.runner_for(machine).await?,
+                dir: row.dir.clone(),
+            }),
+        }
     }
 
     /// The name a call that states none gets: this session's, this program's, and the
@@ -264,14 +380,16 @@ impl Channels {
     }
 
     /// Waits for the relay's first `status`, which says who it started.
-    async fn await_status(&self, dir: &Path) -> Option<crate::relay::Status> {
+    async fn await_status(&self, place: &Where, log: &str) -> Result<u32, String> {
         let deadline = Instant::now() + START_DEADLINE;
         loop {
-            if let Some(status) = read_status(dir) {
-                return Some(status);
+            if let Some(status) = place.status().await {
+                return Ok(status.pid);
             }
             if Instant::now() >= deadline {
-                return None;
+                return Err(format!(
+                    "a relay started but never said who it started; its own words are in {log}"
+                ));
             }
             tokio::time::sleep(LOOK).await;
         }
@@ -293,7 +411,7 @@ impl Channels {
         until: Option<&str>,
     ) -> Result<Outcome, String> {
         let row = self.row_of(session, id)?;
-        let dir = PathBuf::from(&row.dir);
+        let place = self.place_of(&row).await?;
         let grammar = self.grammar_of(&row.program);
         // A sentinel is generated per write, and only for a write: a read alone has
         // nothing to frame.
@@ -313,7 +431,7 @@ impl Channels {
             let mut command = String::from("input ");
             command.push_str(&crate::base64::encode(spelled.as_bytes()));
             command.push('\n');
-            append(&dir.join("in"), &command)?;
+            place.append("in", &command).await?;
         }
         let marker = match until {
             Some(marker) => Some(marker.to_string()),
@@ -325,8 +443,9 @@ impl Channels {
         };
         let deadline = Instant::now() + wait;
         loop {
-            let looked = look(&dir, row.upto, marker.as_deref(), &grammar);
-            let ended = read_status(&dir).and_then(|status| status.exit);
+            let fresh = place.read_from("out", row.upto).await?;
+            let looked = look(&fresh, row.upto, marker.as_deref(), &grammar);
+            let ended = place.status().await.and_then(|status| status.exit);
             if looked.matched || ended.is_some() || wait.is_zero() {
                 // Two statuses, not one fact: the command's, and the program's ending.
                 return self.answer(
@@ -394,16 +513,29 @@ impl Channels {
     }
 
     /// Every channel one session has, oldest name first.
-    pub fn list(&self, session: &str) -> Result<Vec<Value>, String> {
+    ///
+    /// # Invariant
+    ///
+    /// A row whose machine cannot be reached is still listed: it is this table's, and
+    /// what it has said is the one thing that is `null` when nobody can ask.
+    pub async fn list(&self, session: &str) -> Result<Vec<Value>, String> {
         let rows = self.store.channels_of(session).map_err(quiet)?;
-        Ok(rows
-            .iter()
-            .map(|row| {
-                let dir = PathBuf::from(&row.dir);
-                let unread = look(&dir, row.upto, None, &spec::ChannelSpec::default())
-                    .window
-                    .len();
-                json!({
+        let mut listed = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let unread = match self.place_of(row).await {
+                Ok(place) => place
+                    .read_from("out", row.upto)
+                    .await
+                    .map(|fresh| {
+                        look(&fresh, row.upto, None, &spec::ChannelSpec::default())
+                            .window
+                            .len()
+                    })
+                    .map(|unread| json!(unread))
+                    .unwrap_or(Value::Null),
+                Err(_) => Value::Null,
+            };
+            listed.push(json!({
                     "id": row.path,
                     "session": row.session,
                     "program": row.program,
@@ -423,10 +555,10 @@ impl Channels {
                         Some(code) => json!(code),
                         None => Value::Null,
                     },
-                    "unread": unread,
-                })
-            })
-            .collect())
+                "unread": unread,
+            }));
+        }
+        Ok(listed)
     }
 
     /// The channel a session calls this, when it has one and it is still running.
@@ -446,19 +578,24 @@ impl Channels {
     /// writing must not look gone while it is not.
     pub async fn stop(&self, session: &str, id: &str) -> Result<bool, String> {
         let row = self.row_of(session, id)?;
-        let dir = PathBuf::from(&row.dir);
         if row.exit.is_some() {
             self.store.delete_channel(session, id).map_err(quiet)?;
             return Ok(false);
         }
-        append(&dir.join("in"), "kill\n")?;
+        let place = self.place_of(&row).await?;
+        place.append("in", "kill\n").await?;
         let deadline = Instant::now() + START_DEADLINE;
-        while read_status(&dir).and_then(|status| status.exit).is_none() {
+        while place
+            .status()
+            .await
+            .and_then(|status| status.exit)
+            .is_none()
+        {
             if Instant::now() >= deadline {
                 return Err(format!(
                     "channel {id:?} was told to end and did not; its relay log is in \
                      {:?}",
-                    dir.join("relay.log")
+                    place.file("relay.log")
                 ));
             }
             tokio::time::sleep(LOOK).await;
@@ -494,8 +631,14 @@ impl Channels {
         };
         let mut stopped = 0;
         for row in rows {
-            let dir = PathBuf::from(&row.dir);
-            if row.exit.is_none() && append(&dir.join("in"), "kill\n").is_ok() {
+            let alive = match self.place_of(&row).await {
+                Ok(place) => place.append("in", "kill\n").await.is_ok(),
+                Err(e) => {
+                    tracing::warn!(channel = %row.path, "{e}");
+                    false
+                }
+            };
+            if row.exit.is_none() && alive {
                 stopped += 1;
             }
             let _ = self.store.delete_channel(session, &row.path);
@@ -526,8 +669,10 @@ impl Channels {
                     }
                 };
                 for row in live {
-                    let dir = PathBuf::from(&row.dir);
-                    let Some(status) = read_status(&dir) else {
+                    let Ok(place) = channels.place_of(&row).await else {
+                        continue;
+                    };
+                    let Some(status) = place.status().await else {
                         continue;
                     };
                     let Some(exit) = status.exit else {
@@ -538,8 +683,8 @@ impl Channels {
                     }
                     // The window is not taken here: a notice that consumed it would be
                     // the one way to lose it.
-                    let looked = look(&dir, row.upto, None, &spec::ChannelSpec::default());
-                    let output = looked.window;
+                    let fresh = place.read_from("out", row.upto).await.unwrap_or_default();
+                    let output = look(&fresh, row.upto, None, &spec::ChannelSpec::default()).window;
                     (channels.notify)(ChannelEnd {
                         session: row.session.clone(),
                         id: row.path.clone(),
@@ -558,6 +703,101 @@ impl Channels {
     }
 }
 
+/// The peers this home's config names, by the name a call gives.
+fn remotes_of(cfg: &crate::config::Config) -> HashMap<String, Endpoint> {
+    crate::remotes::load(cfg.endpoint.answer_timeout)
+        .into_iter()
+        .map(|remote| (remote.name, remote.endpoint))
+        .collect()
+}
+
+/// Where one channel's files are: a directory this machine has, or one a peer has.
+///
+/// # Invariant
+///
+/// A channel's directory is the machine's own business. The relay that writes it was
+/// started there, so this process reads `out`, `status` and `in` through one connection
+/// and never names a peer path it was not answered. See `docs/notes/server-channel.md`.
+enum Where {
+    Here(PathBuf),
+    There { runner: Arc<Runner>, dir: String },
+}
+
+impl Where {
+    /// The directory, as a row and a message spell it.
+    fn dir(&self) -> String {
+        match self {
+            Self::Here(dir) => dir.display().to_string(),
+            Self::There { dir, .. } => dir.clone(),
+        }
+    }
+
+    /// One file of the channel's, by name, in the spelling its machine opens it by.
+    fn file(&self, name: &str) -> String {
+        match self {
+            Self::Here(dir) => dir.join(name).display().to_string(),
+            Self::There { dir, .. } => format!("{}/{name}", dir.trim_end_matches('/')),
+        }
+    }
+
+    /// What one file holds from `from` on, or why it could not be read.
+    ///
+    /// # Invariant
+    ///
+    /// Every look asks only for what it has not read: a peer answers one chunk at a
+    /// time, and a channel's `out` grows for as long as its program runs.
+    async fn read_from(&self, name: &str, from: u64) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Here(_) => {
+                let path = self.file(name);
+                let bytes =
+                    std::fs::read(&path).map_err(|e| format!("could not read {path:?}: {e}"))?;
+                let start = usize::try_from(from).unwrap_or(0).min(bytes.len());
+                Ok(bytes[start..].to_vec())
+            }
+            Self::There { runner, .. } => {
+                let path = self.file(name);
+                let mut bytes = Vec::new();
+                let mut offset = from;
+                loop {
+                    let chunk = runner
+                        .read(&path, offset)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let fresh = chunk.data.len();
+                    bytes.extend_from_slice(&chunk.data);
+                    // The endpoint's `eof` is "the file has nothing more"; so is an
+                    // empty chunk, from a peer that raced the file's growth.
+                    if chunk.eof || fresh == 0 {
+                        return Ok(bytes);
+                    }
+                    offset = chunk.next;
+                }
+            }
+        }
+    }
+
+    /// What the relay last said about its program, when it has said anything.
+    async fn status(&self) -> Option<crate::relay::Status> {
+        let bytes = self.read_from("status", 0).await.ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Appends one command to the channel's command file.
+    async fn append(&self, name: &str, line: &str) -> Result<(), String> {
+        match self {
+            Self::Here(_) => append_here(&self.file(name), line),
+            Self::There { runner, .. } => {
+                let path = self.file(name);
+                runner
+                    .append(&path, line.as_bytes())
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+}
+
 /// One look at what a channel has said beyond `upto`.
 struct Looked {
     /// The window nobody has read, cut at the marker when it is there.
@@ -569,25 +809,30 @@ struct Looked {
     exit: Option<i32>,
 }
 
-/// Reads the file once: the relay may still be appending, so this is what is there now.
-fn look(dir: &Path, upto: u64, marker: Option<&str>, grammar: &spec::ChannelSpec) -> Looked {
-    let path = dir.join("out");
-    let bytes = std::fs::read(&path).unwrap_or_default();
-    let from = usize::try_from(upto).unwrap_or(0).min(bytes.len());
-    let fresh = String::from_utf8_lossy(&bytes[from..]).to_string();
+/// One look at `fresh`, the bytes a channel said beyond `upto`.
+///
+/// # Invariant
+///
+/// The relay may still be appending, so this is what had arrived when it was read; what
+/// it is read *from* is the cursor, because a look asks the machine for the tail only.
+fn look(fresh: &[u8], upto: u64, marker: Option<&str>, grammar: &spec::ChannelSpec) -> Looked {
+    let mut seen = upto;
+    let fresh = String::from_utf8_lossy(fresh).to_string();
     let Some(marker) = marker else {
+        seen += fresh.len() as u64;
         return Looked {
             window: fresh,
             matched: false,
-            upto: bytes.len() as u64,
+            upto: seen,
             exit: None,
         };
     };
     let Some(at) = fresh.find(marker) else {
+        seen += fresh.len() as u64;
         return Looked {
             window: fresh,
             matched: false,
-            upto: bytes.len() as u64,
+            upto: seen,
             exit: None,
         };
     };
@@ -616,7 +861,7 @@ fn look(dir: &Path, upto: u64, marker: Option<&str>, grammar: &spec::ChannelSpec
     Looked {
         window,
         matched: true,
-        upto: (from + at + marker.len() + eaten) as u64,
+        upto: upto + (at + marker.len() + eaten) as u64,
         exit,
     }
 }
@@ -640,14 +885,8 @@ fn trim_newline(window: &mut String) {
     }
 }
 
-/// What the relay last said about its program, when it has said anything.
-fn read_status(dir: &Path) -> Option<crate::relay::Status> {
-    let bytes = std::fs::read(dir.join("status")).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-/// Appends one command to a channel's command file.
-fn append(path: &Path, line: &str) -> Result<(), String> {
+/// Appends one command to a channel's command file on this machine.
+fn append_here(path: &str, line: &str) -> Result<(), String> {
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)

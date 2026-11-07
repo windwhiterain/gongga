@@ -1705,7 +1705,7 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
 async fn ls_job(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
     let prefix = args.get("path").cloned().unwrap_or_default();
-    match d.agent.channels.list(&session) {
+    match d.agent.channels.list(&session).await {
         Ok(rows) => {
             let listed: Vec<serde_json::Value> = rows
                 .into_iter()

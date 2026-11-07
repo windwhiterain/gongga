@@ -10,8 +10,8 @@ use serde_json::Value;
 /// # Invariant
 ///
 /// Raised when a request gains a meaning an older runner would ignore: 2 `Open.args`,
-/// 3 `Append`, 4 `Relay`.
-pub const PROTOCOL: u32 = 4;
+/// 3 `Append`, 4 `Relay`, 5 `Relay.words`.
+pub const PROTOCOL: u32 = 5;
 
 /// One request; `id` is the client's, and the reply repeats it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,16 +78,20 @@ pub enum Op {
     Space {
         path: String,
     },
-    /// Starts this payload's relay for `dir`, detached, and answers its pid.
+    /// Starts this payload's relay for one channel, detached, and answers its directory.
     ///
     /// # Invariant
     ///
-    /// The runner is the only process that can start one: leaving the client's job
-    /// object is what keeps the relay alive after the connection, and only a native
-    /// process may ask for it. See `docs/notes/server-channel.md`.
+    /// The relay outlives this connection: it is started out of every job this process
+    /// is in, and only a native process may ask for it. The peer also chooses the
+    /// channel's directory, because only the peer knows which home it has, so no client
+    /// ever names a path it was not answered. See `docs/notes/server-channel.md`.
     Relay {
-        dir: String,
+        /// Where the relay itself stands, when the call named a directory.
         cwd: Option<String>,
+        /// The channel's `cmd` file, base64: the relay reads it as it starts, so it
+        /// travels with the request that starts it.
+        words: String,
     },
     /// Bytes for the end of a file, created with its parents when it is not there.
     ///
