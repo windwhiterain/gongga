@@ -171,19 +171,23 @@ impl Agent {
             });
         // The turn's outcome as a row, not only a line: a reader with the database need
         // not match prose.
-        self.log_event(
-            Some(session.id()),
-            "turn_end",
-            &serde_json::json!({
-                "outcome": outcome,
-                "steps": steps,
-                // Why it failed, for the monitor that reads this row back: a
-                // provider's refusal is the `providers` monitor's business.
-                "origin": origin,
-                "elapsed_ms": started.elapsed().as_millis() as u64,
-                "answer": answer,
-            }),
-        );
+        let mut row = serde_json::json!({
+            "outcome": outcome,
+            "steps": steps,
+            // Why it failed, for the monitor that reads this row back: a
+            // provider's refusal is the `providers` monitor's business.
+            "origin": origin,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+        });
+        // A cut turn did not end, so it does not say it did: see server-agent.md.
+        let kind = match outcome {
+            TurnOutcome::Cancelled => "turn_interrupted",
+            _ => {
+                row["answer"] = serde_json::json!(answer);
+                "turn_end"
+            }
+        };
+        self.log_event(Some(session.id()), kind, &row);
         let (status, detail) = match outcome {
             TurnOutcome::Done => (SessionStatus::Idle, None),
             TurnOutcome::Cancelled => (SessionStatus::Idle, Some("cancelled".to_string())),
