@@ -330,24 +330,35 @@ impl Channels {
             let looked = look(&dir, row.upto, marker.as_deref(), &grammar);
             let ended = read_status(&dir).and_then(|status| status.exit);
             if looked.matched || ended.is_some() || wait.is_zero() {
+                // Two statuses, and they are not one fact: `looked.exit` is what the
+                // command said about itself, `ended` is the program being gone. Only the
+                // second ends the channel.
                 return self.answer(
                     row,
                     looked.window,
                     looked.matched,
                     looked.upto,
                     looked.exit.or(ended),
+                    ended,
                 );
             }
             if Instant::now() >= deadline {
                 // Nothing arrived within the wait: what is there is the answer, and the
                 // cursor moves past it so the next call is not told the same thing.
-                return self.answer(row, looked.window, false, looked.upto, None);
+                return self.answer(row, looked.window, false, looked.upto, None, ended);
             }
             tokio::time::sleep(LOOK).await;
         }
     }
 
     /// Records what a call read, and answers with it.
+    ///
+    /// # Invariant
+    ///
+    /// `exit` is what this call's command said about itself; `gone` is the program being
+    /// gone. Only `gone` ends the channel: a framed command inside a persistent shell
+    /// reports a status on every call, and a channel that read that as its own end would
+    /// answer one command and refuse the next.
     fn answer(
         &self,
         row: ChannelRow,
@@ -355,11 +366,12 @@ impl Channels {
         matched: bool,
         read_to: u64,
         exit: Option<i32>,
+        gone: Option<i32>,
     ) -> Result<Outcome, String> {
         self.store
             .set_channel_upto(row.id, read_to)
             .map_err(quiet)?;
-        if let Some(code) = exit {
+        if let Some(code) = gone {
             self.store.finish_channel(row.id, code).map_err(quiet)?;
         }
         Ok(Outcome {
