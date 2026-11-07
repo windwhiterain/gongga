@@ -579,6 +579,54 @@ impl Agent {
         Ok(prompt)
     }
 
+    /// The stored tool set this session sends, stamped when a fact has moved.
+    ///
+    /// # Invariant
+    ///
+    /// Four stored facts -- the peer, the model, whether a compaction origin has
+    /// opened, and the build -- are the only things that can change a head. A
+    /// transient flag, a command, a skill or a tool cannot: nothing here renders a
+    /// schema for a request that did not change one, and a session that never did
+    /// sends the same bytes forever. See `docs/notes/server-tools.md`.
+    fn tool_set_in_force(
+        &self,
+        session: &SessionHandle,
+        id: i64,
+        model: &str,
+        llm: &crate::llm::LlmClient,
+    ) -> anyhow::Result<crate::store::ToolSet> {
+        let remote = session.remote_name();
+        let has_origin = self.live_compact_enabled && self.store.has_live_compact_origin(id)?;
+        let build = protocol::BUILD.to_string();
+        let kept = self.store.tool_set(id)?;
+        if let Some(kept) = &kept
+            && kept.remote == remote
+            && kept.model.as_deref() == Some(model)
+            && kept.has_origin == has_origin
+            && kept.build == build
+        {
+            return Ok(kept.clone());
+        }
+        // Which stored change moved the head, for the record and for a person.
+        let event = match &kept {
+            None => "first",
+            Some(kept) if kept.build != build => "build",
+            Some(kept) if kept.model.as_deref() != Some(model) => "model",
+            Some(kept) if kept.remote != remote => "move",
+            Some(_) => "origin",
+        };
+        let tool_set = crate::store::ToolSet {
+            tools: llm.wire_tools(&self.tools.stamp(session.on_remote(), has_origin)),
+            model: Some(model.to_string()),
+            remote,
+            has_origin,
+            build,
+            event: event.to_string(),
+        };
+        self.store.append_tool_set(id, &tool_set)?;
+        Ok(tool_set)
+    }
+
     /// How much an indexed entry may change before it is re-sent, or nothing when
     /// no patch may be appended.
     ///
@@ -847,20 +895,9 @@ impl Agent {
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
-        let mut definitions = self.tools.definitions(session.on_remote());
-        // A durable request alone makes the compaction schema visible to the model.
-        if self.live_compact_enabled
-            && self
-                .store
-                .live_compact_measurement(id)
-                .is_ok_and(|measurement| measurement.requested)
-            && let Some(definition) = self.tools.definition(
-                crate::tools::live_compact::LIVE_COMPACT_TOOL,
-                session.on_remote(),
-            )
-        {
-            definitions.push(definition);
-        }
+        // The tool set is a stored row, read beside the stored prompt: a request
+        // assembles no part of its own head. See `docs/notes/server-tools.md`.
+        let tools = self.tool_set_in_force(session, id, llm.model(), llm)?;
         let reader = session.reader();
         let source = match (&reader, session.owner()) {
             (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
@@ -899,7 +936,7 @@ impl Agent {
             prompt.tail.as_deref(),
             &source,
             &affinity,
-            &definitions,
+            &tools.tools,
             effort,
             tier.as_deref(),
             cancel.clone(),

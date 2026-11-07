@@ -246,7 +246,7 @@ impl LlmClient {
         tail: Option<&str>,
         source: &RequestSource,
         affinity: &str,
-        tools: &[ToolDefinition],
+        tools: &Value,
         effort: Option<&str>,
         cache_tier: Option<&str>,
         cancel: CancellationToken,
@@ -442,6 +442,43 @@ impl LlmClient {
         rx
     }
 
+    /// The tool block this client sends, rendered once for the session's record.
+    ///
+    /// # Invariant
+    ///
+    /// Called only from a stored change event, never while a request is built: the
+    /// tool list is part of the context, so it is a row and not a rendering a
+    /// request redoes. What it returns is exactly what `build_head` splices, which
+    /// is why the two cannot disagree about a schema. See `docs/notes/server-tools.md`.
+    pub fn wire_tools(&self, definitions: &[ToolDefinition]) -> Value {
+        if self.face == Face::Anthropic {
+            return Value::Array(
+                definitions
+                    .iter()
+                    .map(|t| crate::anthropic::tool(&t.name, &t.description, &t.parameters))
+                    .collect(),
+            );
+        }
+        let mut offered: Vec<Value> = definitions
+            .iter()
+            .map(|t| {
+                json!({
+                    "type": "function",
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                })
+            })
+            .collect();
+        // Verbatim: the roster knows each provider's spelling, not this server.
+        offered.extend(
+            self.builtin_tools
+                .iter()
+                .map(|name| json!({ "type": name })),
+        );
+        Value::Array(offered)
+    }
+
     /// One request's opening bytes, joined to the transcript by the body.
     ///
     /// # Invariant
@@ -454,7 +491,7 @@ impl LlmClient {
         index: Option<&str>,
         card: Option<&str>,
         affinity: &str,
-        tools: &[ToolDefinition],
+        tools: &Value,
         effort: Option<&str>,
         cache_tier: Option<&str>,
     ) -> Vec<u8> {
@@ -462,15 +499,14 @@ impl LlmClient {
         // See `docs/reference/prefix-cache.md`.
         let index = index.filter(|index| !index.is_empty());
         if self.face == Face::Anthropic {
-            let offered: Vec<Value> = tools
-                .iter()
-                .map(|t| crate::anthropic::tool(&t.name, &t.description, &t.parameters))
-                .collect();
+            // The block is the stored row's, byte for byte: a request assembles no
+            // part of its own head. See `docs/notes/server-tools.md`.
+            let offered: &[Value] = tools.as_array().map(Vec::as_slice).unwrap_or(&[]);
             return crate::anthropic::head(
                 &self.model_name,
                 self.max_output_tokens,
                 instructions,
-                &offered,
+                offered,
                 effort,
                 self.temperature,
                 (index_framing(), index),
@@ -496,26 +532,9 @@ impl LlmClient {
         if !instructions.is_empty() {
             body["instructions"] = json!(instructions);
         }
-        // One array holds both kinds of tool; empty sends no key at all.
-        let mut offered: Vec<Value> = tools
-            .iter()
-            .map(|t| {
-                json!({
-                    "type": "function",
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                })
-            })
-            .collect();
-        // Verbatim: the roster knows each provider's spelling, not this server.
-        offered.extend(
-            self.builtin_tools
-                .iter()
-                .map(|name| json!({ "type": name })),
-        );
-        if !offered.is_empty() {
-            body["tools"] = offered.into();
+        // The stored block, verbatim; empty sends no key at all.
+        if tools.as_array().is_some_and(|offered| !offered.is_empty()) {
+            body["tools"] = tools.clone();
         }
         if let Some(t) = self.temperature {
             body["temperature"] = json!(t);

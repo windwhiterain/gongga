@@ -47,6 +47,41 @@ pub struct Prompt {
     pub remote: Option<String>,
 }
 
+/// The tool block a session sends, and the facts it was stamped from.
+///
+/// # Invariant
+///
+/// A stored row, like [`Prompt`]: what is sent is the context, and the context is
+/// append-only, so a request reads this row instead of assembling a tool list. A
+/// stamp is appended only when one of the facts below differs from the newest
+/// row's, so the head moves at a stored change and nowhere else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolSet {
+    /// The block exactly as it goes on the wire, in this session's face.
+    pub tools: serde_json::Value,
+    /// The model it was stamped for: the roster's built-in tools follow the model.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The peer it was stamped for: a move changes which machine a schema names.
+    #[serde(default)]
+    pub remote: Option<String>,
+    /// Whether a compaction origin had opened, which is what puts the schema in.
+    #[serde(default)]
+    pub has_origin: bool,
+    /// The build that rendered it.
+    ///
+    /// # Invariant
+    ///
+    /// A build may rename or reshape a tool, so a session that outlived it must not
+    /// keep advertising the old schema: the model would call a tool this server no
+    /// longer has. Comparing it re-stamps once per build.
+    #[serde(default)]
+    pub build: String,
+    /// Which stored change wrote this row. Read by a person, never compared.
+    #[serde(default)]
+    pub event: String,
+}
+
 /// The row that closes a turn: see `docs/notes/server-store.md`.
 ///
 /// # Invariant
@@ -1313,6 +1348,28 @@ impl Store {
         self.append_message(session_id, "system", &payload)
     }
 
+    /// The newest stored tool set, or nothing before a session's first stamp.
+    pub fn tool_set(&self, session_id: i64) -> anyhow::Result<Option<ToolSet>> {
+        let row = {
+            let conn = self.lock();
+            conn.query_row(
+                "SELECT display FROM messages \
+                  WHERE session_id = ?1 AND kind = 'tools' ORDER BY seq DESC LIMIT 1",
+                params![session_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+        };
+        let Some(display) = row else { return Ok(None) };
+        Ok(serde_json::from_str::<ToolSet>(&display).ok())
+    }
+
+    /// Stores the tool set the next request is built from, bytes and all.
+    pub fn append_tool_set(&self, session_id: i64, tool_set: &ToolSet) -> anyhow::Result<i64> {
+        let payload = serde_json::to_value(tool_set)?;
+        self.append_message(session_id, "tools", &payload)
+    }
+
     // -- what a stream has said so far -------------------------------------
 
     /// Records the text of an item still being streamed.
@@ -1633,6 +1690,20 @@ impl Store {
             requested: row.2 != 0,
             generation: row.3.max(0) as u64,
         })
+    }
+
+    /// Whether this lineage has a compaction origin: what puts the schema in.
+    pub fn has_live_compact_origin(&self, session_id: i64) -> anyhow::Result<bool> {
+        let origin: Option<i64> = self
+            .lock()
+            .query_row(
+                "SELECT live_compact_origin_seq FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(origin.is_some())
     }
 
     /// Records the first provider measurement for the current visible checkpoint.
@@ -3102,6 +3173,9 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
     };
     // Pictures stay in `display` and resolve per request.
     match kind {
+        // A record a request reads, not a message it sends: the prompt and the tool
+        // set in force keep their payload in `display` alone.
+        "system" | "tools" => None,
         "text" => {
             let role = text_of("role");
             Some(if role == "assistant" {
