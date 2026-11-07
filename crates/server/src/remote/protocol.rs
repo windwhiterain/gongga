@@ -13,8 +13,9 @@ use serde_json::Value;
 /// runner that dropped `args` would run the program it was given with a shell's
 /// flags, which is a wrong answer rather than a missing one. 2 added `args` to
 /// `Open`, which is how a program other than a shell is started; 3 added `Append`,
-/// which is how a channel's two files are written on a peer.
-pub const PROTOCOL: u32 = 3;
+/// which is how a channel's two files are written on a peer; 4 added `Relay`, which
+/// is how a channel's program is started so that it outlives the connection.
+pub const PROTOCOL: u32 = 4;
 
 /// One request; `id` is the client's, and the reply repeats it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +82,17 @@ pub enum Op {
     Space {
         path: String,
     },
+    /// Starts this payload's relay for `dir`, detached, and answers its pid.
+    ///
+    /// # Invariant
+    ///
+    /// The runner is the only process that can start one: leaving the client's job
+    /// object is what keeps the relay alive after the connection, and only a native
+    /// process may ask for it. See `docs/notes/server-channel.md`.
+    Relay {
+        dir: String,
+        cwd: Option<String>,
+    },
     /// Bytes for the end of a file, created with its parents when it is not there.
     ///
     /// # Invariant
@@ -113,6 +125,7 @@ impl Op {
             Op::List { .. } => "list",
             Op::Space { .. } => "space",
             Op::Append { .. } => "append",
+            Op::Relay { .. } => "relay",
         }
     }
 }

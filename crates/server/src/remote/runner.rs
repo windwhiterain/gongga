@@ -188,6 +188,7 @@ impl Runner {
             Op::List { path } => list(&path),
             Op::Space { path } => space(&path),
             Op::Append { path, data } => append(&path, &data),
+            Op::Relay { dir, cwd } => relay(&dir, cwd.as_deref()),
         };
         self.reply(id, result).await;
     }
@@ -639,6 +640,89 @@ async fn send(pid: u32, signal: &str) -> bool {
 ///
 /// Answered where the shells run: the machine that fills up is the only one that can
 /// report how much it has left, and a server asking its own `statvfs` would answer
+/// Starts this payload's relay for `dir`, detached, and answers its pid.
+///
+/// # Invariant
+///
+/// The relay must outlive this connection: it is started out of every job this
+/// process is in, with its own stream to a log. It is what makes a channel on a peer
+/// mean what a channel here means -- a program a restart does not end.
+fn relay(dir: &str, cwd: Option<&str>) -> Result<Value, String> {
+    let server = beside("server")?;
+    let log = Path::new(dir).join("relay.log");
+    let out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .map_err(|e| format!("{}: {e}", log.display()))?;
+    let err = out.try_clone().map_err(|e| e.to_string())?;
+    let mut command = Command::new(&server);
+    command
+        .arg("--relay")
+        .arg(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err)
+        .kill_on_drop(false);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    // Out of every job this connection is in: the runner is the only process that
+    // can ask for that, and a channel that stayed in one would end with the ssh.
+    #[cfg(windows)]
+    let child = {
+        const BREAKAWAY: u32 = 0x0100_0000;
+        const DETACHED: u32 = 0x0000_0008;
+        command.creation_flags(BREAKAWAY | DETACHED);
+        match command.spawn() {
+            Ok(child) => child,
+            // A job that does not allow breakaway has nothing to break out of.
+            Err(e) if e.raw_os_error() == Some(5) => {
+                command.creation_flags(DETACHED);
+                command
+                    .spawn()
+                    .map_err(|e| format!("starting the relay: {e}"))?
+            }
+            Err(e) => return Err(format!("starting the relay: {e}")),
+        }
+    };
+    #[cfg(unix)]
+    let child = {
+        // SAFETY: `setsid` is async-signal-safe and touches nothing of this process.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        command
+            .spawn()
+            .map_err(|e| format!("starting the relay: {e}"))?
+    };
+    let pid = child.id().unwrap_or(0);
+    // The child is this machine's now: this process must not wait for it, and must
+    // not take it down on the way out.
+    std::mem::drop(child);
+    Ok(json!({"pid": pid, "log": log.display().to_string()}))
+}
+
+/// The program beside this one: the payload keeps them together.
+fn beside(name: &str) -> Result<PathBuf, String> {
+    let me = std::env::current_exe().map_err(|e| format!("this program's own path: {e}"))?;
+    let dir = me
+        .parent()
+        .ok_or_else(|| "this program has no directory".to_string())?;
+    // The payload names every program `gongga-<what>`, beside this one.
+    let program = dir.join(format!("gongga-{name}{}", std::env::consts::EXE_SUFFIX));
+    if program.is_file() {
+        return Ok(program);
+    }
+    Err(format!(
+        "no {name} beside {}: this payload does not carry a relay",
+        me.display()
+    ))
+}
+
 /// Appends bytes to a file, creating it and its parents.
 ///
 /// # Invariant
