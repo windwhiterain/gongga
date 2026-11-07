@@ -113,7 +113,7 @@ export CHANNEL_SELFTEST_KEY=sk-fake
 env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY \
     -u GONGGA_API_KEY_ENV -u GONGGA_SESSION \
     "$server_bin" --home "$home" --bind "127.0.0.1:$port" \
-    --config "$root/ship/config/config.toml" --log info >>"$log" 2>&1 &
+    --log info >>"$log" 2>&1 &
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
 server_pid=$(child_pid)
 wait_listening "$port" || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
