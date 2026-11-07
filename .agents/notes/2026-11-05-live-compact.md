@@ -6,8 +6,9 @@
   `live_compact_enabled` (env `GONGGA_LIVE_COMPACT_ENABLED`), never a token count.
 - Disabled sessions receive no plan request, no compaction tool schema, and no pending
   compaction delivery. Existing transcript rows remain untouched.
-- The compaction schema is never in the ordinary tool list. It is added only to a request
-  made while a durable compaction request is outstanding, and withdrawn after its commit.
+- The compaction schema enters the session's stored tool set when its compaction origin
+  opens and stays for the session's life: the tool list is a stored row, read like the
+  stored prompt, and no request assembles a head. See `docs/notes/server-tools.md`.
 - Planning is explore mode's job. The first-round PLAN_NOTICE injection, its harness
   marker, and the user_texts harness filter are gone; appending a user row never
   establishes compaction state.
