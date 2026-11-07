@@ -289,32 +289,54 @@ impl Channels {
     ) -> Result<Outcome, String> {
         let row = self.row_of(session, id)?;
         let dir = PathBuf::from(&row.dir);
+        let grammar = self.grammar_of(&row.program);
+        // A sentinel exists only where a reply has to be told apart from the next one:
+        // it is generated per write, and only for a write. A read alone has nothing to
+        // frame, so a grammar whose marker is a sentinel contributes no marker to it.
+        let sentinel = if input.is_some() && grammar.until.as_deref().is_some_and(has_sentinel) {
+            Some(new_sentinel())
+        } else {
+            None
+        };
         if let Some(input) = input {
-            let grammar = self.grammar_of(&row.program);
-            let words = match &grammar.write {
-                Some(spelled) => spelled.replace("{{input}}", input),
-                None => input.to_string(),
+            let spelled = match &grammar.write {
+                Some(spelled) => spelled
+                    .replace("{{input}}", input)
+                    .replace("{{sentinel}}", sentinel.as_deref().unwrap_or_default()),
+                // No spelling: the input is one line, and a shell reads a line as a
+                // command. This is what "raw" means for a name the table never named.
+                None => format!("{input}\n"),
             };
-            let mut fresh = String::from("input ");
-            fresh.push_str(&crate::base64::encode(words.as_bytes()));
-            fresh.push('\n');
-            append(&dir.join("in"), &fresh)?;
+            let mut command = String::from("input ");
+            command.push_str(&crate::base64::encode(spelled.as_bytes()));
+            command.push('\n');
+            append(&dir.join("in"), &command)?;
         }
-        let marker = until.map(str::to_string).or_else(|| {
-            let grammar = self.grammar_of(&row.program);
-            grammar.until.clone()
-        });
+        let marker = match until {
+            Some(marker) => Some(marker.to_string()),
+            None => match (&sentinel, &grammar.until) {
+                (Some(sentinel), Some(spelled)) => Some(spelled.replace("{{sentinel}}", sentinel)),
+                (None, Some(spelled)) if !has_sentinel(spelled) => Some(spelled.clone()),
+                _ => None,
+            },
+        };
         let deadline = Instant::now() + wait;
         loop {
-            let (window, matched, read_to) = read_window(&dir, row.upto, marker.as_deref());
+            let looked = look(&dir, row.upto, marker.as_deref(), &grammar);
             let ended = read_status(&dir).and_then(|status| status.exit);
-            if matched || ended.is_some() || wait.is_zero() {
-                return self.answer(row, window, matched, read_to, ended);
+            if looked.matched || ended.is_some() || wait.is_zero() {
+                return self.answer(
+                    row,
+                    looked.window,
+                    looked.matched,
+                    looked.upto,
+                    looked.exit.or(ended),
+                );
             }
             if Instant::now() >= deadline {
                 // Nothing arrived within the wait: what is there is the answer, and the
                 // cursor moves past it so the next call is not told the same thing.
-                return self.answer(row, window, false, read_to, None);
+                return self.answer(row, looked.window, false, looked.upto, None);
             }
             tokio::time::sleep(LOOK).await;
         }
@@ -366,7 +388,9 @@ impl Channels {
             .iter()
             .map(|row| {
                 let dir = PathBuf::from(&row.dir);
-                let unread = read_window(&dir, row.upto, None).0.len();
+                let unread = look(&dir, row.upto, None, &spec::ChannelSpec::default())
+                    .window
+                    .len();
                 json!({
                     "id": row.path,
                     "session": row.session,
@@ -486,7 +510,8 @@ impl Channels {
                     if channels.store.finish_channel(row.id, exit).is_err() {
                         continue;
                     }
-                    let (output, _, read_to) = read_window(&dir, row.upto, None);
+                    let looked = look(&dir, row.upto, None, &spec::ChannelSpec::default());
+                    let (output, read_to) = (looked.window, looked.upto);
                     if channels.store.set_channel_upto(row.id, read_to).is_err() {
                         continue;
                     }
@@ -508,29 +533,79 @@ impl Channels {
     }
 }
 
-/// The window a reader has not seen: from `upto` to the marker, the end of what is
-/// written, or the whole rest of the file.
-///
-/// # Invariant
-///
-/// Reads by hand rather than by a stored file handle: the relay may still be
-/// appending, so the answer is "what is there now", and the offset comes back so the
-/// caller can record it.
-fn read_window(dir: &Path, upto: u64, until: Option<&str>) -> (String, bool, u64) {
+/// One look at what a channel has said beyond `upto`.
+struct Looked {
+    /// The window nobody has read, cut at the marker when it is there.
+    window: String,
+    matched: bool,
+    /// Where the next read starts: past the marker, and past the digits its own tail
+    /// carried when the grammar puts the status there.
+    upto: u64,
+    /// The status the marker's tail carried, when it carried one.
+    exit: Option<i32>,
+}
+
+/// Reads the file once, by hand: the relay may still be appending, so the answer is
+/// "what is there now", and the offset comes back so the caller can record it.
+fn look(dir: &Path, upto: u64, marker: Option<&str>, grammar: &spec::ChannelSpec) -> Looked {
     let path = dir.join("out");
-    let Ok(bytes) = std::fs::read(&path) else {
-        return (String::new(), false, upto);
-    };
+    let bytes = std::fs::read(&path).unwrap_or_default();
     let from = usize::try_from(upto).unwrap_or(0).min(bytes.len());
     let fresh = String::from_utf8_lossy(&bytes[from..]).to_string();
-    if let Some(marker) = until
-        && let Some(at) = fresh.find(marker)
-    {
-        let mut window = fresh[..at].to_string();
-        trim_newline(&mut window);
-        return (window, true, from as u64 + at as u64 + marker.len() as u64);
+    let Some(marker) = marker else {
+        return Looked {
+            window: fresh,
+            matched: false,
+            upto: bytes.len() as u64,
+            exit: None,
+        };
+    };
+    let Some(at) = fresh.find(marker) else {
+        return Looked {
+            window: fresh,
+            matched: false,
+            upto: bytes.len() as u64,
+            exit: None,
+        };
+    };
+    let mut window = fresh[..at].to_string();
+    trim_newline(&mut window);
+    let after = &fresh[at + marker.len()..];
+    // The grammar may say the marker's own tail is the status: `__GONGGA__0`.
+    let (exit, eaten) = if grammar.exit_from_marker {
+        let digits: String = after
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '-')
+            .collect();
+        let leading = after.len() - after.trim_start().len();
+        let mut eaten = leading + digits.len();
+        // The rest of that line is the marker's, not the program's.
+        if after[eaten..].starts_with("\r\n") {
+            eaten += 2;
+        } else if after[eaten..].starts_with('\n') {
+            eaten += 1;
+        }
+        (digits.parse::<i32>().ok(), eaten)
+    } else {
+        (None, 0)
+    };
+    Looked {
+        window,
+        matched: true,
+        upto: (from + at + marker.len() + eaten) as u64,
+        exit,
     }
-    (fresh, false, bytes.len() as u64)
+}
+
+/// Whether a marker is spelled with the sentinel this server generates per write.
+fn has_sentinel(spelled: &str) -> bool {
+    spelled.contains("{{sentinel}}")
+}
+
+/// A marker no program prints by accident.
+fn new_sentinel() -> String {
+    format!("__gongga-{}__", uuid::Uuid::new_v4().simple())
 }
 
 /// A trailing newline the program's own echo left, not part of what it said.
