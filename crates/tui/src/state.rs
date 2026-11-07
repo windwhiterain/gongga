@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use link::protocol::{self, ArgSpec, Args, CommandSpec};
+use client::protocol::{self, ArgSpec, Args, CommandSpec};
 
 /// How many wrapped rows one block may fill. Client-side only.
 ///

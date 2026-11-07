@@ -22,29 +22,29 @@ you are about to touch.
 | you are about to | read first |
 | --- | --- |
 | run the distribution (`gongga`, `gongga tui`) | [`bundle-main.md`](bundle-main.md) -- it is not a read-only run: pointed at a live home it stops that home's server |
-| start, stop or watch a server | [`link-server.md`](link-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
+| start, stop or watch a server | [`client-server.md`](client-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
 | write into a home (payload, config, database) | [`server-config.md`](server-config.md), [`server-store.md`](server-store.md) |
 | change when the server says the disk is low, or what wakes `@monitor/disk` | [`server-disk.md`](server-disk.md), [`server-monitor.md`](server-monitor.md) |
-| change what a client sends or receives | [`link-lib.md`](link-lib.md), [`protocol-lib.md`](protocol-lib.md) |
+| change what a client sends or receives | [`client-lib.md`](client-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
-| rename the client library or add a front-end | `SPEC.md` `## Crate Structure`, [`link-lib.md`](link-lib.md), `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` |
+| rename the client library or add a front-end | `SPEC.md` `## Crate Structure`, [`client-lib.md`](client-lib.md), `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` |
 | change what the window remembers (`tui.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
 
 ## Naming debt (2026-11-07)
 
 `SPEC.md`'s `## Crate Structure` uses `[client]` for the library and `rpc` for the
-layer that checks and sends commands. The code still says `link` and `cli`. Until
-stage 1 lands:
+layer that checks and sends commands. The crate rename has landed:
 
-- `[client]` = `crates/link` -> `crates/client` (`gongga-client`); `[tui]` = `crates/tui`.
-- `rpc` is not a crate: `link::commands`, `Catalog`, `parse_args`, `python/gongga_cli.py`.
+- `[client]` = `crates/client` (`gongga-client`), renamed from `crates/link`;
+  `[tui]` = `crates/tui`. The `link-*.md` notes became `client-*.md`.
+- `rpc` is not a crate: `client::commands`, `Catalog`, `parse_args`, `python/gongga_cli.py`.
 - `[cli]: python` = `python/gongga.py` / `python/gongga_cli.py`, embedded by
   `crates/server/src/pylib.rs`.
-- Do not blind-replace `cli`: `gongga-cli` (argv0 and command name), the `cli`
-  clap layer word, `cli.toml` (the old name of the window state file, now
-  `tui.toml`), and `cli-bin-gongga.md` are real names with their own meanings.
-- Still owed after stage 0: `DESIGN.md` §5's "CLI (command layer)" heading, the
-  `cli` -> `link` references inside individual notes, `crates/bundle/src/main.rs`,
+- `cli` was kept where it is a name, not a crate: `gongga-cli` (argv0 and
+  command name), the `cli` clap layer word, `cli.toml` (the old name of the
+  window state file, now `tui.toml`), and `cli-bin-gongga.md`.
+- Still owed: `DESIGN.md` §5's "CLI (command layer)" heading, the historical
+  `link` references in `.agents/notes/2026-11-05-*`, `crates/bundle/src/main.rs`,
   and `crates/bundle/build.rs` (only `gongga-server` + `gongga-tui` are built).
 
 ## Index
@@ -130,32 +130,32 @@ stage 1 lands:
 | [`server-tools-job.md`](server-tools-job.md) | `crates/server/src/tools/job.rs` |
 | [`server-transcript.md`](server-transcript.md) | `crates/server/src/transcript.rs` |
 
-### link
+### client
 
-`crates/link` is the client library: one wire client, one command surface, and the
-lines a front-end draws. `crates/tui` is one front-end; `link::run` (NullSink, JSON
+`crates/client` is the client library: one wire client, one command surface, and the
+lines a front-end draws. `crates/tui` is one front-end; `client::run` (NullSink, JSON
 lines) is another. As of 2026-11-07 `SPEC.md` names this library `[client]`, with
-`rpc` as the layer that checks and sends commands; the rename `link` -> `client`
-lands in stage 1, so the notes keep their `link-*.md` names until then.
+`rpc` as the layer that checks and sends commands; `crates/link` was renamed to
+`crates/client` and these notes were renamed from `link-*.md` with it.
 
 | note | source |
 | --- | --- |
-| [`link-lib.md`](link-lib.md) | `crates/link/src/lib.rs` |
-| [`link-server.md`](link-server.md) | `crates/link/src/server.rs` |
-| [`link-catalog.md`](link-catalog.md) | `crates/link/src/catalog.rs` |
-| [`link-complete.md`](link-complete.md) | `crates/link/src/complete.rs` |
-| [`link-commands.md`](link-commands.md) | `crates/link/src/commands.rs` |
-| [`link-skill-command.md`](link-skill-command.md) | `crates/link/src/skill_command.rs` |
+| [`client-lib.md`](client-lib.md) | `crates/client/src/lib.rs` |
+| [`client-server.md`](client-server.md) | `crates/client/src/server.rs` |
+| [`client-catalog.md`](client-catalog.md) | `crates/client/src/catalog.rs` |
+| [`client-complete.md`](client-complete.md) | `crates/client/src/complete.rs` |
+| [`client-commands.md`](client-commands.md) | `crates/client/src/commands.rs` |
+| [`client-skill-command.md`](client-skill-command.md) | `crates/client/src/skill_command.rs` |
 
 ### cli (historical name)
 
 | note | source |
 | --- | --- |
-| [`cli-bin-gongga.md`](cli-bin-gongga.md) | `crates/link/src/lib.rs` (`main`, `run`, `run_once`, `list_commands`); dispatched from `crates/tui/src/main.rs` |
+| [`cli-bin-gongga.md`](cli-bin-gongga.md) | `crates/client/src/lib.rs` (`main`, `run`, `run_once`, `list_commands`); dispatched from `crates/tui/src/main.rs` |
 
 The source path this note was written for, `crates/cli/src/bin/gongga-cli.rs`, no
 longer exists. `gongga-cli` survives as a name: `crates/tui/src/main.rs` routes
-argv to `link::main` when invoked under that name or given a command.
+argv to `client::main` when invoked under that name or given a command.
 
 ### tui
 

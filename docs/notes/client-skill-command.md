@@ -1,4 +1,4 @@
-# `crates/link/src/skill_command.rs`
+# `crates/client/src/skill_command.rs`
 
 ## module doc
 

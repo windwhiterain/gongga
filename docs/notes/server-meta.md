@@ -208,7 +208,7 @@ Two things this buys beyond the parse. A picture pasted into the prompt is writt
 `@image(<path>)` with the path as it is, spaces and all. And the monitor's own session
 name, `@monitor`, is not a reference and never was: it opens no group.
 
-The completion popup inserts what the parser reads (`link-catalog.md`): the prefix
+The completion popup inserts what the parser reads (`client-catalog.md`): the prefix
 candidate is `@file(`, and a chosen value is inserted as `path)` -- a group the operator
 has to close by hand is a reference the parser reads as prose until they do.
 

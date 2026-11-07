@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::LineKind;
-use link::protocol;
+use client::protocol;
 
 /// One thing that happened to one window's blocks, in the order it happened.
 ///
@@ -589,7 +589,7 @@ impl Cache {
 ///
 /// # Invariant
 ///
-/// `link::server::alive` starts a process on Windows -- the first call on this machine
+/// `client::server::alive` starts a process on Windows -- the first call on this machine
 /// costs about a third of a second -- and one walk asks about the same few pids once
 /// per file. An answer cannot change inside a walk: a pid that is gone stays gone.
 #[derive(Default)]
@@ -601,7 +601,7 @@ impl Ask {
         *self
             .0
             .entry(pid)
-            .or_insert_with(|| link::server::alive(pid as u32))
+            .or_insert_with(|| client::server::alive(pid as u32))
     }
 }
 

@@ -8,7 +8,8 @@ authors.workspace = true
 description = "Gongga harness terminal front-end: an event log plus an input line, with no knowledge of commands"
 
 # The terminal is its own program: what it shares with the command line is the
-# link and the command surface (`crates/link`), never the command-line program.
+# client library and the command surface (`crates/client`), never the
+# command-line program.
 # What is left here is the composition root of a window.
 [[bin]]
 name = "gongga-tui"
@@ -18,7 +19,7 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
-link = { workspace = true }
+client = { workspace = true }
 anyhow = { workspace = true }
 # The window's own cache on disk: one journal per window, and the versioned
 # record shape a later build has to be able to refuse.

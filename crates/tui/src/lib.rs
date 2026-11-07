@@ -2,9 +2,9 @@
 //!
 //! # Invariant
 //!
-//! `tui` depends on `link`, never the reverse and never on `cli`: the command
-//! surface and the wire stay usable from a script, and a new command never
-//! changes this crate.
+//! `tui` depends on `client`, never the reverse and never on the command-line
+//! program: the command surface and the wire stay usable from a script, and a
+//! new command never changes this crate.
 
 mod cache;
 mod clipboard;
@@ -66,7 +66,7 @@ fn gesture_modifiers() -> KeyModifiers {
 }
 
 /// Runs the window: its own runtime, because the loop owns every task in it.
-pub fn main(args: link::Args) -> anyhow::Result<()> {
+pub fn main(args: client::Args) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -74,7 +74,7 @@ pub fn main(args: link::Args) -> anyhow::Result<()> {
 }
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
-pub use link::{
+pub use client::{
     Candidate, Completer, Completion, Layout, LineKind, Listed, QuotaRow, SharedCompleter,
     token_bounds,
 };
@@ -142,7 +142,7 @@ pub enum UiEvent {
     /// The window asks for what it means -- "make this session sticky" -- and
     /// the command layer answers it. Spelling it as a command line would put
     /// the command syntax in the window, where it does not belong.
-    Operate(link::protocol::Operation),
+    Operate(client::protocol::Operation),
     /// Alt+Q: leave.
     Quit,
     /// The operator asked to read above what these windows hold.
@@ -565,7 +565,7 @@ pub struct Tui {
     input_seen: Option<(usize, usize)>,
     /// A click on a session, as the command line it asks for, waiting for the loop
     /// to take it. See `docs/notes/tui-lib.md`.
-    clicked: Option<link::protocol::Operation>,
+    clicked: Option<client::protocol::Operation>,
     /// The input box as the last frame drew it: a click has to find it.
     input_area: Rect,
     /// Where a drag began, while the button is still down.
@@ -711,7 +711,7 @@ impl Tui {
             answers: Vec::new(),
             roster: roster::Roster::new(client_home, endpoint),
             roster_failed: false,
-            note_window: link::COMMAND_WINDOW.to_string(),
+            note_window: client::COMMAND_WINDOW.to_string(),
             events: EventStream::new(),
             mouse_captured: true,
             restored: false,
@@ -772,7 +772,7 @@ impl Tui {
     }
 
     /// The session list this window drew last, for a start that has no link yet.
-    pub fn known_list(&self) -> Vec<link::Listed> {
+    pub fn known_list(&self) -> Vec<client::Listed> {
         self.roster.load()
     }
 
@@ -999,7 +999,7 @@ impl Tui {
     }
 
     /// Shows a call's name and fields as a structured section.
-    pub fn describe(&mut self, name: &str, key: &str, head: &link::protocol::Head) {
+    pub fn describe(&mut self, name: &str, key: &str, head: &client::protocol::Head) {
         self.screen.panes.describe(name, key, head);
         self.dirty = true;
     }
@@ -1386,9 +1386,9 @@ impl Tui {
             && let Some(target) = self.screen.sticky_session.clone()
         {
             self.close_completion();
-            return Some(UiEvent::Operate(link::protocol::Operation::DeleteSession {
-                session: target,
-            }));
+            return Some(UiEvent::Operate(
+                client::protocol::Operation::DeleteSession { session: target },
+            ));
         }
 
         if edit_input(
@@ -1482,7 +1482,7 @@ impl Tui {
         // the reading at it.
         match hit.part {
             Part::Header => {
-                self.clicked = Some(link::protocol::Operation::StickySession {
+                self.clicked = Some(client::protocol::Operation::StickySession {
                     session: hit.name.clone(),
                 })
             }
@@ -1501,7 +1501,7 @@ impl Tui {
                     true => (!shown, false),
                     false => (true, true),
                 };
-                self.clicked = Some(link::protocol::Operation::RenderSession {
+                self.clicked = Some(client::protocol::Operation::RenderSession {
                     session: hit.name.clone(),
                     show,
                     solo,
@@ -2022,8 +2022,8 @@ fn apply_and_continue(
 pub struct NoCompleter;
 
 impl Completer for NoCompleter {
-    fn complete(&self, _line: &str, _cursor: usize) -> link::Offered {
-        link::Offered::default()
+    fn complete(&self, _line: &str, _cursor: usize) -> client::Offered {
+        client::Offered::default()
     }
 }
 
@@ -2038,7 +2038,7 @@ impl Completer for NoCompleter {
 fn image_reference(path: &Path) -> String {
     format!(
         "@{}({})",
-        link::protocol::Reference::Image.name(),
+        client::protocol::Reference::Image.name(),
         path.display()
     )
 }

@@ -20,37 +20,37 @@ rpc         层       —— 按 schema 校验后向服务端发命令
 [bundle]    binary   —— 打包与路由
 ```
 
-workspace 现在还是改名前的名字（`Cargo.toml`，8 个 member，`default-members` 不含 bundle）：
+workspace 现在已经是改名后的名字（`Cargo.toml`，8 个 member，`default-members` 不含 bundle）：
 
 ```text
 crates/protocol  gongga-protocol   别名 protocol
 crates/skill     gongga-skill      别名 skill
 crates/console   gongga-console    别名 console
-crates/link      gongga-link       别名 link   —— [client] 库的现状
+crates/client    gongga-client     别名 client  —— [client] 库（原 crates/link）
 crates/server    gongga-server     别名 server
-crates/tui       gongga-tui        别名 tui    —— [tui] 的现状
+crates/tui       gongga-tui        别名 tui    —— [tui]
 crates/bridge    gongga-bridge     别名 bridge
 crates/bundle    gongga-bundle     别名 bundle
 ```
 
-| SPEC | 现在 | 阶段 1 之后 |
+| SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` library | `crates/link` | `crates/client`（`gongga-client`），由 `link` 改名 |
-| `rpc` 层 | `link::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 仍是 `client` 库内的逻辑层，不新建 crate |
+| `[client]` library | `crates/client`（`gongga-client`），由 `crates/link` 改名 | 把 `crates/tui/src/run.rs` 里前端无关的运行时上提进来 |
+| `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
-| `[tui]` binary | `crates/tui`，其中 `run.rs` 还装着连接循环、窗口状态与输入行翻译 | 只剩终端绘制与键盘；前端无关的运行时上提到 `client` 库 |
+| `[tui]` binary | `crates/tui`，其中 `run.rs` 还装着连接循环、窗口状态与输入行翻译 | 只剩终端绘制与键盘 |
 | `[webui]` binary | 无 | 新增，与 `tui` 并列，共用 `client` 库 |
 
 裁定：`Client` 状态机与重连校验归 `[client]` 库，不归前端，第二个前端因此不必重写 seq
 补洞与 greeting resync；`[client]` 描述里的 `render` 读作「产出 `Sink` 事件」，实际绘制由各
-binary 做（`crates/link/src/lib.rs:424-526` 已是这套不带终端类型的词汇）。依赖方向仍是单向：
-`tui → link`（改名后 `tui → client`），`server` 不依赖任何客户端 crate。
+binary 做（`crates/client/src/lib.rs:424-526` 已是这套不带终端类型的词汇）。依赖方向仍是单向：
+`tui → client`，`server` 不依赖任何客户端 crate。
 
-### 历史：命令层从 `cli` 变成 `link`
+### 历史：命令层从 `cli` 变成 `client`
 
-以下记录写于命令层还叫 `cli` 的时候。文中 `cli` 指当时的命令层，今天对应 `crates/link`
-（阶段 1 起为 `crates/client`）；`crates/cli/` 目录与独立的 `gongga-cli` 二进制都已不存在，
-只剩 `gongga-cli` 这个名字作为 `crates/tui/src/main.rs` 的分派入口活着。
+以下记录写于命令层还叫 `cli` 的时候。文中 `cli` 指当时的命令层，中途叫过 `link`，今天对应
+`crates/client`；`crates/cli/` 目录与独立的 `gongga-cli` 二进制都已不存在，只剩
+`gongga-cli` 这个名字作为 `crates/tui/src/main.rs` 的分派入口活着。
 
 当时的结构（写入时，已过时）：
 

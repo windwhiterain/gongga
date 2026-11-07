@@ -25,7 +25,7 @@ instance lock all live under it. Overrides `[server] home`, which overrides
 The server does not look for the CLI, and does not need to: `current_exe()` is
 `gongga-server`, which is not what a shell should type. What its children get is
 `<home>/bin/gongga`, placed there by the command layer that started this server
-(`link-server.md`) -- the command layer is a program of its own now, so the
+(`client-server.md`) -- the command layer is a program of its own now, so the
 directory is the only thing the two have in common.
 
 One name, two `PATH` shapes. `<home>/bin` goes first in both: a shell reads a

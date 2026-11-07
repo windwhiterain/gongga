@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use link::Listed;
+use client::Listed;
 
 /// One session the list held, as the frame drew it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

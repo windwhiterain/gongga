@@ -3,7 +3,7 @@
 One list of three spellings, in the crate both sides already share.
 
 The server parses `@image(...)`, `@skill(...)` and `@file(...)` in `crates/server/src/meta.rs`;
-the client completes them in `crates/link/src/catalog.rs`. Two lists would let a
+the client completes them in `crates/client/src/catalog.rs`. Two lists would let a
 completed reference be one the parser does not read, and the failure would look
 like a completion that inserts nothing.
 

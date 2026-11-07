@@ -828,11 +828,7 @@ name = "gongga-bundle"
 version = "0.2.0"
 
 [[package]]
-name = "gongga-console"
-version = "0.2.0"
-
-[[package]]
-name = "gongga-link"
+name = "gongga-client"
 version = "0.2.0"
 dependencies = [
  "anyhow",
@@ -848,6 +844,10 @@ dependencies = [
  "toml",
  "which",
 ]
+
+[[package]]
+name = "gongga-console"
+version = "0.2.0"
 
 [[package]]
 name = "gongga-protocol"
@@ -904,7 +904,7 @@ dependencies = [
  "crossterm",
  "font8x8",
  "futures-util",
- "gongga-link",
+ "gongga-client",
  "image",
  "pulldown-cmark",
  "ratatui",

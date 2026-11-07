@@ -249,7 +249,7 @@ returns a `ToolOutcome` and emits no chunk, so `skill`'s table, a
 `check_bash` answer, an argument error and an unknown tool's refusal were all a
 block with a verdict and nothing to read -- while the store kept that same output
 and a replay of it showed it. Live and replayed then read differently, which is
-the drift a shared vocabulary exists to prevent (`docs/notes/cli-lib.md`).
+the drift a shared vocabulary exists to prevent (`docs/notes/client-lib.md`).
 
 The count is the fact and not a declaration, because the question is what the
 client received: a tool that declares itself streaming and sends nothing is the

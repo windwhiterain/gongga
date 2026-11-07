@@ -26,13 +26,13 @@ a second client.
   to a front-end. A second front-end must not reimplement sequence-hole
   detection or the greeting resync.
 - `render` in `[client]`'s description means producing `Sink` events; each
-  binary draws them. `crates/link/src/lib.rs:424-526` already publishes that
+  binary draws them. `crates/client/src/lib.rs:424-526` already publishes that
   vocabulary without a terminal type.
 - Landing path chosen by the user: rename `crates/link` -> `crates/client`
   (`gongga-client`), keep `rpc` as a layer inside that library, do not create a
-  `crates/rpc`.
-- This turn's scope: stage 0, documentation only. No Rust source and no
-  `SPEC.md` were edited.
+  `crates/rpc`. The rename landed in stage 1 (see below).
+- Stage 0 was documentation only and is committed as `aaecc23`. `SPEC.md` is
+  the user's file and was not edited.
 
 ## Defaults taken (say so if any is wrong)
 
@@ -52,8 +52,8 @@ a second client.
   were corrected: the dependency-direction `include_str!` assertions no longer
   exist (only `server/pylib.rs` x3, `server/ship.rs`, `skill/entry.rs` use it),
   and "SPEC says tui: transparent cli wrapper" is now marked as old SPEC wording.
-- `docs/notes/README.md`: `### link` describes the actual library; `### cli`
-  points at `crates/link/src/lib.rs` + `crates/tui/src/main.rs` instead of the
+- `docs/notes/README.md`: `### client` describes the actual library; `### cli`
+  points at `crates/client/src/lib.rs` + `crates/tui/src/main.rs` instead of the
   removed `crates/cli/src/bin/gongga-cli.rs`; a "Naming debt" section lists what
   stage 1 must clear and which `cli` names must not be blind-replaced.
 
@@ -66,10 +66,10 @@ a second client.
 - `SPEC.md` `## UI` (98-144) is a terminal screen spec, and `## Cmd`'s six
   client commands (178-187) still assume one window. Decide how a second
   front-end reads them before stage 3.
-- `DESIGN.md` §5's "CLI (command layer)" heading, and `cli` -> `link`
-  references inside individual `docs/notes/*.md`, are cleared with the rename.
-- `crates/link` -> `crates/client`, the runtime uplift from
-  `crates/tui/src/run.rs`, and the new `crates/webui` are stages 1-3.
+- `DESIGN.md` §5's "CLI (command layer)" heading still says `CLI`; the
+  `.agents/notes/2026-11-05-*` notes keep `link` on purpose, as history.
+- Still to do after the rename: uplift the front-end-independent runtime from
+  `crates/tui/src/run.rs`, then add `crates/webui` and wire it into `bundle`.
 
 ## Verified (stage 0, documentation only)
 
@@ -81,3 +81,23 @@ failure) · `cargo fmt --check` 0 · `comments-check` 0 · `test-layout-check`
 `scripts/ship.sh --check` "in agreement", protocol content 4 / build 4,
 ship HEAD 9dfad43598646f87c767fbfe4ecc58925757d32d (local).
 No L3 process test was run: no Rust source changed.
+
+## Stage 1: the crate rename
+
+`crates/link` -> `crates/client` (`gongga-link` -> `gongga-client`), the six
+`link-*.md` notes -> `client-*.md`, and every `link::` / `crates/link` /
+`cli-lib.md` reference repointed. `gongga-cli`, `cli.toml` and the `cli` clap
+layer word were left alone: they are names, not the crate. The historical
+`.agents/notes/2026-11-05-*` notes keep `link` on purpose.
+
+Verified: `cargo build` 0 · `cargo fmt` then `cargo fmt --check` 0 ·
+`comments-check` 0 (one `# Invariant` section grew to 403/400 after the longer
+name; shortened in `crates/client/src/lib.rs`) · `test-layout-check` 8 packages,
+0 violations · `git diff --check` 0 · `scripts/skill_contract.sh` PASS 8 ·
+`scripts/ship.sh --check` in agreement · `gongga-tui --help` 0 ·
+`gongga-server --help` 0.
+
+`scripts/client_state_selftest.sh` exit=1: the server could not clone the
+`gongga-ship` content repo (GitHub schannel closed abruptly), so it never
+listened and the script bailed before its first check. Environmental, not a
+rename regression; the script's own trap removed its temporary home. Not re-run.
