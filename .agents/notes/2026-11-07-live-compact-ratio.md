@@ -39,6 +39,14 @@ request. The arm measured 424,275 uncached tokens against the disabled arm's
 The wording now says what the embedding does. Summaries fell to a mean of 154
 tokens per checkpoint, against the 722 the earlier run recorded.
 
+## Only explore-born sessions compact
+
+The user's decision closes the clause-2 question the earlier note left open: live
+compaction belongs to a lineage that planned. A session created directly in work
+never opens an origin, so it has no baseline, is never asked for a summary and
+never carries the schema; explore -> work at plan finish is the only door. The
+work-born branch this note's measurements were taken with is removed.
+
 ## The A/B and the sweep
 
 `deepseek-official/deepseek-flash`, interval 20,000, ten phases of sequential

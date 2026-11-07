@@ -25,6 +25,15 @@ A request that *is* outstanding but belongs to an older context generation still
 fails: that is not a no-op, it is a summary written against a history that has
 moved, and the agent must know.
 
+## Only a lineage that planned compacts
+
+A compaction origin opens at one place: plan finish, the explore -> work
+transition, which is the agent's own act inside its turn. A session created
+directly in work never opens one, so it has no baseline, is never asked for a
+summary, and never carries the `live_compact` schema, whatever it does. An origin
+opened on the first operator row instead would give such a session a baseline
+taken from inside turn one, which is not the boundary clause 2 names.
+
 ## The schema is stored, not offered per request
 
 See `docs/notes/server-tools.md`: the tool list is a stored row, so the
