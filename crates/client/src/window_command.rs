@@ -4,10 +4,10 @@
 
 use std::net::SocketAddr;
 
-use client::protocol::{self, Args, CommandSpec};
-use client::{LineKind, Sink};
+use crate::protocol::{self, Args, CommandSpec};
+use crate::{LineKind, Sink};
 
-use crate::state::{self, BlockSize, BoxEdge, State};
+use crate::window_state::{self as state, BlockSize, BoxEdge, State};
 
 /// What one client command did.
 pub enum Done {
@@ -37,7 +37,7 @@ pub fn handles(name: &str) -> bool {
 /// ran does: SPEC's row is the last thing asked or told, not a log. Nothing here
 /// dials, except the one command whose whole meaning is an address.
 pub fn run(
-    client: &client::Client,
+    client: &crate::Client,
     state: &mut State,
     name: &str,
     args: &Args,
@@ -52,7 +52,7 @@ pub fn run(
                 LineKind::Error,
                 &format!(
                     "serve takes over the process; run it in a shell: `{} serve <port>`",
-                    client::typed_name()
+                    crate::typed_name()
                 ),
                 sink,
             );
@@ -67,7 +67,7 @@ pub fn run(
                     LineKind::Error,
                     &format!(
                         "set_sticky is missing required argument(s): value; it takes {}",
-                        client::commands::signature(spec(name).as_ref()),
+                        crate::commands::signature(spec(name).as_ref()),
                     ),
                     sink,
                 );
@@ -128,10 +128,10 @@ pub fn run(
 }
 
 /// `connect_server`: the address this window dials from now on.
-fn connect(client: &client::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
+fn connect(client: &crate::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
     let port = args.get("port").map(String::as_str).unwrap_or_default();
     let ip = args.get("ip").map(String::as_str);
-    let addr = match client::server_address(ip, port) {
+    let addr = match crate::server_address(ip, port) {
         Ok(addr) => addr,
         Err(e) => {
             client.say(LineKind::Error, &format!("{e}"), sink);
@@ -162,7 +162,7 @@ fn connect(client: &client::Client, state: &mut State, args: &Args, sink: &mut d
 ///
 /// A value that does not parse saves nothing, and no argument at all is a read of
 /// the setting rather than a reset of it.
-fn render(client: &client::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
+fn render(client: &crate::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
     let size = args.get("block_size");
     let edge = args.get("box_edge");
     if size.is_none() && edge.is_none() {
@@ -219,7 +219,7 @@ fn render(client: &client::Client, state: &mut State, args: &Args, sink: &mut dy
 
 /// `set_render_session`: whether one session is drawn beside the list.
 fn render_session(
-    client: &client::Client,
+    client: &crate::Client,
     state: &mut State,
     args: &Args,
     sink: &mut dyn Sink,
@@ -248,15 +248,15 @@ fn render_session(
 /// one file write and one line. `delete_session` is the command layer's.
 /// See `docs/notes/tui-command.md`.
 pub fn operate(
-    client: &mut client::Client,
+    client: &mut crate::Client,
     state: &mut State,
     operation: protocol::Operation,
     sink: &mut dyn Sink,
-) -> client::Submission {
+) -> crate::Submission {
     match operation {
         protocol::Operation::StickySession { session } => {
             write_sticky(client, state, "session", &session, sink);
-            client::Submission::Local
+            crate::Submission::Local
         }
         protocol::Operation::RenderSession {
             session,
@@ -264,7 +264,7 @@ pub fn operate(
             solo,
         } => {
             write_session(client, state, &session, show, solo, sink);
-            client::Submission::Local
+            crate::Submission::Local
         }
         operation => client.apply(operation, sink),
     }
@@ -272,7 +272,7 @@ pub fn operate(
 
 /// Writes one sticky entry, says what it is, and forgets what followed it.
 fn write_sticky(
-    client: &client::Client,
+    client: &crate::Client,
     state: &mut State,
     kind: &str,
     value: &str,
@@ -299,7 +299,7 @@ fn write_sticky(
 /// so a click and a typed line leave the same window behind. `solo` closes the
 /// other windows in the same write: a selection is one session.
 fn write_session(
-    client: &client::Client,
+    client: &crate::Client,
     state: &mut State,
     name: &str,
     show: bool,
@@ -351,7 +351,7 @@ fn write_session(
 /// SPEC's `sticky to xxx` is applied where the entries live: a model's level is
 /// not carried to another model, and the reader is told rather than left to
 /// notice that a line it never typed stopped applying.
-pub fn forget(client: &client::Client, state: &mut State, changed: &str, sink: &mut dyn Sink) {
+pub fn forget(client: &crate::Client, state: &mut State, changed: &str, sink: &mut dyn Sink) {
     let gone = state.forget_followers(changed, &follows(client));
     if gone.is_empty() {
         return;
@@ -370,7 +370,7 @@ pub fn forget(client: &client::Client, state: &mut State, changed: &str, sink: &
 }
 
 /// Every published dependency: the entry a value keys on, and the one it follows.
-pub fn follows(client: &client::Client) -> Vec<(String, String)> {
+pub fn follows(client: &crate::Client) -> Vec<(String, String)> {
     client
         .commands()
         .iter()
@@ -399,19 +399,19 @@ fn sorted(mut kinds: Vec<String>) -> Vec<String> {
 /// nothing of this one's, so a one-shot process cannot complete them and cannot
 /// be handed one by accident.
 pub struct Window {
-    own: client::Catalog,
-    server: client::SharedCompleter,
+    own: crate::Catalog,
+    server: crate::SharedCompleter,
 }
 
 impl Window {
-    pub fn new(server: client::SharedCompleter) -> Self {
-        let own = client::Catalog::new();
+    pub fn new(server: crate::SharedCompleter) -> Self {
+        let own = crate::Catalog::new();
         own.set_commands(protocol::client_commands());
         Self { own, server }
     }
 
     /// Hands the completion to a front-end that reads it.
-    pub fn shared(&self) -> client::SharedCompleter {
+    pub fn shared(&self) -> crate::SharedCompleter {
         std::sync::Arc::new(Self {
             own: self.own.clone(),
             server: self.server.clone(),
@@ -419,7 +419,7 @@ impl Window {
     }
 
     /// Tells the completion what the window's own state is now.
-    pub fn refresh(&self, client: &client::Client, state: &State) {
+    pub fn refresh(&self, client: &crate::Client, state: &State) {
         self.own.set_sticky_names(&state.sticky().names());
         self.own.set_message_session(state.sticky().get("session"));
         self.own.set_sessions(client.sessions().to_vec());
@@ -428,8 +428,8 @@ impl Window {
     }
 }
 
-impl client::Completer for Window {
-    fn complete(&self, line: &str, cursor: usize) -> client::Offered {
+impl crate::Completer for Window {
+    fn complete(&self, line: &str, cursor: usize) -> crate::Offered {
         match head(line) {
             Some(name) if handles(name) => self.own.complete(line, cursor),
             // The word names both sides: `/set` is `set_session` and `set_render`.
@@ -456,11 +456,11 @@ impl Window {
     /// Names, not arguments: past its command word a line belongs to one command,
     /// and which one is the head's to say, so no argument is ever completed from
     /// the window's own catalog on a line the server will run.
-    fn both(&self, line: &str, cursor: usize) -> client::Offered {
+    fn both(&self, line: &str, cursor: usize) -> crate::Offered {
         let typed = head(line).unwrap_or_default();
         // Two catalogs answer the one word: the trait is what makes `Catalog`
         // callable beside the server's completer.
-        let own = client::Completer::complete(&self.own, line, cursor);
+        let own = crate::Completer::complete(&self.own, line, cursor);
         merged(self.server.complete(line, cursor), own, typed)
     }
 }
@@ -485,7 +485,7 @@ fn in_command_word(line: &str, cursor: usize) -> bool {
 /// A prefix match comes first across both lists, not within each: two catalogs
 /// sorted apart would read as the server's answers followed by the window's, and
 /// the operator would read that as one list in a strange order.
-fn merged(mut server: client::Offered, own: client::Offered, typed: &str) -> client::Offered {
+fn merged(mut server: crate::Offered, own: crate::Offered, typed: &str) -> crate::Offered {
     for candidate in own.candidates {
         if !server
             .candidates

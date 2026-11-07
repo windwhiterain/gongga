@@ -1,4 +1,7 @@
-# tui/state.rs
+# client/window_state.rs — the window's own state
+
+The source moved from `crates/tui/src/state.rs` into the client library. The note
+keeps its name because it is about the window's state, not about a crate.
 
 The window's own state, in `~/.gongga/tui.toml`. Everything the operator sets once
 and expects to find again lives here: the sticky entries, which sessions are drawn,

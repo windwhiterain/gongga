@@ -101,3 +101,35 @@ name; shortened in `crates/client/src/lib.rs`) · `test-layout-check` 8 packages
 `gongga-ship` content repo (GitHub schannel closed abruptly), so it never
 listened and the script bailed before its first check. Environmental, not a
 rename regression; the script's own trap removed its temporary home. Not re-run.
+
+## Stage 2: window state and client commands move into the client library
+
+`crates/tui/src/state.rs` -> `crates/client/src/window_state.rs` and
+`crates/tui/src/command.rs` -> `crates/client/src/window_command.rs`. Both are
+now `pub mod` in `crates/client/src/lib.rs`; `crates/tui/src/run.rs` imports
+them as `client::window_command as command` / `client::window_state::State`.
+Inside the moved files `client::` became `crate::`. No behaviour changed:
+`State::load` is still the only reader/writer of `tui.toml`, a one-shot
+`gongga-cli` still reads and writes none of it, and the six client commands are
+still parsed by the window and never reach the command layer. The notes keep
+their `tui-*.md` names -- they are about the window's state, not a crate -- but
+the README index now points at their new source paths.
+
+This commit is WIP saved while the tree was red (the standing rule: commit each
+small step, even red). Another agent was editing the same worktree at the same
+time: it added `crates/tui/src/closing.rs`, `docs/notes/tui-closing.md`, a
+`windows-sys` dependency, and closing-related hunks in `crates/tui/src/lib.rs`.
+Those files were NOT staged here and were not edited by me. They are why the
+gates below are red.
+
+Verified: `cargo build` 1 (E0433 x2 / E0408 x3, all five in `closing.rs`;
+`windows_sys` unresolved) · `cargo fmt --check` 0 · `comments-check` 1 (three
+preamble sections over 120 chars, all in `closing.rs` or the closing hunk of
+`lib.rs`) · `test-layout-check` 8 packages, 0 violations · `git diff --check`
+0 · `scripts/skill_contract.sh` PASS 8 · `scripts/ship.sh --check` in agreement.
+No L3 process test was run: the tree does not build, and the L3 script was
+already blocked by a network failure in the previous turn.
+
+Owed: re-run `cargo build` and `comments-check` once the concurrent change is
+complete, then run `scripts/client_state_selftest.sh` to prove the one-shot cli
+still reads no window state.

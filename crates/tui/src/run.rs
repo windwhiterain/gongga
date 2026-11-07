@@ -6,9 +6,9 @@ use std::pin::Pin;
 use client::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
 use tokio::time::Duration;
 
-use crate::command::{self, Done};
-use crate::state::State;
-use crate::{Server, Tui, UiEvent};
+use crate::{Server, Tui, UiEvent, closing};
+use client::window_command::{self as command, Done};
+use client::window_state::State;
 
 /// First redial delay, doubling up to the cap; a cadence, not a budget.
 ///
@@ -442,7 +442,7 @@ fn follow(
     state: &mut State,
     msg: &client::protocol::ClientMessage,
     line: &str,
-    pending: &mut Vec<(u64, crate::state::Follow)>,
+    pending: &mut Vec<(u64, client::window_state::Follow)>,
 ) {
     let client::protocol::ClientMessage::Command { id, name, args } = msg else {
         return;
@@ -500,7 +500,7 @@ fn typed_names(client: &client::Client, line: &str) -> Vec<String> {
 fn settle(
     client: &client::Client,
     state: &mut State,
-    pending: &mut Vec<(u64, crate::state::Follow)>,
+    pending: &mut Vec<(u64, client::window_state::Follow)>,
     ui: &mut Tui,
 ) {
     for (id, ok) in ui.take_settled() {
@@ -532,6 +532,8 @@ fn settle(
 enum Step {
     /// The operator did something (or the terminal went away: `None`).
     Input(Option<UiEvent>),
+    /// The console holding this window is going away.
+    Closing,
     /// A message arrived, or `None` when the link ended.
     Wire(Option<Vec<u8>>),
     /// The retry backoff expired: start dialling.
@@ -677,7 +679,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
     // The version of the listings already drawn, so a landed answer repaints once.
     let mut drawn_listings: u64 = 0;
     // What the window keeps for commands the server has not answered yet.
-    let mut pending: Vec<(u64, crate::state::Follow)> = Vec::new();
+    let mut pending: Vec<(u64, client::window_state::Follow)> = Vec::new();
     // The pages of the past windows asked to read and the loop has not sent yet.
     let mut owed: Vec<String> = Vec::new();
     let result = loop {
@@ -686,16 +688,19 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
             tokio::select! {
                 event = ui.next_event() => Step::Input(event),
                 bytes = open.recv() => Step::Wire(bytes),
+                _ = closing::asked() => Step::Closing,
             }
         } else if let Some(pending) = dialing.as_mut() {
             tokio::select! {
                 event = ui.next_event() => Step::Input(event),
                 outcome = pending.as_mut() => Step::Dialed(outcome),
+                _ = closing::asked() => Step::Closing,
             }
         } else {
             tokio::select! {
                 event = ui.next_event() => Step::Input(event),
                 _ = tokio::time::sleep_until(next_try) => Step::Dial,
+                _ = closing::asked() => Step::Closing,
             }
         };
 
@@ -707,6 +712,9 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
             // A scroll past the oldest row a window holds: a page above it.
             Step::Input(Some(UiEvent::Older(names))) => owed.extend(names),
             Step::Input(Some(UiEvent::Quit)) => break Ok(()),
+            // The console is going: it asked on a thread of its own, and the
+            // terminal is already given back. See `docs/notes/tui-closing.md`.
+            Step::Closing => break Ok(()),
             // A gesture of the window's own: an operation, not a line.
             Step::Input(Some(UiEvent::Operate(operation))) => {
                 let outcome =

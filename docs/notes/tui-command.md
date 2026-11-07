@@ -1,4 +1,7 @@
-# tui/command.rs
+# client/window_command.rs — the window's own commands
+
+The source moved from `crates/tui/src/command.rs` into the client library. It is
+still the window that parses these lines; a one-shot `gongga-cli` does not.
 
 The commands the window runs itself: every spec `protocol::client_commands()`
 publishes -- `set_sticky`, `del_sticky`, `set_render`, `set_render_session`,

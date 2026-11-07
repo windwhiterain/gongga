@@ -35,11 +35,14 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` library | `crates/client`（`gongga-client`），由 `crates/link` 改名 | 把 `crates/tui/src/run.rs` 里前端无关的运行时上提进来 |
+| `[client]` library | `crates/client`（`gongga-client`）；窗口状态与六条 client 命令已从 `tui` 上提为 `window_state.rs` / `window_command.rs` | `run.rs` 的连接循环与输入行翻译上提 |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
-| `[tui]` binary | `crates/tui`，其中 `run.rs` 还装着连接循环、窗口状态与输入行翻译 | 只剩终端绘制与键盘 |
+| `[tui]` binary | `crates/tui`，`run.rs` 仍装着连接循环与输入行翻译 | 只剩终端绘制与键盘 |
 | `[webui]` binary | 无 | 新增，与 `tui` 并列，共用 `client` 库 |
+
+上提的两个模块只换了位置：`State::load` 仍独占 `tui.toml`，一次性 `gongga-cli` 不读
+不写它；六条 client 命令仍由窗口解析，不上线。行为不变。
 
 裁定：`Client` 状态机与重连校验归 `[client]` 库，不归前端，第二个前端因此不必重写 seq
 补洞与 greeting resync；`[client]` 描述里的 `render` 读作「产出 `Sink` 事件」，实际绘制由各

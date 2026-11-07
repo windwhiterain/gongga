@@ -146,6 +146,8 @@ lines) is another. As of 2026-11-07 `SPEC.md` names this library `[client]`, wit
 | [`client-complete.md`](client-complete.md) | `crates/client/src/complete.rs` |
 | [`client-commands.md`](client-commands.md) | `crates/client/src/commands.rs` |
 | [`client-skill-command.md`](client-skill-command.md) | `crates/client/src/skill_command.rs` |
+| [`tui-state.md`](tui-state.md) | `crates/client/src/window_state.rs` |
+| [`tui-command.md`](tui-command.md) | `crates/client/src/window_command.rs` |
 
 ### cli (historical name)
 
@@ -176,8 +178,6 @@ argv to `client::main` when invoked under that name or given a command.
 | [`tui-table.md`](tui-table.md) | `crates/tui/src/table.rs` |
 | [`tui-tree.md`](tui-tree.md) | `crates/tui/src/tree.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |
-| [`tui-state.md`](tui-state.md) | `crates/tui/src/state.rs` |
-| [`tui-command.md`](tui-command.md) | `crates/tui/src/command.rs` |
 | [`tui-frame_cost.md`](tui-frame_cost.md) | `crates/tui/examples/frame_cost.rs` |
 
 ### bridge

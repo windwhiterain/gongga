@@ -7,6 +7,8 @@ pub mod commands;
 pub mod complete;
 pub mod server;
 pub mod skill_command;
+pub mod window_command;
+pub mod window_state;
 
 pub use crate::catalog::Catalog;
 pub use crate::complete::{

@@ -8,7 +8,6 @@
 
 mod cache;
 mod clipboard;
-mod command;
 mod cover;
 mod fold;
 mod input;
@@ -20,7 +19,6 @@ pub mod program;
 mod render;
 mod roster;
 pub mod run;
-mod state;
 mod table;
 mod tree;
 
