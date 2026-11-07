@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::session::Machine;
 use crate::tools::words;
-use crate::tools::{Tool, ToolContext, ToolOutcome};
+use crate::tools::{Cmd, ToolContext, ToolOutcome};
 use skill::Skill;
 
 pub struct SkillTool {
@@ -125,7 +125,6 @@ impl Cmd for SkillTool {
             }
         })
     }
-}
 }
 
 /// The entry's argv, as the caller gave it: words, and never a command line.

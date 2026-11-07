@@ -1,8 +1,8 @@
 //! The agent-written checkpoint artifact; the agent loop commits it with its result.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::tools::{Tool, ToolContext, ToolOutcome};
+use crate::tools::{Cmd, ToolContext, ToolOutcome};
 
 pub const LIVE_COMPACT_TOOL: &str = "live_compact";
 
@@ -34,5 +34,4 @@ impl Cmd for LiveCompactTool {
             ToolOutcome::ok(crate::meta::embed(source, &ctx.cwd, summary).await)
         })
     }
-}
 }

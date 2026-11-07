@@ -19,7 +19,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::session::Machine;
-use crate::tools::{Cut, Tool, ToolContext, ToolOutcome};
+use crate::tools::{Cmd, Cut, ToolContext, ToolOutcome};
 
 const DEFAULT_NAME: &str = "default";
 
@@ -444,7 +444,7 @@ impl Cmd for PythonTool {
                  call's reply at a time, and nobody was left to read this one, so {name:?} was \
                  ended -- what it was running is gone and its output with it. The next `{}` \
                  call to that name starts with a fresh namespace.",
-                self.name(),
+                ctx.tool,
                 why = why.because()
             ))
         })
@@ -521,7 +521,7 @@ impl Cmd for PythonTool {
                             Err(e) => {
                                 return ToolOutcome::err(format!(
                                     "{} {name:?} did not start: {e}",
-                                    self.name()
+                                    ctx.tool
                                 ));
                             }
                         };
@@ -542,35 +542,14 @@ impl Cmd for PythonTool {
 
             let request = json!({ "code": code });
             if background {
-                let notify = crate::tools::python_notifier(ctx, self.name(), name);
+                let notify = crate::tools::python_notifier(ctx, &ctx.tool, name);
                 handle.spawn_background(request, Some(notify));
                 return ToolOutcome::ok(format!(
                     "started a background {} call in `{name}`; run `check_python` to collect \
                      what it printed, and this session is told when it ends",
-                    self.name()
+                    ctx.tool
                 ));
             }
-    /// A read never stopped anything: the calls it was waiting for are still there.
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        _ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let name = args["name"]
-                .as_str()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .unwrap_or(DEFAULT_NAME);
-            ToolOutcome::err(format!(
-                "check_python stopped waiting for {name}: {}. The calls it was waiting for are \
-                 still running, and `check_python` reads what they print.",
-                why.because()
-            ))
-        })
-    }
             let mut repl = handle.inner.lock().await;
             match repl.run_request(&request, timeout).await {
                 Ok(reply) => {
@@ -592,28 +571,39 @@ impl Cmd for PythonTool {
                     ToolOutcome::err(format!(
                         "{e}. Interpreter {name:?} was stopped; the next `{}` call to that \
                          name starts with a fresh namespace.",
-                        self.name()
+                        ctx.tool
                     ))
                 }
             }
         })
     }
-
-    /// The interpreter ends with the call whose reply nobody is left to read.
-    ///
-    /// # Invariant
-    ///
-    /// A foreground call reads its own reply line under the interpreter's lock, so a
-    /// call that returns without reading it would hand that line to the next caller
-    /// as the answer to another question. Ending the interpreter keeps "one name, one
-    /// interpreter" true. See `docs/notes/server-tools-python.md`.
-}
 }
 
 /// The collector for interpreters: `check_bash`'s shape, for `python`.
 pub struct CheckPythonTool;
 
 impl Cmd for CheckPythonTool {
+    /// A read never stopped anything: the calls it was waiting for are still there.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = args["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(DEFAULT_NAME);
+            ToolOutcome::err(format!(
+                "check_python stopped waiting for {name}: {}. The calls it was waiting for are \
+                 still running, and `check_python` reads what they print.",
+                why.because()
+            ))
+        })
+    }
     fn run<'a>(
         &'a self,
         args: Value,
@@ -654,9 +644,6 @@ impl Cmd for CheckPythonTool {
             ))
         })
     }
-
-    /// A read never stopped anything: the calls it was waiting for are still there.
-}
 }
 
 pub struct DelPythonTool;
@@ -698,7 +685,6 @@ impl Cmd for DelPythonTool {
             ToolOutcome::ok(format!("discarded python(s) {}", names.join(", ")))
         })
     }
-}
 }
 
 pub struct ListPythonTool;
@@ -755,7 +741,6 @@ impl Cmd for ListPythonTool {
             )
         })
     }
-}
 }
 
 /// One file operation: a fresh driver, one request, one answer. File state is
@@ -869,12 +854,6 @@ async fn one_shot_remote(
 /// Offered only to a session that has a remote: `definitions` drops it otherwise, so
 /// the argument is its own whole explanation and the descriptions below never mention
 /// a second machine.
-fn remote_arg() -> Value {
-    json!({
-        "type": "string"
-    })
-}
-
 pub struct ReadFileTool {
     pub program: Option<PathBuf>,
     pub args: Vec<String>,
@@ -883,6 +862,12 @@ pub struct ReadFileTool {
 }
 
 impl Cmd for ReadFileTool {
+    /// `--remote` is an argument of the call: a file command reads the machine the
+    /// call names, wherever the session stands.
+    fn machine(&self, args: &Value, ctx: &ToolContext) -> Option<crate::session::Machine> {
+        Some(file_machine(args, ctx))
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -953,7 +938,6 @@ impl Cmd for ReadFileTool {
         })
     }
 }
-}
 
 pub struct WriteFileTool {
     pub program: Option<PathBuf>,
@@ -963,6 +947,12 @@ pub struct WriteFileTool {
 }
 
 impl Cmd for WriteFileTool {
+    /// `--remote` is an argument of the call: a file command reads the machine the
+    /// call names, wherever the session stands.
+    fn machine(&self, args: &Value, ctx: &ToolContext) -> Option<crate::session::Machine> {
+        Some(file_machine(args, ctx))
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1022,7 +1012,6 @@ impl Cmd for WriteFileTool {
         })
     }
 }
-}
 
 pub struct ReplaceTool {
     pub program: Option<PathBuf>,
@@ -1032,6 +1021,12 @@ pub struct ReplaceTool {
 }
 
 impl Cmd for ReplaceTool {
+    /// `--remote` is an argument of the call: a file command reads the machine the
+    /// call names, wherever the session stands.
+    fn machine(&self, args: &Value, ctx: &ToolContext) -> Option<crate::session::Machine> {
+        Some(file_machine(args, ctx))
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1102,5 +1097,4 @@ impl Cmd for ReplaceTool {
             }
         })
     }
-}
 }

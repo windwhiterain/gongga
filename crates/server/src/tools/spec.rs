@@ -11,7 +11,7 @@
 //! and takes the tunnel's shared arguments. The code holds the command that runs and
 //! nothing else, so a tool is added, reworded or given an argument without a build.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::session::Machine;
@@ -31,7 +31,7 @@ fn yes() -> bool {
 ///
 /// An order, not a table: the position an argument takes on an operator's line is
 /// the row's, so the two surfaces spell one call the same way.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Argument {
     /// The name both the model and the operator spell.
@@ -39,6 +39,9 @@ pub struct Argument {
     /// The JSON type: `string`, `integer`, `number`, `boolean` or `array`.
     #[serde(rename = "type", default = "string_type")]
     pub kind: String,
+    /// What an `array` argument's elements are. Only arrays have one.
+    #[serde(default)]
+    pub items: Option<String>,
     /// Whether a call that omits it is refused.
     #[serde(default)]
     pub required: bool,
@@ -63,7 +66,7 @@ pub struct Argument {
 ///
 /// The same list the protocol publishes, because a tool's argument and a command's
 /// argument are completed by one client-side engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Completion {
     #[default]
@@ -95,7 +98,7 @@ impl Completion {
 }
 
 /// Which machine a tool's paths belong to, as the row spells it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Side {
     #[default]
@@ -113,7 +116,7 @@ impl Side {
 }
 
 /// What carries a call that says `background`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Carrier {
     /// A process of its own, which outlives a `cancel`.
@@ -136,7 +139,7 @@ impl Carrier {
 }
 
 /// One tool, exactly as one row under `[tools]` declares it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSpec {
     /// The command this tool hands its arguments to: the one implementation that
@@ -180,22 +183,6 @@ pub struct ToolSpec {
 }
 
 impl ToolSpec {
-    /// The argument named, when the row declares one.
-    pub fn argument(&self, name: &str) -> Option<&Argument> {
-        self.parameters.iter().find(|a| a.name == name)
-    }
-
-    /// The arguments an operator spells positionally, in the row's order.
-    pub fn positional(&self) -> Vec<&str> {
-        let mut placed: Vec<(usize, &str)> = self
-            .parameters
-            .iter()
-            .filter_map(|a| a.positional.map(|at| (at, a.name.as_str())))
-            .collect();
-        placed.sort_by_key(|(at, _)| *at);
-        placed.into_iter().map(|(_, name)| name).collect()
-    }
-
     /// The model-facing schema: what the row declares, and nothing else.
     ///
     /// The tunnel's own arguments are added by [`crate::tools::general_parameters`],
@@ -205,6 +192,9 @@ impl ToolSpec {
         let mut required: Vec<String> = Vec::new();
         for argument in &self.parameters {
             let mut property = json!({ "type": argument.kind });
+            if let Some(items) = &argument.items {
+                property["items"] = json!({ "type": items });
+            }
             if let Some(sentence) = &argument.sentence {
                 property["description"] = Value::String(sentence.clone());
             }

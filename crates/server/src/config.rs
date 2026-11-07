@@ -242,6 +242,14 @@ pub struct ToolsConfig {
     /// refused and told to go `detached`, and what it started keeps running. See
     /// `SPEC`, "Tool", and `docs/notes/server-tools-mod.md`.
     pub max_wait: Duration,
+    /// Every tool this home declares, in the order the names sort.
+    ///
+    /// # Invariant
+    ///
+    /// The one table: what the model is offered, what the operator may type and what
+    /// this build carries are all read from here. See
+    /// `docs/notes/server-tools-spec.md`.
+    pub rows: std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>,
 }
 
 /// What a conversation with a peer costs when the peer is silent.
@@ -329,6 +337,12 @@ struct FileConfig {
     #[serde(alias = "provider")]
     model: Option<FileModel>,
     tools: Option<FileTools>,
+    /// `[tool.<name>]`: one row per tool this home declares, by the name the model
+    /// calls it. See `docs/notes/server-tools-spec.md`.
+    tool: Option<std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>>,
+    /// Where the rows used to live: the words alone, under `[tool_text.<name>]`.
+    /// Read for nothing, so a home that still has it is not refused.
+    tool_text: Option<toml::Table>,
     /// Never honoured: `crate::remotes` reads them from the machine.
     #[serde(alias = "targets")]
     remotes: Option<std::collections::BTreeMap<String, crate::remotes::FileRemote>>,
@@ -669,6 +683,7 @@ impl Config {
                     .or_else(|| env_or("GONGGA_TOOL_MAX_WAIT_MS").and_then(|v| v.parse().ok()))
                     .unwrap_or(DEFAULT_TOOL_MAX_WAIT_MS),
             ),
+            rows: file.tool.unwrap_or_default(),
         };
 
         let scripts_file = file.scripts.unwrap_or_default();

@@ -215,8 +215,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             installed.pin,
         );
     }
-    // What a tool says it is: the code's own words, as this home rewrote them.
-    tools::text::install(&cfg.config_path);
     let overridden = prompts::shared().overridden();
     tracing::info!(
         file = %cfg.config_path.display(),
@@ -323,7 +321,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         clients: std::sync::Mutex::new(std::collections::HashMap::new()),
         default_context: cfg.model.context,
         tools: Arc::new(
-            ToolRegistry::with_builtins(
+            ToolRegistry::settings(
                 cfg.tools.max_wait,
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
@@ -335,7 +333,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 skill_lib,
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
-            ),
+            )
+            .build(&cfg.tools.rows),
         ),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,
@@ -351,9 +350,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         detached: detached.clone(),
         jobs: crate::tools::tunnel::JobRegistry::new(),
     });
-
-    // A tool without sentences still runs; the whole-check is
-    // `tools::text::tests` now, where a build is checked.
 
     // Turns in flight and subscription actions: a stop waits for both.
     let active = Arc::new(AtomicUsize::new(0));

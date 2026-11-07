@@ -678,6 +678,8 @@ fn adopted(
     ToolContext {
         session: session.to_string(),
         call_id: String::new(),
+        // This context reads an answer and writes a row; it is no tool's own call.
+        tool: String::new(),
         home: cfg.home.clone(),
         output_dir: output_dir.to_path_buf(),
         shells: Arc::new(std::sync::Mutex::new(crate::session::Shells::empty(

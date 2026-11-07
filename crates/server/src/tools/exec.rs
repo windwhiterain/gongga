@@ -12,11 +12,11 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::session::Machine;
 use crate::tools::exec_remote;
-use crate::tools::{Cut, Tool, ToolContext, ToolOutcome};
+use crate::tools::{Cmd, Cut, ToolContext, ToolOutcome};
 
 pub struct ExecTool {
     pub machine: Machine,
@@ -61,7 +61,7 @@ impl Cmd for ExecTool {
                 "{program} was stopped: {why}. A program started with `{}` has no shell to be \
                  left running in, so it ends with the call -- what it printed after this point \
                  is lost, and its exit status is unknown.",
-                self.name(),
+                ctx.tool,
                 why = why.because()
             ))
         })
@@ -104,7 +104,7 @@ impl Cmd for ExecTool {
                         // A process of its own, so a wait that ends does not end it.
                         match super::tunnel::run_own_program(
                             ctx,
-                            self.name(),
+                            &ctx.tool,
                             description,
                             self.max_output_chars,
                             program,
@@ -183,16 +183,6 @@ impl Cmd for ExecTool {
             }
         })
     }
-
-    /// A program run this way has no shell to be left in.
-    ///
-    /// # Invariant
-    ///
-    /// The wait is dropped with the call. A local program is a process of its own, so a
-    /// stop that lets jobs go leaves it running and the row carries it; every other cut
-    /// ends it, and what is left to say is that it was stopped rather than finished.
-    /// See `docs/notes/server-tools-exec.md`.
-}
 }
 
 fn command_of(args: &Value, ctx: &ToolContext) -> Result<ExecCommand, String> {

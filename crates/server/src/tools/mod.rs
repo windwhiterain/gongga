@@ -32,7 +32,7 @@ pub mod live_compact;
 pub mod python;
 pub mod python_remote;
 pub mod skill;
-pub mod text;
+pub mod spec;
 pub mod tunnel;
 pub mod words;
 
@@ -46,6 +46,13 @@ pub mod words;
 pub struct ToolContext {
     pub session: String,
     pub call_id: String,
+    /// The name this call was made under, so a message can say which tool it was.
+    ///
+    /// # Invariant
+    ///
+    /// The row's name, not a constant in the command: a tool renamed in the config
+    /// says the new name in every message it writes.
+    pub tool: String,
     /// The home this call belongs to: what a worker needs to be started.
     pub home: PathBuf,
     /// Where capped tool output is spilled, so nothing is lost by capping.
@@ -261,8 +268,10 @@ impl ToolOutcome {
 
 /// A tool the model can call; a boxed future instead of `async_trait`, one macro less.
 pub trait Tool: Send + Sync {
-    fn name(&self) -> &'static str;
-    fn parameters(&self) -> Value;
+    fn name(&self) -> &str;
+
+    /// The row this tool is: its arguments, its sentences and every flag below.
+    fn spec(&self) -> &spec::ToolSpec;
 
     /// Which machine this call's paths belong to.
     ///
@@ -271,9 +280,7 @@ pub trait Tool: Send + Sync {
     /// A shell tool answers for the machine it drives; every other tool answers for
     /// where the session stands, unless its own arguments name a machine. That is
     /// the whole of "whose file is this".
-    fn machine(&self, _args: &Value, ctx: &ToolContext) -> Machine {
-        ctx.machine
-    }
+    fn machine(&self, _args: &Value, ctx: &ToolContext) -> Machine;
 
     /// Whether this tool drives the session's remote.
     ///
@@ -281,9 +288,7 @@ pub trait Tool: Send + Sync {
     ///
     /// The tool answers for itself, so a twin added tomorrow cannot be offered to a
     /// session that has no such machine. See `definitions`.
-    fn is_remote(&self) -> bool {
-        false
-    }
+    fn is_remote(&self) -> bool;
 
     /// How long this tool's own calls wait when the call states none.
     ///
@@ -291,9 +296,7 @@ pub trait Tool: Send + Sync {
     ///
     /// A default, never a ceiling: the tunnel resolves the wait from this and its own
     /// cap, and writes the answer into the call. See `tunnel::resolve`.
-    fn default_timeout(&self) -> Option<Duration> {
-        None
-    }
+    fn default_timeout(&self) -> Option<Duration>;
 
     /// Whether this tool is subject to the tunnel's shared arguments.
     ///
@@ -302,9 +305,7 @@ pub trait Tool: Send + Sync {
     /// `wait` is the one tool that answers no: SPEC treats it internally, because
     /// waiting is its whole work -- a ceiling on it would keep it from waiting for what
     /// it was asked to wait for, and `background` would be a way of not waiting at all.
-    fn tunneled(&self) -> bool {
-        true
-    }
+    fn tunneled(&self) -> bool;
 
     /// What carries a call to this tool that says `background`.
     ///
@@ -313,9 +314,7 @@ pub trait Tool: Send + Sync {
     /// `Here` is the answer for a tool that acts on this server's state: a process of its
     /// own would find none of it, so `background` is refused rather than answered with a
     /// job that would die with the server. See `docs/notes/server-tools-worker.md`.
-    fn detached_carrier(&self) -> tunnel::Carried {
-        tunnel::Carried::Here
-    }
+    fn detached_carrier(&self) -> tunnel::Carried;
 
     /// Whether calling this tool is itself a change to the workspace.
     ///
@@ -326,9 +325,7 @@ pub trait Tool: Send + Sync {
     /// earlier or later look could catch what has not happened yet. A tool that
     /// changes the workspace some other way -- through a program -- is caught by the
     /// look its call takes when it ends. See `docs/notes/server-explore.md`.
-    fn writes(&self) -> bool {
-        false
-    }
+    fn writes(&self) -> bool;
 
     /// Whether `background` is this tool's own work rather than the tunnel's.
     ///
@@ -337,9 +334,7 @@ pub trait Tool: Send + Sync {
     /// A tool that backgrounds into a shell or an interpreter is read back by that
     /// collector (`check_bash`, `check_python`); every other tool's background is a
     /// process of its own, read by `check_job`. See `docs/notes/server-tools-mod.md`.
-    fn handles_background(&self) -> bool {
-        false
-    }
+    fn handles_background(&self) -> bool;
 
     /// Whether this tool's wait is its own, so the tunnel's clock does not end it.
     ///
@@ -348,9 +343,7 @@ pub trait Tool: Send + Sync {
     /// A shell or an interpreter turns a long wait into its own background job, and a
     /// reading tool waits for `wait_ms`: in both the work *is* the wait, so a clock
     /// taking the call away would be taking away the thing that was asked for.
-    fn owns_its_wait(&self) -> bool {
-        false
-    }
+    fn owns_its_wait(&self) -> bool;
 
     fn run<'a>(
         &'a self,
@@ -370,7 +363,7 @@ pub trait Tool: Send + Sync {
     fn cut<'a>(
         &'a self,
         _args: &'a Value,
-        _ctx: &'a ToolContext,
+        ctx: &'a ToolContext,
         why: Cut,
         _started: std::time::Instant,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
@@ -378,7 +371,7 @@ pub trait Tool: Send + Sync {
             ToolOutcome::err(format!(
                 "`{}` ended its wait: {}. What it had already done is not reported, because \
                  the call was ended instead of finishing.",
-                self.name(),
+                ctx.tool,
                 why.because()
             ))
         })
@@ -406,104 +399,199 @@ impl Cut {
     }
 }
 
+/// What a config row's `cmd` names: the one implementation that does the work.
+///
+/// # Invariant
+///
+/// Nothing about a tool is here but the work. The name, the arguments, the sentences
+/// and every flag are the row's ([`spec::ToolSpec`]), so two rows naming one command
+/// are two tools with two schemas -- `bash` and `remote_bash` are that pair.
+pub trait Cmd: Send + Sync {
+    fn run<'a>(
+        &'a self,
+        args: Value,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
+
+    /// The machine a call's own arguments name, when they name one.
+    ///
+    /// # Invariant
+    ///
+    /// `None` is the row's: a command that runs where the session stands says nothing
+    /// here. A file command answers, because `--remote` is an argument of the call and
+    /// not a fact about the tool -- which no config row could state.
+    fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Option<Machine> {
+        None
+    }
+
+    /// What this call answers when its wait is ended before the work finishes.
+    ///
+    /// # Invariant
+    ///
+    /// Overridden where ending a wait has to undo something (a shell left running, an
+    /// interpreter ended): this is a hook on the work, not a sentence about it.
+    fn cut<'a>(
+        &'a self,
+        _args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            ToolOutcome::err(format!(
+                "this call ended its wait: {}. What it had already done is not reported, \
+                 because the call was ended instead of finishing.",
+                why.because()
+            ))
+        })
+    }
+}
+
+/// One row of the config, offered as the tool the model and the operator call.
+pub struct Specd {
+    /// The row's name: the key it is declared under.
+    name: String,
+    /// The row: everything said about this tool.
+    spec: spec::ToolSpec,
+    /// The command the row names, which does the work.
+    work: Box<dyn Cmd>,
+}
+
+impl Specd {
+    pub fn new(name: String, spec: spec::ToolSpec, work: Box<dyn Cmd>) -> Self {
+        Self { name, spec, work }
+    }
+}
+
+impl Tool for Specd {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn spec(&self) -> &spec::ToolSpec {
+        &self.spec
+    }
+
+    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
+        self.work
+            .machine(args, ctx)
+            .unwrap_or_else(|| self.spec.machine.machine())
+    }
+
+    fn is_remote(&self) -> bool {
+        self.spec.machine == spec::Side::Remote
+    }
+
+    fn default_timeout(&self) -> Option<Duration> {
+        self.spec.timeout_ms.map(Duration::from_millis)
+    }
+
+    fn tunneled(&self) -> bool {
+        self.spec.tunneled
+    }
+
+    fn detached_carrier(&self) -> tunnel::Carried {
+        self.spec.carrier.carried()
+    }
+
+    fn writes(&self) -> bool {
+        self.spec.writes
+    }
+
+    fn handles_background(&self) -> bool {
+        self.spec.handles_background
+    }
+
+    fn owns_its_wait(&self) -> bool {
+        self.spec.owns_its_wait
+    }
+
+    fn run<'a>(
+        &'a self,
+        args: Value,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        self.work.run(args, ctx)
+    }
+
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        self.work.cut(args, ctx, why, started)
+    }
+}
+
 pub struct ToolRegistry {
     tools: Vec<Arc<dyn Tool>>,
     /// The longest one call may wait for its answer. See `tunnel::resolve`.
     max_wait: Duration,
+    /// What a command needs that no config row states.
+    settings: Settings,
+}
+
+/// What this build hands a command the config names.
+///
+/// # Invariant
+///
+/// Not a tool and not a row: the numbers and the programs a command is built with,
+/// which belong to the machine and not to what the model is told.
+struct Settings {
+    bash_timeout: Duration,
+    max_output_chars: usize,
+    python: Option<(crate::config::PythonConfig, Option<std::path::PathBuf>)>,
+    skill: Option<SkillSettings>,
+    live_compact: bool,
+}
+
+struct SkillSettings {
+    programs: ::skill::Programs,
+    lib: Option<std::path::PathBuf>,
+    timeout: Duration,
+    max_output_chars: usize,
 }
 
 impl ToolRegistry {
-    pub fn with_builtins(
-        max_wait: Duration,
-        bash_timeout: Duration,
-        max_output_chars: usize,
-    ) -> Self {
+    /// A registry with no tools yet: the rows come from the config, in [`Self::build`].
+    ///
+    /// # Invariant
+    ///
+    /// Nothing is registered here. What a build carries is what the home's `[tools]`
+    /// declares, so a row added in the config is a tool and a row removed is not.
+    pub fn settings(max_wait: Duration, bash_timeout: Duration, max_output_chars: usize) -> Self {
         Self {
+            tools: Vec::new(),
             max_wait,
-            tools: vec![
-                Arc::new(BashTool {
-                    machine: Machine::Local,
-                    timeout: bash_timeout,
-                    max_output_chars,
-                }),
-                Arc::new(BashTool {
-                    machine: Machine::Remote,
-                    timeout: bash_timeout,
-                    max_output_chars,
-                }),
-                Arc::new(exec::ExecTool {
-                    machine: Machine::Local,
-                    timeout: bash_timeout,
-                    max_output_chars,
-                }),
-                Arc::new(exec::ExecTool {
-                    machine: Machine::Remote,
-                    timeout: bash_timeout,
-                    max_output_chars,
-                }),
-                Arc::new(CheckBashTool { max_output_chars }),
-                Arc::new(CheckJobTool { max_output_chars }),
-                Arc::new(WaitTool {
-                    timeout: bash_timeout,
-                }),
-                Arc::new(DelBashTool),
-                Arc::new(DelJobTool),
-                Arc::new(ListBashTool),
-                Arc::new(python::CheckPythonTool),
-                Arc::new(python::DelPythonTool),
-                Arc::new(python::ListPythonTool),
-            ],
+            settings: Settings {
+                bash_timeout,
+                max_output_chars,
+                python: None,
+                skill: None,
+                live_compact: false,
+            },
         }
     }
 
-    /// Makes compaction callable without offering its schema in ordinary requests.
+    /// Whether this build carries the compaction checkpoint's tool at all.
     pub fn with_live_compact(mut self, enabled: bool) -> Self {
-        if enabled {
-            self.tools.push(Arc::new(live_compact::LiveCompactTool));
-        }
+        self.settings.live_compact = enabled;
         self
     }
 
-    /// Adds the Python tools; `lib` is where `gongga_skill.py` sits.
+    /// The interpreter a `python` row runs in, and where its package import lives.
     pub fn with_python(
         mut self,
         python: crate::config::PythonConfig,
         lib: Option<std::path::PathBuf>,
     ) -> Self {
-        let files = python.clone();
-        // One implementation, two names: here, and on the session's peer.
-        for machine in [Machine::Local, Machine::Remote] {
-            self.tools.push(Arc::new(python::PythonTool {
-                machine,
-                program: python.program.clone(),
-                args: python.args.clone(),
-                timeout: python.timeout,
-                max_output_chars: python.max_output_chars,
-                lib: lib.clone(),
-            }));
-        }
-        self.tools.push(Arc::new(python::ReadFileTool {
-            program: files.program.clone(),
-            args: files.args.clone(),
-            timeout: files.timeout,
-            max_output_chars: files.max_output_chars,
-        }));
-        self.tools.push(Arc::new(python::WriteFileTool {
-            program: files.program.clone(),
-            args: files.args.clone(),
-            timeout: files.timeout,
-            max_output_chars: files.max_output_chars,
-        }));
-        self.tools.push(Arc::new(python::ReplaceTool {
-            program: files.program,
-            args: files.args,
-            timeout: files.timeout,
-            max_output_chars: files.max_output_chars,
-        }));
+        self.settings.python = Some((python, lib));
         self
     }
 
-    /// Adds `skill`; `lib` is where this home keeps the Python a package imports.
+    /// The entries a `skill` row may start, and where this home keeps its import.
     pub fn with_skills(
         mut self,
         programs: ::skill::Programs,
@@ -511,13 +599,127 @@ impl ToolRegistry {
         timeout: Duration,
         max: usize,
     ) -> Self {
-        self.tools.push(Arc::new(skill::SkillTool {
+        self.settings.skill = Some(SkillSettings {
             programs,
             lib,
             timeout,
             max_output_chars: max,
-        }));
+        });
         self
+    }
+
+    /// Builds one tool per row the config declares.
+    ///
+    /// # Invariant
+    ///
+    /// Every tool is a row, so the model's list, the operator's commands and what this
+    /// process carries are one table. A row naming a command this build does not know,
+    /// or one whose setting is missing, is not carried and the reason is kept in
+    /// [`Self::problems`]: a tool that vanished quietly is a model calling what is not
+    /// there.
+    pub fn build(mut self, rows: &std::collections::BTreeMap<String, spec::ToolSpec>) -> Self {
+        for (name, row) in rows {
+            if row.cmd == live_compact::LIVE_COMPACT_TOOL && !self.settings.live_compact {
+                continue;
+            }
+            match self.command(row) {
+                Ok(work) => self
+                    .tools
+                    .push(Arc::new(Specd::new(name.clone(), row.clone(), work))),
+                Err(why) => tracing::warn!(
+                    row = %name,
+                    "`[tool.{name}]` is not carried: {why}"
+                ),
+            }
+        }
+        self
+    }
+
+    /// The command a row names, built with this build's own settings.
+    fn command(&self, row: &spec::ToolSpec) -> Result<Box<dyn Cmd>, String> {
+        let machine = row.machine.machine();
+        let max_output_chars = row
+            .max_output_chars
+            .unwrap_or(self.settings.max_output_chars);
+        let bash_timeout = row
+            .timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(self.settings.bash_timeout);
+        Ok(match row.cmd.as_str() {
+            "bash" => Box::new(BashTool {
+                machine,
+                timeout: bash_timeout,
+                max_output_chars,
+            }),
+            "exec" => Box::new(exec::ExecTool {
+                machine,
+                timeout: bash_timeout,
+                max_output_chars,
+            }),
+            "check_bash" => Box::new(CheckBashTool { max_output_chars }),
+            "check_job" => Box::new(CheckJobTool { max_output_chars }),
+            "wait" => Box::new(WaitTool {
+                timeout: bash_timeout,
+            }),
+            "del_bash" => Box::new(DelBashTool),
+            "del_job" => Box::new(DelJobTool),
+            "list_bash" => Box::new(ListBashTool),
+            "python" | "check_python" | "del_python" | "list_python" | "read_file"
+            | "write_file" | "replace" => {
+                let (python, lib) = self
+                    .settings
+                    .python
+                    .as_ref()
+                    .ok_or("this build configures no Python")?;
+                let cap = row.max_output_chars.unwrap_or(python.max_output_chars);
+                match row.cmd.as_str() {
+                    "python" => Box::new(python::PythonTool {
+                        machine,
+                        program: python.program.clone(),
+                        args: python.args.clone(),
+                        timeout: python.timeout,
+                        max_output_chars: cap,
+                        lib: lib.clone(),
+                    }),
+                    "check_python" => Box::new(python::CheckPythonTool),
+                    "del_python" => Box::new(python::DelPythonTool),
+                    "list_python" => Box::new(python::ListPythonTool),
+                    "read_file" => Box::new(python::ReadFileTool {
+                        program: python.program.clone(),
+                        args: python.args.clone(),
+                        timeout: python.timeout,
+                        max_output_chars: cap,
+                    }),
+                    "write_file" => Box::new(python::WriteFileTool {
+                        program: python.program.clone(),
+                        args: python.args.clone(),
+                        timeout: python.timeout,
+                        max_output_chars: cap,
+                    }),
+                    _ => Box::new(python::ReplaceTool {
+                        program: python.program.clone(),
+                        args: python.args.clone(),
+                        timeout: python.timeout,
+                        max_output_chars: cap,
+                    }),
+                }
+            }
+            "skill" => {
+                let skill = self
+                    .settings
+                    .skill
+                    .as_ref()
+                    .ok_or("this build configures no skill programs")?;
+                Box::new(skill::SkillTool {
+                    programs: skill.programs.clone(),
+                    lib: skill.lib.clone(),
+                    timeout: skill.timeout,
+                    max_output_chars: max_output_chars.min(skill.max_output_chars),
+                })
+            }
+            "live_compact" => Box::new(live_compact::LiveCompactTool),
+            other => return Err(format!("this build carries no command {other:?}")),
+        })
     }
 
     /// Every tool, in registration order: the catalog generator's one source.
@@ -571,7 +773,7 @@ impl ToolRegistry {
         }
         crate::llm::ToolDefinition {
             name: tool.name().to_string(),
-            description: text::shared().description(tool.name()).unwrap_or_default(),
+            description: tool.spec().summary.clone().unwrap_or_default(),
             parameters,
         }
     }
@@ -597,6 +799,11 @@ impl ToolRegistry {
                 self.names().join(", ")
             ));
         };
+        // The name this call was made under: a command says its own name in what it
+        // answers, and a row renamed in the config names itself the new way.
+        let mut named = ctx.clone();
+        named.tool = name.to_string();
+        let ctx = &named;
         // Before the arguments are read: a refused call must not reach the tool at all,
         // so nothing is spawned for it.
         if tool.writes() && ctx.explore.is_some() {
@@ -639,7 +846,7 @@ impl ToolRegistry {
         outcome
     }
 
-    pub fn names(&self) -> Vec<&'static str> {
+    pub fn names(&self) -> Vec<&str> {
         self.tools.iter().map(|t| t.name()).collect()
     }
 }
@@ -830,7 +1037,7 @@ pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "
 /// accepts what the call layer reads. A property a tool already declares wins:
 /// these are the defaults, not an override.
 pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
-    let mut schema = tool.parameters();
+    let mut schema = tool.spec().schema();
     // A tool the tunnel leaves alone takes none of the tunnel's words. See SPEC.
     if tool.tunneled()
         && let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
@@ -864,8 +1071,6 @@ pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
                 })
             });
     }
-    // Last: a sentence is written into a property that must already exist.
-    text::shared().apply(tool.name(), &mut schema);
     schema
 }
 
@@ -873,7 +1078,7 @@ pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
 ///
 /// See `docs/notes/server-tools-mod.md`.
 fn argument_error(tool: &dyn Tool, args: &Value) -> Option<String> {
-    let schema = tool.parameters();
+    let schema = tool.spec().schema();
     let Some(given) = args.as_object() else {
         return Some(format!(
             "`{name}` did not run: its arguments must be a JSON object, and this was {kind}.\n  \
@@ -1207,9 +1412,6 @@ fn command_line(value: Option<&Value>) -> Result<String, String> {
     }
 }
 
-/// The name the tool on the session's remote is called by.
-const REMOTE_BASH: &str = "remote_bash";
-
 pub struct BashTool {
     /// Which machine this tool drives. One implementation, two names.
     pub machine: Machine,
@@ -1477,23 +1679,6 @@ impl Cmd for BashTool {
                              child can cause. {}. Anything above may be truncated.]",
                             if replaced {
                                 "It has been replaced with a fresh shell in the session's \
-    /// A read never stopped anything: its jobs are still there to read.
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        _ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let name = shell_name(args);
-            ToolOutcome::err(format!(
-                "check_bash stopped waiting for {name}: {}. The jobs it was waiting for were \
-                 not stopped, and `check_bash` reads what they printed.",
-                why.because()
-            ))
-        })
-    }
                                  working directory, so `cd` and exports from earlier calls are \
                                  gone"
                             } else {
@@ -1541,36 +1726,6 @@ impl Cmd for BashTool {
             }
         })
     }
-
-    /// A command in a shell outlives the wait: it is handed to the background, and
-    /// a fresh shell takes its name.
-    ///
-    /// # Invariant
-    /// A job that ended does not stop: it has said all it will say.
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        _ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let id = args
-                .get("job_id")
-                .and_then(Value::as_u64)
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "?".to_string());
-            ToolOutcome::err(format!(
-                "check_job stopped waiting for job {id}: {}. The job was not stopped, and \
-                 `check_job` reads what it answered.",
-                why.because()
-            ))
-        })
-    }
-    ///
-    /// Runs after the call's own future is gone: the task it spawns takes this
-    /// shell's lock. See `docs/notes/server-tools-mod.md`.
-}
 }
 
 // ------------------------------- check_bash --------------------------------
@@ -1585,6 +1740,23 @@ const WAIT_POLL: Duration = Duration::from_millis(100);
 const MAX_WAIT: Duration = Duration::from_secs(600);
 
 impl Cmd for CheckBashTool {
+    /// A read never stopped anything: its jobs are still there to read.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = shell_name(args);
+            ToolOutcome::err(format!(
+                "check_bash stopped waiting for {name}: {}. The jobs it was waiting for were \
+                 not stopped, and `check_bash` reads what they printed.",
+                why.because()
+            ))
+        })
+    }
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1641,9 +1813,6 @@ impl Cmd for CheckBashTool {
             ))
         })
     }
-
-    /// A read never stopped anything: its jobs are still there to read.
-}
 }
 
 // -------------------------------- check_job --------------------------------
@@ -1654,6 +1823,27 @@ pub struct CheckJobTool {
 }
 
 impl Cmd for CheckJobTool {
+    /// A job that ended does not stop: it has said all it will say.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        _ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let id = args
+                .get("job_id")
+                .and_then(Value::as_u64)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "?".to_string());
+            ToolOutcome::err(format!(
+                "check_job stopped waiting for job {id}: {}. The job was not stopped, and \
+                 `check_job` reads what it answered.",
+                why.because()
+            ))
+        })
+    }
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1710,37 +1900,10 @@ impl Cmd for CheckJobTool {
             }
         })
     }
-
-    /// A job that ended does not stop: it has said all it will say.
-}
 }
 
 impl CheckJobTool {
     /// What one job says about itself, and whether that answer is still unread.
-    /// The one tool whose whole point is the wait: being cut by the news is its answer.
-    fn cut<'a>(
-        &'a self,
-        _args: &Value,
-        ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            match why {
-                Cut::Message => ToolOutcome::ok(
-                    "a message arrived for this session while this call waited; it is \
-                     delivered at the next step boundary",
-                ),
-                // A `cancel` marks the turn before it fires the token, so the answer
-                // says which stop this was rather than guessing.
-                Cut::Cancelled if ctx.stop.resumable() => ToolOutcome::ok(
-                    "the server is stopping: this wait ends here, but the turn is kept and \
-                     the next start resumes it.",
-                ),
-                Cut::Cancelled => ToolOutcome::err("wait stopped: this turn was cancelled"),
-            }
-        })
-    }
     fn answer(&self, ctx: &ToolContext, row: &crate::store::JobRow) -> String {
         let ran = row
             .finished_at
@@ -1849,6 +2012,30 @@ pub struct WaitTool {
 }
 
 impl Cmd for WaitTool {
+    /// The one tool whose whole point is the wait: being cut by the news is its answer.
+    fn cut<'a>(
+        &'a self,
+        _args: &Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            match why {
+                Cut::Message => ToolOutcome::ok(
+                    "a message arrived for this session while this call waited; it is \
+                     delivered at the next step boundary",
+                ),
+                // A `cancel` marks the turn before it fires the token, so the answer
+                // says which stop this was rather than guessing.
+                Cut::Cancelled if ctx.stop.resumable() => ToolOutcome::ok(
+                    "the server is stopping: this wait ends here, but the turn is kept and \
+                     the next start resumes it.",
+                ),
+                Cut::Cancelled => ToolOutcome::err("wait stopped: this turn was cancelled"),
+            }
+        })
+    }
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1895,9 +2082,6 @@ impl Cmd for WaitTool {
             }
         })
     }
-
-    /// The one tool whose whole point is the wait: being cut by the news is its answer.
-}
 }
 
 /// What one queued row is, in the few words a summary can carry.
@@ -1962,7 +2146,6 @@ impl Cmd for DelJobTool {
             })
         })
     }
-}
 }
 
 // -------------------------------- list_bash --------------------------------
@@ -2029,7 +2212,6 @@ impl Cmd for ListBashTool {
             )
         })
     }
-}
 }
 
 // -------------------------------- del_bash ---------------------------------
@@ -2105,7 +2287,6 @@ impl Cmd for DelBashTool {
             ToolOutcome::ok(format!("discarded shell(s) {list}{kept}{unconfirmed}"))
         })
     }
-}
 }
 
 /// How a spill file is named: `session-shell-description-callid`, the same for both paths.

@@ -1412,6 +1412,7 @@ impl Agent {
         let ctx = ToolContext {
             session: name.to_string(),
             call_id: call_id.clone(),
+            tool: tool.clone(),
             home: self.home.clone(),
             output_dir: self.output_dir.clone(),
             shells: session.shells(),
