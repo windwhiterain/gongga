@@ -31,6 +31,7 @@ mod prompts;
 mod providers;
 mod pylib;
 mod quota;
+pub mod relay;
 pub mod remote;
 pub mod remotes;
 mod script;

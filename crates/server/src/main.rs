@@ -38,6 +38,10 @@ struct Command {
     /// Run one tool call and write its answer: how a detached call outlives the server.
     #[arg(long, value_name = "FILE", hide = true)]
     run_tool: Option<PathBuf>,
+    /// Relay one channel's program to the files its server reads: how a channel
+    /// outlives the server it was started by.
+    #[arg(long, value_name = "DIR", hide = true)]
+    relay: Option<PathBuf>,
 }
 
 impl From<Command> for Args {
@@ -74,7 +78,30 @@ fn command() -> clap::Command {
     }
 }
 
+/// The directory a `--relay` call names, read before clap and before any home.
+///
+/// # Invariant
+///
+/// A relay is one program and two files: never supervised, because a watchdog would
+/// start it again the moment its program ends, and never a server of its own. So it
+/// is answered here, where the watchdog cannot see it.
+fn relay_dir() -> Option<PathBuf> {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--relay" {
+            return args.next().map(PathBuf::from);
+        }
+        if let Some(rest) = arg.to_str().and_then(|arg| arg.strip_prefix("--relay=")) {
+            return Some(PathBuf::from(rest));
+        }
+    }
+    None
+}
+
 fn main() -> anyhow::Result<()> {
+    if let Some(dir) = relay_dir() {
+        return gongga_server::relay::run(&dir);
+    }
     // SPEC's watchdog is this binary watching this binary; a question skips it.
     if !gongga_server::supervise::is_child() && !gongga_server::supervise::answers_alone() {
         std::process::exit(gongga_server::supervise::watch());
