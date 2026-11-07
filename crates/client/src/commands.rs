@@ -1,4 +1,4 @@
-//! Sticky arguments and shown windows: the client's own state in `tui.toml`.
+//! Sticky arguments and shown windows: the client's own state in `client.toml`.
 //!
 //! See `docs/notes/cli-commands.md`.
 

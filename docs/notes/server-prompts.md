@@ -87,7 +87,7 @@ an error, and "still missing" is a match.
 Returns the templates *and* the problems it found, and a file that does not parse
 yields nothing at all -- the shipped content then answers, because the home's own last
 good read is replaced by it. This is the same rule the config loader already applies to
-a hand-edited `tui.toml`: a broken file is damage, not a reason to refuse to run, and
+a hand-edited `client.toml`: a broken file is damage, not a reason to refuse to run, and
 refusing would take the agent's tools away because of a comma.
 
 A non-string value (`size_hint = 7`) is reported and skipped, not fatal: one mistaken

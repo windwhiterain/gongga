@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use client::render_wire::UiIntent;
 use client::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
 use tokio::time::Duration;
 
@@ -710,13 +711,13 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
             // what the completion was waiting for.
             Step::Input(Some(UiEvent::Recomplete)) => {}
             // A scroll past the oldest row a window holds: a page above it.
-            Step::Input(Some(UiEvent::Older(names))) => owed.extend(names),
-            Step::Input(Some(UiEvent::Quit)) => break Ok(()),
+            Step::Input(Some(UiEvent::Intent(UiIntent::Older { windows }))) => owed.extend(windows),
+            Step::Input(Some(UiEvent::Intent(UiIntent::Quit))) => break Ok(()),
             // The console is going away: it asked, and the way out is the same
             // one Alt-Q takes. See `docs/notes/tui-closing.md`.
             Step::Closing => break Ok(()),
             // A gesture of the window's own: an operation, not a line.
-            Step::Input(Some(UiEvent::Operate(operation))) => {
+            Step::Input(Some(UiEvent::Intent(UiIntent::Operate { operation }))) => {
                 let outcome =
                     command::operate(&mut client, &mut state, operation, &mut TuiSink(&mut ui));
                 // Whatever the gesture changed of the window's own state reaches
@@ -732,7 +733,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                     );
                 }
             }
-            Step::Input(Some(UiEvent::Submit(line))) => {
+            Step::Input(Some(UiEvent::Intent(UiIntent::Submit { line }))) => {
                 let mut moved = None;
                 let outcome = submission(
                     &mut client,

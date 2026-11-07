@@ -10,7 +10,7 @@ command layer.
 
 ## Why the window parses them
 
-They act on `tui.toml`, and `tui.toml` is the window's (`docs/notes/tui-state.md`).
+They act on `client.toml`, and `client.toml` is the window's (`docs/notes/tui-state.md`).
 Two owners of one file is how an agent's `set_session` came to rewrite the operator's
 sticky session; one owner that is not the command layer also means `gongga-cli` has
 no state to inherit, which is the whole point of the split.

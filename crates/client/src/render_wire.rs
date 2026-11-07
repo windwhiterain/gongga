@@ -99,12 +99,24 @@ pub enum CursorMessage {
 }
 
 /// What a front-end asks the daemon to do, in the same words a keyboard would.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// # Invariant
+///
+/// A gesture names what it means instead of spelling a command line, so command
+/// syntax stays out of the front-end. `Older` names the windows a key asked for
+/// and never searches: the request is fixed when it was pressed, so the loop
+/// holds the pages owed and a later frame cannot add to them behind its back.
+/// See `docs/notes/tui-lib.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "intent", rename_all = "snake_case")]
 pub enum UiIntent {
+    /// A finished input line; it may contain newlines.
     Submit { line: String },
+    /// A gesture of the window's own, never a command line.
     Operate { operation: protocol::Operation },
+    /// The operator asked to read above what these windows hold.
     Older { windows: Vec<String> },
+    /// Alt+Q: leave.
     Quit,
 }
 

@@ -45,7 +45,7 @@ pub struct Connection {
     /// Server address, e.g. `127.0.0.1:9700`.
     #[arg(long, global = true)]
     pub server: Option<String>,
-    /// Harness home holding config.toml and tui.toml. Defaults to `~/.gongga`.
+    /// Harness home holding config.toml and client.toml. Defaults to `~/.gongga`.
     #[arg(long, global = true)]
     pub home: Option<PathBuf>,
     /// This client's own directory: its events and its scrollback, never the
@@ -2884,7 +2884,7 @@ impl Greeting {
 ///
 /// # Invariant
 ///
-/// No state is read: `tui.toml` is the window's, and a one-shot command names
+/// No state is read: `client.toml` is the window's, and a one-shot command names
 /// every argument it means. The home is here for one reason -- where `skills/`
 /// is read from -- and never for anything this process would write.
 pub fn build_client(args: &Args) -> Client {

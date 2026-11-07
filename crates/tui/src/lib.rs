@@ -28,6 +28,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
+use client::render_wire::UiIntent;
 use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -127,39 +128,16 @@ enum Arrow {
     Line(bool),
 }
 
-/// Something the operator did: only what a keyboard can do that a command
-/// cannot. See `docs/notes/tui-lib.md`.
+/// What the terminal produced: an intent, or its own ask to go round once more.
+///
+/// # Invariant
+///
+/// `Recomplete` is not an intent: the completion needs the loop to reach the
+/// connection, so it belongs to this crate and never crosses the wire.
+/// See `docs/notes/tui-lib.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
-    /// A finished input line. It may contain newlines: a message with
-    /// paragraphs is still one message.
-    Submit(String),
-    /// A gesture of the window's own: an operation, never a command line.
-    ///
-    /// # Invariant
-    ///
-    /// The window asks for what it means -- "make this session sticky" -- and
-    /// the command layer answers it. Spelling it as a command line would put
-    /// the command syntax in the window, where it does not belong.
-    Operate(client::protocol::Operation),
-    /// Alt+Q: leave.
-    Quit,
-    /// The operator asked to read above what these windows hold.
-    ///
-    /// # Invariant
-    ///
-    /// Named, never searched for: the request is what the key or the wheel said at
-    /// the moment it was pressed, so the loop that answers it holds the pages owed
-    /// and the next frame cannot add to them behind its back.
-    Older(Vec<String>),
-    /// Nothing to submit: the completion asked for something only the connection
-    /// can answer.
-    ///
-    /// # Invariant
-    ///
-    /// The loop has to go round to send it, and a keystroke whose ask is never
-    /// returned leaves it unsent: the loop owns the connection and runs only when
-    /// `next_event` returns.
+    Intent(UiIntent),
     Recomplete,
 }
 
@@ -1074,12 +1052,12 @@ impl Tui {
             // A click is a command, and commands go through the loop that already
             // knows how to send one.
             if let Some(operation) = self.clicked.take() {
-                return Some(UiEvent::Operate(operation));
+                return Some(UiEvent::Intent(UiIntent::Operate { operation }));
             }
             // Taken, not read: a request is answered once, never on every frame.
             let owed = self.screen.take_wants();
             if !owed.is_empty() {
-                return Some(UiEvent::Older(owed));
+                return Some(UiEvent::Intent(UiIntent::Older { windows: owed }));
             }
             if self.draw().is_err() {
                 return None;
@@ -1209,7 +1187,7 @@ impl Tui {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             // Case-insensitive: Shift+Alt+Q arrives as 'Q'.
-            KeyCode::Char('q' | 'Q') if alt => Some(UiEvent::Quit),
+            KeyCode::Char('q' | 'Q') if alt => Some(UiEvent::Intent(UiIntent::Quit)),
             _ => None,
         }
     }
@@ -1395,9 +1373,9 @@ impl Tui {
             && let Some(target) = self.screen.sticky_session.clone()
         {
             self.close_completion();
-            return Some(UiEvent::Operate(
-                client::protocol::Operation::DeleteSession { session: target },
-            ));
+            return Some(UiEvent::Intent(UiIntent::Operate {
+                operation: client::protocol::Operation::DeleteSession { session: target },
+            }));
         }
 
         if edit_input(
@@ -1428,7 +1406,7 @@ impl Tui {
                     self.history.push(raw.clone());
                 }
                 self.history_pos = None;
-                return Some(UiEvent::Submit(raw));
+                return Some(UiEvent::Intent(UiIntent::Submit { line: raw }));
             }
             KeyCode::Char(c) => {
                 self.screen.input.insert(c);

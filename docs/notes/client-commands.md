@@ -9,7 +9,7 @@ sessions, block size, box edge, the remembered address -- is the window's, and
 moved to `crates/tui/src/state.rs` (`docs/notes/tui-state.md`).
 
 That move is also why a one-shot `gongga-cli` cannot inherit an operator's
-session: the command layer reads no `tui.toml` at all, so an argument it was not
+session: the command layer reads no `client.toml` at all, so an argument it was not
 given is an argument nobody gave it.
 
 ## EVENT_FIELDS

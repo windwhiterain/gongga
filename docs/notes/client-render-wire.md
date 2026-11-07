@@ -32,10 +32,10 @@ was drawn. A stateless front-end neither holds a journal nor answers those
 questions, so the daemon consumes these itself. Encoding them in Rust keeps one
 place where every `Sink` method has a name, without putting them on the wire.
 
-`UiIntent` mirrors `tui::UiEvent` minus `Recomplete`, which is a terminal-only
-signal that the completion wants the loop to go round. Two enums currently spell
-the same four gestures; unifying them by lifting `UiEvent` into `client` is a
-later step, registered as debt here rather than hidden.
+`UiIntent` is the only definition of the four gestures. `tui::UiEvent` is a
+wrapper over it: `Intent(UiIntent)` or `Recomplete`. `Recomplete` is a
+terminal-only signal that the completion wants the loop to go round; it is not
+an intent and never crosses the wire.
 
 ## Why `WireSink` overrides `tool_call`
 
@@ -56,10 +56,13 @@ duplication `crates/client` exists to prevent.
 
 ## Not done yet
 
-`WireSink` is not connected to any runtime. Missing, in order: a binary target for
-`crates/client`, a transport (WebSocket or stdio), a `Runtime` that owns one
-`Client` and broadcasts render messages to every connected front-end, a snapshot
-for a new connection (`get_messages --replay true`, with `last_seq` and `as_of`),
-the window journal's move into the daemon (`log.rs`, `cache.rs`, `panes.rs`), a
-TUI reduced to a protocol client, and bundle routing. The ownership invariants
-these steps touch are listed as **【待确认】** in `DESIGN.md` §1.
+`WireSink` is not connected to any runtime. Missing, in order: a binary target
+for `crates/client` that spawns the server and owns its lifetime, a stdio JSON
+Lines transport to its one UI, a `Runtime` that owns one `Client`, the window
+journal's move into the daemon (`log.rs`, `cache.rs`, `panes.rs`), a TUI reduced
+to a protocol client, and bundle routing for `gongga tui`.
+
+One client serves one UI: several UIs mean several client processes, each with
+its own `client.toml`, hole detection and transcript refill. There is no
+broadcast, no multi-connection backlog and no snapshot for a late joiner. The
+six verdicts behind this are in `DESIGN.md` §1.

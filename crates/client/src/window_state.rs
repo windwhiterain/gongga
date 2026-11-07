@@ -1,4 +1,4 @@
-//! The window's own state, in `tui.toml`: what the operator set once.
+//! The window's own state, in `client.toml`: what the operator set once.
 //!
 //! See `docs/notes/tui-state.md`.
 
@@ -24,7 +24,7 @@ pub struct BlockSize(pub usize);
 ///
 /// # Invariant
 ///
-/// This is the only default: `tui.toml` absent, unreadable, or holding rubbish all
+/// This is the only default: `client.toml` absent, unreadable, or holding rubbish all
 /// answer this, so a home never starts with a cap nobody typed.
 pub const DEFAULT_BLOCK_SIZE: usize = 8;
 
@@ -47,9 +47,9 @@ impl BlockSize {
         }
     }
 
-    /// Loads `home/tui.toml`; a missing or unreadable file caps nothing.
+    /// Loads `home/client.toml`; a missing or unreadable file caps nothing.
     pub fn load(home: &Path) -> Self {
-        read_file(&home.join("tui.toml"))
+        read_file(&home.join("client.toml"))
             .block_size
             .as_deref()
             .and_then(|raw| BlockSize::parse(raw).ok())
@@ -57,7 +57,7 @@ impl BlockSize {
     }
 
     pub fn save(self, home: &Path) -> anyhow::Result<()> {
-        let path = home.join("tui.toml");
+        let path = home.join("client.toml");
         let mut file = read_file(&path);
         file.block_size = Some(self.0.to_string());
         write_file(&path, &file)
@@ -93,9 +93,9 @@ impl BoxEdge {
         }
     }
 
-    /// Loads `home/tui.toml`; a missing or unreadable file is the default margin.
+    /// Loads `home/client.toml`; a missing or unreadable file is the default margin.
     pub fn load(home: &Path) -> Self {
-        read_file(&home.join("tui.toml"))
+        read_file(&home.join("client.toml"))
             .box_edge
             .as_deref()
             .and_then(|raw| BoxEdge::parse(raw).ok())
@@ -103,7 +103,7 @@ impl BoxEdge {
     }
 
     pub fn save(self, home: &Path) -> anyhow::Result<()> {
-        let path = home.join("tui.toml");
+        let path = home.join("client.toml");
         let mut file = read_file(&path);
         file.box_edge = Some(self.0.to_string());
         write_file(&path, &file)
@@ -124,9 +124,9 @@ pub struct Shown {
 }
 
 impl Shown {
-    /// Loads `home/tui.toml`; a missing or unreadable file shows nothing.
+    /// Loads `home/client.toml`; a missing or unreadable file shows nothing.
     pub fn load(home: &Path) -> Self {
-        let path = home.join("tui.toml");
+        let path = home.join("client.toml");
         let show = read_file(&path)
             .render_session
             .into_iter()
@@ -216,7 +216,7 @@ fn stored_show(raw: &str) -> Option<bool> {
 /// under `sticky_cmd_arguments`.
 const OLD_STICKY_KEY: &str = "persistant_cmd_arguments";
 
-/// `~/.gongga/tui.toml`.
+/// `~/.gongga/client.toml`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
     #[serde(default)]
@@ -255,9 +255,9 @@ pub struct Sticky {
 }
 
 impl Sticky {
-    /// Loads from `home/tui.toml`; a missing or unreadable file yields none.
+    /// Loads from `home/client.toml`; a missing or unreadable file yields none.
     pub fn load(home: &Path) -> Self {
-        let path = home.join("tui.toml");
+        let path = home.join("client.toml");
         let args = read_file(&path)
             .sticky_cmd_arguments
             .into_iter()
@@ -349,7 +349,7 @@ pub struct State {
 }
 
 impl State {
-    /// Reads every section of `home/tui.toml` once.
+    /// Reads every section of `home/client.toml` once.
     pub fn load(home: &Path) -> Self {
         Self {
             home: home.to_path_buf(),
@@ -454,7 +454,7 @@ impl State {
     /// Read once, when the window starts: from then on the address in force is
     /// the one this process dials, not the one a file says.
     pub fn connection(&self) -> Option<SocketAddr> {
-        let stored = read_file(&self.home.join("tui.toml")).connection?;
+        let stored = read_file(&self.home.join("client.toml")).connection?;
         // Parsed, not formatted: `"::1:9700"` is not an address, and a file
         // that was right must not fall back to the default.
         let ip: std::net::IpAddr = stored.ip.as_deref().unwrap_or("127.0.0.1").parse().ok()?;
@@ -462,7 +462,7 @@ impl State {
     }
 
     pub fn remember(&self, addr: SocketAddr) -> anyhow::Result<()> {
-        let path = self.home.join("tui.toml");
+        let path = self.home.join("client.toml");
         let mut file = read_file(&path);
         file.connection = Some(Stored {
             ip: Some(addr.ip().to_string()),

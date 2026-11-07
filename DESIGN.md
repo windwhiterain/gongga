@@ -42,7 +42,7 @@ crates/bundle    gongga-bundle     别名 bundle
 | `[tui]` binary | `crates/tui`，`run.rs` 仍装着连接循环与输入行翻译 | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
 | `[webui]` binary | 无 | 新增，与 `tui` 平级，用任意语言写 |
 
-上提的两个模块只换了位置：`State::load` 仍独占 `tui.toml`，一次性 `gongga-cli` 不读
+上提的两个模块只换了位置：`State::load` 仍独占 `client.toml`，一次性 `gongga-cli` 不读
 不写它；六条 client 命令仍由窗口解析，不上线。行为不变。
 
 裁定：`Client` 状态机与重连校验归 `[client]` 库，不归前端，第二个前端因此不必重写 seq
@@ -179,60 +179,73 @@ pub enum UiEvent { Submit(String), Quit }
 - `Sink` 是同步 `&mut`，WebUI 的 adapter 只能 `try_send` 到广播队列、不能 await；
   慢客户端靠「内存快照 + `get_messages --replay true`」补齐，不静默丢帧
   （SPEC 的每个事件一个 seq）。
-- 状态按前端实例分文件（TUI 仍是 `tui.toml`），一次性 `gongga-cli` 零状态。
+- 状态按前端实例分文件（形态 1 当时的读法），一次性 `gongga-cli` 零状态。
 - WebUI 默认 `--client_only`：不 spawn、不 cancel 别人的服务端；`--parent`
   所有权模型不动。
 - 复用现有轮子：`Sink` / `NullSink`、`protocol::Operation`、
   `get_messages --replay`（`REPLAY_TURN`）、`bridge` 的平级客户端模型。
 
+以上按形态 1（一个 Rust 进程内嵌多个前端）所写。形态 2 的「单 UI / 一个 client 一个 UI」
+裁定推翻了前两条里的广播与快照，`client spawn server` 推翻了 `--client_only` 不动的做法；
+以形态 2 小节的不变式为准。
+
 分步（每步各自跑门禁）：① 抽连接生命周期，TUI 行为不变；② 抽输入翻译与补拉；
 ③ `crates/webui` 实现 `Sink` → JSON 与 WS 广播；④ bundle 布线 `gongga webui`；
 ⑤ 双前端并存 L3（新脚本需用户许可）。
 
-### 形态 2：client daemon 与跨语言渲染协议【待确认】
+### 形态 2：client daemon 与跨语言渲染协议（2026-11-07 已裁定）
 
-2026-11-07 选定形态 2，并把 SPEC 的 `[client]` 改为 binary：client 是独立常驻进程，UI 用
-任意语言经 WS/stdio 连它。分层只有一条线，且没有第二套协议 —— `Sink` 就是词汇表：
+2026-11-07 选定形态 2，并把 SPEC 的 `[client]` 改为 binary：client 是独立进程，UI 用
+任意语言连它。**一个 client 只服务一个 UI；要多个 UI 就起多个 client**（裁定 3），
+于是不需要广播、不需要多连接管理、不需要给新连接补快照：
 
 ```text
-[任意语言 UI] --UiIntent------> [gongga-client daemon] --protocol--> [gongga-server]
-[任意语言 UI] <--RenderMessage--  [gongga-client daemon] <--deltas--- [gongga-server]
-                                        |
-                                  CursorMessage（自己消费，不过线）
+[一个 UI] --UiIntent------> [一个 gongga-client] --protocol--> [gongga-server]
+[一个 UI] <--RenderMessage--  [一个 gongga-client] <--deltas--- [gongga-server]
+                                       |
+                                 CursorMessage（自己消费，不过线）
+
+多个 UI = 多个上面的三元组，各自一份状态、各自补洞与补拉。
 ```
+
+传输按「单 UI」推导为 **stdio JSON Lines**（无端口、无回环鉴权、一对一）；若以后要跨机
+或浏览器，改为 WS 单连接即可，协议层不用动。**【待确认】** 这是从裁定 3 推导的，不是你
+直接指定的；若要的是 WS，说一声我按 WS 布线。
 
 已落地：`crates/client/src/render_wire.rs` 把 `Sink` 全部 17 个方法写成可序列化的
 `RenderMessage`（12 个绘制）/ `CursorMessage`（5 个 journal），反向 `UiIntent` 四种手势；
 `Listed` / `Layout` / `QuotaRow` 补上 serde 派生；`WireSink` 覆盖 `tool_call`，让结构化
 `Head` 原样过线而不被 trait 默认实现压成文本。见 `docs/notes/client-render-wire.md`。
-这一步不碰任何 Invariant：不接连接循环、不起进程、不改所有权。
 
-**下面六条是 Invariant 级改动，未经许可不动，需要你逐条裁定：**
+**六条裁定（2026-11-07，用户逐条给）**：
 
-1. **谁 spawn server**。SPEC 的 `tui [--client_only]` 写明窗口自动起 server、退出时 cancel
-   它起的那个；daemon 化后窗口不再是起 server 的进程。`--parent` 绑 TUI 还是绑 daemon？
-   `AGENTS.md` 提醒「指向在用的 home 不是只读行为」，这条最危险。
-2. **bundle 路由**。SPEC 的 bundle 行仍写 `server/cli/tui's binary`，而
-   `crates/bundle/build.rs` 实际只构建 server + tui。daemon 要不要进 bundle，
-   `gongga tui` 是否变成「起 daemon + 起 TUI」两步。
-3. **传输**。WS 支持多 UI 与浏览器，但要定端口与本地回环鉴权（是否复用连接 key）；
-   stdio 只能有一个 UI。形态 2 的「任意语言」倾向 WS。
-4. **窗口 journal 归属（最大工程量）**。UI 纯渲染后，`log.rs` / `cache.rs` / `panes.rs`
-   约 3800 行必须搬到 daemon 侧，由虚拟窗口回答 `declare_drawn` / `ask_transcripts`；
-   TUI 从「持有状态」变成「收快照」。
-5. **状态文件与 11-05 裁定**。「只有 TUI 允许 client 状态」与 daemon 持有状态冲突；
-   `tui.toml` 归 TUI 实例还是归 daemon？一次性 `gongga-cli` 仍须零状态。
-6. **`UiIntent` 与 `tui::UiEvent` 统一**。当前两份枚举拼同一组手势，合并要上提
-   `UiEvent`，并把 TUI 专属的 `Recomplete` 留在 tui 内。已登记为命名债。
+| # | 裁定 | 落点 |
+|---|---|---|
+| 1 | **client spawn server**：起 server、`--parent`、退出时 cancel 全归 client daemon | 与 SPEC 的 `tui [--client_only]` 冲突，SPEC 要你改（见下） |
+| 2 | **TUI 进 bundle，其他 UI 不进**；`gongga tui` 变成「起 daemon + 起 TUI」两步 | daemon 二进制必须进 bundle，否则 TUI 无法被拉起 |
+| 3 | **单 UI**：一个 client 一个 UI，否则应当是多 client | 删掉广播与多连接快照；传输简化 |
+| 4 | **窗口 journal 归 client** | `log.rs` / `cache.rs` / `panes.rs` 约 3800 行搬到 daemon |
+| 5 | **状态文件改为 `client.toml`** | 11-05 裁定「只有 TUI 允许 client 状态」由 daemon 继承；一次性 cli 仍零状态 |
+| 6 | **统一 `UiIntent` 与 `UiEvent`** | 本轮已落地：`UiIntent` 是唯一手势定义，`tui::UiEvent` = `Intent(UiIntent)` 或 `Recomplete` |
 
-**不变式（继承阶段 2，不因形态 2 改变）**：一个进程只有一个 `Client` + 一个 `Link`，多 UI
-共享一个广播 `Sink`，不每连接各起一个；`Sink` 同步 `&mut`，adapter 只能 `try_send`、不能
-await；慢客户端靠「内存快照 + `get_messages --replay true`（带 `last_seq` / `as_of`）」补齐，
-不静默丢帧（SPEC 每个事件一个 seq）；一次性 `gongga-cli` 零状态；不新增第二套协议。
+裁定 1 与 SPEC 当前的 `tui [--client_only]`（窗口自动起 server、退出 cancel 它起的那个）
+不一致；SPEC 是唯一真相源且 agent 不得未经许可编辑，**这一处要你改或授权我改**。
+裁定 2 里「其他 UI 不进」我读作：bundle 只装 server + client daemon + TUI，WebUI 等自行
+分发；若指的是别的，说一声。
 
-分步（每步跑门禁）：① 词汇表 + serde（本轮已完成）；② daemon bin target 与传输骨架
-（等 1/2/3 裁定）；③ `Runtime` 接 `WireSink`、广播与快照；④ journal 上提（等 4/5 裁定）；
-⑤ TUI 退为协议客户端；⑥ 任意语言前端 + bundle 布线；⑦ 双前端并存 L3（新脚本需用户许可）。
+**这一轮落地的两小步**：`client.toml`（源码、L3 脚本、当前文档同步；带日期的历史笔记
+保留 `cli.toml` 旧名，不改写记录）、`UiIntent` / `UiEvent` 统一（`Recomplete` 留在 tui
+且不过线）。都不碰连接循环、不起进程。
+
+**不变式（按裁定 3 重写）**：一个 client 进程只有一个 `Client` + 一个 `Link` + 一个 UI；
+`Sink` 同步 `&mut`，adapter 只能 `try_send`、不能 await；不静默丢帧，每个事件一个 seq、
+greeting 才给全量；`RenderMessage` 是语义级，颜色、列宽、折行归 UI；`CursorMessage` 只在
+daemon 内消费；一次性 `gongga-cli` 零状态；不新增第二套协议。
+
+分步（每步跑门禁）：① 词汇表 + serde（已完成）；② `client.toml` 与 `UiIntent` 统一
+（本轮已完成）；③ daemon bin target + stdio 传输骨架（裁定 1 的 spawn/cancel 一起搬）；
+④ 窗口 journal 上提；⑤ TUI 退为协议客户端；⑥ bundle 布线 `gongga tui`；
+⑦ 多 client 并存 L3（新脚本需用户许可）。
 
 ## 2. 传输层：可靠 UDP
 

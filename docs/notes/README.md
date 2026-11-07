@@ -29,7 +29,7 @@ you are about to touch.
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
 | rename the client library or add a front-end | `SPEC.md` `## Crate Structure`, [`client-lib.md`](client-lib.md), `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` |
 | change what crosses the language boundary | [`client-render-wire.md`](client-render-wire.md), `DESIGN.md` §1 "形态 2" |
-| change what the window remembers (`tui.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
+| change what the window remembers (`client.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
 
 ## Naming debt (2026-11-07)
 
@@ -43,14 +43,16 @@ commands. The crate rename has landed:
 - `[cli]: python` = `python/gongga.py` / `python/gongga_cli.py`, embedded by
   `crates/server/src/pylib.rs`.
 - `cli` was kept where it is a name, not a crate: `gongga-cli` (argv0 and
-  command name), the `cli` clap layer word, `cli.toml` (the old name of the
-  window state file, now `tui.toml`), and `cli-bin-gongga.md`.
+  command name), the `cli` clap layer word, and `cli-bin-gongga.md`. The window
+  state file has had three names: `cli.toml` -> `tui.toml` -> `client.toml`
+  (2026-11-07 verdict 5). Historical notes keep the name that was current when
+  they were written; current sources use `client.toml` only.
 - Still owed: `DESIGN.md` §5's "CLI (command layer)" heading, the historical
   `link` references in `.agents/notes/2026-11-05-*`, `crates/bundle/src/main.rs`,
   and `crates/bundle/build.rs` (only `gongga-server` + `gongga-tui` are built).
-- `render_wire.rs`'s `UiIntent` and `tui::UiEvent` spell the same four gestures
-  twice. Unifying them means lifting `UiEvent` into `client` and leaving the
-  terminal-only `Recomplete` in `tui`. See `client-render-wire.md`.
+- Cleared: `UiIntent` is the only definition of the four gestures;
+  `tui::UiEvent` wraps it as `Intent(UiIntent)` or the terminal-only
+  `Recomplete`. See `client-render-wire.md`.
 
 ## Index
 

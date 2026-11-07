@@ -114,7 +114,7 @@ rename regression; the script's own trap removed its temporary home. Not re-run.
 now `pub mod` in `crates/client/src/lib.rs`; `crates/tui/src/run.rs` imports
 them as `client::window_command as command` / `client::window_state::State`.
 Inside the moved files `client::` became `crate::`. No behaviour changed:
-`State::load` is still the only reader/writer of `tui.toml`, a one-shot
+`State::load` is still the only reader/writer of `client.toml`, a one-shot
 `gongga-cli` still reads and writes none of it, and the six client commands are
 still parsed by the window and never reach the command layer. The notes keep
 their `tui-*.md` names -- they are about the window's state, not a crate -- but
@@ -188,7 +188,7 @@ note; README and DESIGN §1 were synced.
 Six Invariant-level decisions are left for the user, listed as 【待确认】 in
 `DESIGN.md` §1: who spawns the server and what `--parent` binds to; bundle
 routing; WebSocket vs stdio; moving the window journal into the daemon; which
-instance owns `tui.toml` (the 2026-11-05 verdict); unifying `UiIntent` with
+instance owns `client.toml` (the 2026-11-05 verdict); unifying `UiIntent` with
 `tui::UiEvent`. None was assumed or changed here.
 
 `SPEC.md` is the user's uncommitted working-tree edit (the third revision) and
@@ -205,3 +205,49 @@ runtime behaviour changed, and the existing L3 script is still blocked on a
 GitHub clone. The gates ran on the shared worktree, which also carries another
 agent's uncommitted picker changes in `crates/tui/src/lib.rs` and
 `docs/notes/tui-cover.md`; neither file was staged or touched by this turn.
+
+## Six verdicts for shape 2 (2026-11-07)
+
+The user answered all six 【待确认】 items in one message:
+
+1. client spawns the server.
+2. TUI goes into bundle, other UIs do not; yes to `gongga tui` becoming two steps.
+3. Single UI: one client per UI, otherwise several clients.
+4. The window journal belongs to the client.
+5. Rename the state file to `client.toml`.
+6. Agreed to unify `UiIntent` and `UiEvent`.
+
+Consequences in `DESIGN.md` §1: the "one daemon broadcasts to many front-ends"
+design is gone. No broadcast Sink, no multi-connection backlog, no replay
+snapshot for a late joiner; several UIs mean several client processes, each with
+its own `client.toml`, hole detection and transcript refill. Transport is derived
+as stdio JSON Lines (one-to-one, no port or loopback auth) and marked 【待确认】
+because the user did not name it. Rulings 1 and 2 conflict with `SPEC.md`'s
+`tui [--client_only]` and bundle lines; SPEC is the user's file and was not edited.
+
+Landed this turn -- two mechanical changes, no runtime behaviour:
+
+- `client.toml`: 48 replacements across 18 current source/doc files, including
+  `scripts/client_state_selftest.sh` (its hard-coded home file and check text,
+  `bash -n` 0). Dated historical notes keep `cli.toml`; they are records. The
+  only remaining `tui.toml` is README's naming-debt chain.
+- `UiIntent` / `UiEvent`: `UiIntent` gained `Eq`, variant docs and an Invariant
+  section; `tui::UiEvent` is `Intent(UiIntent)` or `Recomplete`; every
+  construction site and `run.rs` match arm was rewritten. `Recomplete` stays in
+  the terminal and never crosses the wire. README's naming debt is marked cleared.
+
+Verified: `cargo build` 0 (1m55s, standing Windows incremental-lock warnings) ·
+`cargo check` 0 (18.88s) · `cargo fmt --check` 0 · `comments-check` 0 violations
+· `test-layout-check` 8 packages, 0 violations · `git diff --check` 0 ·
+`scripts/skill_contract.sh` PASS 8 · `gongga-tui --help` 0 ·
+`bash -n scripts/client_state_selftest.sh` 0 ·
+`scripts/ship.sh --check --local` in agreement.
+`scripts/ship.sh --check` exit=1: MISMATCH, remote `origin/main` is
+`de61d29a...` while local `main` is `9dfad435...`. Protocol still agrees
+(content 4, this build 4); the remote has a newer content commit this checkout
+has not fetched. Not caused by this turn -- no `ship/` file was touched, and no
+fetch, rebase or publish was run. No L3 process test was run (GitHub clone still
+blocks it). An isolated export of the staged tree (`git write-tree` ->
+`git archive`, its own `CARGO_TARGET_DIR`) checked out cleanly: `cargo check
+--offline -p gongga-client -p gongga-tui` 0 (1m25s) · `cargo fmt --check` 0.
+The committed tree therefore stands without the concurrent picker work.

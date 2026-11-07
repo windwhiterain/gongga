@@ -22,7 +22,7 @@ spells it, and the endpoint from `client::endpoint_name` -- the address this cli
 would dial, resolved from its own configuration. Two servers are two lists, and the
 answer is known before any server speaks, exactly as it is for the journals.
 
-A directory of its own, not a key inside `tui.toml` and not a file beside the
+A directory of its own, not a key inside `client.toml` and not a file beside the
 journals: a session name is operator text and may be anything, so the key that
 names a file must not also be able to collide with one.
 
