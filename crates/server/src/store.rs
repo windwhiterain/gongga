@@ -2095,7 +2095,21 @@ impl Store {
                 params![session_id],
             )?;
         }
-        Self::append_message_conn(tx, session_id, "text", &user_row(expanded))
+        let seq = Self::append_message_conn(tx, session_id, "text", &user_row(expanded))?;
+        // Work-born sessions open compaction with their first operator row;
+        // no mode transition supplies that boundary.
+        if self.live_compact_is_enabled() {
+            tx.execute(
+                "UPDATE sessions SET live_compact_origin_seq = ?2,
+                        live_compact_baseline_tokens = CASE WHEN context_tokens > 0
+                            THEN context_tokens ELSE NULL END,
+                        live_compact_started = 1
+                 WHERE id = ?1 AND (mode = 'work' OR mode IS NULL)
+                   AND live_compact_origin_seq IS NULL",
+                params![session_id, seq],
+            )?;
+        }
+        Ok(seq)
     }
 
     /// Accepts an idle session's first message and its turn obligation together.
