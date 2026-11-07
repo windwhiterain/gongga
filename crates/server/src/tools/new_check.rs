@@ -83,13 +83,26 @@ impl Cmd for NewTool {
                     ));
                 }
             };
+            // The machine and the directory are the call's; a session's are defaults.
+            let remote = match args.get("remote").and_then(Value::as_str) {
+                Some(name) if name.is_empty() => None,
+                Some(name) => Some(name.to_string()),
+                None => ctx.remote.clone(),
+            };
+            let cwd = match args.get("cwd").and_then(Value::as_str) {
+                Some(path) if !path.is_empty() => std::path::PathBuf::from(path),
+                // The session's directory only when the call asked for its machine.
+                _ if remote == ctx.remote => ctx.cwd.clone(),
+                _ => std::path::PathBuf::from("."),
+            };
             let row = match ctx
                 .channels
                 .start(
                     &ctx.session,
                     name,
                     &words,
-                    &ctx.cwd,
+                    remote.as_deref(),
+                    &cwd,
                     &ctx.env,
                     args.get("id").and_then(Value::as_str).map(str::to_string),
                 )

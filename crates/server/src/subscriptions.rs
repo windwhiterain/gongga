@@ -234,10 +234,12 @@ impl Subscriptions {
         if channels.live(session, &id).is_none() {
             let handle = self.sessions.get(session).map_err(|e| e.to_string())?;
             channels
+                // A subscription's action runs where its session stands.
                 .start(
                     session,
                     program,
                     &[],
+                    handle.remote_name().as_deref(),
                     &handle.cwd(),
                     &handle.env(),
                     Some(id.clone()),

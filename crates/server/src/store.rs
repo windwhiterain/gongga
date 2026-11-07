@@ -302,6 +302,7 @@ CREATE TABLE IF NOT EXISTS channels (
     session      TEXT NOT NULL,
     path         TEXT NOT NULL,
     program      TEXT NOT NULL,
+    remote       TEXT,
     dir          TEXT NOT NULL,
     pid          INTEGER NOT NULL,
     started_at   INTEGER NOT NULL,
@@ -2622,17 +2623,19 @@ impl Store {
         session: &str,
         path: &str,
         program: &str,
+        remote: Option<&str>,
         dir: &std::path::Path,
         pid: u32,
     ) -> anyhow::Result<i64> {
         let conn = self.lock();
         conn.execute(
-            "INSERT INTO channels (session, path, program, dir, pid, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO channels (session, path, program, remote, dir, pid, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 session,
                 path,
                 program,
+                remote,
                 dir.display().to_string(),
                 i64::from(pid),
                 now_millis()
@@ -2645,7 +2648,7 @@ impl Store {
     pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, dir, pid, started_at, ended_at, exit, upto
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto
              FROM channels WHERE session = ?1 ORDER BY path",
         )?;
         let rows = stmt
@@ -2659,7 +2662,7 @@ impl Store {
     pub fn live_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, dir, pid, started_at, ended_at, exit, upto
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto
              FROM channels WHERE ended_at IS NULL ORDER BY id",
         )?;
         let rows = stmt
@@ -2672,7 +2675,7 @@ impl Store {
     pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, dir, pid, started_at, ended_at, exit, upto
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto
              FROM channels WHERE session = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query(params![session, path])?;
@@ -3020,6 +3023,8 @@ pub struct ChannelRow {
     pub path: String,
     /// The program it runs, as it was started: a name, not a path.
     pub program: String,
+    /// The machine it runs on, by the name the operator gave it; `None` is this one.
+    pub remote: Option<String>,
     pub dir: String,
     pub pid: i64,
     pub started_at: i64,
@@ -3035,12 +3040,13 @@ fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
         session: row.get(1)?,
         path: row.get(2)?,
         program: row.get(3)?,
-        dir: row.get(4)?,
-        pid: row.get(5)?,
-        started_at: row.get(6)?,
-        ended_at: row.get(7)?,
-        exit: row.get(8)?,
-        upto: row.get::<_, i64>(9)?.max(0) as u64,
+        remote: row.get(4)?,
+        dir: row.get(5)?,
+        pid: row.get(6)?,
+        started_at: row.get(7)?,
+        ended_at: row.get(8)?,
+        exit: row.get(9)?,
+        upto: row.get::<_, i64>(10)?.max(0) as u64,
     })
 }
 

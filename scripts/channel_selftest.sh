@@ -178,7 +178,18 @@ oneshot_out=$(field "$once" output)
 say "one-shot: exit=[$oneshot_exit] out=[$oneshot_out]"
 ok "a one-shot channel reports its own exit" "$([[ "$oneshot_exit" == 3 && "$oneshot_out" == done ]] && echo 0 || echo 1)"
 
-# 6. A cmd through the same door: `GONGGA_CLI` with the caller's session filled in.
+# 6. The machine and the directory are the call's, not the session's.
+elsewhere=$(mktemp -d 2>/dev/null || echo "$work/elsewhere")
+mkdir -p "$elsewhere"
+in_dir=$("${cli[@]}" new main bash --cwd "$elsewhere" --args '["-lc", "pwd"]' --wait 8000 2>&1)
+say "$in_dir"
+ok "new --cwd starts the program there" "$([[ "$(field "$in_dir" output)" == *"$(basename "$elsewhere")"* ]] && echo 0 || echo 1)"
+rmdir "$elsewhere" 2>/dev/null
+refused=$("${cli[@]}" new main bash --remote nowhere-named 2>&1)
+say "$refused"
+ok "a machine that cannot be reached is refused, not run here" "$([[ "$(field "$refused" id)" == "" ]] && has "$refused" 'not wired' && echo 0 || echo 1)"
+
+# 7. A cmd through the same door: `GONGGA_CLI` with the caller's session filled in.
 cloned=$("${cli[@]}" new main GONGGA_CLI --args '{"cmd": "clone_session", "name": "copy"}' 2>&1)
 say "$cloned"
 ok "GONGGA_CLI routes to the command layer" "$(has "$cloned" '"ok":true' && echo 0 || echo 1)"

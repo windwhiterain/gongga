@@ -77,6 +77,8 @@ pub enum Completion {
     Paths,
     /// Every argument name.
     Arguments,
+    /// The machines `[remotes]` names.
+    Remotes,
 }
 
 impl Completion {
@@ -89,6 +91,7 @@ impl Completion {
             Completion::Skills => protocol::CompletionSource::Skills,
             Completion::Paths => protocol::CompletionSource::Paths,
             Completion::Arguments => protocol::CompletionSource::Arguments,
+            Completion::Remotes => protocol::CompletionSource::Remotes,
         }
     }
 }

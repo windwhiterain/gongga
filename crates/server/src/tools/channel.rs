@@ -159,11 +159,19 @@ impl Channels {
         session: &str,
         name: &str,
         args: &[String],
+        remote: Option<&str>,
         cwd: &Path,
         env: &[(String, String)],
         id: Option<String>,
     ) -> Result<ChannelRow, String> {
         let grammar = self.grammar_of(name);
+        // A channel runs where its call says, not where the session stands.
+        if let Some(machine) = remote {
+            return Err(format!(
+                "a channel on {machine:?} is not wired yet: this build starts programs on \
+                 this machine, and saying so is better than starting one on the wrong one"
+            ));
+        }
         // A cmd is answered by this server, so there is no program to start.
         if grammar.kind == spec::Kind::Cmd {
             return Err(format!(
@@ -230,7 +238,7 @@ impl Channels {
             }
         };
         self.store
-            .add_channel(session, &path, name, &dir, status.pid)
+            .add_channel(session, &path, name, remote, &dir, status.pid)
             .map_err(quiet)?;
         let row = self
             .store
@@ -399,6 +407,11 @@ impl Channels {
                     "id": row.path,
                     "session": row.session,
                     "program": row.program,
+                    // Which machine it runs on, so a reader knows where the work is.
+                    "remote": match &row.remote {
+                        Some(name) => json!(name),
+                        None => Value::Null,
+                    },
                     "pid": row.pid,
                     "dir": row.dir,
                     "started_at": row.started_at,
