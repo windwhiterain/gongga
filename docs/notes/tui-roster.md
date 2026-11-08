@@ -18,11 +18,11 @@ already the client's; this is the index that says which rows there are.
 ## One file per endpoint, named like the journals
 
 `<client-home>/roster/<escaped(endpoint)>.toml`, escaping as `cache.rs::escaped`
-spells it, and the endpoint from `link::endpoint_name` -- the address this client
+spells it, and the endpoint from `client::endpoint_name` -- the address this client
 would dial, resolved from its own configuration. Two servers are two lists, and the
 answer is known before any server speaks, exactly as it is for the journals.
 
-A directory of its own, not a key inside `tui.toml` and not a file beside the
+A directory of its own, not a key inside `client.toml` and not a file beside the
 journals: a session name is operator text and may be anything, so the key that
 names a file must not also be able to collide with one.
 

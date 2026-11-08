@@ -1,12 +1,16 @@
-//! `gongga-cli`: the command layer.
+//! `gongga-client`: the client library and command surface.
 //!
-//! See `docs/notes/cli-lib.md`.
+//! See `docs/notes/client-lib.md`.
 
 pub mod catalog;
 pub mod commands;
 pub mod complete;
+pub mod render_wire;
+pub mod runtime;
 pub mod server;
 pub mod skill_command;
+pub mod window_command;
+pub mod window_state;
 
 pub use crate::catalog::Catalog;
 pub use crate::complete::{
@@ -42,7 +46,7 @@ pub struct Connection {
     /// Server address, e.g. `127.0.0.1:9700`.
     #[arg(long, global = true)]
     pub server: Option<String>,
-    /// Harness home holding config.toml and tui.toml. Defaults to `~/.gongga`.
+    /// Harness home holding config.toml and client.toml. Defaults to `~/.gongga`.
     #[arg(long, global = true)]
     pub home: Option<PathBuf>,
     /// This client's own directory: its events and its scrollback, never the
@@ -367,7 +371,7 @@ pub enum LineKind {
 }
 
 /// One session in the list the window draws on the left.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Listed {
     pub name: String,
     /// The status word, spelled: `idle`, `running`, `error`. A front-end that
@@ -385,7 +389,7 @@ pub struct Listed {
 /// `shown` is the ones that also get a header and their events beside it. A name
 /// appears in both, because the list is where a session is clicked -- it is not a
 /// list of what is hidden.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Layout {
     /// Every session the server knows, in its order.
     pub listed: Vec<Listed>,
@@ -408,8 +412,8 @@ pub struct Layout {
 ///
 /// Only the numbers the provider reported appear, in SPEC's own units, and a row
 /// with no figures says why: a balance nobody could read is not a zero balance.
-/// See `docs/notes/cli-lib.md`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// See `docs/notes/client-lib.md`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QuotaRow {
     pub text: String,
     /// Where the row is drawn: a fact, or the reason there is no fact.
@@ -472,7 +476,7 @@ pub trait Sink {
     /// `cmd` or `cmd_result`, not their history.
     fn clear(&mut self, _window: &str) {}
     /// The session the sticky `session` names: what the keys scroll and what a
-    /// click sets. See `docs/notes/cli-lib.md`.
+    /// click sets. See `docs/notes/client-lib.md`.
     fn sticky_session(&mut self, _name: Option<&str>) {}
     /// A command's terminal outcome, by id.
     ///
@@ -521,7 +525,7 @@ pub trait Sink {
     ///
     /// Told once per turn that ended, and never for a turn that is still
     /// running: a front-end that shows it and one that ignores it hear the same
-    /// fact. See `docs/notes/cli-lib.md`.
+    /// fact. See `docs/notes/client-lib.md`.
     fn stopped(&mut self, _session: &str, _failed: bool) {}
 }
 
@@ -600,7 +604,7 @@ pub struct Client {
     ///
     /// The words are the operator's until the server answers them: a line leaves
     /// this list on its `cmd_result`, and a link that ends first gives it back
-    /// through `set_offline`. See `docs/notes/cli-lib.md`.
+    /// through `set_offline`. See `docs/notes/client-lib.md`.
     unconfirmed: Vec<(u64, String)>,
     sessions: Vec<SessionInfo>,
     /// The session list this client was handed before it ever dialled, from the
@@ -632,9 +636,9 @@ pub struct Client {
     /// The hole is the whole stream's, never one session's: a lost event may be a
     /// session's row or the name that says a session is gone, so nothing in this
     /// layer can work out what is missing. A greeting is the only whole picture, so
-    /// the front-end reads this and dials again. See `docs/notes/link-lib.md`.
+    /// the front-end reads this and dials again. See `docs/notes/client-lib.md`.
     holed: bool,
-    /// The server said it is finishing a `cancel`. See `docs/notes/cli-lib.md`.
+    /// The server said it is finishing a `cancel`. See `docs/notes/client-lib.md`.
     draining: bool,
     /// Another build or home: part of the facts, which no note can wipe.
     build_note: Option<String>,
@@ -937,7 +941,7 @@ impl Client {
     /// A command that deletes its session is answered after the session left the
     /// list, so writing there would leave a line under a name the server hands out
     /// again -- and nobody would see it, because no pane draws that name any more.
-    /// See `docs/notes/cli-lib.md`.
+    /// See `docs/notes/client-lib.md`.
     fn answer_window(&self, window: String) -> String {
         let live = window == self.command_window() || self.taken(&window);
         if live { window } else { self.command_window() }
@@ -949,7 +953,7 @@ impl Client {
     ///
     /// The session's name is never in the text: the window draws it, bracketed, in
     /// the list and in its own header. Two places saying it is how `[main] [main]
-    /// ...` happened. See `docs/notes/cli-lib.md`.
+    /// ...` happened. See `docs/notes/client-lib.md`.
     fn tag(&self, _session: &str, label: &str) -> String {
         label.to_string()
     }
@@ -1240,7 +1244,7 @@ impl Client {
     /// `set_render_session` changes what a frame draws, never what the client is
     /// told. A front-end that records what it is handed -- the TUI's journal --
     /// therefore keeps a hidden session's rows, and showing it again draws them.
-    /// See `docs/notes/cli-lib.md`.
+    /// See `docs/notes/client-lib.md`.
     fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
         match event {
             Event::Cmd { id, name, args } => {
@@ -1250,7 +1254,7 @@ impl Client {
                     return;
                 }
                 // The session is the argument's kind, never its spelling: see
-                // `docs/notes/cli-lib.md`, `Client::command_line`.
+                // `docs/notes/client-lib.md`, `Client::command_line`.
                 let session = self.session_named(&name, &args);
                 let window = self.command_line(session);
                 // The result carries only the id, so say now where its answer goes.
@@ -1480,7 +1484,7 @@ impl Client {
     /// A name leaving the list is a deletion: both announcements carry every
     /// session, and nothing else takes one out. Its window is emptied here,
     /// because the server hands the name out again -- a new session must not open
-    /// on the deleted one's lines. See `docs/notes/cli-lib.md`.
+    /// on the deleted one's lines. See `docs/notes/client-lib.md`.
     fn set_sessions(&mut self, sessions: Vec<SessionInfo>, sink: &mut dyn Sink) {
         for old in &self.sessions {
             if !sessions.iter().any(|new| new.name == old.name) {
@@ -1652,7 +1656,7 @@ impl Client {
         let sync_created = sync.created;
         let as_of = as_of.unwrap_or_default();
         // What the answer covers goes: a replayed row, or one older than its
-        // picture. See `docs/notes/link-lib.md`.
+        // picture. See `docs/notes/client-lib.md`.
         let (owed, restated): (Vec<_>, Vec<_>) = fill
             .buffered
             .into_iter()
@@ -1688,7 +1692,7 @@ impl Client {
     }
 
     /// The status line: server facts only, never a "current session".
-    /// See `docs/notes/cli-lib.md`.
+    /// See `docs/notes/client-lib.md`.
     pub fn refresh(&self, sink: &mut dyn Sink) {
         sink.layout(&self.layout());
         let mut facts = if self.connected && self.draining {
@@ -1717,7 +1721,7 @@ impl Client {
     /// back: a command whose link ended first is not a command the server refused.
     /// The report is a row rather than a note, because a note is wiped by the next
     /// dial's status -- "no answer" must stay readable after the window stopped
-    /// looking. See `docs/notes/cli-lib.md`.
+    /// looking. See `docs/notes/client-lib.md`.
     pub fn set_offline(&mut self, attempts: u32, sink: &mut dyn Sink) -> Vec<String> {
         self.connected = false;
         self.results.clear();
@@ -2011,7 +2015,7 @@ impl Client {
 
         let Some(spec) = self.catalog.command(&head) else {
             // `/name` and a Git Bash-rewritten path get the line that was
-            // meant. See `docs/notes/cli-lib.md`.
+            // meant. See `docs/notes/client-lib.md`.
             if head.contains('/') || head.contains('\\') {
                 let tail = match head.rfind(['/', '\\']) {
                     Some(at) => &head[at + 1..],
@@ -2160,10 +2164,10 @@ impl Client {
     ///
     /// The kind is the catalog's, not the argument's name: `set_session --name`
     /// and `get_messages --session` bind different names to one idea, and only
-    /// the kind says which of them is the session. A client command names no
-    /// session: `set_render_session` has a session argument, and it says whether
-    /// that session is drawn -- following it would undo what it says.
-    /// See `docs/notes/cli-lib.md`.
+    /// the kind says which is the session. A client command names none:
+    /// `set_render_session` has a session argument, but says whether that
+    /// session is drawn -- following it would undo what it says.
+    /// See `docs/notes/client-lib.md`.
     pub fn session_named<'a>(&self, name: &str, args: &'a protocol::Args) -> Option<&'a str> {
         let spec = self.catalog.command(name)?;
         if spec.target != protocol::CommandTarget::Server {
@@ -2184,7 +2188,7 @@ impl Client {
 ///
 /// Each figure carries SPEC's unit, and one nobody measured is left out rather than
 /// shown as zero: `ctx 0` reads as an empty context, not a request that never
-/// happened. See `docs/notes/cli-lib.md`.
+/// happened. See `docs/notes/client-lib.md`.
 fn title_note(session: &protocol::SessionInfo) -> String {
     let usage = &session.usage;
     let mut parts: Vec<String> = Vec::new();
@@ -2264,7 +2268,7 @@ fn newest_turn_first(a: &SessionInfo, b: &SessionInfo) -> std::cmp::Ordering {
 ///
 /// The label is the name SPEC gives each figure -- `month`, `week`, `5h`,
 /// `credit`, `money` -- and one the provider did not report is left out rather
-/// than shown as zero. See `docs/notes/cli-lib.md`.
+/// than shown as zero. See `docs/notes/client-lib.md`.
 fn quota_row(quota: &protocol::Quota) -> QuotaRow {
     let mut parts: Vec<String> = Vec::new();
     for (label, share) in [
@@ -2347,7 +2351,7 @@ impl Link {
     /// SPEC's stop, not a kill: a kill loses the work `cancel` stores for the next
     /// start. The answer is what makes it a stop and not a wish -- `send` only
     /// queues, and a window asking on its way out is one statement away from
-    /// dropping the runtime that would write it. See `docs/notes/cli-lib.md`.
+    /// dropping the runtime that would write it. See `docs/notes/client-lib.md`.
     pub async fn cancel(&mut self) -> bool {
         let asked = self
             .send(ClientMessage::Command {
@@ -2579,7 +2583,7 @@ pub fn server_address(ip: Option<&str>, port: &str) -> anyhow::Result<SocketAddr
 
 /// Headless: one command in, its JSON events out, then exit.
 ///
-/// See `docs/notes/cli-lib.md`.
+/// See `docs/notes/client-lib.md`.
 pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
     let (mut client, mut link) = connect(args).await?;
     let result = run_once(&mut client, &mut link, command).await;
@@ -2618,7 +2622,7 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
         other => anyhow::bail!("{command:?} produced {other:?}, expected a command"),
     };
     // Another session's stream is not this process's output; the kind says
-    // which one is. See `docs/notes/cli-lib.md`.
+    // which one is. See `docs/notes/client-lib.md`.
     let watched = match &msg {
         ClientMessage::Command { name, args, .. } => {
             client.session_named(name, args).map(str::to_string)
@@ -2724,7 +2728,7 @@ pub async fn list_commands(args: &Args) -> anyhow::Result<()> {
 ///
 /// What to dial, and nothing about who may stop the server: a client reads a
 /// server, and only the process that started one decides its lifetime. See
-/// `docs/notes/cli-lib.md`.
+/// `docs/notes/client-lib.md`.
 #[derive(Clone)]
 pub struct Endpoint {
     addr: SocketAddr,
@@ -2781,7 +2785,7 @@ impl DialFailure {
 
 /// Dials, authenticates, and waits for the greeting; binds a fresh local port.
 ///
-/// See `docs/notes/cli-lib.md`.
+/// See `docs/notes/client-lib.md`.
 pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
     let socket = Arc::new(
         UdpSocket::bind("0.0.0.0:0")
@@ -2826,14 +2830,44 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
     };
 
     let msg = decode_server(&greeting)
-        .context("decoding server greeting")
-        .map_err(DialFailure::Temporary)?;
+        .map_err(|e| DialFailure::Temporary(anyhow!(unreadable_greeting(&greeting, &e))))?;
     if let ServerMessage::Denied { reason } = &msg {
         return Err(DialFailure::Fatal(anyhow!(
             "server refused the connection: {reason}"
         )));
     }
     Ok((Link { sink: wire, stream }, Greeting(msg)))
+}
+
+/// Why a greeting could not be read, naming the build on each side.
+///
+/// # Invariant
+///
+/// One field of the raw bytes and nothing else: two builds whose messages have
+/// diverged keep the same protocol version, so the refusal has to say *which*
+/// builds met or the reader is left with a decoder's complaint. Never a second
+/// parser -- a greeting that is not JSON at all answers with what the decoder said.
+fn unreadable_greeting(raw: &[u8], error: &serde_json::Error) -> String {
+    let server = serde_json::from_slice::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|json| {
+            json.pointer("/v/server/build")
+                .and_then(|build| build.as_str())
+                .map(str::to_owned)
+        });
+    match server {
+        Some(build) if build != protocol::BUILD => format!(
+            "the server runs build {build}, this window is build {}: they cannot read each \
+             other's messages. Start the window from the same build, or put the server on \
+             this one.",
+            protocol::BUILD
+        ),
+        Some(build) => format!(
+            "the server answers as build {build}, the same as this window, and its greeting \
+             still could not be read: {error}"
+        ),
+        None => format!("decoding server greeting: {error}"),
+    }
 }
 
 /// The server's greeting, already decoded and opaque to a front-end.
@@ -2881,7 +2915,7 @@ impl Greeting {
 ///
 /// # Invariant
 ///
-/// No state is read: `tui.toml` is the window's, and a one-shot command names
+/// No state is read: `client.toml` is the window's, and a one-shot command names
 /// every argument it means. The home is here for one reason -- where `skills/`
 /// is read from -- and never for anything this process would write.
 pub fn build_client(args: &Args) -> Client {
@@ -2914,7 +2948,7 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
 /// # Invariant
 ///
 /// No lifetime of anybody's: a hello says who is reading the server, and never
-/// who may stop it. See `docs/notes/cli-lib.md`.
+/// who may stop it. See `docs/notes/client-lib.md`.
 fn client_info() -> ClientInfo {
     ClientInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -2932,7 +2966,7 @@ fn client_info() -> ClientInfo {
 /// The program's name, not the crate's: a window, a one-shot command and the
 /// bundle's own `gongga` all dial through this one function, and a record of who
 /// asked is only readable if it says which of them it was. See
-/// `docs/notes/cli-lib.md`.
+/// `docs/notes/client-lib.md`.
 fn client_label() -> String {
     let program = std::env::current_exe()
         .ok()

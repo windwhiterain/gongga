@@ -48,7 +48,7 @@ pub fn owner() -> Option<u32> {
 /// runtime, on the path `cancel` already takes -- every running turn is
 /// interrupted, and a signal's stop ends its background jobs rather than letting
 /// them go.
-pub fn watch<F, Fut>(parent: Option<u32>, stop: F)
+pub fn watch<F, Fut>(parent: Option<u32>, parent_build: Option<&str>, stop: F)
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -61,7 +61,7 @@ where
         tracing::warn!("no signal handler: a Ctrl-C will not interrupt the turns");
     }
     if let Some(pid) = parent {
-        follow_pid(pid);
+        follow_pid(pid, parent_build);
     }
     waiter(wake, stop);
 }
@@ -92,11 +92,23 @@ fn nudge(reason: &str, wake: &Notify) {
 ///
 /// # Invariant
 ///
-/// `--parent` is the whole of it, decided before any connection: a client that
-/// dials reads this server and never becomes its owner, so a server somebody
-/// started by hand keeps running when the windows that read it close. A handover
-/// carries the flag over. See `docs/notes/server-signal.md`.
-fn follow_pid(pid: u32) {
+/// `--parent` is ownership, decided before any connection: a dial reads and never
+/// owns, so a server started by hand outlives the windows that read it, and a
+/// handover carries the flag over. A window of another build is not followed --
+/// it cannot read this one, and its death must not take the successor with it.
+/// See `docs/notes/server-signal.md`.
+fn follow_pid(pid: u32, build: Option<&str>) {
+    if let Some(window) = build {
+        if window != protocol::BUILD {
+            tracing::info!(
+                pid,
+                window = window,
+                this = protocol::BUILD,
+                "the window this server was started for runs another build; not following it"
+            );
+            return;
+        }
+    }
     OWNER.store(pid, Ordering::SeqCst);
     if let Some(wake) = WAKE.get() {
         follows(pid, wake.clone());

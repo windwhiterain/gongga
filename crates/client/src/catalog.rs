@@ -582,7 +582,7 @@ fn bound_words(spec: &CommandSpec, words: &[String], skip: Option<usize>) -> (Ar
 /// Two steps that never overlap: the prefix, then the value -- a path for a picture
 /// or a file, a skill's name for a skill. What the popup inserts is what the parser
 /// reads: `@file(` opens the group and `path)` closes it. See
-/// `docs/notes/link-catalog.md`.
+/// `docs/notes/client-catalog.md`.
 fn reference(ctx: &Ctx, line: &str, cursor: usize, token: &str) -> Offered {
     let (start, _, _) = token_bounds(line, cursor);
     if let Some((at, kind, typed)) = opening(token) {

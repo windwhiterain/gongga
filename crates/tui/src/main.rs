@@ -4,15 +4,15 @@
 use gongga_tui::program::{describe, named, took_layer};
 
 fn main() -> anyhow::Result<()> {
-    let mut args = link::parse_argv(describe().0, describe().1);
+    let mut args = client::parse_argv(describe().0, describe().1);
     // `cli` is this program's own name for the layer it carries.
     // See `docs/notes/tui-main.md`.
     let layer = took_layer(&mut args);
     args.check_flag_order()?;
     // A command line is the layer's business, `serve` included: only the bare
     // invocation is the window.
-    if layer || args.command.is_some() || named(link::COMMAND) {
-        return link::main(args);
+    if layer || args.command.is_some() || named(client::COMMAND) {
+        return client::main(args);
     }
     gongga_tui::main(args)
 }

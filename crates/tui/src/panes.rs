@@ -520,7 +520,7 @@ impl Panes {
     }
 
     /// Replaces a call's provisional body with its structured head.
-    pub fn describe(&mut self, name: &str, key: &str, head: &link::protocol::Head) {
+    pub fn describe(&mut self, name: &str, key: &str, head: &client::protocol::Head) {
         self.log.describe(name, key, head);
     }
 

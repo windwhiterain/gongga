@@ -50,7 +50,7 @@ which commands exist.
 ## named — why the word is not always needed
 
 The server puts *this program* into the home's `bin` under the name `gongga-cli`
-(`link-server.md`), so one file has two names and two meanings:
+(`client-server.md`), so one file has two names and two meanings:
 
 | started as | bare invocation |
 |---|---|

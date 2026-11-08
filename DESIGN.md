@@ -4,6 +4,67 @@
 
 ## 1. 结构
 
+### 当前与目标（2026-11-07）
+
+`SPEC.md` 的 `## Crate Structure` 在 2026-11-07 修订了三次，最终把客户端拆成一层职责与两类程序：
+方括号标记的是 crate / 可执行单元，`rpc` 是唯一不带方括号的逻辑层。第三次把
+`[client]` 从 library 改成 **binary** —— 客户端是一个独立进程，不再是链接进前端的库。
+
+```text
+[protocol]  library  —— cmd schema 的线协议，以及客户端直接使用的语义命令名
+[server]    binary   —— 定义并发布 cmd schema
+rpc         层       —— 按 schema 校验后向服务端发命令
+  [cli]     python   —— 命令行客户端
+[client]    binary   —— client 子进程（UI 起它、生命周期绑定 UI）：收 delta、校验、维护状态、产出行
+  [tui]     binary   —— 终端前端，经管道连 client
+  [webui]   binary   —— 浏览器前端（待新增），与 tui 平级
+[bundle]    binary   —— 打包与路由
+```
+
+workspace 现在已经是改名后的名字（`Cargo.toml`，8 个 member，`default-members` 不含 bundle）：
+
+```text
+crates/protocol  gongga-protocol   别名 protocol
+crates/skill     gongga-skill      别名 skill
+crates/console   gongga-console    别名 console
+crates/client    gongga-client     别名 client  —— [client] 库（原 crates/link）
+crates/server    gongga-server     别名 server
+crates/tui       gongga-tui        别名 tui    —— [tui]
+crates/bridge    gongga-bridge     别名 bridge
+crates/bundle    gongga-bundle     别名 bundle
+```
+
+| SPEC | 现在 | 仍待做 |
+|---|---|---|
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）仍是 library crate；窗口状态与六条 client 命令已从 `tui` 上提；`render_wire.rs` 已定义序列化词汇表 | 给它加 bin target，由 UI 用管道拉起；`run.rs` 的连接循环、输入翻译与 journal 上提 |
+| `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
+| `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
+| `[tui]` binary | `crates/tui`，`run.rs` 仍装着连接循环与输入行翻译 | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
+| `[webui]` binary | 无 | 新增，与 `tui` 平级，用任意语言写 |
+
+上提的两个模块只换了位置：`State::load` 仍独占 `client.toml`，一次性 `gongga-cli` 不读
+不写它；六条 client 命令仍由窗口解析，不上线。行为不变。
+
+裁定：`Client` 状态机与重连校验归 `[client]` 库，不归前端，第二个前端因此不必重写 seq
+补洞与 greeting resync；`[client]` 描述里的 `render` 读作「产出 `Sink` 事件」，实际绘制由各
+binary 做（`crates/client/src/lib.rs:424-526` 已是这套不带终端类型的词汇）。依赖方向仍是单向：
+`tui → client`，`server` 不依赖任何客户端 crate。
+
+2026-11-07 追加裁定：前端与 client **跨进程、跨语言**（下称形态 2）。client 是 UI 起的
+子进程、生命周期绑定 UI；client↔server 仍是多对一且可远程的 UDP（见形态 2 小节）。
+`render` 因此不只是
+「产出 `Sink` 事件」，还要把事件序列化到线上；`RenderMessage` / `UiIntent` 就是这套词汇表
+（`crates/client/src/render_wire.rs`）。一个 crate 同时是 library 与 binary 并不违背 SPEC 的
+`binary`：SPEC 说的是交付形态，`crates/client` 目前仍只交付 library，bin target 待补。
+
+### 历史：命令层从 `cli` 变成 `client`
+
+以下记录写于命令层还叫 `cli` 的时候。文中 `cli` 指当时的命令层，中途叫过 `link`，今天对应
+`crates/client`；`crates/cli/` 目录与独立的 `gongga-cli` 二进制都已不存在，只剩
+`gongga-cli` 这个名字作为 `crates/tui/src/main.rs` 的分派入口活着。
+
+当时的结构（写入时，已过时）：
+
 ```text
 Cargo.toml                  workspace，resolver 3，edition 2024
 crates/protocol/  gongga-protocol   别名 protocol —— 帧、可靠 UDP 通道、消息词汇
@@ -59,11 +120,13 @@ ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚
 的依赖里没有 `protocol` ——「线长什么样」仍然只有命令层知道。代价是 `cli` 多了三个薄封装
 （`Link::send/recv/goodbye`、`Client::handle_bytes`、`Greeting::apply`）。
 
-**方向有测试钉着**：`cli` 里断言「依赖里不得出现 tui/ratatui/crossterm，且它的程序就是命令行
-那一个 `gongga-cli`」，`tui` 里断言「必须依赖 cli」。两者都读 `include_str!("../Cargo.toml")`，
-谁把箭头调回去，测试会先红。
+**方向曾有测试钉着**（当时的记录）：`cli` 里断言「依赖里不得出现 tui/ratatui/crossterm，且它的
+程序就是命令行那一个 `gongga-cli`」，`tui` 里断言「必须依赖 cli」，两者都读
+`include_str!("../Cargo.toml")`。2026-11-07 核对：源码里的 `include_str!` 只剩
+`server/pylib.rs`（3）、`server/ship.rs`（1）、`skill/entry.rs`（1），这类方向断言已不在代码里。
+现在方向由 `Cargo.toml` 与 review 保证；阶段 1 改名时应补回一条，否则箭头调回去没人拦。
 
-**`tui` 的边界**：SPEC 说「tui: transparent cli wrapper, do not know cmd」。所以 tui 只认识
+**`tui` 的边界**：旧版 SPEC 说「tui: transparent cli wrapper, do not know cmd」。所以 tui 只认识
 「行」「候选词」「按键」，不认识命令、不认识协议。词汇本身由命令层定义、tui 拿来用
 （`pub use cli::{Candidate, Completer, Completion, LineKind, SharedCompleter}`，所以
 `crate::LineKind` 在 `render.rs` / `log.rs` 里照旧可读）：
@@ -83,6 +146,161 @@ pub enum UiEvent { Submit(String), Quit }
 看上去只是「多一个键」，实际上是给「停掉 turn」开了一条绕过命令层的小路：只有 TUI 有入口，
 脚本和模型都没有。现在打断/停服都只是普通命令（`interrupt_session` / `cancel`），
 `UiEvent` 只剩下「提交一行」和「离开」（Alt+Q）。
+
+### 阶段 2 设计：前端无关的运行时（形态 1 的历史方案）
+
+以下是前端仍在同一 Rust 进程内（形态 1）时的接口形状。2026-11-07 选定形态 2 后，
+`Frontend` trait 不再需要 —— 前端在另一个进程，不是一个 trait 实现；这一节保留作方案记录，
+下面的不变式与分步仍然有效，且被形态 2 契约继承。
+
+`crates/tui/src/run.rs` 的 `interactive`（885 行）同时握着两件事：窗口的键盘与屏幕，
+以及任何前端都需要的连接生命周期。WebUI 若另写一份，就会有两份拨号退避、两份 seq
+补洞、两份 transcript 补拉 —— 这正是 `crates/client` 当初存在要消灭的重复。
+
+要抽进 `client` 库的（与终端无关）：拨号与退避（`dial_now` / `wait_for`）、
+服务端生命周期（`starts_a_server` / `spawn` / `stop` / 退出时 `cancel` 判定）、
+握手与重连校验（`greeting.apply` / `declare` / `take_hole`）、
+补拉（`answer_completion` / `answer_transcripts` / `answer_older`）、
+输入翻译（`submission` / `filled`，依赖已上提的 `window_state` / `window_command`）。
+留在各前端 binary 的：键盘/鼠标事件、帧绘制、`Sink` 的实现、WS 帧的编码。
+
+两个候选形状：
+
+| | 做法 | 利 | 弊 |
+|---|---|---|---|
+| **A（推荐）** | 一个 `Frontend` trait（sink + 事件流 + 状态 + 绘制 + 补拉询问），`client::Runtime::run(frontend)` 拥有整个循环 | 拨号/重连/补拉/输入翻译只有一份，第三个前端几乎零重复 | trait 要暴露 `answer_*` 需要的窗口内部状态（completer / cache / panes），接口较大，改动集中在 885 行主循环 |
+| **B** | 只抽「连接生命周期」为一个 `Connection` 状态机；`interactive` 与 WebUI 各保留自己的循环，共享拨号与重连决策 | 改动小、可分步，回归面窄 | 循环仍有两份，补拉与输入翻译仍要各写一遍 |
+
+倾向 A，但 A 的验收依赖真进程 L3（`scripts/client_state_selftest.sh`、
+`tui_live.py`）；GitHub 未恢复之前不宜动主循环。
+
+不变式（两种形状都要守）：
+
+- 一个进程一个 `Client` + 一个 `Link`；多浏览器共享一个 `Sink` 广播，
+  不每个 WebSocket 连接各起一个 Client。
+- `Sink` 是同步 `&mut`，WebUI 的 adapter 只能 `try_send` 到广播队列、不能 await；
+  慢客户端靠「内存快照 + `get_messages --replay true`」补齐，不静默丢帧
+  （SPEC 的每个事件一个 seq）。
+- 状态按前端实例分文件（形态 1 当时的读法），一次性 `gongga-cli` 零状态。
+- WebUI 默认 `--client_only`：不 spawn、不 cancel 别人的服务端；`--parent`
+  所有权模型不动。
+- 复用现有轮子：`Sink` / `NullSink`、`protocol::Operation`、
+  `get_messages --replay`（`REPLAY_TURN`）、`bridge` 的平级客户端模型。
+
+以上按形态 1（一个 Rust 进程内嵌多个前端）所写。形态 2 的「单 UI / 一个 client 一个 UI」
+裁定推翻了前两条里的广播与快照，`client spawn server` 推翻了 `--client_only` 不动的做法；
+以形态 2 小节的不变式为准。
+
+分步（每步各自跑门禁）：① 抽连接生命周期，TUI 行为不变；② 抽输入翻译与补拉；
+③ `crates/webui` 实现 `Sink` → JSON 与 WS 广播；④ bundle 布线 `gongga webui`；
+⑤ 双前端并存 L3（新脚本需用户许可）。
+
+### 形态 2：client 子进程与跨语言渲染协议（2026-11-07 已裁定）
+
+2026-11-07 选定形态 2：`[client]` 是独立 binary，但**不是常驻 daemon** —— UI 自动起它，
+client 的生命周期绑定 UI。只有 **UI ↔ client 一对一**；**client ↔ server 是多对一且可
+跨机**（用户 20:21 澄清）。两段连接因此是两种传输：
+
+```text
+   [一个 UI]                    [一个 client]                 [一个 server]
+       |  stdin  UiIntent (JSONL)     |                           |
+       |----------------------------->|  SPEC 的可靠 UDP + key    |
+       |  stdout RenderMessage/JSONL  |-------------------------->|  远程，多个 client 共享
+       |<-----------------------------|<--------------------------|
+       |                              |  CursorMessage（自己消费） |
+       |                              |                           |
+  UI 是父进程，client 是子进程；       只在本地且无 server 时才 spawn；
+  client 退出即 UI 退出（绑定）。      远程地址不 spawn、不 cancel。
+```
+
+**UI ↔ client 用 subprocess 管道，不用 socket**（用户裁定）：一对一、本机，没有端口、
+监听、回环鉴权，也省掉 WS/TCP 那一层流量。**client ↔ server 仍走 SPEC 的可靠 UDP**，
+这段是远程且多对一的，不能换成管道；一个 server 同时服务多个 client，每个 client 各自
+拨号、各自补洞、各自补拉。
+
+现成轮子，不另发明传输：`crates/server/src/remote/transport.rs:334-345` 用
+`stdin/stdout/stderr(Stdio::piped())` + `kill_on_drop(true)` 起子进程，`:815-850` 的
+`write_loop` 整行写、`read_loop` 按 `lines().next_line()` 读一帧 JSON；
+`server/src/tools/{bash,python}.rs`、`script.rs` 同构。协议就是 JSON Lines：
+`serde_json` 会转义字符串里的换行，所以 `UiIntent::Submit { line }` 带段落也安全。
+
+**四个硬点**：
+
+1. **stderr 必须单独 drain 或落盘**。`NullSink::note` 走 `eprintln!`
+   （`crates/client/src/lib.rs:552`），一次性 CLI 的错误也在 stderr；父端若
+   `Stdio::piped()` 却不读，管道写满会阻塞 client 主循环。建议 client 的 stderr
+   重定向到 home 日志（复用 `server.rs` 的 `log_path`），UI 只管 stdin/stdout。
+2. **孙进程不会串进协议流**：`crates/client/src/server.rs:258-260` 起 server 时已把
+   它的 stdin 设 null、stdout/stderr 指向同一日志文件。client 的 stdout 因此干净。
+3. **背压**：`WireSink` 是同步 `&mut`，不能在 client 主循环里同步写管道；要一个写 task
+   + 有界队列 `try_send`。UI 侧同样要持续 drain stdout，不能等有空才读。这就是
+   「`Sink` 同步、adapter 不能 await」那条不变式的具体形状。
+4. **TTY 不冲突**：`crates/client/src/` 里没有任何 `is_terminal` / `IsTerminal` 探测，
+   TUI 自己持有真实终端（crossterm raw mode），client 子进程的 stdin/stdout 是管道。
+
+**「client spawn server」与远程共享 server 不矛盾，现有代码已经分开**：
+`crates/client/src/server.rs:101` 的 `spawn()` 第一句是
+`if !starts_here(&addr) { return Ok(None); }`，`starts_here` 就是
+`addr.ip().is_loopback()`（`:205-207`）；`--client_only` 再抑制一次本地 spawn。
+SPEC 原话也是 cancel "the server it spawn" —— 只 cancel 自己起的那个。连远程 server
+时既不 spawn 也不 cancel。SPEC 里「窗口起 server、退出 cancel」的措辞要改成 client。
+
+**`--parent` 归 UI（2026-11-07 确认）**：server 是 client spawn 的孙进程，`server.rs:275`
+把 owner pid 传下去，`run.rs:568` 的 `whose_server` 认「`--parent` 等于本窗口 pid」为
+handover。裁定传 **UI 的 pid**：UI 退出 → server 停；client 单独崩掉而 UI 还在时 server
+继续，因为所有权绑的是 UI 而不是 client。client 从 argv 拿到 UI pid 后透传给 `spawn()`，
+`whose_server` 的判定语义不变 —— 它认的仍然是「那个窗口」，只是现在窗口是父进程。
+
+**一次性入口不混**：`gongga-cli` 现在由 `crates/tui/src/main.rs` 分派，stdout 打 JSON
+lines；UI 起的 client 是协议模式，两者都占 stdout 但互不冲突（不同进程、不同模式）。
+按显式 argv 标志区分，不靠「stdin 是不是 TTY」猜。
+
+已落地：`crates/client/src/render_wire.rs` 把 `Sink` 全部 17 个方法写成可序列化的
+`RenderMessage`（12 个绘制）/ `CursorMessage`（5 个 journal），反向 `UiIntent` 四种手势；
+`Listed` / `Layout` / `QuotaRow` 补上 serde 派生；`WireSink` 覆盖 `tool_call`，让结构化
+`Head` 原样过线而不被 trait 默认实现压成文本。见 `docs/notes/client-render-wire.md`。
+
+**六条裁定（2026-11-07，用户逐条给）**：
+
+| # | 裁定 | 落点 |
+|---|---|---|
+| 1 | **client spawn server**：只在本地无 server 时起，`--parent`、退出时 cancel 归 client | 远程地址由 `starts_here` 挡住；SPEC 的措辞要你改（见下） |
+| 2 | **TUI 进 bundle，其他 UI 不进**；UI 起 client 子进程 | client 二进制必须进 bundle，否则 UI 无法拉起它 |
+| 3 | **单 UI**：一个 client 一个 UI，否则应当是多 client | 删掉广播与多连接快照；传输简化 |
+| 4 | **窗口 journal 归 client** | `log.rs` / `cache.rs` / `panes.rs` 约 3800 行搬到 daemon |
+| 5 | **状态文件改为 `client.toml`** | 11-05 裁定「只有 TUI 允许 client 状态」由 daemon 继承；一次性 cli 仍零状态 |
+| 6 | **统一 `UiIntent` 与 `UiEvent`** | 本轮已落地：`UiIntent` 是唯一手势定义，`tui::UiEvent` = `Intent(UiIntent)` 或 `Recomplete` |
+
+裁定 1 与 SPEC 当前的 `tui [--client_only]`（窗口自动起 server、退出 cancel 它起的那个）
+不一致：起 server 的现在是 client，且只在本地地址。SPEC 是唯一真相源且 agent 不得未经
+许可编辑，**这一处要你改或授权我改**。裁定 2 里「其他 UI 不进」我读作：bundle 只装
+server + client + TUI，WebUI 等自行分发；若指的是别的，说一声。远程 server 不在 bundle
+的分发范围里，它按 SPEC 的 `--bind` / key 由 client 拨号连过去。
+
+**这一轮落地的两小步**：`client.toml`（源码、L3 脚本、当前文档同步；带日期的历史笔记
+保留 `cli.toml` 旧名，不改写记录）、`UiIntent` / `UiEvent` 统一（`Recomplete` 留在 tui
+且不过线）。都不碰连接循环、不起进程。
+
+**不变式（按裁定 3 + 20:21 澄清重写）**：一个 client 进程只有一个 `Client` + 一个
+`Link` + 一个 UI；一个 server 可以被多个 client 连接，且可以在另一台机器上 —— client
+不拥有它，除非那个 server 是它自己起的；`Sink` 同步 `&mut`，adapter 只能 `try_send`、
+不能 await，管道两端都要持续 drain；不静默丢帧，每个事件一个 seq、greeting 才给全量；
+`RenderMessage` 是语义级，颜色、列宽、折行归 UI；`CursorMessage` 只在 client 内消费；
+一次性 `gongga-cli` 零状态；不新增第二套协议。
+
+分步（每步跑门禁）：① 词汇表 + serde（已完成）；② `client.toml` 与 `UiIntent` 统一
+（已完成）；③ 管道帧编解码（已完成）；④ 连接循环与 journal 上提到 client ——
+`crates/client/src/runtime.rs` 已上提重连阶梯、起 server 判定、单次拨号、所有权判定
+与 `Server` 枚举；`interactive` 主循环、输入翻译与窗口 journal 仍待；⑤ client bin
+target 接管道骨架（要等 ④ 的主循环，否则是空壳）；⑥ TUI 改为 spawn client 并只做
+绘制；⑦ bundle 布线（client 二进制进 payload）；⑧ 多 client 连同一 server L3
+（新脚本需用户许可）。
+
+**④ 里随 `--parent` 裁定修掉的一处**：`whose_server` 原先用 `std::process::id()`
+比对 server 的 `--parent`；client 成为 UI 的子进程后，这个值会是 client 自己的 pid，
+而 `--parent` 是 UI pid，handover 会被误判成「别人的 server」。上提时把 owner pid
+改成了显式参数，`interactive` 当前传本进程 id（UI 还没拆出去），拆分后从 argv 取。
+见 `docs/notes/client-runtime.md`。
 
 ## 2. 传输层：可靠 UDP
 

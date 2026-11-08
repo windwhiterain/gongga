@@ -173,19 +173,23 @@ impl Agent {
             });
         // The turn's outcome as a row, not only a line: a reader with the database need
         // not match prose.
-        self.log_event(
-            Some(session.id()),
-            "turn_end",
-            &serde_json::json!({
-                "outcome": outcome,
-                "steps": steps,
-                // Why it failed, for the monitor that reads this row back: a
-                // provider's refusal is the `providers` monitor's business.
-                "origin": origin,
-                "elapsed_ms": started.elapsed().as_millis() as u64,
-                "answer": answer,
-            }),
-        );
+        let mut row = serde_json::json!({
+            "outcome": outcome,
+            "steps": steps,
+            // Why it failed, for the monitor that reads this row back: a
+            // provider's refusal is the `providers` monitor's business.
+            "origin": origin,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+        });
+        // A cut turn did not end, so it does not say it did: see server-agent.md.
+        let kind = match outcome {
+            TurnOutcome::Cancelled => "turn_interrupted",
+            _ => {
+                row["answer"] = serde_json::json!(answer);
+                "turn_end"
+            }
+        };
+        self.log_event(Some(session.id()), kind, &row);
         let (status, detail) = match outcome {
             TurnOutcome::Done => (SessionStatus::Idle, None),
             TurnOutcome::Cancelled => (SessionStatus::Idle, Some("cancelled".to_string())),
@@ -610,6 +614,54 @@ impl Agent {
         Ok(prompt)
     }
 
+    /// The stored tool set this session sends, stamped when a fact has moved.
+    ///
+    /// # Invariant
+    ///
+    /// Four stored facts -- the peer, the model, whether a compaction origin has
+    /// opened, and the build -- are the only things that can change a head. A
+    /// transient flag, a command, a skill or a tool cannot: nothing here renders a
+    /// schema for a request that did not change one, and a session that never did
+    /// sends the same bytes forever. See `docs/notes/server-tools.md`.
+    fn tool_set_in_force(
+        &self,
+        session: &SessionHandle,
+        id: i64,
+        model: &str,
+        llm: &crate::llm::LlmClient,
+    ) -> anyhow::Result<crate::store::ToolSet> {
+        let remote = session.remote_name();
+        let has_origin = self.live_compact_enabled && self.store.has_live_compact_origin(id)?;
+        let build = protocol::BUILD.to_string();
+        let kept = self.store.tool_set(id)?;
+        if let Some(kept) = &kept
+            && kept.remote == remote
+            && kept.model.as_deref() == Some(model)
+            && kept.has_origin == has_origin
+            && kept.build == build
+        {
+            return Ok(kept.clone());
+        }
+        // Which stored change moved the head, for the record and for a person.
+        let event = match &kept {
+            None => "first",
+            Some(kept) if kept.build != build => "build",
+            Some(kept) if kept.model.as_deref() != Some(model) => "model",
+            Some(kept) if kept.remote != remote => "move",
+            Some(_) => "origin",
+        };
+        let tool_set = crate::store::ToolSet {
+            tools: llm.wire_tools(&self.tools.stamp(session.on_remote(), has_origin)),
+            model: Some(model.to_string()),
+            remote,
+            has_origin,
+            build,
+            event: event.to_string(),
+        };
+        self.store.append_tool_set(id, &tool_set)?;
+        Ok(tool_set)
+    }
+
     /// How much an indexed entry may change before it is re-sent, or nothing when
     /// no patch may be appended.
     ///
@@ -878,20 +930,8 @@ impl Agent {
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
-        let mut definitions = self.tools.definitions(session.on_remote());
-        // A durable request alone makes the compaction schema visible to the model.
-        if self.live_compact_enabled
-            && self
-                .store
-                .live_compact_measurement(id)
-                .is_ok_and(|measurement| measurement.requested)
-            && let Some(definition) = self.tools.definition(
-                crate::tools::live_compact::LIVE_COMPACT_TOOL,
-                session.on_remote(),
-            )
-        {
-            definitions.push(definition);
-        }
+        // Read beside the stored prompt; a request assembles no part of its head.
+        let tools = self.tool_set_in_force(session, id, llm.model(), llm)?;
         let reader = session.reader();
         let source = match (&reader, session.owner()) {
             (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
@@ -930,7 +970,7 @@ impl Agent {
             prompt.tail.as_deref(),
             &source,
             &affinity,
-            &definitions,
+            &tools.tools,
             effort,
             tier.as_deref(),
             cancel.clone(),
@@ -1225,6 +1265,7 @@ impl Agent {
                     // path, because reading an allowance is a network call.
                     crate::quota::publish(
                         self.bus.clone(),
+                        self.store.clone(),
                         attempt.llm.provider().map(str::to_string),
                     );
                     // A delta, not a whole list: republishing that every step
@@ -1510,31 +1551,51 @@ impl Agent {
                     "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
         let mut checkpointed = false;
         let mut checkpoint_error = None;
+        // Unasked-for call: a no-op, not an error (an error invites a retry loop).
+        // See `docs/notes/server-live-compact.md`.
+        let mut unrequested = false;
         if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && outcome.ok {
-            match self
+            if self
                 .store
-                .append_live_compact_result(id, &call_id, &content)
+                .live_compact_measurement(id)
+                .is_ok_and(|measurement| !measurement.requested)
             {
-                Ok(committed) => {
-                    checkpointed = true;
-                    self.announce_row(name, Ok(committed.result_seq));
-                    self.log_event(
-                        Some(id),
-                        "live_compact",
-                        &json!({
-                            "checkpoint": committed.checkpoint_id,
-                            "result_seq": committed.result_seq,
-                            "generation": committed.generation,
-                        }),
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
-                    checkpoint_error = Some(format!("{e:#}"));
+                unrequested = true;
+            } else {
+                match self
+                    .store
+                    .append_live_compact_result(id, &call_id, &content)
+                {
+                    Ok(committed) => {
+                        checkpointed = true;
+                        self.announce_row(name, Ok(committed.result_seq));
+                        self.log_event(
+                            Some(id),
+                            "live_compact",
+                            &json!({
+                                "checkpoint": committed.checkpoint_id,
+                                "result_seq": committed.result_seq,
+                                "generation": committed.generation,
+                            }),
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
+                        checkpoint_error = Some(format!("{e:#}"));
+                    }
                 }
             }
         }
-        if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
+        if unrequested {
+            output = concat!(
+                "No checkpoint was outstanding: nothing was compacted, ",
+                "and the history is untouched."
+            )
+            .to_string();
+            content["output"] = json!(output.clone());
+            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            tail = output.clone();
+        } else if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
             status = "error";
             let reason = checkpoint_error.unwrap_or_else(|| output.clone());
             output = format!("ERROR: live_compact checkpoint was not committed: {reason}");
@@ -1887,8 +1948,24 @@ fn context_notice(
     )
 }
 
+/// What the server asks for when the interval elapses.
+///
+/// # Invariant
+///
+/// It asks for what a later turn cannot recover and nothing else: the round the
+/// server keeps verbatim is not restated, a file is cited rather than pasted, and
+/// the answer stays short -- every word here is paid again on every later request,
+/// because a summary is never a cache hit. See `docs/notes/server-live-compact.md`.
 fn live_compact_notice() -> String {
-    "The live-compaction token interval has elapsed. Call `live_compact` now with a      `summary` of everything since the previous checkpoint, including the latest complete      ordinary tool-call round. The server retains that round and every checkpoint summary;      do not use heir or delete any transcript rows."
+    "The live-compaction interval has elapsed. Call `live_compact` with a summary of \
+what a later turn cannot recover from the transcript: the decisions taken, the paths \
+and identifiers the next step needs, the open question, and the facts it depends on. \
+The server keeps the latest complete tool-call round and every earlier summary \
+verbatim, so do not restate them. The summary may also cite a file as \
+`@file(<path>)`: the citation embeds that file whole into the summary, so a later \
+turn reads the content without opening it again -- at the cost of carrying it in \
+every later request. Keep it short. Do not use heir and do not delete transcript \
+rows."
         .to_string()
 }
 

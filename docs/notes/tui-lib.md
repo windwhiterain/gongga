@@ -6,15 +6,15 @@
 
 This crate is deliberately ignorant. It renders lines, keeps an input line, and
 shows a completion popup whose contents somebody else supplies. It has no idea
-what a command is: `crates/link` owns the catalog, the wire, and the meaning of
+what a command is: `crates/client` owns the catalog, the wire, and the meaning of
 every line, and hands both completion candidates and typed lines over.
 
-That is why the dependency runs this way -- `tui` depends on `link`, never the
-reverse, and never on `cli`: the command-line program is a *program*, and a window
-that linked it would be carrying `main`, its flags and its argv for nothing. The
-same holds the other way: a link that knew about terminals could not be used from a
-script, and a front-end that knew about commands would change every time one is
-added.
+That is why the dependency runs this way -- `tui` depends on `client`, never the
+reverse, and never on the command-line program: that program is a *program*, and a
+window that linked it would be carrying `main`, its flags and its argv for nothing.
+The same holds the other way: a client library that knew about terminals could not
+be used from a script, and a front-end that knew about commands would change every
+time one is added.
 
 ## link re-exports
 
@@ -274,7 +274,7 @@ which an alternate screen has none of.
 recomputes the status from the session list as events arrive, and most of those
 recomputations say the same thing as the last one.
 
-The footer is gone (see `docs/notes/cli-lib.md`: SPEC dropped its row, and the
+The footer is gone (see `docs/notes/client-lib.md`: SPEC dropped its row, and the
 information lives on the canvas), so the status line is the only chrome this window
 owns.
 
@@ -306,7 +306,7 @@ session that stopped while it was not drawn (`docs/notes/tui-panes.md`,
 A turn somebody stopped is not this: `cli::Client` hears `TurnOutcome::Cancelled` on
 the status and says nothing, so `Tui::stopped` is the end of a turn the agent reached
 by itself. The window does not filter it a second time -- one rule, where the fact
-arrives (`docs/notes/cli-lib.md`).
+arrives (`docs/notes/client-lib.md`).
 
 ## Tui::draw — the frame is under a net
 

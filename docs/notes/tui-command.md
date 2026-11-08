@@ -1,4 +1,7 @@
-# tui/command.rs
+# client/window_command.rs — the window's own commands
+
+The source moved from `crates/tui/src/command.rs` into the client library. It is
+still the window that parses these lines; a one-shot `gongga-cli` does not.
 
 The commands the window runs itself: every spec `protocol::client_commands()`
 publishes -- `set_sticky`, `del_sticky`, `set_render`, `set_render_session`,
@@ -7,7 +10,7 @@ command layer.
 
 ## Why the window parses them
 
-They act on `tui.toml`, and `tui.toml` is the window's (`docs/notes/tui-state.md`).
+They act on `client.toml`, and `client.toml` is the window's (`docs/notes/tui-state.md`).
 Two owners of one file is how an agent's `set_session` came to rewrite the operator's
 sticky session; one owner that is not the command layer also means `gongga-cli` has
 no state to inherit, which is the whole point of the split.

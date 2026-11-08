@@ -4,8 +4,8 @@
 
 /// The name and the sentence to answer with: what was typed, then argv[0].
 pub fn describe() -> (&'static str, &'static str) {
-    if std::env::var_os("GONGGA_NAME").is_some() || named(link::COMMAND) {
-        (link::spoken_name(), link::ABOUT)
+    if std::env::var_os("GONGGA_NAME").is_some() || named(client::COMMAND) {
+        (client::spoken_name(), client::ABOUT)
     } else {
         ("gongga-tui", "Gongga harness terminal client")
     }
@@ -40,11 +40,11 @@ pub fn is_name(path: &std::path::Path, name: &str) -> bool {
 /// with nothing at all: the word is removed with the command left empty, not with
 /// a command named `cli` -- and not with the window, which is what an empty
 /// command line means everywhere else.
-pub fn took_layer(args: &mut link::Args) -> bool {
-    let Some(link::Sub::Cmd(tokens)) = &mut args.command else {
+pub fn took_layer(args: &mut client::Args) -> bool {
+    let Some(client::Sub::Cmd(tokens)) = &mut args.command else {
         return false;
     };
-    if tokens.first().map(String::as_str) != Some(link::CLI) {
+    if tokens.first().map(String::as_str) != Some(client::CLI) {
         return false;
     }
     tokens.remove(0);

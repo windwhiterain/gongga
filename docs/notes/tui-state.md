@@ -1,12 +1,15 @@
-# tui/state.rs
+# client/window_state.rs — the window's own state
 
-The window's own state, in `~/.gongga/tui.toml`. Everything the operator sets once
+The source moved from `crates/tui/src/state.rs` into the client library. The note
+keeps its name because it is about the window's state, not about a crate.
+
+The window's own state, in `~/.gongga/client.toml`. Everything the operator sets once
 and expects to find again lives here: the sticky entries, which sessions are drawn,
 the block size and the box edge, and the address `connect_server` last pointed at.
 
 The rule this file exists for: **client state is the window's**. A one-shot
 `gongga-cli` reads none of it and writes none of it -- it is a script or a model that
-names every argument it means -- so `tui.toml` has exactly one reader and one writer.
+names every argument it means -- so `client.toml` has exactly one reader and one writer.
 Before this it had two of each: an agent's `set_session` wrote the operator's sticky
 session, and an agent's bare `send_message` landed in whatever session that entry
 named.
@@ -19,7 +22,7 @@ the file is not rewritten from a single in-memory copy: a stray second writer --
 build from another worktree, a hand edit -- would be silently dropped.
 
 A missing or unreadable file is never fatal. A client that cannot remember its
-defaults is still usable, and refusing to start over a corrupt `tui.toml` would make
+defaults is still usable, and refusing to start over a corrupt `client.toml` would make
 the file a single point of failure for the whole harness. An unparseable *value* in
 an otherwise readable file falls back to the default the type publishes.
 

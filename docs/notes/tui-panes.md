@@ -8,7 +8,7 @@ live on -- and this file turns that list into rows.
 
 The division is here because a view is a drawing fact once the lines are named: which
 line belongs to which window is the command layer's decision (see
-`docs/notes/cli-lib.md`), how tall a view is and what it scrolls is nobody else's.
+`docs/notes/client-lib.md`), how tall a view is and what it scrolls is nobody else's.
 
 ## One log, many windows
 

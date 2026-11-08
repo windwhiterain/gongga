@@ -476,7 +476,7 @@ grab under it, and `0` is a shape an operator picks rather than the absence of o
 answering through the notice window, and it will not start another turn.
 `serde(default)`, so a greeting from a build without it reads as "not draining". A
 window already attached learns the same fact from the `server_stop` row the cancel
-writes -- see `SERVER_STOP` and `docs/notes/cli-lib.md`.
+writes -- see `SERVER_STOP` and `docs/notes/client-lib.md`.
 
 The field exists because both states look like silence on a wire. A `cancel` now
 interrupts every turn and leaves, but the quarter-second acknowledgement window is

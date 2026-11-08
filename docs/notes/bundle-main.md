@@ -68,7 +68,7 @@ dispatching between them is its whole job. The command layer does not learn a
 
 `exec` on unix, inherited stdio and the child's exit code on Windows -- the same
 rule `cli::server::serve` follows, and for the same reason: one command, one
-console, one exit code (`link-server.md`).
+console, one exit code (`client-server.md`).
 
 ## payload (the feature)
 
@@ -215,7 +215,7 @@ way out of a stuck *old* server, not of this build.
 `--force` is the operator's way out of that loop. The head reads the flag before
 it calls `retire`; the program parses argv only afterwards, so write the flag
 *after* the program word (`gongga tui --force`, not `gongga --force tui`). It is a
-global flag in `link::Args`, so the command line accepts it too, and
+global flag in `client::Args`, so the command line accepts it too, and
 `check_flag_order` still requires it before a command name.
 
 What it costs: `taskkill /T` on Windows takes the server's whole process tree

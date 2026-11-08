@@ -69,7 +69,7 @@ Three steps, and each happens exactly once per submission or answer:
 - **follow** records what an accepted command will keep: a session the command names
   is drawn and becomes sticky (so the window draws what it was told about), and a
   `set_session` is remembered as `(id, pairs)` -- typed arguments only, see
-  `docs/notes/cli-lib.md`. Nothing is written before the answer.
+  `docs/notes/client-lib.md`. Nothing is written before the answer.
 - **settle** applies those pairs on `cmd_result { ok }`, and then SPEC's
   `sticky to xxx`: an entry that follows a model the command changed is forgotten
   unless the command stated it too. `Sink::settled` is how the answer reaches here --
@@ -126,7 +126,7 @@ both of those cases.
 ## interactive
 
 The address in force is the window's: `connect_server` saves it and the loop dials what
-it saved, starting from the entry `tui.toml` holds (`docs/notes/tui-state.md`). A
+it saved, starting from the entry `client.toml` holds (`docs/notes/tui-state.md`). A
 one-shot command has no such memory -- it names its server or reads `GONGGA_SERVER`.
 
 The window and the link are separate things. Nothing here makes the server's
@@ -188,7 +188,7 @@ exactly that -- and what it drops is not one session's rows: a deletion is publi
 as one name, and a name the client never received is a session it believes is still
 there. `Client::take_hole` says so once, the link is dropped, and the next dial's
 greeting is the whole list again -- the same announcement that emptied a deleted
-session's window in the first place (`docs/notes/link-lib.md`). Nothing of the
+session's window in the first place (`docs/notes/client-lib.md`). Nothing of the
 operator's is lost with it: a line the server has not answered comes back through
 `set_offline`, the way it does when a link ends.
 
@@ -196,12 +196,12 @@ The window draws the session a command names, and works it out for itself: befor
 the command goes out, `Client::show_named_session` reads the catalog's kind and shows
 that session. A session the server announces is not shown -- nobody here asked for
 it -- so a session somebody else created never takes the events area on its own. See
-`docs/notes/cli-lib.md`.
+`docs/notes/client-lib.md`.
 
 The one thing done before the window opens is `cli::home_of`: the loop needs the
 home for the server it may start, and nothing else. The command an agent's shell
 types is not this front-end's to write -- a shell only exists inside a server, and
-the server writes it from its own program as it comes up (`link-server.md`).
+the server writes it from its own program as it comes up (`client-server.md`).
 
 Starting a server is SPEC's job for this front-end, and it happens *before the first
 dial*, not on the first failed dial. Asking first cost the first seconds of every

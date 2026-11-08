@@ -22,12 +22,37 @@ you are about to touch.
 | you are about to | read first |
 | --- | --- |
 | run the distribution (`gongga`, `gongga tui`) | [`bundle-main.md`](bundle-main.md) -- it is not a read-only run: pointed at a live home it stops that home's server |
-| start, stop or watch a server | [`link-server.md`](link-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
+| start, stop or watch a server | [`client-server.md`](client-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
 | write into a home (payload, config, database) | [`server-config.md`](server-config.md), [`server-store.md`](server-store.md) |
 | change when the server says the disk is low, or what wakes `@monitor/disk` | [`server-disk.md`](server-disk.md), [`server-monitor.md`](server-monitor.md) |
-| change what a client sends or receives | [`link-lib.md`](link-lib.md), [`protocol-lib.md`](protocol-lib.md) |
+| change what a client sends or receives | [`client-lib.md`](client-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
-| change what the window remembers (`tui.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
+| rename the client library or add a front-end | `SPEC.md` `## Crate Structure`, [`client-lib.md`](client-lib.md), `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` |
+| change what crosses the language boundary | [`client-render-wire.md`](client-render-wire.md), `DESIGN.md` §1 "形态 2" |
+| change what the window remembers (`client.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
+
+## Naming debt (2026-11-07)
+
+`SPEC.md`'s `## Crate Structure` uses `[client]` for the unit that owns the wire
+(and now calls it a binary) and `rpc` for the layer that checks and sends
+commands. The crate rename has landed:
+
+- `[client]` = `crates/client` (`gongga-client`), renamed from `crates/link`;
+  `[tui]` = `crates/tui`. The `link-*.md` notes became `client-*.md`.
+- `rpc` is not a crate: `client::commands`, `Catalog`, `parse_args`, `python/gongga_cli.py`.
+- `[cli]: python` = `python/gongga.py` / `python/gongga_cli.py`, embedded by
+  `crates/server/src/pylib.rs`.
+- `cli` was kept where it is a name, not a crate: `gongga-cli` (argv0 and
+  command name), the `cli` clap layer word, and `cli-bin-gongga.md`. The window
+  state file has had three names: `cli.toml` -> `tui.toml` -> `client.toml`
+  (2026-11-07 verdict 5). Historical notes keep the name that was current when
+  they were written; current sources use `client.toml` only.
+- Still owed: `DESIGN.md` §5's "CLI (command layer)" heading, the historical
+  `link` references in `.agents/notes/2026-11-05-*`, `crates/bundle/src/main.rs`,
+  and `crates/bundle/build.rs` (only `gongga-server` + `gongga-tui` are built).
+- Cleared: `UiIntent` is the only definition of the four gestures;
+  `tui::UiEvent` wraps it as `Intent(UiIntent)` or the terminal-only
+  `Recomplete`. See `client-render-wire.md`.
 
 ## Index
 
@@ -112,25 +137,39 @@ you are about to touch.
 | [`server-tools-job.md`](server-tools-job.md) | `crates/server/src/tools/job.rs` |
 | [`server-transcript.md`](server-transcript.md) | `crates/server/src/transcript.rs` |
 
-### link
+### client
 
-The client side `crates/cli` and `crates/tui` share: one wire client, one command
-surface, two front-ends.
-
-| note | source |
-| --- | --- |
-| [`link-lib.md`](link-lib.md) | `crates/link/src/lib.rs` |
-| [`link-server.md`](link-server.md) | `crates/link/src/server.rs` |
-| [`link-catalog.md`](link-catalog.md) | `crates/link/src/catalog.rs` |
-| [`link-complete.md`](link-complete.md) | `crates/link/src/complete.rs` |
-| [`link-commands.md`](link-commands.md) | `crates/link/src/commands.rs` |
-| [`link-skill-command.md`](link-skill-command.md) | `crates/link/src/skill_command.rs` |
-
-### cli
+`crates/client` is the client side: one wire client, one command surface, and the
+lines a front-end draws. `crates/tui` is one front-end; `client::run` (NullSink, JSON
+lines) is another. As of 2026-11-07 `SPEC.md` names this unit `[client]` and calls
+it a **binary**: the UI spawns it as a child process over a pipe and its lifetime
+is bound to that UI. Only UI <-> client is one-to-one; client <-> server is
+many-to-one and may be remote. `rpc` is the layer that checks and sends
+commands; `crates/link` was renamed to `crates/client` and the `link-*.md` notes
+with it. The binary target is not built yet -- this crate still ships as a library.
 
 | note | source |
 | --- | --- |
-| [`cli-bin-gongga.md`](cli-bin-gongga.md) | `crates/cli/src/bin/gongga-cli.rs` |
+| [`client-lib.md`](client-lib.md) | `crates/client/src/lib.rs` |
+| [`client-server.md`](client-server.md) | `crates/client/src/server.rs` |
+| [`client-catalog.md`](client-catalog.md) | `crates/client/src/catalog.rs` |
+| [`client-complete.md`](client-complete.md) | `crates/client/src/complete.rs` |
+| [`client-commands.md`](client-commands.md) | `crates/client/src/commands.rs` |
+| [`client-runtime.md`](client-runtime.md) | `crates/client/src/runtime.rs` |
+| [`client-render-wire.md`](client-render-wire.md) | `crates/client/src/render_wire.rs` |
+| [`client-skill-command.md`](client-skill-command.md) | `crates/client/src/skill_command.rs` |
+| [`tui-state.md`](tui-state.md) | `crates/client/src/window_state.rs` |
+| [`tui-command.md`](tui-command.md) | `crates/client/src/window_command.rs` |
+
+### cli (historical name)
+
+| note | source |
+| --- | --- |
+| [`cli-bin-gongga.md`](cli-bin-gongga.md) | `crates/client/src/lib.rs` (`main`, `run`, `run_once`, `list_commands`); dispatched from `crates/tui/src/main.rs` |
+
+The source path this note was written for, `crates/cli/src/bin/gongga-cli.rs`, no
+longer exists. `gongga-cli` survives as a name: `crates/tui/src/main.rs` routes
+argv to `client::main` when invoked under that name or given a command.
 
 ### tui
 
@@ -151,8 +190,6 @@ surface, two front-ends.
 | [`tui-table.md`](tui-table.md) | `crates/tui/src/table.rs` |
 | [`tui-tree.md`](tui-tree.md) | `crates/tui/src/tree.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |
-| [`tui-state.md`](tui-state.md) | `crates/tui/src/state.rs` |
-| [`tui-command.md`](tui-command.md) | `crates/tui/src/command.rs` |
 | [`tui-frame_cost.md`](tui-frame_cost.md) | `crates/tui/examples/frame_cost.rs` |
 
 ### bridge

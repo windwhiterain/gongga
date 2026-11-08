@@ -35,16 +35,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command \
   "Invoke-Expression (Get-Content -Raw '<clean-disk.ps1 的绝对路径>')"
 ```
 
-### 已知缺陷：回收站那一步会虚报成功
+### 读结果：`SUMMARY_JSON` 与退出码，不要读散文
 
-`clean-disk.ps1` 的第 11 步是 `Clear-RecycleBin -Force -ErrorAction SilentlyContinue`，
-紧接着**无条件**打印 `[完成] 回收站已清空`。实际它会抛
-`Win32Exception: The system cannot find the path specified`（回收站里的路径 shell API
-枚举不了），而错误被 `-ErrorAction SilentlyContinue` 吃掉。
+clean-disk 曾经在第 11 步虚报成功：`Clear-RecycleBin` 抛 `Win32Exception`，被
+`-ErrorAction SilentlyContinue` 吃掉，然后无条件打印 `[完成] 回收站已清空`（实测
+68 GiB 还在）；几十万文件时这一步还会**挂死**二十分钟不返回。已在
+`gongga-agents` 的 `skills/clean-disk` 修掉（2026-11-07）：
 
-**后果**：回收站常常是最大的一块（实测单次 16 GiB ~ 52 GiB），脚本报「已清空」而
-文件还在。**不要相信那行输出，要自己量。** 清它要用脚本自己的 robocopy 空目录镜像
-（长路径和 ACL 都吃得下），路径里的 `$` 要防 shell 吃掉：
+- 第 11 步改成按 SID 目录走脚本自己的 `Clear-Folder` 镜像，删完**再量一次**残留；
+- 每次结束打印一行 `SUMMARY_JSON`：`freed_bytes`（盘差，权威）、`item_freed_bytes`、
+  `recycle_left`、`blocked`（没清掉的项目与原因）、`warnings`、`skipped_locked`、`log`；
+- **退出码**：`0` 全清或本来就没有；`1` 有失败/残留/被占用；
+- 无人值守用 `-NoElevate`（不弹 UAC、不留提权窗口）；
+- 每段打印上一步耗时，用来分辨「慢」和「挂了」。
+
+判据：跑完先看 `recycle_left` 和退出码。`recycle_left > 0` 基本就是「回收站里有
+别的账号建的东西」——`icacls /grant` 会 *Access is denied*，只有提权能删，别反复试。
+
+**别相信任何一句「已清空」，要看数字。**（这条对旧版本副本仍然成立：别的机器上若还是
+旧脚本，就得按下面手工镜像来清。）
 
 ```powershell
 $empty = 'C:\resource\gongga\.dev\empty-mirror'; New-Item -ItemType Directory -Force -Path $empty | Out-Null
@@ -55,8 +64,8 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
 
 - 写 `'C:\$Recycle.Bin'` 会被 bash 展开成 `C:\.Bin`（`$Recycle` 变空），**静默扫到
   0 个目录**，看起来像「清完了」其实什么都没做。用 `[char]36` 拼 `$`。
-- 回收站里若有你**不拥有**的目录（如别的账号装的 Anaconda），`icacls /grant` 会
-  *Access is denied*——那是真需要管理员的一条，别反复试。
+- 同理，自己写的 `Get-ChildItem -Recurse` 探针在长路径上报错被吞掉时会返回 0——
+  今天就被这个假 0 骗过一次，随后脚本自己的数字（3.39 GB 释放 / 15.89 GB 残留）才是真的。
 
 ## Verification
 

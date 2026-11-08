@@ -249,7 +249,7 @@ returns a `ToolOutcome` and emits no chunk, so `skill`'s table, a
 `check_bash` answer, an argument error and an unknown tool's refusal were all a
 block with a verdict and nothing to read -- while the store kept that same output
 and a replay of it showed it. Live and replayed then read differently, which is
-the drift a shared vocabulary exists to prevent (`docs/notes/cli-lib.md`).
+the drift a shared vocabulary exists to prevent (`docs/notes/client-lib.md`).
 
 The count is the fact and not a declaration, because the question is what the
 client received: a tool that declares itself streaming and sends nothing is the
@@ -522,9 +522,19 @@ mention of it.
 
 ## a_turn_leaves_its_outcome_as_a_row
 
-`events.kind = turn_end` carries the outcome, the step count and the
-elapsed time, so "did it finish, and why not" is a query rather than a
+`events.kind = turn_end` carries the outcome, the step count, the elapsed time
+and the turn's answer, so "did it finish, and why not" is a query rather than a
 match against a log line that carries colour escapes.
+
+A turn that was cut publishes `turn_interrupted` instead, with the same payload
+minus `answer`. A cut turn did not end -- SPEC's `cancel` interrupts it -- so a
+subscriber that read `turn_end` as "this turn finished" would take the previous
+answer for this one's; the polity watch relayed a cancelled role turn to justice
+as if it were an answer. A subscriber that wants both writes a pattern over both
+names, and a script that waits on `events --kind turn_end` alone waits forever on
+a cut: it must ask for `turn_interrupted` too, or read the session's status. The
+monitor's own query is unaffected: it reads `turn_end` for `origin = provider`,
+which is a failure, and a failure still ends the turn.
 
 ## a_request_records_what_it_cost_and_how_long
 

@@ -2,13 +2,13 @@
 //!
 //! # Invariant
 //!
-//! `tui` depends on `link`, never the reverse and never on `cli`: the command
-//! surface and the wire stay usable from a script, and a new command never
-//! changes this crate.
+//! `tui` depends on `client`, never the reverse and never on the command-line
+//! program: the command surface and the wire stay usable from a script, and a
+//! new command never changes this crate.
 
 mod cache;
 mod clipboard;
-mod command;
+mod closing;
 mod cover;
 mod fold;
 mod input;
@@ -20,7 +20,6 @@ pub mod program;
 mod render;
 mod roster;
 pub mod run;
-mod state;
 mod table;
 mod tree;
 
@@ -29,6 +28,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context;
+use client::render_wire::UiIntent;
 use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -51,6 +51,7 @@ pub use crate::input::{InputLine, apply_completion};
 pub use crate::log::Log;
 pub use crate::panes::Panes;
 pub use crate::run::interactive;
+pub use client::runtime::Server;
 
 /// The modifiers a terminal forwards with a mouse event, as a gesture's own.
 ///
@@ -66,7 +67,7 @@ fn gesture_modifiers() -> KeyModifiers {
 }
 
 /// Runs the window: its own runtime, because the loop owns every task in it.
-pub fn main(args: link::Args) -> anyhow::Result<()> {
+pub fn main(args: client::Args) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -74,7 +75,7 @@ pub fn main(args: link::Args) -> anyhow::Result<()> {
 }
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
-pub use link::{
+pub use client::{
     Candidate, Completer, Completion, Layout, LineKind, Listed, QuotaRow, SharedCompleter,
     token_bounds,
 };
@@ -128,39 +129,16 @@ enum Arrow {
     Line(bool),
 }
 
-/// Something the operator did: only what a keyboard can do that a command
-/// cannot. See `docs/notes/tui-lib.md`.
+/// What the terminal produced: an intent, or its own ask to go round once more.
+///
+/// # Invariant
+///
+/// `Recomplete` is not an intent: the completion needs the loop to reach the
+/// connection, so it belongs to this crate and never crosses the wire.
+/// See `docs/notes/tui-lib.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
-    /// A finished input line. It may contain newlines: a message with
-    /// paragraphs is still one message.
-    Submit(String),
-    /// A gesture of the window's own: an operation, never a command line.
-    ///
-    /// # Invariant
-    ///
-    /// The window asks for what it means -- "make this session sticky" -- and
-    /// the command layer answers it. Spelling it as a command line would put
-    /// the command syntax in the window, where it does not belong.
-    Operate(link::protocol::Operation),
-    /// Alt+Q: leave.
-    Quit,
-    /// The operator asked to read above what these windows hold.
-    ///
-    /// # Invariant
-    ///
-    /// Named, never searched for: the request is what the key or the wheel said at
-    /// the moment it was pressed, so the loop that answers it holds the pages owed
-    /// and the next frame cannot add to them behind its back.
-    Older(Vec<String>),
-    /// Nothing to submit: the completion asked for something only the connection
-    /// can answer.
-    ///
-    /// # Invariant
-    ///
-    /// The loop has to go round to send it, and a keystroke whose ask is never
-    /// returned leaves it unsent: the loop owns the connection and runs only when
-    /// `next_event` returns.
+    Intent(UiIntent),
     Recomplete,
 }
 
@@ -200,50 +178,6 @@ struct PaneCell {
     row: usize,
     /// The cell's column inside the window, for the margin a box leaves each side.
     column: usize,
-}
-
-/// Whose server the window is talking to, which the header says beside the status.
-///
-/// # Invariant
-///
-/// A server's lifetime belongs to whoever *started* it, never to whoever
-/// connects: dialling is reading. Two facts make one ours -- the pid `spawn`
-/// answered, and the pid the server follows (`--parent`) being this window's,
-/// which is how a handover keeps the lifetime it had. Anything else outlives the
-/// window. See `docs/notes/tui-run.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Server {
-    /// This window started it, so it goes when the window does.
-    Ours { pid: u32 },
-    /// A handover of this window's server: a newer build in its place, carrying
-    /// the same `--parent`, so it goes too.
-    Handover { pid: u32 },
-    /// Another window started it: this one reads it and cannot stop it.
-    Another { pid: u32 },
-    /// Nobody started it for a window: it outlives every window that reads it.
-    Unowned { pid: u32 },
-}
-
-impl Server {
-    /// Whether closing this window stops this server.
-    ///
-    /// # Invariant
-    ///
-    /// One answer for two readers: the header draws it and the way out acts on
-    /// it, so the bar cannot promise a lifetime the window does not honour.
-    pub fn is_ours(self) -> bool {
-        matches!(self, Server::Ours { .. } | Server::Handover { .. })
-    }
-
-    /// The words the header shows: whether it is own, why, and then its pid.
-    pub fn label(&self) -> String {
-        match self {
-            Server::Ours { pid } => format!("own #{pid}"),
-            Server::Handover { pid } => format!("own #{pid} (handover)"),
-            Server::Another { pid } => format!("not own #{pid} (another window)"),
-            Server::Unowned { pid } => format!("not own #{pid} (no owner)"),
-        }
-    }
 }
 
 /// Everything the renderer reads, separate from the terminal it draws to.
@@ -565,7 +499,7 @@ pub struct Tui {
     input_seen: Option<(usize, usize)>,
     /// A click on a session, as the command line it asks for, waiting for the loop
     /// to take it. See `docs/notes/tui-lib.md`.
-    clicked: Option<link::protocol::Operation>,
+    clicked: Option<client::protocol::Operation>,
     /// The input box as the last frame drew it: a click has to find it.
     input_area: Rect,
     /// Where a drag began, while the button is still down.
@@ -603,50 +537,113 @@ pub struct Tui {
 ///
 /// # Invariant
 ///
-/// Sixel and kitty are answers to a query and are taken. iTerm2 is a variable the
-/// crate read, and its list includes `vscode`, which paints no picture: an iTerm2
-/// escape there costs the whole picture. The cell geometry is checked the same way --
-/// `Cover::rect` counts the picture in cells from it. See `docs/notes/tui-cover.md`.
+/// The environment decides first: it is the only evidence that describes the terminal
+/// and not the pty under it, and the query adds what the environment leaves unnamed.
+/// The measured cell is kept whatever the protocol becomes -- `Cover::rect` counts the
+/// picture in cells from it. See `docs/notes/tui-cover.md`.
 fn picker() -> Picker {
     let queried = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
-    if !paints_what_it_named(&queried) {
-        return Picker::halfblocks();
-    }
+    let pictured = named_protocol()
+        .or_else(|| answered_pictures(&queried))
+        .unwrap_or(ProtocolType::Halfblocks);
     if cell_shaped(queried.font_size()) {
-        return queried;
+        let mut picker = queried;
+        picker.set_protocol_type(pictured);
+        return picker;
     }
     let mut fallback = Picker::halfblocks();
-    fallback.set_protocol_type(queried.protocol_type());
+    fallback.set_protocol_type(pictured);
     fallback
 }
 
-/// Whether the protocol this picker named is one the terminal really paints.
+/// The protocol this environment names, including the ones that name cells only.
 ///
 /// # Invariant
 ///
-/// Measured twice: sixel and kitty are the terminal's answers to a question, so they
-/// are taken. iTerm2 is only a variable the crate read, and the terminals it reads it
-/// off do not all paint one -- so this asks the variable again, for the name that
-/// protocol belongs to.
-fn paints_what_it_named(picker: &Picker) -> bool {
-    match picker.protocol_type() {
-        ProtocolType::Iterm2 => names_iterm2(),
-        ProtocolType::Halfblocks | ProtocolType::Sixel | ProtocolType::Kitty => true,
+/// A name is the only evidence that describes the terminal rather than the pty under
+/// it, so a named protocol is taken before the query is even consulted. Every row and
+/// the reason for it are in `docs/notes/tui-cover.md`.
+fn named_protocol() -> Option<ProtocolType> {
+    named_protocol_where(|name| std::env::var(name).ok())
+}
+
+/// The same table read through `get`, so a test can hand it its own environment.
+///
+/// # Invariant
+///
+/// Ported from `supports-terminal-graphics`, with its `vscode` row changed: that row
+/// says sixel from 1.80, and this terminal answers sixel and paints none. Terms are
+/// lowercase, as that library reads them.
+fn named_protocol_where(get: impl Fn(&str) -> Option<String>) -> Option<ProtocolType> {
+    let value = |name: &str| get(name).unwrap_or_default().to_lowercase();
+    let term = value("TERM");
+    let program = value("TERM_PROGRAM");
+    // Shells that draw their terminal in a DOM: cells, and no picture of their own.
+    if matches!(
+        program.as_str(),
+        "vscode" | "tabby" | "hyper" | "bobcat" | "apple_terminal"
+    ) {
+        return Some(ProtocolType::Halfblocks);
+    }
+    let wezterm = get("WEZTERM_PANE").is_some()
+        || get("WEZTERM_UNIX_SOCKET").is_some()
+        || program == "wezterm"
+        || value("LC_TERMINAL") == "wezterm";
+    if wezterm
+        || get("KITTY_WINDOW_ID").is_some()
+        || get("KITTY_PID").is_some()
+        || get("GHOSTTY_RESOURCES_DIR").is_some()
+        || matches!(
+            program.as_str(),
+            "kitty" | "ghostty" | "rio" | "warpterminal"
+        )
+        || term.contains("kitty")
+        || term == "xterm-ghostty"
+    {
+        return Some(ProtocolType::Kitty);
+    }
+    if matches!(program.as_str(), "iterm.app" | "mintty") || value("LC_TERMINAL") == "iterm2" {
+        return Some(ProtocolType::Iterm2);
+    }
+    if get("KONSOLE_VERSION").is_some_and(|version| !version.is_empty())
+        || term.starts_with("mlterm")
+    {
+        return Some(ProtocolType::Sixel);
+    }
+    // Sixel reached Windows Terminal in 1.22; before that it paints none of it.
+    if program == "windows_terminal" {
+        let after = at_least(&value("TERM_PROGRAM_VERSION"), 1, 22);
+        return Some(match after {
+            true => ProtocolType::Sixel,
+            false => ProtocolType::Halfblocks,
+        });
+    }
+    None
+}
+
+/// Whether a `major.minor.patch` string names a version at least `major.minor`.
+fn at_least(version: &str, major: u32, minor: u32) -> bool {
+    let mut parts = version
+        .split('.')
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    match (parts.next(), parts.next()) {
+        (Some(found_major), Some(found_minor)) => (found_major, found_minor) >= (major, minor),
+        _ => false,
     }
 }
 
-/// Whether this is a terminal whose own picture protocol is iTerm2's.
+/// The protocol the terminal's own answer named, where that answer can be believed.
 ///
 /// # Invariant
 ///
-/// The two that paint one: iTerm2 itself, and WezTerm, which speaks the protocol on
-/// purpose. The crate's list also counts `vscode`, `mintty`, `Tabby`, `Hyper`, `rio`,
-/// `Bobcat` and `WarpTerminal`, and those are Electron shells and Windows consoles
-/// that carry cells and nothing else. See `docs/notes/tui-cover.md`.
-fn names_iterm2() -> bool {
-    let paints = |value: &str| value.contains("iTerm") || value.contains("WezTerm");
-    std::env::var("TERM_PROGRAM").is_ok_and(|program| paints(&program))
-        || std::env::var("LC_TERMINAL").is_ok_and(|terminal| paints(&terminal))
+/// Sixel and kitty are answers to a question, and the names that lie about them are
+/// settled before this runs. iTerm2 is only a variable the crate read, so it is never
+/// taken here: the table is the one place a name decides.
+fn answered_pictures(queried: &Picker) -> Option<ProtocolType> {
+    match queried.protocol_type() {
+        ProtocolType::Halfblocks | ProtocolType::Iterm2 => None,
+        other => Some(other),
+    }
 }
 
 /// Whether this measures a character cell: a few pixels across, about twice as tall.
@@ -662,6 +659,8 @@ impl Tui {
         endpoint: &str,
     ) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
+        // Before the alternate screen: the platform's thread must find it here.
+        let watched = closing::watch();
         let initialized = (|| {
             let mut out = stdout();
             // Capture makes the wheel a scroll key; Alt+M gives it back. Bracketed
@@ -711,7 +710,7 @@ impl Tui {
             answers: Vec::new(),
             roster: roster::Roster::new(client_home, endpoint),
             roster_failed: false,
-            note_window: link::COMMAND_WINDOW.to_string(),
+            note_window: client::COMMAND_WINDOW.to_string(),
             events: EventStream::new(),
             mouse_captured: true,
             restored: false,
@@ -721,6 +720,14 @@ impl Tui {
             settled: None,
             stashed: None,
         };
+        // Said once: a window that cannot hear the console closing leaves
+        // it in raw mode when it goes.
+        if !watched {
+            window.say(
+                LineKind::Error,
+                "no console handler: a window closed from outside will not be seen",
+            );
+        }
         // Dialing can win the first select, so the cover cannot wait for next_event.
         window.draw()?;
         Ok(window)
@@ -772,7 +779,7 @@ impl Tui {
     }
 
     /// The session list this window drew last, for a start that has no link yet.
-    pub fn known_list(&self) -> Vec<link::Listed> {
+    pub fn known_list(&self) -> Vec<client::Listed> {
         self.roster.load()
     }
 
@@ -999,7 +1006,7 @@ impl Tui {
     }
 
     /// Shows a call's name and fields as a structured section.
-    pub fn describe(&mut self, name: &str, key: &str, head: &link::protocol::Head) {
+    pub fn describe(&mut self, name: &str, key: &str, head: &client::protocol::Head) {
         self.screen.panes.describe(name, key, head);
         self.dirty = true;
     }
@@ -1065,12 +1072,12 @@ impl Tui {
             // A click is a command, and commands go through the loop that already
             // knows how to send one.
             if let Some(operation) = self.clicked.take() {
-                return Some(UiEvent::Operate(operation));
+                return Some(UiEvent::Intent(UiIntent::Operate { operation }));
             }
             // Taken, not read: a request is answered once, never on every frame.
             let owed = self.screen.take_wants();
             if !owed.is_empty() {
-                return Some(UiEvent::Older(owed));
+                return Some(UiEvent::Intent(UiIntent::Older { windows: owed }));
             }
             if self.draw().is_err() {
                 return None;
@@ -1200,7 +1207,7 @@ impl Tui {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             // Case-insensitive: Shift+Alt+Q arrives as 'Q'.
-            KeyCode::Char('q' | 'Q') if alt => Some(UiEvent::Quit),
+            KeyCode::Char('q' | 'Q') if alt => Some(UiEvent::Intent(UiIntent::Quit)),
             _ => None,
         }
     }
@@ -1386,8 +1393,8 @@ impl Tui {
             && let Some(target) = self.screen.sticky_session.clone()
         {
             self.close_completion();
-            return Some(UiEvent::Operate(link::protocol::Operation::DeleteSession {
-                session: target,
+            return Some(UiEvent::Intent(UiIntent::Operate {
+                operation: client::protocol::Operation::DeleteSession { session: target },
             }));
         }
 
@@ -1419,7 +1426,7 @@ impl Tui {
                     self.history.push(raw.clone());
                 }
                 self.history_pos = None;
-                return Some(UiEvent::Submit(raw));
+                return Some(UiEvent::Intent(UiIntent::Submit { line: raw }));
             }
             KeyCode::Char(c) => {
                 self.screen.input.insert(c);
@@ -1482,7 +1489,7 @@ impl Tui {
         // the reading at it.
         match hit.part {
             Part::Header => {
-                self.clicked = Some(link::protocol::Operation::StickySession {
+                self.clicked = Some(client::protocol::Operation::StickySession {
                     session: hit.name.clone(),
                 })
             }
@@ -1501,7 +1508,7 @@ impl Tui {
                     true => (!shown, false),
                     false => (true, true),
                 };
-                self.clicked = Some(link::protocol::Operation::RenderSession {
+                self.clicked = Some(client::protocol::Operation::RenderSession {
                     session: hit.name.clone(),
                     show,
                     solo,
@@ -2022,8 +2029,8 @@ fn apply_and_continue(
 pub struct NoCompleter;
 
 impl Completer for NoCompleter {
-    fn complete(&self, _line: &str, _cursor: usize) -> link::Offered {
-        link::Offered::default()
+    fn complete(&self, _line: &str, _cursor: usize) -> client::Offered {
+        client::Offered::default()
     }
 }
 
@@ -2038,7 +2045,7 @@ impl Completer for NoCompleter {
 fn image_reference(path: &Path) -> String {
     format!(
         "@{}({})",
-        link::protocol::Reference::Image.name(),
+        client::protocol::Reference::Image.name(),
         path.display()
     )
 }
@@ -2114,4 +2121,77 @@ fn pasted(keys: &[KeyEvent]) -> Option<String> {
         }
     }
     Some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// One environment, as the table reads it.
+    fn named(pairs: &[(&str, &str)]) -> Option<ProtocolType> {
+        let environment: HashMap<&str, &str> = pairs.iter().copied().collect();
+        named_protocol_where(|name| environment.get(name).map(|value| value.to_string()))
+    }
+
+    /// The terminals this window is actually opened in.
+    #[test]
+    fn what_the_environment_names() {
+        let cells = Some(ProtocolType::Halfblocks);
+        assert_eq!(named(&[("TERM_PROGRAM", "vscode")]), cells);
+        assert_eq!(named(&[("TERM_PROGRAM", "Apple_Terminal")]), cells);
+        assert_eq!(
+            named(&[
+                ("TERM_PROGRAM", "Windows_Terminal"),
+                ("TERM_PROGRAM_VERSION", "1.24.12741.0"),
+            ]),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(
+            named(&[
+                ("TERM_PROGRAM", "Windows_Terminal"),
+                ("TERM_PROGRAM_VERSION", "1.21.2911.0"),
+            ]),
+            cells
+        );
+        assert_eq!(
+            named(&[("KONSOLE_VERSION", "220400")]),
+            Some(ProtocolType::Sixel)
+        );
+        assert_eq!(
+            named(&[("TERM_PROGRAM", "iTerm.app")]),
+            Some(ProtocolType::Iterm2)
+        );
+        assert_eq!(named(&[("TERM", "xterm-256color")]), None);
+    }
+
+    /// The signals that still arrive through tmux and ssh, where no name is left.
+    #[test]
+    fn what_survives_a_wrapper() {
+        let kitty = Some(ProtocolType::Kitty);
+        assert_eq!(named(&[("WEZTERM_PANE", "3")]), kitty);
+        assert_eq!(named(&[("KITTY_WINDOW_ID", "1")]), kitty);
+        assert_eq!(named(&[("GHOSTTY_RESOURCES_DIR", "/opt/ghostty")]), kitty);
+        assert_eq!(named(&[("TERM", "xterm-kitty")]), kitty);
+        assert_eq!(
+            named(&[("LC_TERMINAL", "iTerm2")]),
+            Some(ProtocolType::Iterm2)
+        );
+        assert_eq!(
+            named(&[("TERM", "mlterm-256color")]),
+            Some(ProtocolType::Sixel)
+        );
+    }
+
+    /// A version is compared by its numbers, not by its text.
+    #[test]
+    fn versions_are_numbers() {
+        assert!(at_least("1.22.0.0", 1, 22));
+        assert!(at_least("1.24.12741.0", 1, 22));
+        assert!(at_least("2.0", 1, 22));
+        assert!(!at_least("1.9.9999.0", 1, 22));
+        assert!(!at_least("1.21", 1, 22));
+        assert!(!at_least("", 1, 22));
+    }
 }

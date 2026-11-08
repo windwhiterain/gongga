@@ -271,8 +271,10 @@ fn start(
 fn command(server: &Path, home: &Path, addr: SocketAddr, owner: Option<u32>) -> Command {
     let mut cmd = server_command(server, home, &addr.to_string());
     if let Some(owner) = owner {
-        // Nobody is left to cancel it once the window is gone.
+        // Nobody is left to cancel it once the window is gone; a window of
+        // another build is not followed at all.
         cmd.arg("--parent").arg(owner.to_string());
+        cmd.arg("--parent-build").arg(protocol::BUILD);
     }
     cmd
 }

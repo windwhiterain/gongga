@@ -823,28 +823,35 @@ impl ToolRegistry {
         }
     }
 
-    /// Tool schemas in the shape the Responses API expects.
+    /// The tool set a session is stamped with, rendered once per stored change.
     ///
     /// # Invariant
     ///
-    /// A tool that drives a machine this session does not have is not offered at
+    /// The only renderer of a schema, called only from a stored change -- never
+    /// while a request is built. See `docs/notes/server-tools.md`.
+    ///
+    /// A tool that drives a machine this session does not have is not in the set at
     /// all, and neither is an argument that names one: a model can call what it is
-    /// offered, so what it is offered has to be able to answer. See
-    /// `docs/notes/server-tools-mod.md`.
-    pub fn definitions(&self, has_remote: bool) -> Vec<crate::llm::ToolDefinition> {
-        self.tools
+    /// offered, so what it is offered has to be able to answer.
+    pub fn stamp(
+        &self,
+        has_remote: bool,
+        with_live_compact: bool,
+    ) -> Vec<crate::llm::ToolDefinition> {
+        let mut definitions: Vec<crate::llm::ToolDefinition> = self
+            .tools
             .iter()
             .filter(|t| t.offered())
             .filter(|t| t.name() != live_compact::LIVE_COMPACT_TOOL)
             .filter(|t| has_remote || !t.is_remote())
             .map(|t| Self::definition_of(t, has_remote))
-            .collect()
-    }
-
-    /// One explicitly requested schema, outside the ordinary tool list.
-    pub fn definition(&self, name: &str, has_remote: bool) -> Option<crate::llm::ToolDefinition> {
-        self.get(name)
-            .map(|tool| Self::definition_of(&tool, has_remote))
+            .collect();
+        // Once a lineage has a compaction origin the schema stays for its life, so
+        // the head stops moving twice per cycle.
+        if with_live_compact && let Some(tool) = self.get(live_compact::LIVE_COMPACT_TOOL) {
+            definitions.push(Self::definition_of(&tool, has_remote));
+        }
+        definitions
     }
 
     fn definition_of(tool: &Arc<dyn Tool>, has_remote: bool) -> crate::llm::ToolDefinition {

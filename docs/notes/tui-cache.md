@@ -274,7 +274,7 @@ Its *records* are another matter, and the distinction is the whole reason this m
 exists: a hidden window is still recorded, block by block as any other, and only its
 bodies in memory are what a frame pays for. `Client::handle_event` used to drop a
 hidden session's events before the sink saw them, which turned a view setting into a
-hole in the journal; see `docs/notes/cli-lib.md`.
+hole in the journal; see `docs/notes/client-lib.md`.
 
 There is no budget and no number to tune. The bound is the render: a window costs the
 rows it is drawing, plus whatever the operator scrolled past without coming back to the

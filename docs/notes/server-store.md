@@ -151,7 +151,7 @@ pane the operator was reading moved with it. The list is ordered by turns, so on
 turn may move it.
 
 The tie is `name`, not `id`, because `name` is what a client is told: `SessionInfo`
-carries `ended_at` and `name`, and `link::Client` sorts a delta by the same two
+carries `ended_at` and `name`, and `client::Client` sorts a delta by the same two
 numbers, so a row that arrives on the wire lands exactly where the store would have
 put it. `id` is unique but unpublished, and two orders that disagree are two orders.
 

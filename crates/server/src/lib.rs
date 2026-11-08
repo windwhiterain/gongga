@@ -84,6 +84,8 @@ pub struct Args {
     pub log_format: LogFormat,
     /// The process that started this server, when its death should stop it.
     pub parent: Option<u32>,
+    /// That process's build, when the one that started this named it.
+    pub parent_build: Option<String>,
 }
 
 /// The same as an empty command line: every value comes from the home's config.
@@ -98,6 +100,7 @@ impl Default for Args {
             log: "info".to_string(),
             log_format: LogFormat::Text,
             parent: None,
+            parent_build: None,
         }
     }
 }
@@ -580,9 +583,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     // A signal, or a dead window: a stop request, on the path `cancel` takes.
     let signalled = dispatch.clone();
-    signal::watch(args.parent, move || async move {
-        commands::stop(&signalled).await
-    });
+    signal::watch(
+        args.parent,
+        args.parent_build.as_deref(),
+        move || async move { commands::stop(&signalled).await },
+    );
 
     let served = net::serve(Arc::new(cfg), dispatch, bus).await;
     // Nothing new may fire once the socket stopped; turns were interrupted already.
