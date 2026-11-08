@@ -331,6 +331,11 @@ block that is not drawn is worth.
 
 ## Ledger
 
+As of 2026-11-08 the type lives in `crates/client/src/window_index.rs`, next
+to `RowIndex`. These sections stay for its invariants. The `pub` fields are
+transitional: `Log` still reads them from the terminal crate. See
+`client-window-index.md`.
+
 One `Log` holds the blocks; a `Ledger` is one window's way of reading them, keyed by
 the window's name. A ledger is a list of block indices plus a row index over them, so
 "which block holds row N" is answered per window in O(log blocks) and a frame never

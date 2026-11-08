@@ -522,3 +522,32 @@ dismissal>` 1 on the first run (the server never logged "listening"; proxy
 200, ship submodule intact), 0 on the unchanged retry -- transient ·
 `scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local` 0 and `--check`
 0, both "in agreement". Proxy 7890 throughout.
+
+## 2026-11-08: Ledger, and the loop-lifting contract
+
+`Ledger` moved from `crates/tui/src/log.rs` into the existing
+`crates/client/src/window_index.rs`, next to `RowIndex` (log.rs 2405 -> 2377).
+All six fields are pure data and all 50 uses are `Log` methods in the same
+file, so this is type ownership only. The fields are `pub` as a transitional
+state: while `Log` is still in the terminal crate it reaches them directly;
+when `Log` moves, they become private again and the operations become
+`Ledger` methods. That is written into `client-window-index.md` so the `pub`
+is not mistaken for a design.
+
+Scouting `interactive` showed that lifting it is the real gate for the client
+binary, but not a one-turn step: it needs a `Frontend` trait (generic, not
+`dyn`, because `impl Future` / `impl FnOnce` are not object-safe),
+`FrontendEvent` in place of `UiEvent`, a no-self `closing()` to avoid two
+borrows of the view inside `tokio::select!`, and `with_sink` to build the
+temporary `TuiSink` inside the front-end. The full shape and a two-step
+migration are in `docs/notes/client-frontend.md`; step 1 is interface-only,
+step 2 is the mechanical move of the loop body. No code from that contract was
+written this turn.
+
+Verified: `cargo check` 0 (9.13s incremental, with the kept 1.3 GB target) ·
+`cargo build` 0 (24.24s) · `cargo fmt --check` 0 · `comments-check` 0
+violations · `test-layout-check` 8 packages, 0 violations · `git diff --check`
+0 · `scripts/client_state_selftest.sh -v` PASS · 4s · client-state · 23539d1 ·
+`scripts/tui_live.py --script <window-state + cover dismissal>` 0 ·
+`scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local` 0 and `--check`
+0, both "in agreement". Proxy 7890 throughout.

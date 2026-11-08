@@ -18,7 +18,7 @@ use crate::LineKind;
 use crate::markdown;
 use client::protocol;
 use client::window_cache::{Cache, Record};
-use client::window_index::RowIndex;
+use client::window_index::{Ledger, RowIndex};
 
 /// One block: a line that may still be growing, plus its rows.
 ///
@@ -683,34 +683,6 @@ pub struct Viewport<'a> {
     pub rows: Vec<Row<'a>>,
     /// Rows hidden above the window; only the renderer can work this out.
     pub max_scroll: usize,
-}
-
-/// One window's row bookkeeping over the shared blocks.
-///
-/// # Invariant
-///
-/// One ledger, one width. A block belongs to exactly one window and is laid out
-/// once, at the width of the pane that draws that window -- so a frame that asks
-/// two panes for two widths pays for each block at most once, and only a change of
-/// shape pays again. See `docs/notes/tui-log.md`.
-#[derive(Default)]
-struct Ledger {
-    /// Global index of this window's k-th block, in arrival order.
-    blocks: Vec<usize>,
-    index: RowIndex,
-    /// Rows one block may fill in this window; 0 defers to the log's `block_size`.
-    cap: usize,
-    /// The pages this window holds, in the order it draws them.
-    ///
-    /// # Invariant
-    ///
-    /// Each is a block id and the oldest row that page stands for: a page is what one
-    /// fill landed, and this is the only place a row and a block are joined.
-    pages: Vec<(u64, i64)>,
-    /// The block a page now landing begins with, until its answer names the rows.
-    page_first: Option<u64>,
-    /// The width `blocks` were last laid out at; 0 until a frame asks.
-    width: usize,
 }
 
 /// One cell of a window, as the walk that answers a press and a wheel finds it.

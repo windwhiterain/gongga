@@ -1,4 +1,4 @@
-//! The window's row index, shared by any front-end's journal.
+//! The window's row index and per-window ledger, without a terminal.
 //!
 //! See `docs/notes/client-window-index.md`.
 
@@ -71,4 +71,32 @@ impl RowIndex {
         }
         line
     }
+}
+
+/// One window's row bookkeeping over the shared blocks.
+///
+/// # Invariant
+///
+/// One ledger, one width. A block belongs to exactly one window and is laid out
+/// once, at the width of the pane that draws that window -- so a frame that asks
+/// two panes for two widths pays for each block at most once, and only a change of
+/// shape pays again. See `docs/notes/tui-log.md`.
+#[derive(Default)]
+pub struct Ledger {
+    /// Global index of this window's k-th block, in arrival order.
+    pub blocks: Vec<usize>,
+    pub index: RowIndex,
+    /// Rows one block may fill in this window; 0 defers to the log's `block_size`.
+    pub cap: usize,
+    /// The pages this window holds, in the order it draws them.
+    ///
+    /// # Invariant
+    ///
+    /// Each is a block id and the oldest row that page stands for: a page is what one
+    /// fill landed, and this is the only place a row and a block are joined.
+    pub pages: Vec<(u64, i64)>,
+    /// The block a page now landing begins with, until its answer names the rows.
+    pub page_first: Option<u64>,
+    /// The width `blocks` were last laid out at; 0 until a frame asks.
+    pub width: usize,
 }

@@ -295,11 +295,14 @@ server + client + TUI，WebUI 等自行分发；若指的是别的，说一声�
 / `escaped`；`window_refill.rs` 已上提 `declare` / `answer_completion` /
 `answer_transcripts` / `answer_older`，经只读 `WindowFacts` 取窗口事实；
 `window_sync.rs` 已上提 `sync` / `settle`，经 `WindowView` 呈现状态；
-`window_index.rs` 已上提 `RowIndex`（Fenwick 索引，索引拆分第一块，仍由 TUI 的
-`Ledger` 使用）；`interactive` 主循环、`TuiSink` 与 `log.rs` 里的 `Ledger` /
-`Log` / ratatui 折行仍待；⑤ client bin target 接管道骨架（要等 ④ 的主循环，
+`window_index.rs` 已上提 `RowIndex` 与 `Ledger`（索引数据，仍由 TUI 的 `Log`
+使用）；`interactive` 主循环、`TuiSink` 与 `log.rs` 里的 `Log` / `Panes` /
+ratatui 折行仍待；⑤ client bin target 接管道骨架（要等 ④ 的主循环，
 否则是空壳）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
 payload）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
+主循环上提的接口形状（`Frontend` / `FrontendEvent` / `with_sink`、为何用泛型而
+非 trait object、两步迁移）见 `docs/notes/client-frontend.md`；这一步要动 240 行
+`interactive`，按两步各跑一次门禁。
 
 **纠正一处（2026-11-08）**：上一轮把 ④ 写成「定下跨进程补拉查询的形状」。裁定 4 是
 journal 归 client：目标形态下 client 自己持有窗口记录，`stamp_of` / `drawn` /
