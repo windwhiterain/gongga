@@ -42,10 +42,27 @@ pub struct Status {
 /// How often `in` is looked at. The floor on a write's round trip.
 const POLL: Duration = Duration::from_millis(50);
 
+/// The program a name runs here: the environment's own, for the names it knows.
+///
+/// # Invariant
+///
+/// Resolved in this process's environment, because this process *is* the machine the
+/// program runs on -- the same binary is the relay on a peer. `bash` and `python` are
+/// asked the way the rest of this server asks (`detect_git_bash`, `detect_python`): a
+/// bare `PATH` name is not enough on Windows, where `python3` is often a Store stub.
+fn program_of(name: &str) -> std::path::PathBuf {
+    match name {
+        "bash" => crate::config::detect_git_bash(),
+        "python" => crate::config::detect_python(),
+        _ => None,
+    }
+    .unwrap_or_else(|| std::path::PathBuf::from(name))
+}
+
 /// Runs one channel until its program ends.
 pub fn run(dir: &Path) -> anyhow::Result<()> {
     let words: Words = serde_json::from_slice(&std::fs::read(dir.join("cmd"))?)?;
-    let mut command = Command::new(&words.program);
+    let mut command = Command::new(program_of(&words.program));
     command
         .args(&words.args)
         .current_dir(&words.cwd)
