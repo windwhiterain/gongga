@@ -62,10 +62,6 @@ impl Cmd for NewTool {
             };
             let name = name.to_string();
             let name = name.as_str();
-            // A name the config calls a cmd is answered by the command layer.
-            if ctx.channels.kind_of(name) == crate::tools::spec::Kind::Cmd {
-                return route(ctx, name, &args).await;
-            }
             // A list is argv; an object is a cmd's named arguments.
             let words = match args.get("args") {
                 None | Some(Value::Null) => Vec::new(),
@@ -171,48 +167,6 @@ impl Cmd for CheckTool {
                 .await;
             answer(outcome, self.wait.max_output_chars, ctx)
         })
-    }
-}
-
-/// Sends one call to the command layer, as `new` with a name the config calls a cmd.
-///
-/// # Invariant
-///
-/// The caller's session fills the first argument the target declares as a session, and
-/// only when the call did not name one: a command that moves a session elsewhere must
-/// not be pinned to the caller's.
-async fn route(ctx: &ToolContext, name: &str, args: &Value) -> ToolOutcome {
-    let Some(layer) = crate::commands::layer() else {
-        return ToolOutcome::err(format!(
-            "{name:?} is a cmd, and this process has no command layer: it runs one call and \
-             answers with a file"
-        ));
-    };
-    let Some(table) = args.get("args").and_then(Value::as_object) else {
-        return ToolOutcome::err(format!(
-            "{name:?} is a cmd: `args` is a table of its arguments, with `cmd` naming it, \
-             as in {{\"cmd\": \"send_message\", \"message\": \"hi\"}}"
-        ));
-    };
-    let words = named_words(table);
-    let Some(cmd) = table.get("cmd").and_then(Value::as_str) else {
-        return ToolOutcome::err(format!(
-            "{name:?} needs `args.cmd`: the command to run, e.g. \"send_message\""
-        ));
-    };
-    let began = std::time::Instant::now();
-    let outcome = layer.run(&ctx.session, cmd, words).await;
-    let answer = json!({
-        "id": Value::Null,
-        "output": outcome.message,
-        "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
-        "matched": false,
-        "exit": if outcome.ok { 0 } else { 1 },
-    });
-    if outcome.ok {
-        ToolOutcome::ok(answer.to_string())
-    } else {
-        ToolOutcome::err(answer.to_string())
     }
 }
 

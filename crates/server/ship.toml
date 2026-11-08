@@ -16,4 +16,4 @@
 # tested with instead of a server that cannot start.
 [ship]
 url = "https://github.com/windwhiterain/gongga-ship.git"
-protocol = 6
+protocol = 7

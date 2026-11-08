@@ -141,13 +141,12 @@ impl Carrier {
 ///
 /// # Invariant
 ///
-/// The one place a name is known: whether it is a program or a cmd, how it starts and
-/// how a reply is framed. A name absent here is raw.
+/// The one place a name is known: how it starts and how a reply is framed. Every name
+/// is a program -- the command layer is reached by a tool call, not by a channel. A name
+/// absent here is raw.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelSpec {
-    #[serde(default)]
-    pub kind: Kind,
     /// The words the program is started with, when a call gives no `args` of its own.
     #[serde(default)]
     pub spawn: Vec<String>,
@@ -162,17 +161,6 @@ pub struct ChannelSpec {
     /// the window.
     #[serde(default)]
     pub exit_from_marker: bool,
-}
-
-/// What a name is: a program this server starts, or a cmd it answers itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Kind {
-    /// A program on the session's machine, started and relayed.
-    #[default]
-    Program,
-    /// A cmd of this server, answered in this process: no program, no pipes.
-    Cmd,
 }
 
 /// One tool, exactly as one row under `[tools]` declares it.

@@ -158,11 +158,6 @@ impl Channels {
         )
     }
 
-    /// What the config says a name is, for a caller that has to route before it starts.
-    pub fn kind_of(&self, name: &str) -> spec::Kind {
-        self.grammar_of(name).kind
-    }
-
     /// What the config says a name is; a name it does not mention is raw.
     fn grammar_of(&self, name: &str) -> spec::ChannelSpec {
         self.grammar.get(name).cloned().unwrap_or_default()
@@ -186,13 +181,6 @@ impl Channels {
         id: Option<String>,
     ) -> Result<ChannelRow, String> {
         let grammar = self.grammar_of(name);
-        // A cmd is answered by this server, so there is no program to start.
-        if grammar.kind == spec::Kind::Cmd {
-            return Err(format!(
-                "{name:?} is a cmd, not a program: `new` answers it through the command \
-                 layer, and it has no channel of its own"
-            ));
-        }
         let path = match id {
             Some(path) => {
                 if self

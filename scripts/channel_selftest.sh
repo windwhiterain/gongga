@@ -205,10 +205,10 @@ refused=$("${cli[@]}" new main bash --remote nowhere-named 2>&1)
 say "$refused"
 ok "a machine that cannot be reached is refused, not run here" "$([[ "$(field "$refused" id)" == "" ]] && has "$refused" 'no remote named' && echo 0 || echo 1)"
 
-# 7. A cmd through the same door: `GONGGA_CLI` with the caller's session filled in.
-cloned=$("${cli[@]}" new main GONGGA_CLI --args '{"cmd": "clone_session", "name": "copy"}' 2>&1)
+# 7. A command is reached by a tool call, not by a channel: SPEC's `fn <tool>(**args)`.
+cloned=$("${cli[@]}" clone_session --session main --name copy 2>&1)
 say "$cloned"
-ok "GONGGA_CLI routes to the command layer" "$(has "$cloned" '"ok":true' && echo 0 || echo 1)"
+ok "a command runs as itself" "$(has "$cloned" '"ok":true' && echo 0 || echo 1)"
 copied=$("${cli[@]}" get_messages --session copy 2>&1)
 ok "the cmd really ran" "$(has "$copied" 'last_seq' && echo 0 || echo 1)"
 
