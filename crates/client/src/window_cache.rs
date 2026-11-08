@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::LineKind;
-use client::protocol;
+use crate::protocol;
 
 /// One thing that happened to one window's blocks, in the order it happened.
 ///
@@ -589,7 +589,7 @@ impl Cache {
 ///
 /// # Invariant
 ///
-/// `client::server::alive` starts a process on Windows -- the first call on this machine
+/// `crate::server::alive` starts a process on Windows -- the first call on this machine
 /// costs about a third of a second -- and one walk asks about the same few pids once
 /// per file. An answer cannot change inside a walk: a pid that is gone stays gone.
 #[derive(Default)]
@@ -601,7 +601,7 @@ impl Ask {
         *self
             .0
             .entry(pid)
-            .or_insert_with(|| client::server::alive(pid as u32))
+            .or_insert_with(|| crate::server::alive(pid as u32))
     }
 }
 
@@ -612,7 +612,7 @@ impl Ask {
 /// Reversible and injective over the bytes a name may hold, because two windows that
 /// differ only in a character must not share one journal -- and a name is not a file
 /// name: `cmd ` ends in a space, and a session may be called anything.
-pub(crate) fn escaped(window: &str) -> String {
+pub fn escaped(window: &str) -> String {
     let mut out = String::with_capacity(window.len());
     for byte in window.bytes() {
         match byte {

@@ -409,3 +409,28 @@ user's permission.
 All test processes from this run ended: the only `gongga-server.exe` left are
 `C:\Users\17124\.gongga` on port 9700 (pids 24124 / 5172), which are the
 user's. Measurements are in `.dev/verify/5e337ea-l3.json`.
+
+## Stage 4, step 3: the journal's data layer moved (2026-11-08)
+
+`crates/tui/src/cache.rs` -> `crates/client/src/window_cache.rs`. `Record`,
+`Cache` and `escaped` have no terminal types: only std fs/io, serde,
+`crate::LineKind`, `crate::protocol` and `crate::server::alive`. `tui/src/log.rs`
+imports `client::window_cache::{Cache, Record}`; `roster.rs` uses
+`client::window_cache::escaped`; `escaped` became `pub`. The `Cache` instance is
+still created by `log.rs`, so this moves type ownership, not runtime state.
+`log.rs` (2475 lines) keeps ratatui `Style` / `Line` / `Span` and `materialize`.
+
+Correction to the previous turn's plan: stage 4 does NOT need a serialized
+window-query protocol. Verdict 4 puts the journal in the client, so
+`stamp_of`, `drawn`, `room_of` and `floor_of` become local answers once the
+window index moves; `CursorMessage` stays client-internal. `DESIGN.md` §1 now
+records this instead of the "cross-process query shape" from the last turn.
+
+Verified: `cargo build` 0 (1m27s) · fresh `cargo build -p gongga-tui` 0 with
+no warning (the earlier "1 warning" was a stale incremental diagnostic;
+`cargo clean -p gongga-tui` freed 664.4 MiB) · `cargo fmt --check` 0 ·
+`comments-check` 0 violations · `test-layout-check` 8 packages, 0 violations ·
+`git diff --check` 0 · `scripts/client_state_selftest.sh -v` PASS · 4s ·
+client-state · ba69520 · `scripts/tui_live.py --script <window-state + cover
+dismissal>` 0 · `scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local`
+0 and `--check` 0, both "in agreement". Proxy 7890 throughout.

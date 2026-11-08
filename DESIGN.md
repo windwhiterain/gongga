@@ -36,13 +36,13 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）仍是 library crate；`window_state.rs` / `window_command.rs` / `runtime.rs` / `window_input.rs` / `render_wire.rs` 均已上提 | 给它加 bin target，由 UI 用管道拉起；`run.rs` 的 `interactive` 主循环、`sync` / `settle` / `declare` / `answer_*` 与窗口 journal 上提 |
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）仍是 library crate；`window_state.rs` / `window_command.rs` / `runtime.rs` / `window_input.rs` / `window_cache.rs` / `render_wire.rs` 均已上提 | 给它加 bin target，由 UI 用管道拉起；`run.rs` 的 `interactive` 主循环与 `log.rs` / `panes.rs` 的窗口索引上提 |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
 | `[tui]` binary | `crates/tui`，`run.rs` 仍装着 `interactive` 主循环、`sync` / `settle`、`declare` / `answer_*` 与窗口 journal | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
 | `[webui]` binary | 无 | 新增，与 `tui` 平级，用任意语言写 |
 
-上提的两个模块只换了位置：`State::load` 仍独占 `client.toml`，一次性 `gongga-cli` 不读
+上提的模块只换了位置：`State::load` 仍独占 `client.toml`，一次性 `gongga-cli` 不读
 不写它；六条 client 命令仍由窗口解析，不上线。行为不变。
 
 裁定：`Client` 状态机与重连校验归 `[client]` 库，不归前端，第二个前端因此不必重写 seq
@@ -291,11 +291,20 @@ server + client + TUI，WebUI 等自行分发；若指的是别的，说一声�
 分步（每步跑门禁）：① 词汇表 + serde（已完成）；② `client.toml` 与 `UiIntent` 统一
 （已完成）；③ 管道帧编解码（已完成）；④ 连接循环与 journal 上提到 client ——
 `runtime.rs` 已上提重连阶梯、起 server 判定、单次拨号、所有权判定与 `Server` 枚举；
-`window_input.rs` 已上提 `classified` / `submission` / `filled` / `restates` /
-`follow` / `typed_names`；`interactive` 主循环、`sync` / `settle` / `declare` /
-`answer_*` 与窗口 journal 仍待；⑤ client bin target 接管道骨架（要等 ④ 的主循环，
+`window_input.rs` 已上提六个输入翻译函数；`window_cache.rs` 已上提 `Record` / `Cache`
+/ `escaped`；`interactive` 主循环、`sync` / `settle` / `declare` / `answer_*` 与
+`log.rs` / `panes.rs` 的窗口索引仍待；⑤ client bin target 接管道骨架（要等 ④ 的主循环，
 否则是空壳）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
 payload）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
+
+**纠正一处（2026-11-08）**：上一轮把 ④ 写成「定下跨进程补拉查询的形状」。裁定 4 是
+journal 归 client：目标形态下 client 自己持有窗口记录，`stamp_of` / `drawn` /
+`room_of` / `floor_of` 都是它本地的回答，**不该序列化过线**；`CursorMessage` 只在
+client 内消费这一点不变。所以 A 路线不设计查询往返，而是把数据层逐块上提：
+`window_cache.rs`（`Record` / `Cache` / `escaped`）不带终端类型，先搬；`log.rs` 的
+ratatui 折行与 `materialize` 留在 TUI。等窗口索引也上提，`declare` / `answer_*`
+直接读 client 内状态即可。今天 `Cache` 仍由 TUI 的 `log.rs` 实例化，这一步只换了
+类型的所有权，行为不变。
 
 **④ 里随 `--parent` 裁定修掉的一处**：`whose_server` 原先用 `std::process::id()`
 比对 server 的 `--parent`；client 成为 UI 的子进程后，这个值会是 client 自己的 pid，

@@ -15,9 +15,9 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::LineKind;
-use crate::cache::{Cache, Record};
 use crate::markdown;
 use client::protocol;
+use client::window_cache::{Cache, Record};
 
 /// One block: a line that may still be growing, plus its rows.
 ///

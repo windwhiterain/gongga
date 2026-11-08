@@ -1,6 +1,11 @@
-# tui/cache.rs
+# client/window_cache.rs (was tui/cache.rs)
 
 ## cache.rs
+
+As of 2026-11-08 the source lives in `crates/client/src/window_cache.rs`. The
+note keeps its `tui-cache.md` name because it describes the window's journal,
+not a crate. The journal's data types moved; the ratatui folding in `log.rs`
+stayed in the terminal crate.
 
 The window's own record of the rows it was given, on disk.
 

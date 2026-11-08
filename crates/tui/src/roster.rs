@@ -124,9 +124,10 @@ impl Roster {
     }
 
     fn path(&self) -> PathBuf {
-        self.root
-            .join("roster")
-            .join(format!("{}.toml", crate::cache::escaped(&self.endpoint)))
+        self.root.join("roster").join(format!(
+            "{}.toml",
+            client::window_cache::escaped(&self.endpoint)
+        ))
     }
 
     fn read(&self) -> Vec<Row> {

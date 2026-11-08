@@ -6,7 +6,6 @@
 //! program: the command surface and the wire stay usable from a script, and a
 //! new command never changes this crate.
 
-mod cache;
 mod clipboard;
 mod closing;
 mod cover;

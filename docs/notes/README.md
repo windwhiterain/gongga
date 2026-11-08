@@ -160,6 +160,7 @@ with it. The binary target is not built yet -- this crate still ships as a libra
 | [`client-render-wire.md`](client-render-wire.md) | `crates/client/src/render_wire.rs` |
 | [`client-skill-command.md`](client-skill-command.md) | `crates/client/src/skill_command.rs` |
 | [`tui-state.md`](tui-state.md) | `crates/client/src/window_state.rs` |
+| [`tui-cache.md`](tui-cache.md) | `crates/client/src/window_cache.rs` |
 | [`tui-command.md`](tui-command.md) | `crates/client/src/window_command.rs` |
 
 ### cli (historical name)
@@ -176,7 +177,6 @@ argv to `client::main` when invoked under that name or given a command.
 
 | note | source |
 | --- | --- |
-| [`tui-cache.md`](tui-cache.md) | `crates/tui/src/cache.rs` |
 | [`tui-main.md`](tui-main.md) | `crates/tui/src/main.rs` |
 | [`tui-program.md`](tui-program.md) | `crates/tui/src/program.rs` |
 | [`tui-lib.md`](tui-lib.md) | `crates/tui/src/lib.rs` |
