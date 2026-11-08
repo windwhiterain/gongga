@@ -1096,9 +1096,7 @@ async fn read_stream_inner(
     let request = request.body(reqwest::Body::wrap_stream(body));
 
     let response = match tokio::select! {
-        // Nothing else in this request listens to the token, so a server asked to
-        // stop used to wait out the provider's silence with the home still locked:
-        // the swap that asked it to leave looked finished and served nothing.
+        // Nothing else listens to the token, so a stop waited out the silence instead.
         _ = cancel.cancelled() => {
             probe.outcome("cancelled");
             tracing::info!(elapsed = ?started.elapsed(), "model request: cancelled before headers");

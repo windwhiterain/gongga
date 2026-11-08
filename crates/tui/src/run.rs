@@ -607,9 +607,8 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                             .ok()
                             .flatten()
                     }
-                    // A server that would not leave is not started over: it still
-                    // holds the lock, so ours would refuse and the window would be
-                    // left with no server at all and no word about why.
+                    // A server that would not leave still holds the lock, so ours
+                    // would refuse: say so instead of starting one.
                     Err(error) => {
                         TuiSink(&mut ui).say(LineKind::System, &format!("{error}"));
                         None

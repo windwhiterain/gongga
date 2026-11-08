@@ -119,11 +119,7 @@ const GONE_POLL: Duration = Duration::from_millis(100);
 ///
 /// The key is the one this process would *dial* with, never the home's: a client started
 /// with `--key` proves it by using it. See `docs/notes/cli-server.md`.
-pub async fn stop(
-    conn: &Connection,
-    home: &Path,
-    addr: SocketAddr,
-) -> anyhow::Result<Option<u32>> {
+pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> anyhow::Result<Option<u32>> {
     if !starts_here(&addr) {
         return Ok(None);
     }
@@ -147,10 +143,7 @@ pub async fn stop(
     if waits_out(pid, CANCEL_GRACE).await {
         return Ok(Some(pid));
     }
-    // The address is free and the lock is not: a server that survives this is
-    // still holding `server.lock`, and the one this caller is about to start
-    // reads it as a live server and refuses. Answering `Some` here is what made
-    // a swap look finished while the home had no server at all.
+    // A server that survives this still holds `server.lock`, so a new one refuses.
     anyhow::bail!(
         "the server on {addr} is still there after cancel and kill (pid {pid}); \
          it holds this home's lock, so a new server would refuse to start"
