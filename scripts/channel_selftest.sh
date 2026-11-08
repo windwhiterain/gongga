@@ -219,18 +219,21 @@ ok "ls_job lists the channels" "$(has "$listed" "$shell_id" && echo 0 || echo 1)
 ended=$("${cli[@]}" del_job --session main "$shell_id" 2>&1)
 ok "del_job ends a channel" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
 
-# 8. A subscription's action runs in a channel of the session's, twice in the same one.
+# 8. A subscription runs one command per match: the log row is what a match leaves.
 armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe watcher '^channel_selftest$' \
-  --persistant true --bash plug --cmd "echo sub-ran" 2>&1)
-ok "a subscription arms with a channel" "$(has "$armed" '"ok":true' && echo 0 || echo 1)"
+  '{"name": "trigger_event", "args": {"event": "sub_ran"}}' --persistant true 2>&1)
+say "$armed"
+ok "a subscription carries the command it runs" \
+  "$(has "$armed" '"ok":true' && echo 0 || echo 1)"
 "${cli[@]}" trigger_event channel_selftest >/dev/null 2>&1
 sleep 1
 "${cli[@]}" trigger_event channel_selftest >/dev/null 2>&1
 sleep 2
-twice=$(cat "$home"/channels/*/out 2>/dev/null | grep -c '^sub-ran$')
-plug=$(ls -d "$home"/channels/*/ 2>/dev/null | wc -l)
-ok "both matches wrote into one channel" "$([[ "$twice" == 2 ]] && echo 0 || echo 1)"
-say "channels on disk: $plug; sub-ran lines: $twice"
+ran=$("${cli[@]}" events --kind subscription --session main 2>&1)
+twice=$(printf '%s' "$ran" | grep -c 'sub_ran')
+ok "both matches ran the command it carries" \
+  "$([[ "$twice" == 2 ]] && echo 0 || echo 1)"
+say "subscription rows: $(printf '%s' "$ran" | head -c 300)"
 
 took=$(( $(date +%s) - began ))
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)

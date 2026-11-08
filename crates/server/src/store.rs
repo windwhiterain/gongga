@@ -326,6 +326,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     cmd        TEXT,
     python     TEXT,
     code       TEXT,
+    action     TEXT,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS subscriptions_by_session ON subscriptions(session);
@@ -560,6 +561,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("cmd", "ALTER TABLE subscriptions ADD COLUMN cmd TEXT"),
         ("python", "ALTER TABLE subscriptions ADD COLUMN python TEXT"),
         ("code", "ALTER TABLE subscriptions ADD COLUMN code TEXT"),
+        ("action", "ALTER TABLE subscriptions ADD COLUMN action TEXT"),
     ] {
         add_column_if_missing(conn, "subscriptions", column, ddl)?;
     }
@@ -2904,14 +2906,9 @@ impl Store {
         persistent: bool,
         action: Option<crate::subscriptions::Action>,
     ) -> anyhow::Result<SubscriptionRow> {
-        let (bash, cmd, python, code) = match action {
-            Some(crate::subscriptions::Action::Bash { name, cmd }) => {
-                (Some(name), Some(cmd), None, None)
-            }
-            Some(crate::subscriptions::Action::Python { name, code }) => {
-                (None, None, Some(name), Some(code))
-            }
-            None => (None, None, None, None),
+        let action = match action {
+            Some(action) => Some(serde_json::to_string(&action)?),
+            None => None,
         };
         let conn = self.lock();
         // One name is one subscription: arming replaces the row it held.
@@ -2921,19 +2918,9 @@ impl Store {
         )?;
         conn.execute(
             "INSERT INTO subscriptions
-                 (session, name, pattern, persistent, bash, cmd, python, code, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                session,
-                name,
-                pattern,
-                persistent,
-                bash,
-                cmd,
-                python,
-                code,
-                now_millis()
-            ],
+                 (session, name, pattern, persistent, action, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![session, name, pattern, persistent, action, now_millis()],
         )?;
         Ok(SubscriptionRow {
             id: conn.last_insert_rowid(),
@@ -2941,10 +2928,7 @@ impl Store {
             name: name.to_string(),
             pattern: pattern.to_string(),
             persistent,
-            bash,
-            cmd,
-            python,
-            code,
+            action,
         })
     }
 
@@ -2952,7 +2936,7 @@ impl Store {
     pub fn subscriptions(&self) -> anyhow::Result<Vec<SubscriptionRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, name, pattern, persistent, bash, cmd, python, code
+            "SELECT id, session, name, pattern, persistent, action
              FROM subscriptions ORDER BY id",
         )?;
         let rows = stmt
@@ -2963,10 +2947,7 @@ impl Store {
                     name: r.get(2)?,
                     pattern: r.get(3)?,
                     persistent: r.get(4)?,
-                    bash: r.get(5)?,
-                    cmd: r.get(6)?,
-                    python: r.get(7)?,
-                    code: r.get(8)?,
+                    action: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3015,14 +2996,8 @@ pub struct SubscriptionRow {
     pub pattern: String,
     /// Whether it stays armed after it fires.
     pub persistent: bool,
-    /// The session's named shell a match runs in, when it carries one.
-    pub bash: Option<String>,
-    /// The bash command run on a match.
-    pub cmd: Option<String>,
-    /// The session's named interpreter a match runs in, when it carries one.
-    pub python: Option<String>,
-    /// The Python code run on a match.
-    pub code: Option<String>,
+    /// The cmd a match runs, as `{"name":…,"args":{…}}`, when it carries one.
+    pub action: Option<String>,
 }
 
 /// The operator's own lines a transaction wrote, and where the transcript ended.

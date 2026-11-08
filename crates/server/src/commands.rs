@@ -621,16 +621,16 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             name: "subscribe".into(),
             description: "Name a subscription over the event stream and ask for it to be \
                       armed. It answers at once -- it does not wait for a match. A match \
-                      notices the session that armed it, and runs `--bash`/`--python` when \
-                      one is given; the agent's side of waiting for the notice is the \
-                      `wait` tool."
+                      runs `cmd` in `session`: one command, the same door a tool's \
+                      `fn <tool>(**args)` uses."
                 .into(),
             args: vec![
-                pos(
+                arg(
                     "subscription",
                     "The name it is armed and dropped by. Arming a name again replaces \
-                     what it held.",
-                    true,
+                     what it held. Omit it to be given one, which `ls_subscription` \
+                     reports.",
+                    false,
                     Some("name"),
                     CompletionSource::None,
                 ),
@@ -646,6 +646,22 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("pattern"),
                     CompletionSource::None,
                 ),
+                pos(
+                    "cmd",
+                    "What a match runs: a command's name, or the whole call as an object, \
+                     `{\"name\": \"send_message\", \"args\": {\"message\": \"hi\"}}`.",
+                    true,
+                    Some("cmd"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "session",
+                    "The session a match runs in. A tool call leaves it to the caller, \
+                     which is the session it is arm ing from.",
+                    false,
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
                 arg(
                     "persistant",
                     "`true` keeps the subscription armed after it fires, so every later \
@@ -658,39 +674,6 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                             .map(|v| v.to_string())
                             .collect(),
                     ),
-                ),
-                arg(
-                    "bash",
-                    "The name of the session's own persistent shell the action runs in: \
-                     the same shell `bash` uses under that name, so `cd` and exports are \
-                     shared between a subscription and the session.",
-                    false,
-                    Some("name"),
-                    CompletionSource::None,
-                ),
-                arg(
-                    "cmd",
-                    "The bash command `--bash` runs on a match; what it prints is a log \
-                     row (`subscription`).",
-                    false,
-                    Some("cmd"),
-                    CompletionSource::None,
-                ),
-                arg(
-                    "python",
-                    "The name of the session's own persistent interpreter the action runs \
-                     in: the same namespace `python` uses under that name.",
-                    false,
-                    Some("name"),
-                    CompletionSource::None,
-                ),
-                arg(
-                    "code",
-                    "The Python code `--python` runs on a match; what it prints is a log \
-                     row (`subscription`).",
-                    false,
-                    Some("code"),
-                    CompletionSource::None,
                 ),
             ],
         },
@@ -1910,31 +1893,37 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
 /// is deliberate -- a subscription with no addressee would match, fire, and tell
 /// nobody, which is the one failure a registry cannot notice by itself.
 async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let name = args
-        .get("subscription")
-        .map(String::as_str)
-        .unwrap_or("")
-        .trim();
-    if name.is_empty() {
-        return Outcome::err("subscribe needs a name: `subscribe <name> <pattern>`");
-    }
     let pattern = args.get("pattern").map(String::as_str).unwrap_or("").trim();
     if pattern.is_empty() {
         return Outcome::err(
             "subscribe needs a pattern over event names, e.g. `turn_end`".to_string(),
         );
     }
-    let Some(caller) = caller.filter(|name| !name.trim().is_empty()) else {
+    let given = args.get("session").map(String::as_str).or(caller);
+    let Some(session) = given.filter(|name| !name.trim().is_empty()) else {
         return Outcome::err(
-            "subscribe notices the session it was run from, and this client did not say \
-             which: run it from a session's shell, where `$GONGGA_SESSION` is set",
+            "subscribe notices a session, and neither the call nor its client named one: \
+             run it from a session's shell, where `$GONGGA_SESSION` is set",
         );
     };
-    match d.store.get_session(caller) {
+    let session = session.trim().to_string();
+    match d.store.get_session(&session) {
         Ok(Some(_)) => {}
-        Ok(None) => return Outcome::err(format!("no session named {caller:?} to notice")),
+        Ok(None) => return Outcome::err(format!("no session named {session:?} to notice")),
         Err(e) => return Outcome::err(e.to_string()),
     }
+    let action = match args.get("cmd").map(String::as_str) {
+        Some(raw) => match parse_cmd(raw) {
+            Ok(action) => action,
+            Err(why) => return Outcome::err(why),
+        },
+        None => {
+            return Outcome::err(format!(
+                "subscribe runs a command on a match: `subscribe <pattern> <cmd>` \
+                 {session}"
+            ));
+        }
+    };
     let persistent = match args.get("persistant") {
         None => false,
         Some(raw) => match parse_bool(raw) {
@@ -1947,71 +1936,106 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
             }
         },
     };
-    let action = match (
-        args.get("bash"),
-        args.get("cmd"),
-        args.get("python"),
-        args.get("code"),
-    ) {
-        (Some(_), _, Some(_), _) | (_, Some(_), _, Some(_)) => {
-            return Outcome::err("subscribe takes one of --bash/--cmd or --python/--code");
-        }
-        (Some(bash), Some(cmd), None, None) => Some(crate::subscriptions::Action::Bash {
-            name: bash.clone(),
-            cmd: cmd.clone(),
-        }),
-        (None, None, Some(python), Some(code)) => Some(crate::subscriptions::Action::Python {
-            name: python.clone(),
-            code: code.clone(),
-        }),
-        (Some(bash), None, None, None) => {
-            return Outcome::err(format!(
-                "--bash names the shell; --cmd is what runs in it: `subscribe {name}                  <pattern> --bash {bash} --cmd <cmd>`"
-            ));
-        }
-        (None, None, Some(python), None) => {
-            return Outcome::err(format!(
-                "--python names the interpreter; --code is what runs in it: `subscribe                  {name} <pattern> --python {python} --code <code>`"
-            ));
-        }
-        // SPEC leaves it optional: with no action a match does nothing. Warned.
-        (None, None, None, None) => {
-            tracing::warn!(
-                session = %caller, name, pattern = %pattern,
-                "subscription armed with no action: a match will do nothing"
-            );
-            None
-        }
-        // --cmd/--code without the interpreter they run in.
-        _ => return Outcome::err("subscribe: --cmd needs --bash, and --code needs --python"),
+    let named = args
+        .get("subscription")
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty());
+    let name = match named {
+        Some(name) => name,
+        None => match free_subscription_name(d, &session) {
+            Ok(name) => name,
+            Err(e) => return Outcome::err(e),
+        },
     };
     match d
         .subscriptions
-        .arm(caller, name, pattern, persistent, action)
+        .arm(&session, &name, pattern, persistent, Some(action.clone()))
         .await
     {
         Ok(row) => {
             tracing::info!(
-                session = %caller, subscription = row.id, name, pattern = %pattern,
-                persistent, "subscribed"
+                session = %session, subscription = row.id, name = %name, pattern = %pattern,
+                cmd = %action.name, persistent, "subscribed"
             );
             Outcome::ok_with(
                 format!(
-                    "subscription `{name}` armed: a match of `{pattern}` runs its command in \
-                     {caller}'s shell{}",
+                    "subscription `{name}` armed: a match of `{pattern}` runs `{}` in \
+                     {session}{}",
+                    action.name,
                     if persistent { ", every time" } else { " once" }
                 ),
                 json!({
                     "id": row.id,
-                    "session": caller,
+                    "session": session,
                     "subscription": name,
                     "event": pattern,
+                    "cmd": action.name,
                     "persistant": persistent,
                 }),
             )
         }
         Err(e) => Outcome::err(e),
     }
+}
+
+/// What a match runs, from the one argument the row gives it.
+///
+/// # Invariant
+///
+/// An object is the whole call (`{"name":…,"args":{…}}`), and a bare word is a name
+/// with no arguments: the same two shapes `new` takes for a cmd's `args`.
+fn parse_cmd(raw: &str) -> Result<crate::subscriptions::Action, String> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err("subscribe needs a command to run on a match".to_string());
+    }
+    if !text.starts_with('{') {
+        return Ok(crate::subscriptions::Action {
+            name: text.to_string(),
+            args: Args::new(),
+        });
+    }
+    let value: serde_json::Value = serde_json::from_str(text)
+        .map_err(|e| format!("`cmd` is an object only when it is a whole call: {e}"))?;
+    let name = value
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            "`cmd` needs a `name`: {\"name\": \"send_message\", \"args\": {}}".to_string()
+        })?;
+    let mut table = Args::new();
+    if let Some(given) = value.get("args").and_then(serde_json::Value::as_object) {
+        for (key, value) in given {
+            let word = match value {
+                serde_json::Value::String(word) => word.clone(),
+                other => other.to_string(),
+            };
+            table.insert(key.clone(), word);
+        }
+    }
+    Ok(crate::subscriptions::Action {
+        name: name.to_string(),
+        args: table,
+    })
+}
+
+/// The first `sub<n>` this session is not using, for a call that named no subscription.
+fn free_subscription_name(d: &Dispatch, session: &str) -> Result<String, String> {
+    let rows = d
+        .store
+        .subscriptions()
+        .map_err(|e| format!("could not read the armed subscriptions: {e}"))?;
+    let taken: std::collections::HashSet<String> = rows
+        .into_iter()
+        .filter(|row| row.session == session)
+        .map(|row| row.name)
+        .collect();
+    (1..)
+        .map(|n| format!("sub{n}"))
+        .find(|name| !taken.contains(name.as_str()))
+        .ok_or_else(|| "no free subscription name".to_string())
 }
 
 /// Drops one named subscription; the caller drops its own, never another session's.

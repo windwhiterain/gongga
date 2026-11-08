@@ -409,13 +409,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let active = Arc::new(AtomicUsize::new(0));
     // Read from the database, so a restart resumes what was asked for; the
     // actions it runs take the agent's tools.
-    let subscriptions = crate::subscriptions::Subscriptions::load(
-        store.clone(),
-        bus.clone(),
-        agent.clone(),
-        sessions.clone(),
-        active.clone(),
-    );
+    let subscriptions =
+        crate::subscriptions::Subscriptions::load(store.clone(), bus.clone(), active.clone());
 
     let dispatch = Arc::new(Dispatch {
         agent,

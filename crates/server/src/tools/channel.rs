@@ -564,15 +564,6 @@ impl Channels {
         Ok(listed)
     }
 
-    /// The channel a session calls this, when it has one and it is still running.
-    pub fn live(&self, session: &str, id: &str) -> Option<ChannelRow> {
-        self.store
-            .channel_of(session, id)
-            .ok()
-            .flatten()
-            .filter(|row| row.exit.is_none())
-    }
-
     /// Ends a channel, and forgets it.
     ///
     /// # Invariant
