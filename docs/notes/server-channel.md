@@ -114,7 +114,9 @@ restarted must not answer with the silence of the run before it. It is not a ses
 connection: the channel outlives the session's shells either way.
 
 Everything else is the same three files: `out` from the row's cursor, `status` whole, `in`
-appended. A relay started by a peer's runner leaves every job this connection is in, so a
+appended. Their shape is part of the remote protocol, for the same reason the frames are:
+the peer's relay writes them and this side reads them, so a build that changes the layout
+raises `PROTOCOL` instead of pairing with a peer that keeps the old one. A relay started by a peer's runner leaves every job this connection is in, so a
 `cancel`, an ssh that drops and a server that restarts all leave the channel running --
 which is what `scripts/channel_remote_selftest.sh` proves by killing the server and asking
 the same channel again.

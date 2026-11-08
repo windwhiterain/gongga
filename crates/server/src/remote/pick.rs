@@ -4,10 +4,9 @@
 //!
 //! # Invariant
 //!
-//! The answer is this build's own runner, placed on the peer under the name of this
-//! build. A configuration may name a program, and it is preferred, but only what the
-//! peer says at its greeting decides: a mismatch is not argued with, it is run past.
-//! That is why the two ends cannot disagree -- one of them is the other's own build.
+//! The answer speaks this build's protocol: a configured program is preferred, a placed
+//! payload is named by the protocol rather than by the commit that built it, and what the
+//! peer says at its greeting decides. A mismatch is run past, never argued with.
 
 use std::path::Path;
 use std::time::Duration;
@@ -61,51 +60,58 @@ async fn greet(endpoint: &Endpoint, words: &str, answer: Duration) -> anyhow::Re
     }
 }
 
-/// Puts this build on the peer, and answers the words that run its runner.
+/// Puts this build's payload on the peer, and answers the words that run its runner.
 ///
 /// # Invariant
 ///
-/// The directory is named by this build, so a peer that already holds it is answered
-/// without a transfer, and no other build's payload is ever touched. The runner and
-/// the server go together because a channel's relay is the server, started beside the
-/// runner that asked for it.
+/// The directory is named by the protocol and written once: a peer that holds it is
+/// answered without a transfer, whichever commit put it there, and a program the peer may
+/// be running is never replaced over. The runner and the server go together because a
+/// channel's relay is the server, started beside the runner that asked for it.
 async fn place(endpoint: &Endpoint) -> anyhow::Result<String> {
-    let (runner, server) = local_payload()?;
     let home = peer_home(endpoint).await?;
     let suffix = if is_dos(&home) { ".exe" } else { "" };
-    let build = protocol::BUILD;
-    let directory = format!("{}/.gongga/payload/{}", peer_quote(&home), build);
+    let protocol = crate::remote::protocol::PROTOCOL;
+    let directory = format!("{}/.gongga/payload/{}", peer_quote(&home), protocol);
     let there = |name: &str| format!("{directory}/gongga-{name}{suffix}");
     // What `scp` and the peer's own sftp both resolve from the account's home.
-    let sent = |name: &str| format!(".gongga/payload/{build}/gongga-{name}{suffix}");
-    // Same name is not same bytes: compare sizes before running anything.
-    let size = |path: &std::path::Path| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let present = run(
+    let sent = |name: &str| format!(".gongga/payload/{protocol}/gongga-{name}{suffix}");
+    let test = format!("test -f {} && test -f {}", there("runner"), there("server"));
+    // Presence is the whole answer, because only a whole pair is ever renamed into place.
+    if run(endpoint, &test).await.is_some() {
+        return Ok(there("runner"));
+    }
+    let (runner, server) = local_payload()?;
+    run(endpoint, &format!("mkdir -p {directory}"))
+        .await
+        .ok_or_else(|| anyhow::anyhow!("the peer could not make {directory}"))?;
+    // A name per copy per client: a stopped transfer leaves nothing runnable.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let staging = |name: &str| format!("{}.{stamp}.new", sent(name));
+    copy(endpoint, &runner, &staging("runner")).await?;
+    copy(endpoint, &server, &staging("server")).await?;
+    let moved = run(
         endpoint,
         &format!(
-            "test -f {runner} && test -f {server} && [ \"$(stat -c %s {runner})\" -eq {a} ] \
-             && [ \"$(stat -c %s {server})\" -eq {b} ]",
-            runner = there("runner"),
-            server = there("server"),
-            a = size(&runner),
-            b = size(&server),
+            "mv -f {r_new} {r} && mv -f {s_new} {s} && chmod +x {r} {s}",
+            r_new = staging("runner"),
+            r = there("runner"),
+            s_new = staging("server"),
+            s = there("server"),
         ),
     )
-    .await
-    .is_some();
-    if !present {
-        run(endpoint, &format!("mkdir -p {directory}"))
-            .await
-            .ok_or_else(|| anyhow::anyhow!("the peer could not make {directory}"))?;
-        copy(endpoint, &runner, &sent("runner")).await?;
-        copy(endpoint, &server, &sent("server")).await?;
-        run(
-            endpoint,
-            &format!("chmod +x {} {}", there("runner"), there("server")),
-        )
-        .await;
-        tracing::info!(peer = %endpoint.describe(), directory = %directory, "payload placed");
+    .await;
+    // A refused rename is not yet a failure: look for a pair another client placed.
+    if moved.is_none() && run(endpoint, &test).await.is_none() {
+        return Err(anyhow::anyhow!(
+            "the peer took this build's payload but could not put it in place: {} is still absent",
+            there("runner")
+        ));
     }
+    tracing::info!(peer = %endpoint.describe(), directory = %directory, "payload placed");
     // A payload program is one program, not a file that dispatches on its first word.
     Ok(there("runner"))
 }

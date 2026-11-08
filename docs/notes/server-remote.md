@@ -135,34 +135,40 @@ mid-command.
 
 ## Getting the runner onto a peer: this build places it
 
-A runner speaks one protocol and a server speaks one protocol, so the pair has to
-agree. Naming a path per build made that an operator's problem -- and a path says
-where a program is, never what it says.
+A runner speaks one protocol and a server speaks one, so what a pair has to agree on is
+that protocol -- not the commit either was built from. Naming a path per build made it an
+operator's problem: a path says where a program is, never what it says, and two builds of
+one protocol would each have been copied to a peer that could have served both.
 
-So the server answers it the way `ship` answers the same question about content: by
-what each side *says*, not by what a file is called.
+So the payload is named by what it promises: `<peer home>/.gongga/payload/<protocol>/`
+holds this protocol's `gongga-runner` and the `gongga-server` a channel's relay needs
+beside it. Three rules follow, and each is a consequence of the first.
 
-1. A `runner` key in the remote's table is a **preference**. It is greeted first, and
-   kept only if it greets this build's protocol; anything else about it is reported
-   and run past.
-2. Otherwise this build places **its own payload** on the peer: its `gongga-runner`
-   and the `gongga-server` a channel's relay needs beside it, in
-   `<peer home>/.gongga/payload/<build>/`, named by the build string so a peer that
-   already holds it is answered without a transfer and no other build's payload is
-   touched. The agreement is then a fact: one end is the other's own build.
-3. A copy goes through `scp`, not through the shell: `ssh … bash -lc 'cat > file'`
-   was measured to deliver 947256 bytes of a 1048576-byte file, and an executable
-   that arrived short is not a program.
+1. **A `runner` key in the remote's table is a preference.** It is greeted first, and kept
+   only if it greets this protocol; anything else about it is reported and run past.
+2. **A peer that already holds the directory is answered without a transfer**, whichever
+   build put it there. Identity is what the greeting says: a runner that answers this
+   protocol *is* this protocol's runner, and the pair stands as it is. That is what makes
+   a rebuild harmless -- the earlier failure was a size of a file on disk deciding whether
+   two machines could talk, a fact the other end can neither see nor answer.
+3. **The directory is written once and never replaced.** A program the peer may be running
+   cannot be overwritten while it runs, so asking for that is the failure this rule
+   removes: each copy goes to a staging name of its own and is renamed into place whole,
+   which makes "present" mean "whole", and two clients placing at the same moment do not
+   share a staging file. A pair that is present and does not answer is reported, never
+   replaced -- replacing it is a decision for a human.
 
-The first use on a new peer costs one copy of this build (tens of megabytes over
-ssh); every use after it is a greeting. Nothing else has to be installed, and
-`remotes.toml` needs no per-build edit.
+A copy goes through `scp`, not through the shell: `ssh … bash -lc 'cat > file'` was
+measured to deliver 947256 bytes of a 1048576-byte file, and an executable that arrived
+short is not a program. A transfer can still fail for its own reasons (the network, a full
+disk, a permission), and that is why it is off the path that decides whether two ends can
+talk: it can only make the *first* placement fail, never make a peer that already answers
+stop answering.
 
-A peer that had a distribution put there by hand still answers: that is the
-preference path, and it is taken whenever its greeting agrees. `gongga-cli skill
-remote install` remains what it always was -- a way to put a distribution on a peer
-from outside a session, and the one command a human needs to bootstrap a peer with
-no gongga on it at all.
+The first use on a peer that holds nothing for this protocol costs one copy of this build
+(tens of megabytes over ssh); every use after it, from any client, is a greeting.
+`remotes.toml` needs no per-build edit. Payloads of retired builds are left where they are:
+nothing reads a directory whose number this build does not speak.
 
 ### The same architecture, not just the same kernel
 

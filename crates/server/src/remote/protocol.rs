@@ -9,8 +9,10 @@ use serde_json::Value;
 ///
 /// # Invariant
 ///
-/// Raised when a request gains a meaning an older runner would ignore: 2 `Open.args`,
-/// 3 `Append`, 4 `Relay`, 5 `Relay.words`.
+/// Raised when a request gains a meaning an older runner would ignore (2 `Open.args`,
+/// 3 `Append`, 4 `Relay`, 5 `Relay.words`), and when a channel directory's shape changes:
+/// both ends read it, so a number that stayed would promise a layout the other build does
+/// not keep. A peer's payload is named by it too: `<home>/.gongga/payload/<protocol>/`.
 pub const PROTOCOL: u32 = 5;
 
 /// One request; `id` is the client's, and the reply repeats it.
