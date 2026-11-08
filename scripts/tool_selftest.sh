@@ -250,6 +250,17 @@ ok "wait ended on the news a subscription sent"   "$(has "$waited" 'nothing arri
 "${cli[@]}" get_messages --session main 2>/dev/null | grep -q 'news-from-sub'
 ok "the news reached the session as a message" "$?"
 
+# 5. A call's own clock. `wait` is the one tool whose wait is its work, so the
+#    `timeout_ms` a call names is the ceiling it gets -- the row's default is what a
+#    call that names none gets. Measured before this test: 5 s asked, 120 s waited.
+fake_up wait '{"timeout_ms":2500}' || exit 1
+"${cli[@]}" send_message "wait a moment" --name main >/dev/null 2>&1
+wait_turn main
+short=$(last_tool main)
+say "short wait answered: $(printf '%s' "$short" | head -c 120)"
+ok "wait honours the clock its call names" \
+  "$(has "$short" 'within 2.5s' && echo 0 || echo 1)"
+
 took=$(( $(date +%s) - began ))
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then
