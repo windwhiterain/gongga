@@ -52,6 +52,24 @@ pub use crate::panes::Panes;
 pub use crate::run::interactive;
 pub use client::runtime::Server;
 
+impl client::window_refill::WindowFacts for Tui {
+    fn stamp_of(&self, window: &str) -> Option<(i64, i64)> {
+        Tui::stamp_of(self, window)
+    }
+    fn floor_of(&self, window: &str) -> Option<i64> {
+        Tui::floor_of(self, window)
+    }
+    fn room_of(&self, window: &str) -> usize {
+        Tui::room_of(self, window)
+    }
+    fn drawn(&self) -> &[String] {
+        Tui::drawn(self)
+    }
+    fn refresh_completion(&mut self) {
+        Tui::refresh_completion(self)
+    }
+}
+
 /// The modifiers a terminal forwards with a mouse event, as a gesture's own.
 ///
 /// # Invariant

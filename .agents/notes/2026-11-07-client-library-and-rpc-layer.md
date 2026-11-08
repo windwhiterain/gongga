@@ -434,3 +434,26 @@ no warning (the earlier "1 warning" was a stale incremental diagnostic;
 client-state · ba69520 · `scripts/tui_live.py --script <window-state + cover
 dismissal>` 0 · `scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local`
 0 and `--check` 0, both "in agreement". Proxy 7890 throughout.
+
+## Stage 4, step 4: the refills lifted (2026-11-08)
+
+`crates/client/src/window_refill.rs` now owns `declare`, `answer_completion`,
+`answer_transcripts` and `answer_older`; `run.rs` 598 -> 479 lines. They used to
+take `&Tui` / `&mut Tui`; they now take `&dyn WindowFacts` (and `&mut` for
+`answer_completion`, the only one that calls `refresh_completion`). `Tui`
+implements the trait with five one-line forwarders to methods it already had,
+so behaviour is unchanged. This is a local read-only interface, not a
+cross-process query protocol: verdict 4 puts the journal in the client, which
+will implement `WindowFacts` itself once `log.rs` / `panes.rs` move. `sync`
+and `settle` still need `&mut Tui`. See `docs/notes/client-refill.md`.
+
+Verified: `cargo build` 0 (1m07s on retry; first attempt 101 from the known
+Windows incremental `os error 5` lock) · `cargo check` 0 (6m12s after
+clean-disk removed the cargo registry sources) · `cargo fmt --check` 0 ·
+`comments-check` 0 violations (the new module first had an unused
+`Client` / `Link` import; removed) · `test-layout-check` 8 packages, 0
+violations · `git diff --check` 0 · `scripts/client_state_selftest.sh -v`
+PASS · 4s · client-state · 3eff4d2 · `scripts/tui_live.py --script
+<window-state + cover dismissal>` 0 · `scripts/skill_contract.sh` PASS 8 ·
+`ship.sh --check --local` 0 and `--check` 0, both "in agreement".
+Proxy 7890 throughout.

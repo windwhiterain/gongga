@@ -6,6 +6,7 @@ use std::pin::Pin;
 use client::render_wire::UiIntent;
 use client::runtime;
 use client::window_input;
+use client::window_refill;
 use client::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
 
 use crate::{Server, Tui, UiEvent, closing};
@@ -101,126 +102,6 @@ impl TuiSink<'_> {
     /// no session.
     fn say(&mut self, kind: LineKind, text: &str) {
         self.0.say(kind, text);
-    }
-}
-
-/// One input line, handed to the command layer or sent as a message.
-///
-/// # Invariant
-///
-/// Sends what the completion asked for, and reports whether the popup is out of
-/// date. It runs outside the key handler, because a completion is answered
-/// synchronously and a peer's directory cannot be.
-async fn answer_completion(
-    client: &mut client::Client,
-    link: Option<&client::Link>,
-    ui: &mut Tui,
-    seen: &mut u64,
-) {
-    if let Some(open) = link {
-        for (target, directory) in client.take_wanted_paths() {
-            let Some(message) = client.ask_paths(&target, &directory) else {
-                continue;
-            };
-            if open.send(message).await.is_err() {
-                break;
-            }
-        }
-    }
-    let version = client.paths_version();
-    if version != *seen {
-        *seen = version;
-        ui.refresh_completion();
-    }
-}
-
-/// Tells the client what this window's own journals hold, once per greeting.
-///
-/// # Invariant
-///
-/// Only what is written down: a window the journal says nothing about is left
-/// undeclared, and an undeclared window is never fetched -- a fresh client has
-/// nothing to be behind on. See `docs/notes/tui-run.md`.
-fn declare(client: &mut client::Client, ui: &Tui) {
-    let names: Vec<String> = client.sessions().iter().map(|s| s.name.clone()).collect();
-    for name in names {
-        match ui.stamp_of(&name) {
-            Some((created, drawn)) => {
-                client.declare_drawn(&name, created, drawn, ui.floor_of(&name))
-            }
-            // No journal at all: nothing drawn, so the whole transcript is owed.
-            None => client.declare_empty(&name),
-        }
-    }
-}
-
-/// Asks the server for the rows of the windows a frame drew and the greeting
-/// found behind.
-///
-/// # Invariant
-///
-/// The draw is the trigger: a session nobody is reading is never fetched, so a
-/// reconnect costs one request per window the operator is looking at rather than
-/// one per session on the machine. The answer arrives as the events that drew
-/// those rows the first time, so a refilled window is drawn by the code that drew
-/// it live.
-async fn answer_transcripts(
-    client: &mut client::Client,
-    link: Option<&client::Link>,
-    ui: &mut Tui,
-) {
-    let Some(open) = link else {
-        return;
-    };
-    let behind: Vec<String> = client.behind().into_iter().map(|(name, _)| name).collect();
-    for name in behind {
-        if !ui.drawn().iter().any(|drawn| *drawn == name) {
-            continue;
-        }
-        let Some(message) = client.ask_transcript(&name, ui.room_of(&name)) else {
-            continue;
-        };
-        if open.send(message.clone()).await.is_err() {
-            client.never_sent(&message);
-            break;
-        }
-    }
-}
-
-/// Asks the server for the page above what the windows the operator scrolled past
-/// their first row hold.
-///
-/// # Invariant
-///
-/// The keystroke is the request: a page is fetched because someone asked to read
-/// above the rows they had, so a window sitting at its oldest row is not refilled
-/// over and over. `owed` is what the window asked for and has not been sent yet:
-/// a page is asked once, and kept only while an answer is already on its way.
-async fn answer_older(
-    client: &mut client::Client,
-    link: Option<&client::Link>,
-    ui: &mut Tui,
-    owed: &mut Vec<String>,
-) {
-    let Some(open) = link else {
-        return;
-    };
-    for name in std::mem::take(owed) {
-        // The transcript's own first row: there is nothing above it to read.
-        if ui.floor_of(&name).is_some_and(|floor| floor <= 1) {
-            continue;
-        }
-        // One page, shaped by the pane. A fill already on its way answers it too.
-        match client.ask_older(&name, ui.room_of(&name)) {
-            Some(message) => {
-                if open.send(message.clone()).await.is_err() {
-                    client.never_sent(&message);
-                    break;
-                }
-            }
-            None if client.waiting(&name) => owed.push(name),
-            None => {}
-        }
     }
 }
 
@@ -543,7 +424,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                         // Applying the greeting is what the server says; what
                         // this window kept is the other half of the comparison.
                         greeting.apply(&mut client, &mut TuiSink(&mut ui));
-                        declare(&mut client, &ui);
+                        window_refill::declare(&mut client, &ui);
                         link = Some(open);
                         backoff = runtime::RECONNECT_MIN;
                     }
@@ -574,11 +455,12 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
         }
         // After the step, never during it: a peer's directory is not a
         // synchronous answer.
-        answer_completion(&mut client, link.as_ref(), &mut ui, &mut drawn_listings).await;
+        window_refill::answer_completion(&mut client, link.as_ref(), &mut ui, &mut drawn_listings)
+            .await;
         // Same place, same reason: what a frame drew decides what is fetched.
-        answer_transcripts(&mut client, link.as_ref(), &mut ui).await;
+        window_refill::answer_transcripts(&mut client, link.as_ref(), &ui).await;
         // And what the operator asked to read above: a page of the past.
-        answer_older(&mut client, link.as_ref(), &mut ui, &mut owed).await;
+        window_refill::answer_older(&mut client, link.as_ref(), &ui, &mut owed).await;
     };
 
     // SPEC's stop, for the server the bar drew as own, and nothing for one that is
