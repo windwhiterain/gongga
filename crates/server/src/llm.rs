@@ -1095,7 +1095,23 @@ async fn read_stream_inner(
     }
     let request = request.body(reqwest::Body::wrap_stream(body));
 
-    let response = match tokio::time::timeout(headers_timeout, request.send()).await {
+    let response = match tokio::select! {
+        // Nothing else in this request listens to the token, so a server asked to
+        // stop used to wait out the provider's silence with the home still locked:
+        // the swap that asked it to leave looked finished and served nothing.
+        _ = cancel.cancelled() => {
+            probe.outcome("cancelled");
+            tracing::info!(elapsed = ?started.elapsed(), "model request: cancelled before headers");
+            let _ = tx
+                .send(LlmEvent::Failed {
+                    message: "the server stopped waiting for this answer".to_string(),
+                    retryable: false,
+                })
+                .await;
+            return;
+        }
+        sent = tokio::time::timeout(headers_timeout, request.send()) => sent,
+    } {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
             probe.outcome("send_failed");
