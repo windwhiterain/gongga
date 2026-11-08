@@ -2626,23 +2626,6 @@ impl Store {
         Ok(id)
     }
 
-    /// The job one call became, if it is still one.
-    ///
-    /// # Invariant
-    ///
-    /// By call id, because that is the only name a tool holds while it runs: a call
-    /// whose wait ended before it answered is a job the model has to be able to name.
-    pub fn job_of_call(&self, session: &str, call_id: &str) -> anyhow::Result<Option<i64>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id FROM tool_jobs WHERE session = ?1 AND call_id = ?2 ORDER BY id DESC LIMIT 1",
-        )?;
-        let id = stmt
-            .query_row(params![session, call_id], |row| row.get::<_, i64>(0))
-            .ok();
-        Ok(id)
-    }
-
     /// Writes how a job ended, and queues the notice that says so, in one act.
     ///
     /// # Invariant

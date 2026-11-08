@@ -2686,20 +2686,6 @@ pub(crate) async fn stop(d: &Dispatch) {
     tracing::info!(answer = %said.message, "stopped as a signal asks");
 }
 
-/// Whether the stop in progress is one that lets background jobs go.
-///
-/// # Invariant
-///
-/// Set by `cancel` before it interrupts anything. A tool whose process outlives its
-/// call reads it to tell the two stops apart: a client's `cancel` releases the work,
-/// every other stop ends it. See `docs/notes/server-commands.md`.
-static CANCEL_LETS_GO: AtomicBool = AtomicBool::new(false);
-
-/// Whether this stop lets the work go, and the next start adopt it.
-pub fn cancel_lets_go() -> bool {
-    CANCEL_LETS_GO.load(Ordering::SeqCst)
-}
-
 /// Interrupts every turn, records who asked, and leaves at once.
 ///
 /// # Invariant
@@ -2709,11 +2695,6 @@ pub fn cancel_lets_go() -> bool {
 /// says who asked. The status that follows from it states the fact, not the
 /// name -- see `docs/notes/server-commands.md`.
 async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
-    // Set first: a tool whose process outlives its call reads it to tell the stops apart.
-    CANCEL_LETS_GO.store(
-        matches!(origin, Origin::Client { .. } | Origin::Tool { .. }),
-        Ordering::SeqCst,
-    );
     // The listen loop keeps dispatching through the notice window.
     d.shutting_down.store(true, Ordering::SeqCst);
     let running = d.sessions.live_sessions();

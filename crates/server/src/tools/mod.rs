@@ -24,8 +24,6 @@ use crate::tools::detached::DetachedRegistry;
 pub mod bash;
 pub mod channel;
 pub mod detached;
-pub mod exec;
-pub mod exec_remote;
 pub mod interpreter;
 #[cfg(windows)]
 pub mod job;
@@ -146,19 +144,6 @@ impl ToolContext {
                 })
                 .await;
         }
-    }
-
-    /// Where one machine's shells run, for a tool that needs another program there.
-    ///
-    /// # Invariant
-    ///
-    /// `None` when the session has no shells on that machine, which is what a tool
-    /// reports rather than starting the program on the wrong one.
-    pub(crate) fn endpoint(&self, machine: Machine) -> Option<crate::remote::endpoint::Endpoint> {
-        self.shells
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .endpoint(machine)
     }
 
     /// The handle for `name` on `machine`, spawning the shell if this is its first use.
@@ -765,11 +750,6 @@ impl ToolRegistry {
             .unwrap_or(self.settings.bash_timeout);
         Ok(match row.cmd.as_str() {
             "bash" => Box::new(BashTool {
-                machine,
-                timeout: bash_timeout,
-                max_output_chars,
-            }),
-            "exec" => Box::new(exec::ExecTool {
                 machine,
                 timeout: bash_timeout,
                 max_output_chars,

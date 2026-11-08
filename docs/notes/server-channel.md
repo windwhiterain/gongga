@@ -173,6 +173,16 @@ Delete in this order, one slice at a time, each slice building and passing
    view and `cancel_lets_go` -- check each before removing it, because `cancel` and a
    `resume` after a stop read them.
 
+## Deleted so far
+
+**`exec`/`remote_exec`**, and the carrier behind them: `tools/exec.rs`,
+`tools/exec_remote.rs`, `tunnel::run_own_program` with its `Running` guard,
+`tunnel::promote_child`, `words::Own`/`spawn_own`, `Store::job_of_call`,
+`ToolContext::endpoint` and the `CANCEL_LETS_GO` flag nothing read any more. Their two
+rows went with them, and `scripts/job_selftest.sh` retired too: it tested "a call's own
+program becomes a job", which is what a channel is for now. `check_job`/`del_job` and
+`tools/detached.rs` are still here for the slice that removes the `background` carrier.
+
 What stays: `read_file`, `write_file`, `replace` (a model has no other door to a file),
 `list_paths`, `skill`, and every command in `commands.rs` that the channel world added.
 `Shells::names`, `ToolContext::peek` and the job view are used by live paths today; the

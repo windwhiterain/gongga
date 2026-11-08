@@ -38,7 +38,7 @@ call says so instead of pretending.
 
 Every tool's description rides every request, so a sentence said twice is paid on
 every turn. The non-local tools therefore state only their difference, in the tool's
-own terms: `remote_bash` is `bash` on the peer, `remote_exec` is `exec` there,
+own terms: `remote_bash` is `bash` on the peer,
 `remote_python` is `python` as `remote_bash` is `bash`, `python` is `bash` with `code`
 in place of `command`, and `check_python` / `del_python` / `list_python` name their
 shell counterparts in one clause. Measured: the sentences that describe the two
@@ -377,9 +377,9 @@ Three tools override it:
   one, and the old one reports the rest of its output into the inbox. "A message
   ended the wait" and "the deadline passed" are still one story, told with two
   reasons.
-- `exec`/`remote_exec` cannot keep it: a program with no shell has nowhere to be
-  left, so it is stopped with the call and its exit status is unknown. This is a
-  fact about `exec`, not a policy -- a remote run's lifetime *is* its connection.
+- A program with no shell has nowhere to be left, so it was stopped with the call
+  and its exit status was unknown: a fact about the `exec` tool, which no longer
+  exists. A channel is what a session uses when the program must outlive the call.
 - `python`/`remote_python` ends the interpreter. A foreground call reads its own
   reply line under the interpreter's lock, so a call that returned without reading
   it would hand that line to the next caller as the answer to another question.
