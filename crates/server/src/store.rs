@@ -1159,9 +1159,22 @@ impl Store {
         item: &str,
         pictures: &str,
     ) -> anyhow::Result<()> {
+        Self::append_context_item(conn, session_id, message_seq, "input", None, item, pictures)
+    }
+
+    /// One item, saying whether it fills a provider field or joins the messages.
+    pub(crate) fn append_context_item(
+        conn: &rusqlite::Connection,
+        session_id: i64,
+        message_seq: i64,
+        slot: &str,
+        field: Option<&str>,
+        item: &str,
+        pictures: &str,
+    ) -> anyhow::Result<()> {
         conn.execute(
             "INSERT INTO context_rows
-                 (session_id, generation, position, message_seq, item, pictures)
+                 (session_id, generation, position, message_seq, slot, field, item, pictures)
              VALUES (
                 ?1,
                 (SELECT COALESCE(MAX(generation), 0) FROM context_rows WHERE session_id = ?1),
@@ -1169,11 +1182,62 @@ impl Store {
                   WHERE session_id = ?1
                     AND generation = (SELECT COALESCE(MAX(generation), 0) FROM context_rows
                                        WHERE session_id = ?1)),
-                ?2, ?3, ?4
+                ?2, ?3, ?4, ?5, ?6
              )",
-            params![session_id, message_seq, item, pictures],
+            params![session_id, message_seq, slot, field, item, pictures],
         )?;
         Ok(())
+    }
+
+    /// One item appended to the generation now in force.
+    pub fn append_item(
+        &self,
+        session_id: i64,
+        message_seq: i64,
+        slot: &str,
+        field: Option<&str>,
+        item: &str,
+        pictures: &str,
+    ) -> anyhow::Result<()> {
+        Self::append_context_item(
+            &self.lock(),
+            session_id,
+            message_seq,
+            slot,
+            field,
+            item,
+            pictures,
+        )
+    }
+
+    /// The provider fields the generation in force fills, each by its last write.
+    ///
+    /// # Invariant
+    ///
+    /// Later wins: a session that moved to a peer appends its tool set again, and
+    /// what it says now is what a request sends. Only the generation in force is
+    /// read, so a copy of an earlier write is never taken for a second one.
+    pub fn context_fields(
+        &self,
+        session_id: i64,
+        upto_seq: i64,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT r.field, r.item FROM context_rows r
+             WHERE r.session_id = ?1 AND r.slot = 'field' AND r.message_seq <= ?2
+               AND r.generation = (SELECT COALESCE(MAX(generation), 0) FROM context_rows
+                                    WHERE session_id = ?1)
+               AND r.position = (
+                   SELECT MAX(o.position) FROM context_rows o
+                   WHERE o.session_id = r.session_id AND o.generation = r.generation
+                     AND o.field = r.field AND o.slot = 'field')
+             ORDER BY r.position",
+        )?;
+        let rows = stmt.query_map(params![session_id, upto_seq], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     /// Drops every row after `seq`, returning how many went.
@@ -1726,20 +1790,6 @@ impl Store {
         })
     }
 
-    /// Whether this lineage has a compaction origin: what puts the schema in.
-    pub fn has_live_compact_origin(&self, session_id: i64) -> anyhow::Result<bool> {
-        let origin: Option<i64> = self
-            .lock()
-            .query_row(
-                "SELECT live_compact_origin_seq FROM sessions WHERE id = ?1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        Ok(origin.is_some())
-    }
-
     /// Records the first provider measurement for the current visible checkpoint.
     pub fn set_live_compact_baseline(
         &self,
@@ -1955,7 +2005,8 @@ impl Store {
     ///
     /// What a request then reads is a stored, ordered list: the prefix up to the
     /// checkpoint, the summary in place of the segment it replaces, and the retained
-    /// round after it. Nothing here is decided again while a request is built.
+    /// round after it. A row keeps its slot, so a field stays a field and a message
+    /// stays a message; nothing here is decided again while a request is built.
     fn write_next_generation(
         tx: &rusqlite::Transaction<'_>,
         session_id: i64,
@@ -1969,20 +2020,22 @@ impl Store {
         )?;
         let rows = {
             let mut stmt = tx.prepare(
-                "SELECT message_seq, item, pictures FROM context_rows
+                "SELECT message_seq, slot, field, item, pictures FROM context_rows
                  WHERE session_id = ?1 AND generation = ?2 ORDER BY position",
             )?;
             let mapped = stmt.query_map(params![session_id, from], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             })?;
             mapped.collect::<Result<Vec<_>, _>>()?
         };
         let mut position = 0i64;
-        for (message_seq, item, pictures) in rows {
+        for (message_seq, slot, field, item, pictures) in rows {
             let kept = message_seq <= request.segment_after_seq
                 || artifacts.contains(&message_seq)
                 || message_seq >= request.round_start_seq;
@@ -1992,9 +2045,19 @@ impl Store {
             position += 1;
             tx.execute(
                 "INSERT INTO context_rows
-                     (session_id, generation, position, message_seq, item, pictures)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![session_id, from + 1, position, message_seq, item, pictures],
+                     (session_id, generation, position, message_seq, slot, field,
+                      item, pictures)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    session_id,
+                    from + 1,
+                    position,
+                    message_seq,
+                    slot,
+                    field,
+                    item,
+                    pictures
+                ],
             )?;
         }
         Ok(())
@@ -3229,6 +3292,78 @@ fn user_row(expanded: &crate::meta::Expanded) -> serde_json::Value {
     row
 }
 
+/// The items a prompt puts in the sequence: instructions as a field, then opening,
+/// separator, index, card as messages.
+///
+/// # Invariant
+///
+/// Written once, at creation and when a home written before `context_rows` is
+/// materialised, so a request neither places nor spells any of them. See
+/// `docs/notes/server-context.md`.
+pub(crate) fn prompt_items(prompt: &Prompt) -> Vec<(String, Option<String>, String)> {
+    let framing = crate::llm::index_framing();
+    let input = |name: &str, item: serde_json::Value| {
+        (
+            "input".to_string(),
+            Some(name.to_string()),
+            item.to_string(),
+        )
+    };
+    let mut items: Vec<(String, Option<String>, String)> = Vec::new();
+    if !prompt.instructions.is_empty() {
+        items.push((
+            "field".to_string(),
+            Some("instructions".to_string()),
+            json!(prompt.instructions).to_string(),
+        ));
+    }
+    if !framing.opening.is_empty() {
+        items.push(input(
+            "opening",
+            json!({"role": "user",
+                       "content": [{"type": "input_text", "text": framing.opening}]}),
+        ));
+    }
+    if let Some(index) = prompt
+        .index
+        .as_deref()
+        .filter(|_| !framing.separator.is_empty())
+    {
+        items.push(input(
+            "separator",
+            json!({"role": "assistant",
+                       "content": [{"type": "output_text", "text": framing.separator}]}),
+        ));
+        items.push(input(
+            "index",
+            json!({"role": "user", "content": [{"type": "input_text", "text": index}]}),
+        ));
+    }
+    if let Some(card) = prompt.tail.as_deref().filter(|card| !card.is_empty()) {
+        items.push(input(
+            "card",
+            json!({"role": "user", "content": [{"type": "input_text", "text": card}]}),
+        ));
+    }
+    items
+}
+
+/// The item a tool set puts in the sequence, or nothing when it offers no tool.
+pub(crate) fn tool_set_items(tool_set: &ToolSet) -> Vec<(String, Option<String>, String)> {
+    if !tool_set
+        .tools
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty())
+    {
+        return Vec::new();
+    }
+    vec![(
+        "field".to_string(),
+        Some("tools".to_string()),
+        tool_set.tools.to_string(),
+    )]
+}
+
 /// Materialises the sequence a home written before `context_rows` was sending.
 ///
 /// # Invariant
@@ -3266,23 +3401,26 @@ fn backfill_context_rows(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 |row| row.get(0),
             )
             .optional()?;
-        // A row's sendable form is its `content`; its pictures are in `display`.
+        // A message's item is `content`; its payload is `display`, where a head lives.
         let rows = {
             let mut stmt = conn.prepare(
-                "SELECT seq, content, display FROM messages
-                 WHERE session_id = ?1 AND content IS NOT NULL ORDER BY seq",
+                "SELECT seq, kind, content, display FROM messages
+                 WHERE session_id = ?1
+                   AND (content IS NOT NULL OR kind IN ('system', 'tools'))
+                 ORDER BY seq",
             )?;
             let mapped = stmt.query_map(params![session_id], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })?;
             mapped.collect::<Result<Vec<_>, _>>()?
         };
         let mut position = 0i64;
-        for (seq, item, display) in rows {
+        for (seq, kind, item, display) in rows {
             let kept = match (prefix_end, round_start) {
                 (Some(end), Some(start)) => {
                     seq <= end
@@ -3302,20 +3440,39 @@ fn backfill_context_rows(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             if !kept {
                 continue;
             }
-            position += 1;
-            let pictures = serde_json::Value::Array(
-                images_of(&serde_json::from_str(&display).unwrap_or_default())
-                    .iter()
-                    .map(|image| image.to_json())
-                    .collect(),
-            )
-            .to_string();
-            conn.execute(
-                "INSERT OR IGNORE INTO context_rows
-                     (session_id, generation, position, message_seq, item, pictures)
-                 VALUES (?1, 0, ?2, ?3, ?4, ?5)",
-                params![session_id, position, seq, item, pictures],
-            )?;
+            let written = match (kind.as_str(), item) {
+                ("system", _) => match serde_json::from_str::<Prompt>(&display) {
+                    Ok(prompt) => prompt_items(&prompt),
+                    Err(_) => continue,
+                },
+                ("tools", _) => match serde_json::from_str::<ToolSet>(&display) {
+                    Ok(tool_set) => tool_set_items(&tool_set),
+                    Err(_) => continue,
+                },
+                (_, Some(item)) => vec![("input".to_string(), None, item)],
+                (_, None) => continue,
+            };
+            for (slot, field, item) in written {
+                position += 1;
+                // Pictures ride in a message; a provider field names none.
+                let pictures = match slot.as_str() {
+                    "input" => serde_json::Value::Array(
+                        images_of(&serde_json::from_str(&display).unwrap_or_default())
+                            .iter()
+                            .map(|image| image.to_json())
+                            .collect(),
+                    )
+                    .to_string(),
+                    _ => "[]".to_string(),
+                };
+                conn.execute(
+                    "INSERT OR IGNORE INTO context_rows
+                         (session_id, generation, position, message_seq, slot, field,
+                          item, pictures)
+                     VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![session_id, position, seq, slot, field, item, pictures],
+                )?;
+            }
         }
     }
     Ok(())

@@ -85,6 +85,11 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             generation  INTEGER NOT NULL,
             position    INTEGER NOT NULL,
             message_seq INTEGER NOT NULL,
+            -- 'input' is an element of the request's message array; 'field' is a
+            -- provider field, named in `field`. The row says which; the request
+            -- does not decide it.
+            slot        TEXT NOT NULL DEFAULT 'input',
+            field       TEXT,
             item        TEXT NOT NULL,
             pictures    TEXT NOT NULL DEFAULT '[]',
             PRIMARY KEY (session_id, generation, position)
@@ -95,7 +100,23 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             checkpoint_id INTEGER NOT NULL REFERENCES live_compact_checkpoints(id) ON DELETE CASCADE,
             PRIMARY KEY (session_id, message_seq)
         );",
-    )
+    )?;
+    // After the table it widens: a home written before the slot existed gets it here.
+    for (column, ddl) in [
+        (
+            "slot",
+            "ALTER TABLE context_rows ADD COLUMN slot TEXT NOT NULL DEFAULT 'input'",
+        ),
+        ("field", "ALTER TABLE context_rows ADD COLUMN field TEXT"),
+    ] {
+        if conn
+            .prepare(&format!("SELECT {column} FROM context_rows LIMIT 1"))
+            .is_err()
+        {
+            conn.execute(ddl, [])?;
+        }
+    }
+    Ok(())
 }
 
 /// Finds a complete ordinary round; malformed or interrupted rounds suppress compaction.

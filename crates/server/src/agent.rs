@@ -603,7 +603,12 @@ impl Agent {
             remote: remote.map(str::to_string),
             model: Some(model.to_string()),
         };
-        self.store.append_prompt(id, &prompt)?;
+        let prompt_seq = self.store.append_prompt(id, &prompt)?;
+        // The items a request reads, written once where they are decided.
+        for (slot, field, item) in crate::store::prompt_items(&prompt) {
+            self.store
+                .append_item(id, prompt_seq, &slot, field.as_deref(), &item, "[]")?;
+        }
         Ok(prompt)
     }
 
@@ -623,9 +628,24 @@ impl Agent {
         model: &str,
         llm: &crate::llm::LlmClient,
     ) -> anyhow::Result<crate::store::ToolSet> {
-        // Written once, with the first request's rows; no later event writes one.
+        // Written once with the first rows; a move adds one, and says where it is.
         if let Some(kept) = self.store.tool_set(id)? {
-            return Ok(kept);
+            if kept.remote == session.remote_name() {
+                return Ok(kept);
+            }
+            // A move: what the session now stands on is said before it sends there.
+            self.store.append_message(
+                id,
+                "text",
+                &serde_json::json!({
+                    "role": "user",
+                    "text": format!(
+                        "This session now stands on {} at {}.",
+                        session.remote_name().unwrap_or_else(|| "this machine".to_string()),
+                        session.cwd().display(),
+                    ),
+                }),
+            )?;
         }
         let tool_set = crate::store::ToolSet {
             tools: llm.wire_tools(&self.tools.stamp(session.on_remote())),
@@ -633,7 +653,11 @@ impl Agent {
             remote: session.remote_name(),
             build: protocol::BUILD.to_string(),
         };
-        self.store.append_tool_set(id, &tool_set)?;
+        let tool_set_seq = self.store.append_tool_set(id, &tool_set)?;
+        for (slot, field, item) in crate::store::tool_set_items(&tool_set) {
+            self.store
+                .append_item(id, tool_set_seq, &slot, field.as_deref(), &item, "[]")?;
+        }
         Ok(tool_set)
     }
 
@@ -905,8 +929,8 @@ impl Agent {
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
-        // Read beside the stored prompt; a request assembles no part of its head.
-        let tools = self.tool_set_in_force(session, id, llm.model(), llm)?;
+        // The write, when the session has none; the request reads the items.
+        self.tool_set_in_force(session, id, llm.model(), llm)?;
         let reader = session.reader();
         let source = match (&reader, session.owner()) {
             (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
@@ -939,13 +963,11 @@ impl Agent {
         } else {
             prompt.cwd.clone()
         };
+        let fields = self.store.context_fields(id, source.upto_seq)?;
         let mut rx = llm.stream(
-            &prompt.instructions,
-            prompt.index.as_deref(),
-            prompt.tail.as_deref(),
+            &fields,
             &source,
             &affinity,
-            &tools.tools,
             effort,
             tier.as_deref(),
             cancel.clone(),

@@ -45,6 +45,7 @@ impl Iterator for Transcript {
             "SELECT r.position, r.item, r.pictures
              FROM context_rows r
              WHERE r.session_id = ?1 AND r.position > ?2 AND r.message_seq <= ?3
+               AND r.slot = 'input'
                AND r.generation = (SELECT COALESCE(MAX(generation), 0) FROM context_rows
                                     WHERE session_id = ?1)
              ORDER BY r.position LIMIT 1",

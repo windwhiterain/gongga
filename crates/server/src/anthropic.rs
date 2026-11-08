@@ -36,14 +36,22 @@ pub struct Framing {
 pub fn head(
     model: &str,
     max_tokens: u32,
-    instructions: &str,
-    tools: &[Value],
+    fields: &[(String, String)],
     effort: Option<&str>,
     temperature: Option<f32>,
-    indexing: (Framing, Option<&str>),
-    card: Option<&str>,
 ) -> Vec<u8> {
-    let (framing, index) = indexing;
+    // The same stored fields, spelled the way this face spells them.
+    let value = |name: &str| {
+        fields
+            .iter()
+            .find(|(field, _)| field == name)
+            .map(|(_, value)| value.clone())
+    };
+    let instructions = value("instructions").unwrap_or_else(|| "\"\"".to_string());
+    let instructions: String = serde_json::from_str(&instructions).unwrap_or_default();
+    let tools: Vec<Value> = value("tools")
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default();
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -69,32 +77,7 @@ pub fn head(
     let mut head = body.to_string();
     head.pop();
     head.push_str(",\"messages\":[");
-    if !framing.opening.is_empty() {
-        head.push_str(
-            &json!({"role": "user", "content": [{"type": "text", "text": framing.opening}]})
-                .to_string(),
-        );
-        head.push(',');
-    }
-    if !framing.separator.is_empty() && index.is_some() {
-        head.push_str(
-            &json!({"role": "assistant", "content": [{"type": "text", "text": framing.separator}]})
-                .to_string(),
-        );
-        head.push(',');
-    }
-    if let Some(index) = index.filter(|index| !index.is_empty()) {
-        head.push_str(
-            &json!({"role": "user", "content": [{"type": "text", "text": index}]}).to_string(),
-        );
-        head.push(',');
-    }
-    if let Some(card) = card.filter(|card| !card.is_empty()) {
-        head.push_str(
-            &json!({"role": "user", "content": [{"type": "text", "text": card}]}).to_string(),
-        );
-        head.push(',');
-    }
+
     head.into_bytes()
 }
 

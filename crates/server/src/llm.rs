@@ -241,27 +241,16 @@ impl LlmClient {
     /// See `docs/notes/server-llm.md`.
     pub fn stream(
         &self,
-        instructions: &str,
-        index: Option<&str>,
-        tail: Option<&str>,
+        fields: &[(String, String)],
         source: &RequestSource,
         affinity: &str,
-        tools: &Value,
         effort: Option<&str>,
         cache_tier: Option<&str>,
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
-        let head = self.build_head(
-            instructions,
-            index,
-            tail,
-            affinity,
-            tools,
-            effort,
-            cache_tier,
-        );
+        let head = self.build_head(fields, affinity, effort, cache_tier);
         let session_header = self.cache_session_header.then(|| affinity.to_string());
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
@@ -487,29 +476,19 @@ impl LlmClient {
     /// so a face that opened `"messages"` must be the face that writes messages.
     fn build_head(
         &self,
-        instructions: &str,
-        index: Option<&str>,
-        card: Option<&str>,
+        fields: &[(String, String)],
         affinity: &str,
-        tools: &Value,
         effort: Option<&str>,
         cache_tier: Option<&str>,
     ) -> Vec<u8> {
-        // The index travels as a message, never in the system text.
-        // See `docs/reference/prefix-cache.md`.
-        let index = index.filter(|index| !index.is_empty());
+        // Every field comes from a stored item; nothing here is rendered or placed.
         if self.face == Face::Anthropic {
-            // The stored row's bytes; a request assembles no part of its head.
-            let offered: &[Value] = tools.as_array().map(Vec::as_slice).unwrap_or(&[]);
             return crate::anthropic::head(
                 &self.model_name,
                 self.max_output_tokens,
-                instructions,
-                offered,
+                fields,
                 effort,
                 self.temperature,
-                (index_framing(), index),
-                card,
             );
         }
         let mut body = json!({
@@ -528,12 +507,8 @@ impl LlmClient {
         if self.cache_affinity {
             body["prompt_cache_key"] = json!(affinity);
         }
-        if !instructions.is_empty() {
-            body["instructions"] = json!(instructions);
-        }
-        // The stored block, verbatim; empty sends no key at all.
-        if tools.as_array().is_some_and(|offered| !offered.is_empty()) {
-            body["tools"] = tools.clone();
+        for (field, value) in fields {
+            body[field.as_str()] = serde_json::from_str(value).unwrap_or(Value::Null);
         }
         if let Some(t) = self.temperature {
             body["temperature"] = json!(t);
@@ -556,49 +531,6 @@ impl LlmClient {
         let mut head = body.to_string();
         head.pop();
         head.push_str(",\"input\":[");
-        // The opening and separator come first: the index is never the first message.
-        let framing = index_framing();
-        if !framing.opening.is_empty() {
-            head.push_str(
-                &json!({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": framing.opening}],
-                })
-                .to_string(),
-            );
-            head.push(',');
-        }
-        if !framing.separator.is_empty() && index.is_some() {
-            let separator = &framing.separator;
-            head.push_str(
-                &json!({
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": separator}],
-                })
-                .to_string(),
-            );
-            head.push(',');
-        }
-        if let Some(index) = index {
-            head.push_str(
-                &json!({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": index}],
-                })
-                .to_string(),
-            );
-            head.push(',');
-        }
-        if let Some(card) = card.filter(|card| !card.is_empty()) {
-            head.push_str(
-                &json!({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": card}],
-                })
-                .to_string(),
-            );
-            head.push(',');
-        }
         head.into_bytes()
     }
 }
@@ -1391,7 +1323,7 @@ pub(crate) fn sendable_activity(
 }
 
 /// The constant opening and separator, when this home carries them.
-fn index_framing() -> crate::anthropic::Framing {
+pub(crate) fn index_framing() -> crate::anthropic::Framing {
     let prompts = crate::prompts::shared();
     // Both are in `REQUIRED`: a home without them does not start.
     let text = |name: &str| prompts.text(name).unwrap_or_default().trim().to_string();
