@@ -260,7 +260,9 @@ pub async fn run(
                 // The key this window dials with, so the child does not mint
                 // another one and refuse the window that started it.
                 let key = conn.key.clone();
-                crate::spawn(&home, addr, Some(std::process::id()), key.as_deref())
+                // `--parent` names the UI: a crashed client must not take the
+                // server from a window that is still there.
+                crate::spawn(&home, addr, Some(owner_pid), key.as_deref())
                     .ok()
                     .flatten()
             }

@@ -36,7 +36,7 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）仍是 library crate；`window_state.rs` / `window_command.rs` / `runtime.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` 均已上提 | 给它加 bin target，由 UI 用管道拉起；`run.rs` 的 `interactive` 主循环与 `log.rs` / `panes.rs` 的窗口索引上提 |
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` 均已上提 | UI 改为 spawn 这个 bin、只做绘制；`log.rs` / `panes.rs` 的窗口 journal 与 ratatui 折行上提；`WindowFacts` 改由 client 本地 journal 回答 |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
 | `[tui]` binary | `crates/tui`，`run.rs` 仍装着 `interactive` 主循环、`TuiSink` 与窗口 journal | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
@@ -233,8 +233,10 @@ client 的生命周期绑定 UI。只有 **UI ↔ client 一对一**；**client 
 2. **孙进程不会串进协议流**：`crates/client/src/server.rs:258-260` 起 server 时已把
    它的 stdin 设 null、stdout/stderr 指向同一日志文件。client 的 stdout 因此干净。
 3. **背压**：`WireSink` 是同步 `&mut`，不能在 client 主循环里同步写管道；要一个写 task
-   + 有界队列 `try_send`。UI 侧同样要持续 drain stdout，不能等有空才读。这就是
-   「`Sink` 同步、adapter 不能 await」那条不变式的具体形状。
+   + 队列，UI 侧同样要持续 drain stdout，不能等有空才读。落地用的是
+   `mpsc::unbounded_channel` 而不是有界 `try_send`：满了只有「丢帧」和「阻塞主循环」
+   两条路，两条都违反「不静默丢帧」与「`Sink` 不能 await」。写 task 只做 `write_all`
+   + `flush`，主循环从不碰管道。这就是「`Sink` 同步、adapter 不能 await」的形状。
 4. **TTY 不冲突**：`crates/client/src/` 里没有任何 `is_terminal` / `IsTerminal` 探测，
    TUI 自己持有真实终端（crossterm raw mode），client 子进程的 stdin/stdout 是管道。
 
@@ -300,7 +302,7 @@ server + client + TUI，WebUI 等自行分发；若指的是别的，说一声�
 `Step` / `Dialing` 与整个 `run` 循环，循环只经 `Box<dyn Frontend>` 访问 UI；
 `crates/tui/src/run.rs` 只剩 `TuiSink`、三个接口实现与构造 UI 的 `interactive`
 包装；`log.rs` 里的 `Log` / `Panes` / ratatui 折行仍待；⑤ client bin target
-接管道骨架（`run` 已在 client，不再是空壳）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
+接管道骨架（已完成，见下一节）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
 payload）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
 主循环上提的接口形状（object-safe `Frontend`、`Box<dyn Sink>`、`FrontendEvent`
 与两步迁移）见 `docs/notes/client-frontend.md`；两步均已完成，循环现由
@@ -318,8 +320,42 @@ ratatui 折行与 `materialize` 留在 TUI。等窗口索引也上提，`declare
 **④ 里随 `--parent` 裁定修掉的一处**：`whose_server` 原先用 `std::process::id()`
 比对 server 的 `--parent`；client 成为 UI 的子进程后，这个值会是 client 自己的 pid，
 而 `--parent` 是 UI pid，handover 会被误判成「别人的 server」。上提时把 owner pid
-改成了显式参数，`interactive` 当前传本进程 id（UI 还没拆出去），拆分后从 argv 取。
-见 `docs/notes/client-runtime.md`。
+改成了显式参数，`interactive` 当前传本进程 id（UI 还没拆出去）。client bin 则从隐藏的
+`--parent` 取 UI pid，并把它透传给 `spawn()`，所以 server 跟的是 UI 而不是 client。
+见 `docs/notes/client-runtime.md` 与 `docs/notes/client-pipe.md`。
+
+### 形态 2 的第五步：client bin 已接上管道（2026-11-08）
+
+`crates/client/Cargo.toml` 现在同时是 library 和 `gongga-client` bin，`src/main.rs`
+只做装配：解析 argv、起一个写 stdout 的 task、把 `BufReader(stdin).lines()` 交给
+`PipeFrontend`，再调 `runtime::run(&args, owner_pid, ...)`。library 里没有新增终端
+类型，`render_wire.rs` 的词汇表也没有多一个变体。
+
+- **入口是显式的**：这是独立的二进制，不靠 stdin 是不是 TTY 猜模式；带命令进来直接
+  报错（一次性命令仍归 `gongga-cli`）。`--parent <pid>` 是隐藏的全局参数，UI 传自己
+  的 pid；`runtime::run` 把它交给 `spawn()`，server 的 `--parent` 因此跟 UI，
+  client 崩了而 UI 还在时 server 不停。TUI 仍在同一进程，`interactive` 传本进程 id。
+- **一条进一条出**：stdin 一行一个 `UiIntent`，坏行不静默丢弃，回一条 `Note{Error}`
+  后继续读；EOF 是 UI 走了（`FrontendEvent::Closed`），`Quit` 是操作者要离开，
+  两者都让循环收尾。`closing()` 现在是 `pending()`，不额外发明第二种退出信号。
+- **stdout 只有帧**：`PipeSink` 把一次调用的 17 个 `Sink` 方法转交给 `WireSink`，
+  drop 时把 `RenderMessage` 编成 JSON Lines 交给写 task，`CursorMessage` 就地消费
+  （stamp / floor / settled），不过线。stderr 只有编码失败的诊断；UI 起进程时应按
+  硬点 1 把它重定向到日志，不要 `piped()` 之后不读。
+- **实测**：临时 home + `--client_only`，喂 `quit` / EOF / 坏行 / 带换行的提交，
+  `exit=0`、stderr 空、每行都是合法 JSON；带换行的文本被转义成一个帧。逐条记录在
+  `.dev/verify/<sha>-pipe.json`。
+
+**这仍是骨架**：`WindowFacts` 由 `PipeFrontend` 从自己产出的帧里答（stamp / floor /
+drawn），`room_of` 目前返回 0（`ask_transcript` 会兜到 1 行），`known_list` 为空。
+`log.rs` / `panes.rs` 的 journal 搬进 client 后，这些答案都从本地 journal 出，
+不再依赖帧的副产物。`WindowView` 里还欠四类过线的控制帧：completion 词表刷新、
+server 归属（header 画 own / not own）、`repoint` 后的窗口清理、以及把未发出的输入
+还给 UI 的 draft（现在退化成一条 `Note`）。这些是 ⑥ 的前置，不是第二套协议。
+
+裁定 2 的 bundle 布线（⑦）还没做：`gongga-client` 现在能被 cargo 构建出来，但
+`crates/bundle` 的 payload 白名单仍只认 `gongga-server` / `gongga-tui` /
+`gongga-cli`，分发包里还没有它。
 
 ## 2. 传输层：可靠 UDP
 

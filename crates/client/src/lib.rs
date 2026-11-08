@@ -90,6 +90,15 @@ pub struct Args {
     /// Stop a server of another build by pid instead of asking it to cancel.
     #[arg(long, global = true)]
     pub force: bool,
+    /// The UI's pid, passed by the UI when it starts this client as a child.
+    ///
+    /// # Invariant
+    ///
+    /// A server this client starts follows the UI, not the client: the window
+    /// outliving a crashed client keeps its server. Hidden because only a UI
+    /// writes it. See `docs/notes/client-pipe.md`.
+    #[arg(long, hide = true, global = true)]
+    pub parent: Option<u32>,
     #[command(subcommand)]
     pub command: Option<Sub>,
 }
@@ -124,6 +133,7 @@ impl Args {
                 "--key",
                 "--client_only",
                 "--client-only",
+                "--parent",
                 "--force",
             ];
             if let Some(flag) = ordered

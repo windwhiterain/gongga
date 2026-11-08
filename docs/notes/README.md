@@ -28,7 +28,7 @@ you are about to touch.
 | change what a client sends or receives | [`client-lib.md`](client-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
 | rename the client library or add a front-end | `SPEC.md` `## Crate Structure`, [`client-lib.md`](client-lib.md), `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` |
-| change what crosses the language boundary | [`client-render-wire.md`](client-render-wire.md), `DESIGN.md` §1 "形态 2" |
+| change what crosses the language boundary | [`client-render-wire.md`](client-render-wire.md), [`client-pipe.md`](client-pipe.md), `DESIGN.md` §1 "形态 2" |
 | change what the window remembers (`client.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
 
 ## Naming debt (2026-11-07)
