@@ -24,6 +24,7 @@ use crate::tools::detached::DetachedRegistry;
 pub mod bash;
 pub mod channel;
 pub mod detached;
+pub mod file;
 pub mod interpreter;
 #[cfg(windows)]
 pub mod job;
@@ -782,19 +783,19 @@ impl ToolRegistry {
                     "check_python" => Box::new(python::CheckPythonTool),
                     "del_python" => Box::new(python::DelPythonTool),
                     "list_python" => Box::new(python::ListPythonTool),
-                    "read_file" => Box::new(python::ReadFileTool {
+                    "read_file" => Box::new(file::ReadFileTool {
                         program: python.program.clone(),
                         args: python.args.clone(),
                         timeout: python.timeout,
                         max_output_chars: cap,
                     }),
-                    "write_file" => Box::new(python::WriteFileTool {
+                    "write_file" => Box::new(file::WriteFileTool {
                         program: python.program.clone(),
                         args: python.args.clone(),
                         timeout: python.timeout,
                         max_output_chars: cap,
                     }),
-                    _ => Box::new(python::ReplaceTool {
+                    _ => Box::new(file::ReplaceTool {
                         program: python.program.clone(),
                         args: python.args.clone(),
                         timeout: python.timeout,
