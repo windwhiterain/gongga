@@ -60,6 +60,12 @@ finished channel's notice and a `check` never hand the same bytes over twice.
 `until` is the caller's marker: the window is cut at it and the marker is not
 returned, because `matched` is the answer to "was it there".
 
+`time` is what *this call* cost, and its start is the call's own input: a `check` that
+writes measures from that write, and one that only reads measures from the channel's
+last write (the program's start, before any). A channel that has been alive for an
+hour answers a fresh command with the milliseconds it took, which is the number a
+reader is asking for -- so the row records `wrote_at` beside the cursor.
+
 ## `[channel.<name>]`: what a name is
 
 One section per name `new` knows, and nothing there is about a tool:

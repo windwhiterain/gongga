@@ -171,6 +171,14 @@ say "$slow"
 ok "a command slower than a second still answers" \
   "$([[ "$(field "$slow" output | tr -d '\n')" == slow-said ]] && echo 0 || echo 1)"
 
+# 3c. `time` is what this call cost: from its own write, not from when the channel
+#     was opened. The channel has been alive for a while by now.
+aged=$("${cli[@]}" check main "$shell_id" --input 'echo aged' --wait 5000 2>&1)
+say "aged: time=$(field "$aged" time)"
+ok "time is measured from this call's input"   "$(python -c 'import sys
+raw = sys.argv[1].rstrip("s")
+print(0 if 0 < float(raw) < 3 else 1)' "$(field "$aged" time)" 2>/dev/null || echo 1)"
+
 # 4. The window moves: what one call took, the next does not see.
 empty=$("${cli[@]}" check main "$shell_id" --wait 0 2>&1)
 say "$empty"

@@ -410,6 +410,8 @@ impl Channels {
         let row = self.row_of(session, id)?;
         let place = self.place_of(&row).await?;
         let grammar = self.grammar_of(&row.program);
+        // `time` is what this call cost: from its own write, or from the last one.
+        let mut since = row.wrote_at.unwrap_or(row.started_at);
         // A sentinel is generated per write, and only for a write: a read alone has
         // nothing to frame.
         let sentinel = if input.is_some() && grammar.until.as_deref().is_some_and(has_sentinel) {
@@ -429,6 +431,12 @@ impl Channels {
             command.push_str(&crate::base64::encode(spelled.as_bytes()));
             command.push('\n');
             place.append("in", &command).await?;
+            // This call's own clock starts at its write, which is what `time` is.
+            let at = now_millis();
+            self.store
+                .set_channel_wrote(session, id, at)
+                .map_err(quiet)?;
+            since = at;
         }
         let marker = match until {
             Some(marker) => Some(marker.to_string()),
@@ -452,11 +460,12 @@ impl Channels {
                     looked.upto,
                     looked.exit.or(ended),
                     ended,
+                    since,
                 );
             }
             if Instant::now() >= deadline {
                 // Nothing arrived: what is there is the answer, and the cursor moves.
-                return self.answer(row, looked.window, false, looked.upto, None, ended);
+                return self.answer(row, looked.window, false, looked.upto, None, ended, since);
             }
             tokio::time::sleep(LOOK).await;
         }
@@ -470,6 +479,7 @@ impl Channels {
     /// gone. Only `gone` ends the channel: a framed command inside a persistent shell
     /// reports a status on every call, and a channel that read that as its own end would
     /// answer one command and refuse the next.
+    #[allow(clippy::too_many_arguments)]
     fn answer(
         &self,
         row: ChannelRow,
@@ -478,6 +488,7 @@ impl Channels {
         read_to: u64,
         exit: Option<i32>,
         gone: Option<i32>,
+        since: i64,
     ) -> Result<Outcome, String> {
         self.store
             .set_channel_upto(row.id, read_to)
@@ -488,12 +499,7 @@ impl Channels {
         Ok(Outcome {
             id: row.path.clone(),
             output,
-            time: Duration::from_millis(
-                (now_millis() - row.started_at)
-                    .max(0)
-                    .try_into()
-                    .unwrap_or(0),
-            ),
+            time: Duration::from_millis((now_millis() - since).max(0).try_into().unwrap_or(0)),
             matched,
             exit,
         })

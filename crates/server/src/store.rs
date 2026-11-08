@@ -344,6 +344,9 @@ CREATE TABLE IF NOT EXISTS channels (
     ended_at     INTEGER,
     exit         INTEGER,
     upto         INTEGER NOT NULL DEFAULT 0,
+    -- When this channel was last written to: what a call's `time` is measured
+    -- from. NULL until the first write, so the program's start stands then.
+    wrote_at     INTEGER,
     UNIQUE (session, path)
 );
 
@@ -539,6 +542,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "messages",
         "call_id",
         "ALTER TABLE messages ADD COLUMN call_id TEXT",
+    )?;
+    add_column_if_missing(
+        conn,
+        "channels",
+        "wrote_at",
+        "ALTER TABLE channels ADD COLUMN wrote_at INTEGER",
     )?;
     add_column_if_missing(
         conn,
@@ -2712,7 +2721,7 @@ impl Store {
     pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
              FROM channels WHERE session = ?1 ORDER BY path",
         )?;
         let rows = stmt
@@ -2726,7 +2735,7 @@ impl Store {
     pub fn live_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
              FROM channels WHERE ended_at IS NULL ORDER BY id",
         )?;
         let rows = stmt
@@ -2739,7 +2748,7 @@ impl Store {
     pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
              FROM channels WHERE session = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query(params![session, path])?;
@@ -2754,6 +2763,17 @@ impl Store {
         self.lock().execute(
             "UPDATE channels SET upto = ?2 WHERE id = ?1",
             params![id, i64::try_from(upto).unwrap_or(i64::MAX)],
+        )?;
+        Ok(())
+    }
+
+    /// Records that this channel was written to: what a call's `time` is measured
+    /// from. See `docs/notes/server-channel.md`.
+    pub fn set_channel_wrote(&self, session: &str, path: &str, at: i64) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE channels SET wrote_at = ?3 WHERE session = ?1 AND path = ?2",
+            params![session, path, at],
         )?;
         Ok(())
     }
@@ -3096,6 +3116,8 @@ pub struct ChannelRow {
     pub exit: Option<i64>,
     /// How far this reader has read: taking the window is what advances it.
     pub upto: u64,
+    /// When this channel was last written to; `None` before the first write.
+    pub wrote_at: Option<i64>,
 }
 
 fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
@@ -3111,6 +3133,7 @@ fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
         ended_at: row.get(8)?,
         exit: row.get(9)?,
         upto: row.get::<_, i64>(10)?.max(0) as u64,
+        wrote_at: row.get(11)?,
     })
 }
 
