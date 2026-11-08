@@ -911,7 +911,6 @@ dependencies = [
  "ratatui-image",
  "serde",
  "serde_json",
- "shell-words",
  "tokio",
  "toml",
  "unicode-width",

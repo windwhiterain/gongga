@@ -346,3 +346,33 @@ two-line `owner_pid` preamble was 133/120 chars, shortened) ·
 `scripts/skill_contract.sh` PASS 8 · `scripts/ship.sh --check --local` in
 agreement · `scripts/ship.sh --check` exit=1, the same external `origin/main`
 divergence. No L3 process test: no runtime behaviour changed.
+
+## Stage 4, step 2: input translation lifted (2026-11-08)
+
+The main checkout had been left on `feature/client-split` since 17:22 on
+2026-11-07; the user caught it and it is back on `main` (pointer fast-forwarded
+to the same tree, no file rolled back and no commit lost). This step was done in
+`.worktrees/client-split` on `feature/client-split` with its own
+`CARGO_TARGET_DIR`; the main checkout was not modified.
+
+`crates/client/src/window_input.rs` now owns `classified`, `submission`,
+`filled`, `restates`, `follow` and `typed_names`; `crates/tui/src/run.rs` went
+835 -> 598 lines. `submission`'s sink became `&mut dyn Sink`; its bad-parse line
+goes through `Sink::note`, which is the same `Tui::say` call the old inherent
+`TuiSink::say` made. `shell-words` left `crates/tui/Cargo.toml` (the client
+library already had it). `sync`, `settle`, `declare`, `answer_*` and the journal
+stay behind: they read `ui.stamp_of`, `ui.drawn`, `ui.room_of` and
+`ui.take_settled`. See `docs/notes/client-window-input.md`.
+
+Verified in the isolated worktree: `cargo build` 0 (45.94s on retry; first run
+101 writing `invoked.timestamp`, the known Windows os error 5) · `cargo check`
+0 (11.97s) · `cargo fmt --check` 0 · `comments-check` 0 violations (first run
+1: the new module preamble was 121/120, shortened) · `test-layout-check` 8
+packages, 0 violations · `git diff --check` 0 · `scripts/skill_contract.sh`
+PASS 1 in the worktree, PASS 8 in the main checkout · `gongga-tui --help` 0 ·
+`gongga-server --help` 0. `scripts/ship.sh --check --local` 0 (in agreement,
+protocol 4/4) and `--check` 1 (`origin/main` vs local divergence, external)
+were run read-only in the main checkout because the worktree's `ship/`
+submodule could not be initialised: cloning `gongga-ship` failed with schannel
+/ empty reply. The same network failure still blocks the L3 process scripts;
+no L3 was run, and no runtime behaviour changed.

@@ -42,10 +42,6 @@ font8x8 = "0.3"
 # 0.25.10 raises its minimum Rust above this workspace's 1.86; only the cover's PNG is decoded.
 image = { version = "=0.25.9", default-features = false, features = ["png"] }
 unicode-width = "0.2"
-# The input line's grammar: `/cmd` has to be split into tokens. Nothing else in
-# this crate parses text, and the command layer never needs it -- argv is already
-# tokenised by whoever started the process.
-shell-words = "1"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 # The toast's script travels as `-EncodedCommand` wants it: UTF-16LE, base64.
 base64 = "0.23"

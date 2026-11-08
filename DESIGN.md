@@ -36,10 +36,10 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）仍是 library crate；窗口状态与六条 client 命令已从 `tui` 上提；`render_wire.rs` 已定义序列化词汇表 | 给它加 bin target，由 UI 用管道拉起；`run.rs` 的连接循环、输入翻译与 journal 上提 |
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）仍是 library crate；`window_state.rs` / `window_command.rs` / `runtime.rs` / `window_input.rs` / `render_wire.rs` 均已上提 | 给它加 bin target，由 UI 用管道拉起；`run.rs` 的 `interactive` 主循环、`sync` / `settle` / `declare` / `answer_*` 与窗口 journal 上提 |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
-| `[tui]` binary | `crates/tui`，`run.rs` 仍装着连接循环与输入行翻译 | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
+| `[tui]` binary | `crates/tui`，`run.rs` 仍装着 `interactive` 主循环、`sync` / `settle`、`declare` / `answer_*` 与窗口 journal | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
 | `[webui]` binary | 无 | 新增，与 `tui` 平级，用任意语言写 |
 
 上提的两个模块只换了位置：`State::load` 仍独占 `client.toml`，一次性 `gongga-cli` 不读
@@ -290,11 +290,12 @@ server + client + TUI，WebUI 等自行分发；若指的是别的，说一声�
 
 分步（每步跑门禁）：① 词汇表 + serde（已完成）；② `client.toml` 与 `UiIntent` 统一
 （已完成）；③ 管道帧编解码（已完成）；④ 连接循环与 journal 上提到 client ——
-`crates/client/src/runtime.rs` 已上提重连阶梯、起 server 判定、单次拨号、所有权判定
-与 `Server` 枚举；`interactive` 主循环、输入翻译与窗口 journal 仍待；⑤ client bin
-target 接管道骨架（要等 ④ 的主循环，否则是空壳）；⑥ TUI 改为 spawn client 并只做
-绘制；⑦ bundle 布线（client 二进制进 payload）；⑧ 多 client 连同一 server L3
-（新脚本需用户许可）。
+`runtime.rs` 已上提重连阶梯、起 server 判定、单次拨号、所有权判定与 `Server` 枚举；
+`window_input.rs` 已上提 `classified` / `submission` / `filled` / `restates` /
+`follow` / `typed_names`；`interactive` 主循环、`sync` / `settle` / `declare` /
+`answer_*` 与窗口 journal 仍待；⑤ client bin target 接管道骨架（要等 ④ 的主循环，
+否则是空壳）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
+payload）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
 
 **④ 里随 `--parent` 裁定修掉的一处**：`whose_server` 原先用 `std::process::id()`
 比对 server 的 `--parent`；client 成为 UI 的子进程后，这个值会是 client 自己的 pid，
