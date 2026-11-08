@@ -375,4 +375,37 @@ protocol 4/4) and `--check` 1 (`origin/main` vs local divergence, external)
 were run read-only in the main checkout because the worktree's `ship/`
 submodule could not be initialised: cloning `gongga-ship` failed with schannel
 / empty reply. The same network failure still blocks the L3 process scripts;
-no L3 was run, and no runtime behaviour changed.
+no L3 was run, and no runtime behaviour changed. This paragraph was superseded
+on 2026-11-08, when the user opened a proxy -- see the next section.
+
+## L3 verified once the proxy was up (2026-11-08)
+
+`http://127.0.0.1:50274` (the tool's built-in proxy) reaches baidu but returns
+`CONNECT tunnel failed, response 502` for github.com. The user's proxy on
+`127.0.0.1:7890` returns 200 and works for git and for the server's own
+content-repo clone. `flm` is at `C:\resource\kualemon-cli\flm.cmd`. With
+`http_proxy` / `https_proxy` set to 7890, `ship/` was initialised in the
+worktree (checked out `9dfad435...`, remote tip `5a0d615...`) and both
+`ship.sh --check --local` and `ship.sh --check` return **0, in agreement**
+there (protocol 4/4). The main checkout's older clone still reports the
+`origin/main` divergence; no fetch, rebase or publish was run.
+
+`scripts/client_state_selftest.sh -v`: **PASS · 4s · client-state ·
+5e337ea**. This is the first real-process check of the rename, `client.toml`
+and the six client commands after several turns blocked by the network.
+
+`scripts/tui_live.py --scenario window-state` fails with exit=3: the new
+startup cover has no timer (`docs/notes/tui-cover.md`), the harness sends no
+key to dismiss it, and the first script line already expects `session(s)`.
+Its first frame lands at t=+6380ms, so an immediate `key enter` is lost too.
+Driving the shipped scenario through `--script` with `wait 10000`, `key enter`,
+`wait 600` prepended returns **exit=0**: every `expect` in `window-state`
+(`/set_sticky`, `/set_render`, `/del_sticky`, `sticky to xxx`) passed. That is
+the real-window evidence that lifting `submission`, `filled` and `follow` did
+not change behaviour. The temporary drive script was removed. Making the cover
+dismissal permanent in `tui_live.py` is a test-tool change and needs the
+user's permission.
+
+All test processes from this run ended: the only `gongga-server.exe` left are
+`C:\Users\17124\.gongga` on port 9700 (pids 24124 / 5172), which are the
+user's. Measurements are in `.dev/verify/5e337ea-l3.json`.
