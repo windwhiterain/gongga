@@ -563,13 +563,8 @@ impl Agent {
             Some(path) => crate::session::stated(path),
             None => crate::session::stated(cwd),
         };
-        // Stamped once, and again only on a move: the row records the directory
-        // and the peer it was written for.
-        if let Some(kept) = self.store.prompt(id)?
-            && kept.cwd == here
-            && kept.remote.as_deref() == remote
-            && kept.model.as_deref() == Some(model)
-        {
+        // The row of the first request; a request reads it back. server-context.md
+        if let Some(kept) = self.store.prompt(id)? {
             return Ok(kept);
         }
         let prompts = crate::prompts::shared();
@@ -628,33 +623,15 @@ impl Agent {
         model: &str,
         llm: &crate::llm::LlmClient,
     ) -> anyhow::Result<crate::store::ToolSet> {
-        let remote = session.remote_name();
-        let has_origin = self.live_compact_enabled && self.store.has_live_compact_origin(id)?;
-        let build = protocol::BUILD.to_string();
-        let kept = self.store.tool_set(id)?;
-        if let Some(kept) = &kept
-            && kept.remote == remote
-            && kept.model.as_deref() == Some(model)
-            && kept.has_origin == has_origin
-            && kept.build == build
-        {
-            return Ok(kept.clone());
+        // Written once, with the first request's rows; no later event writes one.
+        if let Some(kept) = self.store.tool_set(id)? {
+            return Ok(kept);
         }
-        // Which stored change moved the head, for the record and for a person.
-        let event = match &kept {
-            None => "first",
-            Some(kept) if kept.build != build => "build",
-            Some(kept) if kept.model.as_deref() != Some(model) => "model",
-            Some(kept) if kept.remote != remote => "move",
-            Some(_) => "origin",
-        };
         let tool_set = crate::store::ToolSet {
-            tools: llm.wire_tools(&self.tools.stamp(session.on_remote(), has_origin)),
+            tools: llm.wire_tools(&self.tools.stamp(session.on_remote())),
             model: Some(model.to_string()),
-            remote,
-            has_origin,
-            build,
-            event: event.to_string(),
+            remote: session.remote_name(),
+            build: protocol::BUILD.to_string(),
         };
         self.store.append_tool_set(id, &tool_set)?;
         Ok(tool_set)

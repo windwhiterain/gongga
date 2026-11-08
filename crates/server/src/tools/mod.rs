@@ -547,24 +547,13 @@ impl ToolRegistry {
     /// A tool that drives a machine this session does not have is not in the set at
     /// all, and neither is an argument that names one: a model can call what it is
     /// offered, so what it is offered has to be able to answer.
-    pub fn stamp(
-        &self,
-        has_remote: bool,
-        with_live_compact: bool,
-    ) -> Vec<crate::llm::ToolDefinition> {
-        let mut definitions: Vec<crate::llm::ToolDefinition> = self
-            .tools
+    pub fn stamp(&self, has_remote: bool) -> Vec<crate::llm::ToolDefinition> {
+        // The compaction schema is in the set a session is born with.
+        self.tools
             .iter()
-            .filter(|t| t.name() != live_compact::LIVE_COMPACT_TOOL)
             .filter(|t| has_remote || !t.is_remote())
             .map(|t| Self::definition_of(t, has_remote))
-            .collect();
-        // Once a lineage has a compaction origin the schema stays for its life, so
-        // the head stops moving twice per cycle.
-        if with_live_compact && let Some(tool) = self.get(live_compact::LIVE_COMPACT_TOOL) {
-            definitions.push(Self::definition_of(&tool, has_remote));
-        }
-        definitions
+            .collect()
     }
 
     fn definition_of(tool: &Arc<dyn Tool>, has_remote: bool) -> crate::llm::ToolDefinition {

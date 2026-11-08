@@ -65,21 +65,9 @@ pub struct ToolSet {
     /// The peer it was stamped for: a move changes which machine a schema names.
     #[serde(default)]
     pub remote: Option<String>,
-    /// Whether a compaction origin had opened, which is what puts the schema in.
-    #[serde(default)]
-    pub has_origin: bool,
-    /// The build that rendered it.
-    ///
-    /// # Invariant
-    ///
-    /// A build may rename or reshape a tool, so a session that outlived it must not
-    /// keep advertising the old schema: the model would call a tool this server no
-    /// longer has. Comparing it re-stamps once per build.
+    /// The build that rendered it: provenance, never a reason to write again.
     #[serde(default)]
     pub build: String,
-    /// Which stored change wrote this row. Read by a person, never compared.
-    #[serde(default)]
-    pub event: String,
 }
 
 /// The row that closes a turn: see `docs/notes/server-store.md`.
