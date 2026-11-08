@@ -541,6 +541,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     backfill_wire_items(conn)?;
     crate::live_compact::migrate(conn)?;
+    backfill_context_rows(conn).map_err(|e| {
+        rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(format!("{e:#}"))))
+    })?;
     conn.execute_batch(
         "CREATE TRIGGER IF NOT EXISTS session_context_reset
          AFTER UPDATE OF context_tokens ON sessions
@@ -1146,7 +1149,43 @@ impl Store {
             ],
             |r| r.get(0),
         )?;
+        // The item joins the sequence here; a request only reads it in order.
+        if let Some(item) = wire_item(kind, content) {
+            let pictures = serde_json::Value::Array(
+                images_of(content)
+                    .iter()
+                    .map(|image| image.to_json())
+                    .collect(),
+            )
+            .to_string();
+            Self::append_context_row(conn, session_id, seq, &item.to_string(), &pictures)?;
+        }
         Ok(seq)
+    }
+
+    /// Appends one item to the sequence this session is sending now.
+    pub(crate) fn append_context_row(
+        conn: &rusqlite::Connection,
+        session_id: i64,
+        message_seq: i64,
+        item: &str,
+        pictures: &str,
+    ) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO context_rows
+                 (session_id, generation, position, message_seq, item, pictures)
+             VALUES (
+                ?1,
+                (SELECT COALESCE(MAX(generation), 0) FROM context_rows WHERE session_id = ?1),
+                (SELECT COALESCE(MAX(position), 0) + 1 FROM context_rows
+                  WHERE session_id = ?1
+                    AND generation = (SELECT COALESCE(MAX(generation), 0) FROM context_rows
+                                       WHERE session_id = ?1)),
+                ?2, ?3, ?4
+             )",
+            params![session_id, message_seq, item, pictures],
+        )?;
+        Ok(())
     }
 
     /// Drops every row after `seq`, returning how many went.
@@ -1890,7 +1929,7 @@ impl Store {
         )?;
         let checkpoint_id = tx.last_insert_rowid();
         artifacts.push(result_seq);
-        for message_seq in artifacts {
+        for message_seq in &artifacts {
             tx.execute(
                 "INSERT INTO live_compact_artifacts (session_id, message_seq, checkpoint_id)
                  VALUES (?1, ?2, ?3)",
@@ -1911,12 +1950,66 @@ impl Store {
                 params![session_id],
             )?;
         }
+        // The next generation keeps the prefix, the summary in the replaced
+        // segment's place, and the retained round.
+        Self::write_next_generation(&tx, session_id, &request, &artifacts)?;
         tx.commit()?;
         Ok(crate::live_compact::Committed {
             checkpoint_id,
             result_seq,
             generation: request.generation + 1,
         })
+    }
+
+    /// Copies the sent sequence forward, dropping the segment this checkpoint replaces.
+    ///
+    /// # Invariant
+    ///
+    /// What a request then reads is a stored, ordered list: the prefix up to the
+    /// checkpoint, the summary in place of the segment it replaces, and the retained
+    /// round after it. Nothing here is decided again while a request is built.
+    fn write_next_generation(
+        tx: &rusqlite::Transaction<'_>,
+        session_id: i64,
+        request: &crate::live_compact::Request,
+        artifacts: &[i64],
+    ) -> anyhow::Result<()> {
+        let from: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(generation), 0) FROM context_rows WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        let rows = {
+            let mut stmt = tx.prepare(
+                "SELECT message_seq, item, pictures FROM context_rows
+                 WHERE session_id = ?1 AND generation = ?2 ORDER BY position",
+            )?;
+            let mapped = stmt.query_map(params![session_id, from], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+        let mut position = 0i64;
+        for (message_seq, item, pictures) in rows {
+            let kept = message_seq <= request.segment_after_seq
+                || artifacts.contains(&message_seq)
+                || message_seq >= request.round_start_seq;
+            if !kept {
+                continue;
+            }
+            position += 1;
+            tx.execute(
+                "INSERT INTO context_rows
+                     (session_id, generation, position, message_seq, item, pictures)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![session_id, from + 1, position, message_seq, item, pictures],
+            )?;
+        }
+        Ok(())
     }
 
     /// The transcript a request reads, closed at the row that exists right now.
@@ -3146,6 +3239,98 @@ fn user_row(expanded: &crate::meta::Expanded) -> serde_json::Value {
         );
     }
     row
+}
+
+/// Materialises the sequence a home written before `context_rows` was sending.
+///
+/// # Invariant
+///
+/// The rule applied here is the one that home was read under -- columns up to its
+/// stored prefix end, its checkpoints' artifacts, and everything from the latest
+/// round on -- applied once, at startup, so its next request sends the same bytes
+/// as its last one did. A session that already has rows is left alone, which is
+/// also what makes this safe to run on every open.
+fn backfill_context_rows(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+    let sessions: Vec<i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM sessions s
+             WHERE NOT EXISTS (SELECT 1 FROM context_rows r WHERE r.session_id = s.id)
+               AND EXISTS (SELECT 1 FROM messages m
+                            WHERE m.session_id = s.id AND m.content IS NOT NULL)",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for session_id in sessions {
+        let prefix_end: Option<i64> = conn
+            .query_row(
+                "SELECT live_compact_origin_seq FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let round_start: Option<i64> = conn
+            .query_row(
+                "SELECT round_start_seq FROM live_compact_checkpoints
+                 WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // A row's sendable form is its `content`; its pictures are in `display`.
+        let rows = {
+            let mut stmt = conn.prepare(
+                "SELECT seq, content, display FROM messages
+                 WHERE session_id = ?1 AND content IS NOT NULL ORDER BY seq",
+            )?;
+            let mapped = stmt.query_map(params![session_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            mapped.collect::<Result<Vec<_>, _>>()?
+        };
+        let mut position = 0i64;
+        for (seq, item, display) in rows {
+            let kept = match (prefix_end, round_start) {
+                (Some(end), Some(start)) => {
+                    seq <= end
+                        || seq >= start
+                        || conn
+                            .query_row(
+                                "SELECT 1 FROM live_compact_artifacts
+                                 WHERE session_id = ?1 AND message_seq = ?2",
+                                params![session_id, seq],
+                                |_| Ok(()),
+                            )
+                            .optional()?
+                            .is_some()
+                }
+                _ => true,
+            };
+            if !kept {
+                continue;
+            }
+            position += 1;
+            let pictures = serde_json::Value::Array(
+                images_of(&serde_json::from_str(&display).unwrap_or_default())
+                    .iter()
+                    .map(|image| image.to_json())
+                    .collect(),
+            )
+            .to_string();
+            conn.execute(
+                "INSERT OR IGNORE INTO context_rows
+                     (session_id, generation, position, message_seq, item, pictures)
+                 VALUES (?1, 0, ?2, ?3, ?4, ?5)",
+                params![session_id, position, seq, item, pictures],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value> {

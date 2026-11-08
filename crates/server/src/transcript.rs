@@ -1,35 +1,23 @@
-//! The transcript as a request reads it: one row at a time, and never all of it.
+//! The transcript as a request reads it: the stored sequence, in order.
 //!
-//! See `docs/notes/server-store.md`.
+//! See `docs/notes/server-context.md`.
 
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, params};
 
-/// A walk over one session's sendable rows in `(0, upto_seq]`, oldest first.
+/// A walk over one session's stored sequence, oldest position first.
 ///
 /// # Invariant
 ///
-/// What comes back is the stored item, byte for byte: the request's shape was
-/// decided when the row was appended, so a walk cannot disagree with an earlier
-/// request about what a row is.
-///
-/// It holds its own connection rather than the store's, and `upto_seq` is fixed
-/// when the walk is made. See `docs/notes/server-transcript.md`.
+/// It selects and sends the stored sequence, and decides nothing: no row is
+/// dropped or substituted here. `upto_seq` is fixed when the walk is made, which
+/// is what a retry replays. See `docs/notes/server-context.md`.
 pub struct Transcript {
     conn: Connection,
     session_id: i64,
     upto_seq: i64,
-    after_seq: i64,
-    /// Where the permanent prefix ends and the latest ordinary round starts.
-    ///
-    /// # Invariant
-    ///
-    /// The first number is the starting checkpoint: `start_live_compact` writes the
-    /// session's position at the explore -> work switch, so everything said while
-    /// exploring is sent byte for byte and a summary replaces only the segment after
-    /// it. See `docs/notes/server-live-compact.md`.
-    projection: Option<(i64, i64)>,
+    position: i64,
 }
 
 impl Transcript {
@@ -39,26 +27,11 @@ impl Transcript {
             path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        let latest = conn
-            .query_row(
-                // `live_compact_origin_seq` is the prefix end, not a first row.
-                "SELECT s.live_compact_origin_seq, c.round_start_seq
-                 FROM live_compact_checkpoints c
-                 JOIN sessions s ON s.id = c.session_id
-                 WHERE c.session_id = ?1 AND c.result_seq <= ?2
-                 ORDER BY c.id DESC LIMIT 1",
-                params![session_id, upto_seq],
-                |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()?;
-        let projection =
-            latest.and_then(|(prefix_end, round_start)| prefix_end.map(|end| (end, round_start)));
         Ok(Self {
             conn,
             session_id,
             upto_seq,
-            after_seq: 0,
-            projection,
+            position: 0,
         })
     }
 }
@@ -67,47 +40,41 @@ impl Iterator for Transcript {
     type Item = anyhow::Result<crate::body::Stored>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Indexed artifacts, prefix, and latest round plus later rows; raw rows stay unchanged.
+        // The sequence the session is sending now, in the order it was written.
         let found = self.conn.query_row(
-            "SELECT seq, content, kind, display FROM messages
-              WHERE session_id = ?1 AND seq > ?2 AND seq <= ?3 AND content IS NOT NULL
-                AND (?4 = 0 OR seq <= ?5 OR seq >= ?6
-                     OR EXISTS (SELECT 1 FROM live_compact_artifacts a
-                                WHERE a.session_id = messages.session_id
-                                  AND a.message_seq = messages.seq))
-              ORDER BY seq LIMIT 1",
-            params![
-                self.session_id,
-                self.after_seq,
-                self.upto_seq,
-                self.projection.is_some(),
-                self.projection.map(|p| p.0).unwrap_or(0),
-                self.projection.map(|p| p.1).unwrap_or(0),
-            ],
+            "SELECT r.position, r.item, r.pictures
+             FROM context_rows r
+             WHERE r.session_id = ?1 AND r.position > ?2 AND r.message_seq <= ?3
+               AND r.generation = (SELECT COALESCE(MAX(generation), 0) FROM context_rows
+                                    WHERE session_id = ?1)
+             ORDER BY r.position LIMIT 1",
+            params![self.session_id, self.position, self.upto_seq],
             |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
-                    r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
                 ))
             },
         );
-        let (seq, item, kind, display) = match found {
+        let (position, item, pictures) = match found {
             Ok(row) => row,
             Err(rusqlite::Error::QueryReturnedNoRows) => return None,
             Err(e) => return Some(Err(e.into())),
         };
-        self.after_seq = seq;
-        // The pictures ride in `display`, what the row recorded: a copy is read
-        // when a request is built.
-        let pictures = match kind.as_str() {
-            "tool_result" | "text" => {
-                let value = serde_json::from_str(&display).unwrap_or_default();
-                crate::store::images_of(&value)
-            }
-            _ => Vec::new(),
-        };
+        self.position = position;
+        // The pictures ride with the item: a copy is read when a request is built.
+        let pictures: Vec<crate::image::ImageRef> =
+            serde_json::from_str::<serde_json::Value>(&pictures)
+                .ok()
+                .and_then(|value| {
+                    value.as_array().map(|list| {
+                        list.iter()
+                            .filter_map(crate::image::ImageRef::from_json)
+                            .collect()
+                    })
+                })
+                .unwrap_or_default();
         Some(Ok(crate::body::Stored { item, pictures }))
     }
 }

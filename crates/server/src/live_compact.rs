@@ -77,6 +77,18 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS live_compact_checkpoints_by_session
             ON live_compact_checkpoints(session_id, id);
+        -- What a session sends, as a stored and ordered sequence: one row per
+        -- item, keyed by the generation a request reads. A compaction commit writes
+        -- the next generation and leaves the one before it exactly as it was.
+        CREATE TABLE IF NOT EXISTS context_rows (
+            session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            generation  INTEGER NOT NULL,
+            position    INTEGER NOT NULL,
+            message_seq INTEGER NOT NULL,
+            item        TEXT NOT NULL,
+            pictures    TEXT NOT NULL DEFAULT '[]',
+            PRIMARY KEY (session_id, generation, position)
+        );
         CREATE TABLE IF NOT EXISTS live_compact_artifacts (
             session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             message_seq  INTEGER NOT NULL,
