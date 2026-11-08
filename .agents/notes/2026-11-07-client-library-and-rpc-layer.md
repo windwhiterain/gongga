@@ -551,3 +551,38 @@ violations · `test-layout-check` 8 packages, 0 violations · `git diff --check`
 `scripts/tui_live.py --script <window-state + cover dismissal>` 0 ·
 `scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local` 0 and `--check`
 0, both "in agreement". Proxy 7890 throughout.
+
+## 2026-11-08: Frontend step 1 landed
+
+`FrontendEvent`, the `Frontend` trait and `give_back` now live in
+`crates/client/src/runtime.rs`. `Tui` implements `Frontend`; `interactive`
+holds a `Box<dyn Frontend>` and every call in the loop goes through it -- only
+the `Tui::new` line still names the terminal. `Step` carries `FrontendEvent`
+instead of `Option<UiEvent>`. Behaviour is unchanged: `Closed` covers both
+`Step::Input(None)` and `Step::Closing`, `TuiSink::say` became the identical
+`sink.note(kind, text)`, and `has_draft` is the negation of the old empty-input
+test.
+
+The landed interface differs from the previous turn's sketch, for the better:
+`sink()` returns `Box<dyn Sink + '_>` (boxing the borrowed `TuiSink` gives it an
+owner for one call), which makes the whole trait object-safe, so `interactive`
+can keep its signature instead of becoming generic and needing a `Session`
+struct. Trait upcasting (rustc 1.98) supplies `&mut dyn WindowView` and
+`&dyn WindowFacts`. `closing(&self)` returns a `'static` future so
+`tokio::select!` can hold it beside `next_event()`'s mutable borrow; each arm
+builds its own. `client-frontend.md` was rewritten to match the code.
+
+Three compile issues were fixed rather than worked around: a malformed
+`select!` block from an automated insertion, two E0499 borrows where a
+temporary `Box<dyn Sink>` inside `if let Err(e) = ...` outlived the condition
+(bind the result to a local first), and a dead `TuiSink::say` plus two comment
+preambles over the 120-char budget.
+
+Verified: `cargo check` 0 (7.64s) · `cargo build` 0 (18.92s, no warnings) ·
+`cargo fmt --check` 0 · `comments-check` 0 violations · `test-layout-check` 8
+packages, 0 violations · `git diff --check` 0 ·
+`scripts/client_state_selftest.sh -v` PASS · 4s · client-state · 101a2f1 ·
+`scripts/tui_live.py --script <window-state + cover dismissal>` 0 -- the
+interface-only step passed both real-process scripts ·
+`scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local` 0 and `--check`
+0, both "in agreement". Proxy 7890 throughout.

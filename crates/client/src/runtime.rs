@@ -2,9 +2,15 @@
 //!
 //! See `docs/notes/client-runtime.md`.
 
+use std::future::Future;
+use std::path::Path;
+use std::pin::Pin;
 use std::time::Duration;
 
-use crate::{Connection, DialFailure, Greeting, Link};
+use crate::render_wire::UiIntent;
+use crate::window_refill::WindowFacts;
+use crate::window_sync::WindowView;
+use crate::{Connection, DialFailure, Greeting, Link, Listed, Sink};
 
 /// First redial delay, doubling up to the cap; a cadence, not a budget.
 ///
@@ -123,4 +129,60 @@ pub fn wait_for(spawned: Option<u32>, attempts: u32, backoff: Duration) -> Durat
 pub async fn dial_now(conn: Connection) -> Result<(Link, Greeting), DialFailure> {
     let endpoint = conn.endpoint().map_err(DialFailure::Temporary)?;
     crate::dial(endpoint).await
+}
+
+/// What the loop hears from its one front-end, in words a pipe can carry.
+///
+/// # Invariant
+///
+/// `Recomplete` is not an intent: the completion needs the loop to reach the
+/// connection, so it never crosses the wire. `Closed` covers both a terminal
+/// that went away and a console that asked to close; the loop leaves for both.
+pub enum FrontendEvent {
+    Intent(UiIntent),
+    Recomplete,
+    Closed,
+}
+
+/// The one front-end this client serves, without naming a terminal.
+///
+/// # Invariant
+///
+/// `sink` hands out a short-lived view of the front-end's own renderer. A
+/// borrowed wrapper cannot be returned by reference, so the box owns it for
+/// the length of one call; the loop never holds two mutable borrows of the
+/// front-end at once. See `docs/notes/client-frontend.md`.
+pub trait Frontend: WindowFacts + WindowView {
+    /// The next gesture, or that the front-end is gone.
+    fn next_event(&mut self) -> Pin<Box<dyn Future<Output = FrontendEvent> + Send + '_>>;
+    /// The console is going away. The future has no `self`, so `select!` can
+    /// hold it beside `next_event`.
+    fn closing(&self) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+    /// Lines the client draws through, for one call.
+    fn sink(&mut self) -> Box<dyn Sink + '_>;
+    /// The sessions this window already knew before a greeting.
+    fn known_list(&self) -> Vec<Listed>;
+    fn set_server(&mut self, server: Option<Server>);
+    fn repoint(&mut self, client_home: &Path, endpoint: &str);
+    fn restore_input(&mut self, text: &str);
+    fn has_draft(&self) -> bool;
+    fn server_is_ours(&self) -> bool;
+    fn restore(&mut self) -> anyhow::Result<()>;
+}
+
+/// Gives the operator back the lines no server answered.
+///
+/// # Invariant
+///
+/// A line leaves the input when it is sent and comes back when the link ends
+/// first: the words are the operator's until the server says it has them. A draft
+/// in the input is not replaced -- the command row names what was lost, and the
+/// history keeps it. See `docs/notes/tui-run.md`.
+pub fn give_back(front: &mut dyn Frontend, lines: Vec<String>) {
+    let Some(newest) = lines.last() else {
+        return;
+    };
+    if !front.has_draft() {
+        front.restore_input(newest);
+    }
 }

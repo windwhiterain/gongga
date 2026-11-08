@@ -98,14 +98,6 @@ impl Sink for TuiSink<'_> {
     }
 }
 
-impl TuiSink<'_> {
-    /// A line this front-end says about itself, in the window for lines that name
-    /// no session.
-    fn say(&mut self, kind: LineKind, text: &str) {
-        self.0.say(kind, text);
-    }
-}
-
 impl client::window_sync::WindowView for Tui {
     fn show_state(&mut self, state: &State) {
         self.set_block_size(state.block_size().0);
@@ -123,10 +115,48 @@ impl client::window_sync::WindowView for Tui {
     }
 }
 
+impl runtime::Frontend for Tui {
+    fn next_event(&mut self) -> Pin<Box<dyn Future<Output = runtime::FrontendEvent> + Send + '_>> {
+        Box::pin(async move {
+            match Tui::next_event(self).await {
+                Some(UiEvent::Intent(intent)) => runtime::FrontendEvent::Intent(intent),
+                Some(UiEvent::Recomplete) => runtime::FrontendEvent::Recomplete,
+                None => runtime::FrontendEvent::Closed,
+            }
+        })
+    }
+    fn closing(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(closing::asked())
+    }
+    fn sink(&mut self) -> Box<dyn Sink + '_> {
+        Box::new(TuiSink(self))
+    }
+    fn known_list(&self) -> Vec<client::Listed> {
+        Tui::known_list(self)
+    }
+    fn set_server(&mut self, server: Option<Server>) {
+        Tui::set_server(self, server);
+    }
+    fn repoint(&mut self, client_home: &std::path::Path, endpoint: &str) {
+        Tui::repoint(self, client_home, endpoint);
+    }
+    fn restore_input(&mut self, text: &str) {
+        Tui::restore_input(self, text);
+    }
+    fn has_draft(&self) -> bool {
+        !self.screen().input.text().trim().is_empty()
+    }
+    fn server_is_ours(&self) -> bool {
+        self.screen().server.is_some_and(Server::is_ours)
+    }
+    fn restore(&mut self) -> anyhow::Result<()> {
+        Tui::restore(self)
+    }
+}
 /// What the loop is waiting for this time round.
 enum Step {
-    /// The operator did something (or the terminal went away: `None`).
-    Input(Option<UiEvent>),
+    /// What the front-end said; `Closed` covers a terminal that went away.
+    Input(runtime::FrontendEvent),
     /// The console holding this window is going away.
     Closing,
     /// A message arrived, or `None` when the link ended.
@@ -139,24 +169,6 @@ enum Step {
 
 /// A dial kept alive between loop iterations, boxed so the loop never blocks.
 type Dialing = Pin<Box<dyn Future<Output = Result<(Link, Greeting), DialFailure>>>>;
-
-/// Gives the operator back the lines no server answered.
-///
-/// # Invariant
-///
-/// A line leaves the input when it is sent and comes back when the link ends
-/// first: the words are the operator's until the server says it has them. A draft
-/// in the input is not replaced -- the command row names what was lost, and the
-/// history keeps it. See `docs/notes/tui-run.md`.
-fn give_back(ui: &mut Tui, lines: Vec<String>) {
-    let Some(newest) = lines.last() else {
-        return;
-    };
-    // A draft is the operator's next line, not the one that was lost.
-    if ui.screen().input.text().trim().is_empty() {
-        ui.restore_input(newest);
-    }
-}
 
 /// The interactive front-end: the window outlives the link. See `docs/notes/tui-run.md`.
 pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
@@ -178,14 +190,15 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
 
     let mut client = client::build_client(args);
     let window = command::Window::new(client.completer());
-    let mut ui = Tui::new(window.shared(), &client_home, &endpoint)?;
+    let mut ui: Box<dyn runtime::Frontend> =
+        Box::new(Tui::new(window.shared(), &client_home, &endpoint)?);
     // What this window drew last: a greeting may never come.
     // See `docs/notes/tui-roster.md`.
     let known = ui.known_list();
     client.seed_listed(known);
     // Nothing has been sent yet: a fresh client owes nobody a line.
-    let _ = client.set_offline(0, &mut TuiSink(&mut ui));
-    window_sync::sync(&mut client, &state, &window, &mut ui);
+    let _ = client.set_offline(0, ui.sink().as_mut());
+    window_sync::sync(&mut client, &state, &window, &mut *ui);
 
     let mut link: Option<client::Link> = None;
     let mut dialing: Option<Dialing> = None;
@@ -198,7 +211,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
         true => match client::server_of(&conn) {
             Ok(addr) => {
                 if let Some(old) = client::stop(&conn, &home, addr).await {
-                    TuiSink(&mut ui).say(
+                    ui.sink().note(
                         LineKind::System,
                         &format!("stopped the server that was serving this home (pid {old})"),
                     );
@@ -223,65 +236,70 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
     let result = loop {
         // Every arm keeps the keyboard branch, so no state stops it answering keys.
         let step = if let Some(open) = link.as_mut() {
+            let closing = ui.closing();
             tokio::select! {
                 event = ui.next_event() => Step::Input(event),
                 bytes = open.recv() => Step::Wire(bytes),
-                _ = closing::asked() => Step::Closing,
+                _ = closing => Step::Closing,
             }
         } else if let Some(pending) = dialing.as_mut() {
+            let closing = ui.closing();
             tokio::select! {
                 event = ui.next_event() => Step::Input(event),
                 outcome = pending.as_mut() => Step::Dialed(outcome),
-                _ = closing::asked() => Step::Closing,
+                _ = closing => Step::Closing,
             }
         } else {
+            let closing = ui.closing();
             tokio::select! {
                 event = ui.next_event() => Step::Input(event),
                 _ = tokio::time::sleep_until(next_try) => Step::Dial,
-                _ = closing::asked() => Step::Closing,
+                _ = closing => Step::Closing,
             }
         };
 
         match step {
-            Step::Input(None) => break Ok(()),
+            Step::Input(runtime::FrontendEvent::Closed) => break Ok(()),
             // Not input: the key changed nothing to submit. The drain below is
             // what the completion was waiting for.
-            Step::Input(Some(UiEvent::Recomplete)) => {}
+            Step::Input(runtime::FrontendEvent::Recomplete) => {}
             // A scroll past the oldest row a window holds: a page above it.
-            Step::Input(Some(UiEvent::Intent(UiIntent::Older { windows }))) => owed.extend(windows),
-            Step::Input(Some(UiEvent::Intent(UiIntent::Quit))) => break Ok(()),
+            Step::Input(runtime::FrontendEvent::Intent(UiIntent::Older { windows })) => {
+                owed.extend(windows)
+            }
+            Step::Input(runtime::FrontendEvent::Intent(UiIntent::Quit)) => break Ok(()),
             // The console is going away: it asked, and the way out is the same
             // one Alt-Q takes. See `docs/notes/tui-closing.md`.
             Step::Closing => break Ok(()),
             // A gesture of the window's own: an operation, not a line.
-            Step::Input(Some(UiEvent::Intent(UiIntent::Operate { operation }))) => {
+            Step::Input(runtime::FrontendEvent::Intent(UiIntent::Operate { operation })) => {
                 let outcome =
-                    command::operate(&mut client, &mut state, operation, &mut TuiSink(&mut ui));
+                    command::operate(&mut client, &mut state, operation, ui.sink().as_mut());
                 // Whatever the gesture changed of the window's own state reaches
                 // the drawing and the completion before the next event.
-                window_sync::sync(&mut client, &state, &window, &mut ui);
+                window_sync::sync(&mut client, &state, &window, &mut *ui);
                 if let client::Submission::Send(msg) = outcome
                     && let Some(open) = link.as_ref()
                     && let Err(e) = open.send(msg).await
                 {
-                    TuiSink(&mut ui).say(
+                    ui.sink().note(
                         LineKind::Error,
                         &format!("the operation could not be sent: {e}"),
                     );
                 }
             }
-            Step::Input(Some(UiEvent::Intent(UiIntent::Submit { line }))) => {
+            Step::Input(runtime::FrontendEvent::Intent(UiIntent::Submit { line })) => {
                 let mut moved = None;
                 let outcome = window_input::submission(
                     &mut client,
                     &mut state,
                     &line,
-                    &mut TuiSink(&mut ui),
+                    ui.sink().as_mut(),
                     &mut moved,
                 );
                 // Whatever the line changed of the window's own state reaches
                 // the screen and the completion before the next keystroke.
-                window_sync::sync(&mut client, &state, &window, &mut ui);
+                window_sync::sync(&mut client, &state, &window, &mut *ui);
                 // A `connect_server` moved the address: drop the link and let
                 // the next dial find the new one.
                 if let Some(addr) = moved {
@@ -295,8 +313,8 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                     backoff = runtime::RECONNECT_MIN;
                     attempts = 0;
                     next_try = tokio::time::Instant::now();
-                    let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
-                    give_back(&mut ui, unanswered);
+                    let unanswered = client.set_offline(0, ui.sink().as_mut());
+                    runtime::give_back(&mut *ui, unanswered);
                 }
                 match outcome {
                     client::Submission::Local | client::Submission::Rejected => {}
@@ -308,7 +326,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                             // The command names a session: that session's window
                             // is drawn, and what the server accepts is kept.
                             window_input::follow(&client, &mut state, &msg, &line, &mut pending);
-                            window_sync::sync(&mut client, &state, &window, &mut ui);
+                            window_sync::sync(&mut client, &state, &window, &mut *ui);
                             if open.send(msg).await.is_err() {
                                 // Its end went unnoticed: nothing was sent, and the
                                 // line goes back like any other unanswered one.
@@ -317,8 +335,8 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                                 backoff = runtime::RECONNECT_MIN;
                                 attempts = 0;
                                 next_try = tokio::time::Instant::now();
-                                let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
-                                give_back(&mut ui, unanswered);
+                                let unanswered = client.set_offline(0, ui.sink().as_mut());
+                                runtime::give_back(&mut *ui, unanswered);
                             }
                         }
                         // Raced with the link going down: nothing was sent, so it goes
@@ -332,21 +350,25 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
             }
             Step::Wire(Some(bytes)) => {
                 // Decoding stays in the command layer; this crate never names a protocol type.
-                if let Err(e) = client.handle_bytes(&bytes, &mut TuiSink(&mut ui)) {
-                    TuiSink(&mut ui).say(LineKind::Error, &format!("bad message: {e}"));
+                let decoded = client.handle_bytes(&bytes, ui.sink().as_mut());
+                if let Err(e) = decoded {
+                    ui.sink()
+                        .note(LineKind::Error, &format!("bad message: {e}"));
                 }
                 // Everything waiting goes in before the next frame: one paint
                 // per burst, not per delta.
                 if let Some(open) = link.as_mut() {
                     while let Some(more) = open.try_recv() {
-                        if let Err(e) = client.handle_bytes(&more, &mut TuiSink(&mut ui)) {
-                            TuiSink(&mut ui).say(LineKind::Error, &format!("bad message: {e}"));
+                        let decoded = client.handle_bytes(&more, ui.sink().as_mut());
+                        if let Err(e) = decoded {
+                            ui.sink()
+                                .note(LineKind::Error, &format!("bad message: {e}"));
                             break;
                         }
                     }
                 }
-                window_sync::settle(&client, &mut state, &mut pending, &mut ui);
-                window_sync::sync(&mut client, &state, &window, &mut ui);
+                window_sync::settle(&client, &mut state, &mut pending, &mut *ui);
+                window_sync::sync(&mut client, &state, &window, &mut *ui);
                 // A hole: only a greeting carries the whole list, so dial again.
                 // See `docs/notes/tui-run.md`.
                 if client.take_hole() && link.is_some() {
@@ -355,12 +377,12 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                     backoff = runtime::RECONNECT_MIN;
                     attempts = 0;
                     next_try = tokio::time::Instant::now();
-                    let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
-                    TuiSink(&mut ui).say(
+                    let unanswered = client.set_offline(0, ui.sink().as_mut());
+                    ui.sink().note(
                         LineKind::System,
                         "the stream skipped events — reconnecting to read the list again",
                     );
-                    give_back(&mut ui, unanswered);
+                    runtime::give_back(&mut *ui, unanswered);
                 }
             }
             Step::Wire(None) => {
@@ -369,9 +391,10 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                 backoff = runtime::RECONNECT_MIN;
                 attempts = 0;
                 next_try = tokio::time::Instant::now();
-                let unanswered = client.set_offline(0, &mut TuiSink(&mut ui));
-                TuiSink(&mut ui).say(LineKind::System, "server connection lost — reconnecting");
-                give_back(&mut ui, unanswered);
+                let unanswered = client.set_offline(0, ui.sink().as_mut());
+                ui.sink()
+                    .note(LineKind::System, "server connection lost — reconnecting");
+                runtime::give_back(&mut *ui, unanswered);
             }
             Step::Dial => {
                 attempts += 1;
@@ -385,22 +408,22 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                         ui.set_server(Some(runtime::whose_server(spawned, &greeting, owner_pid)));
                         // Applying the greeting is what the server says; what
                         // this window kept is the other half of the comparison.
-                        greeting.apply(&mut client, &mut TuiSink(&mut ui));
-                        window_refill::declare(&mut client, &ui);
+                        greeting.apply(&mut client, ui.sink().as_mut());
+                        window_refill::declare(&mut client, &*ui);
                         link = Some(open);
                         backoff = runtime::RECONNECT_MIN;
                     }
                     Err(failure) if failure.is_fatal() => break Err(failure.into_error()),
                     Err(failure) => {
-                        let unanswered = client.set_offline(attempts, &mut TuiSink(&mut ui));
-                        give_back(&mut ui, unanswered);
+                        let unanswered = client.set_offline(attempts, ui.sink().as_mut());
+                        runtime::give_back(&mut *ui, unanswered);
                         // A spawned server is coming up: a fresh home has no key
                         // until it writes one, so that is not news yet.
                         if spawned.is_none() {
                             // Said every time: the refresh above wipes a note
                             // said once, and a window that says only
                             // "reconnecting" looks hung.
-                            TuiSink(&mut ui).say(
+                            ui.sink().note(
                                 LineKind::Error,
                                 &format!(
                                     "{} (attempt {attempts}) — still trying; Alt+Q leaves",
@@ -417,17 +440,17 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
         }
         // After the step, never during it: a peer's directory is not a
         // synchronous answer.
-        window_refill::answer_completion(&mut client, link.as_ref(), &mut ui, &mut drawn_listings)
+        window_refill::answer_completion(&mut client, link.as_ref(), &mut *ui, &mut drawn_listings)
             .await;
         // Same place, same reason: what a frame drew decides what is fetched.
-        window_refill::answer_transcripts(&mut client, link.as_ref(), &ui).await;
+        window_refill::answer_transcripts(&mut client, link.as_ref(), &*ui).await;
         // And what the operator asked to read above: a page of the past.
-        window_refill::answer_older(&mut client, link.as_ref(), &ui, &mut owed).await;
+        window_refill::answer_older(&mut client, link.as_ref(), &*ui, &mut owed).await;
     };
 
     // SPEC's stop, for the server the bar drew as own, and nothing for one that is
     // somebody else's: one answer decides both.
-    if ui.screen().server.is_some_and(Server::is_ours)
+    if ui.server_is_ours()
         && let Some(open) = link.as_mut()
     {
         open.cancel().await;
