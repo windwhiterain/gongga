@@ -133,45 +133,36 @@ The protocol version was raised for each of them in turn -- `Append` is 3, `Rela
 `Relay`'s words 5 -- so a client refuses a peer it cannot speak to instead of discovering it
 mid-command.
 
-## Getting the runner onto a peer
+## Getting the runner onto a peer: this build places it
 
-The runner ships inside the distribution, so there is nothing extra to build or
-install: **`runner` is the second word of the one file**, and the default target
-runs exactly that.
+A runner speaks one protocol and a server speaks one protocol, so the pair has to
+agree. Naming a path per build made that an operator's problem -- and a path says
+where a program is, never what it says.
 
-1. On the peer, put the distribution on `PATH` under the name `gongga`:
+So the server answers it the way `ship` answers the same question about content: by
+what each side *says*, not by what a file is called.
 
-       scp gongga peer:/usr/local/bin/gongga && ssh peer chmod +x /usr/local/bin/gongga
+1. A `runner` key in the remote's table is a **preference**. It is greeted first, and
+   kept only if it greets this build's protocol; anything else about it is reported
+   and run past.
+2. Otherwise this build places **its own payload** on the peer: its `gongga-runner`
+   and the `gongga-server` a channel's relay needs beside it, in
+   `<peer home>/.gongga/payload/<build>/`, named by the build string so a peer that
+   already holds it is answered without a transfer and no other build's payload is
+   touched. The agreement is then a fact: one end is the other's own build.
+3. A copy goes through `scp`, not through the shell: `ssh … bash -lc 'cat > file'`
+   was measured to deliver 947256 bytes of a 1048576-byte file, and an executable
+   that arrived short is not a program.
 
-   Nothing else is needed. The file carries `gongga-cli`, `gongga-server`,
-   `gongga-tui` and `gongga-runner`, and it dispatches on its first word, so the
-   whole remote side is the one file `ssh` already has to be able to execute.
+The first use on a new peer costs one copy of this build (tens of megabytes over
+ssh); every use after it is a greeting. Nothing else has to be installed, and
+`remotes.toml` needs no per-build edit.
 
-2. A remote in this machine's remotes file — `~/.agents/remotes.toml`, and nothing
-   else. It is not the home's `config.toml`; why is
-   `docs/notes/server-remotes.md`.
-
-       [remotes.build]
-       host = "peer"
-
-   That means `ssh peer -- gongga runner`. `port`, `identity` and `runner` are the
-   only other keys; `identity` is an `ssh -i` path on *this* machine, and `runner`
-   is the peer's command, spelled in as many words as it takes:
-
-       [remotes.build]
-       host = "peer"
-       port = 2222
-       identity = "C:/keys/build"
-       runner = "gongga runner"          # the default, written out
-       # runner = "gongga-runner"       # a copy of gongga-runner on the peer's PATH
-       # runner = "/opt/gongga/build"   # any other program that speaks the protocol
-
-3. A session on it:
-
-       gongga-cli set_session build <provider>/<model> --remote build
-
-   `--cwd` is optional and, when given, is a path **on the peer**: the endpoint
-   canonicalises it and refuses one it does not have.
+A peer that had a distribution put there by hand still answers: that is the
+preference path, and it is taken whenever its greeting agrees. `gongga-cli skill
+remote install` remains what it always was -- a way to put a distribution on a peer
+from outside a session, and the one command a human needs to bootstrap a peer with
+no gongga on it at all.
 
 ### The same architecture, not just the same kernel
 

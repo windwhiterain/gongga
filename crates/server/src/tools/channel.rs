@@ -343,12 +343,9 @@ impl Channels {
                 }
             ));
         };
-        let command = endpoint
-            .runner_command()
-            .map_err(|e| format!("{machine}: {e}"))?;
-        let spawned = Runner::spawn(command, endpoint.answer_timeout())
+        let spawned = crate::remote::pick::runner(endpoint, endpoint.answer_timeout())
             .await
-            .map_err(|e| format!("{}: {e}", endpoint.describe()))?;
+            .map_err(|e| format!("{e}"))?;
         let runner = Arc::new(spawned);
         runners.insert(machine.to_string(), Arc::clone(&runner));
         Ok(runner)

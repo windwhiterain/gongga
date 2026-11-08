@@ -124,25 +124,9 @@ mkdir -p "$work" "$home"
 git clone --quiet "$root/ship" "$home/ship" 2>/dev/null || cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 : > "$log"
 
-# The peer must speak this build: an older runner is refused at its greeting, and a
-# channel would prove nothing about the code under test.
-greeting=$(ssh -o BatchMode=yes -o ConnectTimeout=8 ${peer_key:+-i "$peer_key"} ${peer_port:+-p "$peer_port"} \
-  "$peer_host" -- "$peer_runner" </dev/null 2>/dev/null | head -1)
-say "greeting: $greeting"
-if ! has "$greeting" '"protocol"'; then
-  echo "skip: $peer_name answered no greeting ($greeting)"
-  exit 0
-fi
-peer_protocol=$(python -c 'import json,sys
-print(json.loads(sys.argv[1]).get("protocol"))' "$greeting" 2>/dev/null)
-this_protocol=$(python -c 'import re,sys
-text = open(sys.argv[1], encoding="utf-8").read()
-print(re.search(r"PROTOCOL: u32 = (\d+)", text).group(1))' "$root/crates/server/src/remote/protocol.rs")
-if [[ "$peer_protocol" != "$this_protocol" ]]; then
-  echo "skip: $peer_name runs protocol $peer_protocol and this build speaks $this_protocol;"
-  echo "      install this build there with: gongga-cli skill remote install --host <peer>"
-  exit 0
-fi
+# Which distribution a peer runs is the server's answer, not this file's: no runner is
+# named below, so a run that reaches a program proves the peer chose one that speaks
+# this build -- or that this build placed its own there.
 
 # A scratch directory on the peer, made and named by the peer's own shell.
 peer_scratch=$(ssh -o BatchMode=yes -o ConnectTimeout=8 ${peer_key:+-i "$peer_key"} ${peer_port:+-p "$peer_port"} \
@@ -152,12 +136,14 @@ say "peer scratch: $peer_scratch"
 
 # This run's own remotes file, so the operator's is never read twice or written.
 export GONGGA_REMOTES_CATALOG="$work/channel-remote-remotes.toml"
+# No `runner` line on purpose: a peer is asked for the distribution that speaks this
+# build's protocol, and one is placed there when it has none. Naming a path is what
+# made two ends disagree, so the test never names one.
 {
   echo "[remotes.$peer_name]"
   echo "host = \"$peer_host\""
   [[ -n "$peer_key" ]] && echo "identity = \"$peer_key\""
   [[ -n "$peer_port" ]] && echo "port = $peer_port"
-  echo "runner = \"$peer_runner\""
 } > "$GONGGA_REMOTES_CATALOG"
 
 export GONGGA_HOME="$home"
