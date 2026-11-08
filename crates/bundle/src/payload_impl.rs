@@ -78,6 +78,20 @@ pub fn fnv_of(path: &Path) -> std::io::Result<u64> {
     }
 }
 
+/// The file that says which build placed a directory.
+///
+/// # Invariant
+///
+/// Only a directory holding this marker is this file's to stop or to remove: a home's
+/// `payload/` also holds a peer's pair for one protocol (`remote/pick.rs`), which this
+/// file did not put there and may not touch.
+pub const MARKER: &str = ".payload";
+
+/// Says this directory holds `stamp`'s programs.
+pub fn mark(dir: &Path, stamp: &str) -> std::io::Result<()> {
+    std::fs::write(dir.join(MARKER), stamp)
+}
+
 /// One name for one set of payloads, so a build never rewrites another's files.
 pub fn stamp(programs: &[(&str, &[u8])]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -117,6 +131,11 @@ pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool, force: b
             continue;
         }
         let old = entry.path();
+        // Before anything is asked to stop: a directory this feature did not place is
+        // not a build of ours to replace.
+        if !old.join(MARKER).is_file() {
+            continue;
+        }
         if !stop_programs_in(&old, ours, keeps_servers, force) {
             continue;
         }
