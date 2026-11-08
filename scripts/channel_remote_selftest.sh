@@ -212,11 +212,11 @@ for line in text.splitlines():
 sys.stdout.write(str(value))' "$1" "$2"
 }
 
-"${cli[@]}" set_session main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" set_session --name main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
 
 # 1. A one-shot program on the peer, printing the directory it ran in: the peer's
 #    scratch, not a directory this machine has of the same name.
-once=$("${cli[@]}" new main bash --remote "$peer_name" --cwd "$peer_scratch" \
+once=$("${cli[@]}" new --session main --name bash --remote "$peer_name" --cwd "$peer_scratch" \
   --args '["-lc", "pwd"]' --wait 30000 2>&1)
 say "$once"
 ran=$(field "$once" output | tr -d '\r\n')
@@ -227,18 +227,18 @@ ok "new on $peer_name runs the program there" "$([[ -n "$ran" && "$(field "$once
 #    the cursor is this server's, so each call answers only what it said.
 # `--wait 0`: a shell that has been opened has said nothing yet, and waiting for a
 # window that cannot arrive is what the caller's own clock is for.
-shell=$("${cli[@]}" new main bash --remote "$peer_name" --cwd "$peer_scratch" --wait 0 2>&1)
+shell=$("${cli[@]}" new --session main --name bash --remote "$peer_name" --cwd "$peer_scratch" --wait 0 2>&1)
 say "$shell"
 shell_id=$(field "$shell" id)
 ok "a channel on $peer_name opens" "$([[ -n "$shell_id" ]] && echo 0 || echo 1)"
-one=$("${cli[@]}" check main "$shell_id" --input 'echo one' --wait 20000 2>&1)
-two=$("${cli[@]}" check main "$shell_id" --input 'echo two' --wait 20000 2>&1)
+one=$("${cli[@]}" check --session main --id "$shell_id" --input 'echo one' --wait 20000 2>&1)
+two=$("${cli[@]}" check --session main --id "$shell_id" --input 'echo two' --wait 20000 2>&1)
 say "one: $(field "$one" output) / two: $(field "$two" output)"
 ok "the same channel answers a second command" \
   "$([[ "$(field "$one" output | tr -d '\r\n')" == one && "$(field "$two" output | tr -d '\r\n')" == two ]] && echo 0 || echo 1)"
 
 # 3. The listing names the machine and the directory the peer chose.
-listed=$("${cli[@]}" ls_channel --session main "" 2>&1)
+listed=$("${cli[@]}" ls_channel --session main --path "" 2>&1)
 say "$listed"
 # The answer's message is JSON inside JSON, so it is parsed, not grepped.
 row=$(python - "$listed" "$shell_id" <<'INNER'
@@ -275,16 +275,16 @@ taskkill //PID "$server_pid" //T //F >/dev/null 2>&1
 for _ in $(seq 1 60); do alive "$server_pid" || break; sleep 0.2; done
 sleep 1
 start_server
-after=$("${cli[@]}" check main "$shell_id" --input 'echo after-restart' --wait 20000 2>&1)
+after=$("${cli[@]}" check --session main --id "$shell_id" --input 'echo after-restart' --wait 20000 2>&1)
 say "$after"
 ok "a channel survives the server it was started from" \
   "$([[ "$(field "$after" output | tr -d '\r\n')" == after-restart ]] && echo 0 || echo 1)"
 
 # 5. `del_channel` ends it: the program is gone, and the row with it.
-ended=$("${cli[@]}" del_channel --session main "$shell_id" 2>&1)
+ended=$("${cli[@]}" del_channel --session main --path "$shell_id" 2>&1)
 say "$ended"
 ok "del_channel ends a channel on $peer_name" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
-gone=$("${cli[@]}" check main "$shell_id" --wait 0 2>&1)
+gone=$("${cli[@]}" check --session main --id "$shell_id" --wait 0 2>&1)
 ok "the ended channel is no longer there to read" "$(has "$gone" 'no channel' && echo 0 || echo 1)"
 
 took=$(( $(date +%s) - began ))

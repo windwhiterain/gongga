@@ -1,13 +1,14 @@
 """The command line, in Python: one command per process.
 
-    gongga_cli.py <name> [--argument value | --argument=value | bare word ...]
+    gongga_cli.py <name> [--argument value | --argument=value ...]
 
 What the server publishes is the whole interface, so nothing here is a table of
-commands: the greeting's catalog says which names exist, which arguments each takes,
-which are required, and which are spelled without `--`. A word with no flag fills the
-first argument still empty from the line's cursor on -- the rule the Rust layer binds
-by, because two command lines that disagree about which argument a word lands on are
-one line too many.
+commands: the greeting's catalog says which names exist, which arguments each takes and
+which are required. Every one of them is spelled `--name`, including the ones the
+catalog marks positional: a bare word on a line nobody is watching is a typo said out
+loud, and the rule that guessed which argument it landed on guessed wrong (`send_message
+reader hello` sent "hello" to a session called `hello`). So a bare word is refused, and
+the refusal names the flags the command does take.
 
 Events go out one per line as JSON, in the order the server sent them: a script or a
 pipeline reads its answer there. The command's own message goes to stderr, and the
@@ -93,66 +94,45 @@ def usage(spec):
     for argument in spec.get("args") or []:
         hint = argument.get("value_hint") or argument["name"]
         word = f"--{argument['name']} <{hint}>"
-        if argument.get("positional"):
-            word = f"<{hint}>"
         if not argument.get("required"):
             word = f"[{word}]"
         words.append(word)
     return " ".join(words)
 
 
-def after_arg(specs, name):
-    """The cursor a parameter leaves behind: one past it."""
-    for at, spec in enumerate(specs):
-        if spec["name"] == name:
-            return at + 1
-    return None
-
-
-def next_unfilled(specs, bound, cursor):
-    """Where a bare word at `cursor` lands: the first unfilled one, else the first.
-
-    The wrap is what keeps a flag ahead of the line from stranding what is behind
-    it, and it is the rule the Rust layer binds by.
-    """
-    order = list(range(cursor, len(specs))) + list(range(0, min(cursor, len(specs))))
-    for at in order:
-        if specs[at]["name"] not in bound:
-            return at
-    return None
-
-
 def bind(wanted, words):
-    """The words as `wanted`'s arguments: `--name value`, or a word by position."""
+    """The words as `wanted`'s arguments: `--name value`, `--name=value`, and no other shape.
+
+    # Invariant
+
+    A word with no dash is refused, never placed. Which argument such a word was meant
+    for is a guess, and the guess is what sent `send_message reader hello` to a session
+    named `hello`; the line this reads is one nobody can see, so it says what it takes
+    instead of deciding for the caller.
+    """
     specs = wanted.get("args") or []
     takes = {spec["name"] for spec in specs}
-    values, cursor, i = {}, 0, 0
+    values, i = {}, 0
     while i < len(words):
         word = words[i]
-        if word.startswith("--"):
-            name, separator, inline = word[2:].partition("=")
-            if name not in takes:
-                raise ValueError(
-                    f"{wanted['name']} has no argument --{name}; it reads " + usage(wanted)
-                )
-            if not separator:
-                i += 1
-                if i >= len(words):
-                    raise ValueError(f"--{name} needs a value")
-                inline = words[i]
-            if name in values:
-                raise ValueError(f"--{name} was given twice")
-            values[name] = inline
-            cursor = after_arg(specs, name) or cursor
-            i += 1
-            continue
-        at = next_unfilled(specs, values, cursor)
-        if at is None:
+        if not word.startswith("--"):
             raise ValueError(
-                f'unexpected argument "{word}"; {wanted["name"]} reads ' + usage(wanted)
+                f'{wanted["name"]} takes its arguments by name, and "{word}" names none; '
+                "it reads " + usage(wanted)
             )
-        values[specs[at]["name"]] = word
-        cursor = at + 1
+        name, separator, inline = word[2:].partition("=")
+        if name not in takes:
+            raise ValueError(
+                f"{wanted['name']} has no argument --{name}; it reads " + usage(wanted)
+            )
+        if not separator:
+            i += 1
+            if i >= len(words):
+                raise ValueError(f"--{name} needs a value")
+            inline = words[i]
+        if name in values:
+            raise ValueError(f"--{name} was given twice")
+        values[name] = inline
         i += 1
     missing = [
         spec["name"] for spec in specs if spec.get("required") and spec["name"] not in values

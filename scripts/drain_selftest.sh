@@ -93,7 +93,7 @@ for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
-created=$("${cli[@]}" set_session sleeper fake/flash-fake --cwd "$work" 2>&1)
+created=$("${cli[@]}" set_session --name sleeper --model fake/flash-fake --cwd "$work" 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
 
 # The payload leads: `--message <text> --name <session>` is the declared order.

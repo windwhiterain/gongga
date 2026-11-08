@@ -12,8 +12,8 @@ as a built-in, and none of them needs a client rebuild.
 It does not own the *input line*. Whether a line is a `/command` or prose for
 the agent is the interactive front-end's decision (`Client::command` and
 `Client::message` are the two things that decision can ask for), so the
-one-shot path -- `gongga-cli send_message main hi` -- never has to guess: its
-argv is already tokens.
+one-shot path -- `gongga-cli send_message --name main --message hi` -- never
+has to guess: its argv is already tokens.
 
 It knows nothing about terminals. That is the point of the split: anything that
 can present `Sink` events can drive it, and the interactive client is one such
@@ -659,7 +659,8 @@ canvas does not is `block_size`, and that is a setting read back through
 
 ## Client::command
 
-This is the whole interface of the one-shot path (`gongga-cli send_message main hi`). There is no grammar here on purpose: a command line arrives tokenised by
+This is the whole interface of the one-shot path (`gongga-cli send_message --name
+main --message hi`). There is no grammar here on purpose: a command line arrives tokenised by
 the shell that started the process, so there is nothing left to decide. `/name`
 is the *interactive* input line's syntax and prose is not a command; splitting a
 string back into tokens only to re-derive an intention would let the two paths
@@ -789,7 +790,7 @@ before any server speaks, which is why nothing a window keeps depends on a greet
 
 Runs one command against the server, prints the events, exits.
 
-`gongga-cli send_message main hi`. One command per process is the
+`gongga-cli send_message --name main --message hi`. One command per process is the
 whole interface: there is no `exec` to wrap it in, and nothing to configure
 about the wait -- the command returns when the server answers, which for
 `send_message` is the moment the message is accepted, not the moment the turn

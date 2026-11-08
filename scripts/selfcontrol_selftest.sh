@@ -194,7 +194,7 @@ project_native=$(cygpath -m "$project")
 
 # The session every copy starts from: a row with something in every column a copy
 # has to reproduce, and a level the model does not take by default.
-"${cli[@]}" set_session source --model fake/flash-fake --thinking high --ctx_limit 20% \
+"${cli[@]}" set_session --name source --model fake/flash-fake --thinking high --ctx_limit 20% \
   --cache_tier short --cache_keepalive true --cwd "$project_native" >"$work/source.out" 2>&1
 [[ "$(query "select count(*) from sessions where name='source'")" == "1" ]] \
   || hard "the source session was not made: $(tail -2 "$work/source.out")"
@@ -221,7 +221,7 @@ a_label="and the command says so: exit $a, $(first_line "$work/new-a.out" "$work
 ok "$a_label" $?
 
 # --- B: a name that is taken is refused, and the row it names is left alone -----
-"${cli[@]}" set_session taken --model fake/flash-fake --thinking low >"$work/taken.out" 2>&1
+"${cli[@]}" set_session --name taken --model fake/flash-fake --thinking low >"$work/taken.out" 2>&1
 taken_before=$(columns_of taken)
 GONGGA_SESSION=source "${cli[@]}" skill self-control new_session taken >"$work/new-b.out" 2>"$work/new-b.err"
 b=$?
@@ -268,7 +268,7 @@ e_label="the package publishes ask and new_session: exit $e, $(first_line "$work
 ok "$e_label" $?
 
 # --- F: `ask` asks, waits and prints the answer ---------------------------------
-"${cli[@]}" set_session mentor --model fake/flash-fake --cwd "$project_native" >"$work/mentor.out" 2>&1
+"${cli[@]}" set_session --name mentor --model fake/flash-fake --cwd "$project_native" >"$work/mentor.out" 2>&1
 answer=$(timeout -k 5 120 "${cli[@]}" skill self-control ask mentor "What did I ask?" 2>"$work/ask-f.err")
 f=$?
 printf '%s' "$answer" > "$work/ask-f.out"

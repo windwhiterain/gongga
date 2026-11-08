@@ -99,7 +99,7 @@ TOML
 before=$(md5sum "$home/client.toml" | cut -d' ' -f1)
 
 cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
-"${cli[@]}" set_session s1 --model fake/flash-fake >/dev/null 2>&1
+"${cli[@]}" set_session --name s1 --model fake/flash-fake >/dev/null 2>&1
 after_create=$(md5sum "$home/client.toml" | cut -d' ' -f1)
 
 # 1. A required session is not filled from the window's entry: the line fails,
@@ -131,11 +131,11 @@ done
 
 # 5. `--cache_tier none` is a statement: the value that sends no tier at all, and
 #    the only one a model that declares none can take.
-clear=$("${cli[@]}" set_session plain --model fake/flash-fake --cache_tier none 2>&1); code=$?
+clear=$("${cli[@]}" set_session --name plain --model fake/flash-fake --cache_tier none 2>&1); code=$?
 [[ $code -eq 0 && "$clear" == *'"ok":true'* ]]
 ok "set_session --cache_tier none is accepted" $?
 say "$clear"
-bad=$("${cli[@]}" set_session plain --model fake/flash-fake --cache_tier 9h 2>&1); code=$?
+bad=$("${cli[@]}" set_session --name plain --model fake/flash-fake --cache_tier 9h 2>&1); code=$?
 [[ $code -ne 0 && "$bad" == *"is not a tier this model declares"* && "$bad" == *"none"* ]]
 ok "an undeclared tier is refused, and none is named among the values" $?
 say "$bad"
