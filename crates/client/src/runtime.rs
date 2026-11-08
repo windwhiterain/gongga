@@ -8,9 +8,11 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::render_wire::UiIntent;
+use crate::window_command as command;
 use crate::window_refill::WindowFacts;
+use crate::window_state::State;
 use crate::window_sync::WindowView;
-use crate::{Connection, DialFailure, Greeting, Link, Listed, Sink};
+use crate::{Connection, DialFailure, Greeting, LineKind, Link, Listed, Sink};
 
 /// First redial delay, doubling up to the cap; a cadence, not a budget.
 ///
@@ -185,4 +187,329 @@ pub fn give_back(front: &mut dyn Frontend, lines: Vec<String>) {
     if !front.has_draft() {
         front.restore_input(newest);
     }
+}
+
+/// What the loop is waiting for this time round.
+enum Step {
+    /// What the front-end said; `Closed` covers a terminal that went away.
+    Input(FrontendEvent),
+    /// The console holding this window is going away.
+    Closing,
+    /// A message arrived, or `None` when the link ended.
+    Wire(Option<Vec<u8>>),
+    /// The retry backoff expired: start dialling.
+    Dial,
+    /// A dial in flight finished.
+    Dialed(Result<(Link, Greeting), DialFailure>),
+}
+
+/// A dial kept alive between loop iterations, boxed so the loop never blocks.
+type Dialing = Pin<Box<dyn Future<Output = Result<(Link, Greeting), DialFailure>>>>;
+
+/// The loop that outlives the link, driven through `Frontend`.
+///
+/// # Invariant
+///
+/// `--parent` names the UI, so its pid comes from the caller, not this process.
+/// See `docs/notes/client-frontend.md`.
+pub async fn run(
+    args: &crate::Args,
+    owner_pid: u32,
+    make: impl FnOnce(crate::SharedCompleter, &Path, &str) -> anyhow::Result<Box<dyn Frontend>>,
+) -> anyhow::Result<()> {
+    // The command an agent's shell types, installed before any shell exists.
+    let home = crate::home_of(args);
+    // Both are this process's own: where a row lives never depends on a greeting.
+    let client_home = crate::client_home_of(args);
+    // The window's own state: sticky entries, drawn sessions, settings, address.
+    let mut state = State::load(&home);
+    // The address in force: what the window remembers first, then the flags.
+    let mut conn = args.conn.clone();
+    if let Some(addr) = state.connection() {
+        conn.server = Some(addr.to_string());
+    }
+    let mut endpoint = crate::endpoint_name(&conn);
+
+    let mut client = crate::build_client(args);
+    let window = command::Window::new(client.completer());
+    let mut ui: Box<dyn Frontend> = make(window.shared(), &client_home, &endpoint)?;
+    // What this window drew last: a greeting may never come.
+    // See `docs/notes/tui-roster.md`.
+    let known = ui.known_list();
+    client.seed_listed(known);
+    // Nothing has been sent yet: a fresh client owes nobody a line.
+    let _ = client.set_offline(0, ui.sink().as_mut());
+    crate::window_sync::sync(&mut client, &state, &window, &mut *ui);
+
+    let mut link: Option<crate::Link> = None;
+    let mut dialing: Option<Dialing> = None;
+    let mut next_try = tokio::time::Instant::now();
+    let mut backoff = RECONNECT_MIN;
+    let mut attempts: u32 = 0;
+    // Started once, before any dial; what it spawned is its to stop, so the
+    // server on the address is stopped first.
+    let spawned: Option<u32> = match starts_a_server(args.client_only) {
+        true => match crate::server_of(&conn) {
+            Ok(addr) => {
+                if let Some(old) = crate::stop(&conn, &home, addr).await {
+                    ui.sink().note(
+                        LineKind::System,
+                        &format!("stopped the server that was serving this home (pid {old})"),
+                    );
+                }
+                // The key this window dials with, so the child does not mint
+                // another one and refuse the window that started it.
+                let key = conn.key.clone();
+                crate::spawn(&home, addr, Some(std::process::id()), key.as_deref())
+                    .ok()
+                    .flatten()
+            }
+            Err(_) => None,
+        },
+        false => None,
+    };
+    // The version of the listings already drawn, so a landed answer repaints once.
+    let mut drawn_listings: u64 = 0;
+    // What the window keeps for commands the server has not answered yet.
+    let mut pending: Vec<(u64, crate::window_state::Follow)> = Vec::new();
+    // The pages of the past windows asked to read and the loop has not sent yet.
+    let mut owed: Vec<String> = Vec::new();
+    let result = loop {
+        // Every arm keeps the keyboard branch, so no state stops it answering keys.
+        let step = if let Some(open) = link.as_mut() {
+            let closing = ui.closing();
+            tokio::select! {
+                event = ui.next_event() => Step::Input(event),
+                bytes = open.recv() => Step::Wire(bytes),
+                _ = closing => Step::Closing,
+            }
+        } else if let Some(pending) = dialing.as_mut() {
+            let closing = ui.closing();
+            tokio::select! {
+                event = ui.next_event() => Step::Input(event),
+                outcome = pending.as_mut() => Step::Dialed(outcome),
+                _ = closing => Step::Closing,
+            }
+        } else {
+            let closing = ui.closing();
+            tokio::select! {
+                event = ui.next_event() => Step::Input(event),
+                _ = tokio::time::sleep_until(next_try) => Step::Dial,
+                _ = closing => Step::Closing,
+            }
+        };
+
+        match step {
+            Step::Input(FrontendEvent::Closed) => break Ok(()),
+            // Not input: the key changed nothing to submit. The drain below is
+            // what the completion was waiting for.
+            Step::Input(FrontendEvent::Recomplete) => {}
+            // A scroll past the oldest row a window holds: a page above it.
+            Step::Input(FrontendEvent::Intent(UiIntent::Older { windows })) => owed.extend(windows),
+            Step::Input(FrontendEvent::Intent(UiIntent::Quit)) => break Ok(()),
+            // The console is going away: it asked, and the way out is the same
+            // one Alt-Q takes. See `docs/notes/tui-closing.md`.
+            Step::Closing => break Ok(()),
+            // A gesture of the window's own: an operation, not a line.
+            Step::Input(FrontendEvent::Intent(UiIntent::Operate { operation })) => {
+                let outcome =
+                    command::operate(&mut client, &mut state, operation, ui.sink().as_mut());
+                // Whatever the gesture changed of the window's own state reaches
+                // the drawing and the completion before the next event.
+                crate::window_sync::sync(&mut client, &state, &window, &mut *ui);
+                if let crate::Submission::Send(msg) = outcome
+                    && let Some(open) = link.as_ref()
+                    && let Err(e) = open.send(msg).await
+                {
+                    ui.sink().note(
+                        LineKind::Error,
+                        &format!("the operation could not be sent: {e}"),
+                    );
+                }
+            }
+            Step::Input(FrontendEvent::Intent(UiIntent::Submit { line })) => {
+                let mut moved = None;
+                let outcome = crate::window_input::submission(
+                    &mut client,
+                    &mut state,
+                    &line,
+                    ui.sink().as_mut(),
+                    &mut moved,
+                );
+                // Whatever the line changed of the window's own state reaches
+                // the screen and the completion before the next keystroke.
+                crate::window_sync::sync(&mut client, &state, &window, &mut *ui);
+                // A `connect_server` moved the address: drop the link and let
+                // the next dial find the new one.
+                if let Some(addr) = moved {
+                    conn.server = Some(addr.to_string());
+                    // The rows on screen are the old endpoint's: they go, and the
+                    // next frame reads this one's records instead.
+                    endpoint = crate::endpoint_name(&conn);
+                    ui.repoint(&client_home, &endpoint);
+                    link = None;
+                    ui.set_server(None);
+                    backoff = RECONNECT_MIN;
+                    attempts = 0;
+                    next_try = tokio::time::Instant::now();
+                    let unanswered = client.set_offline(0, ui.sink().as_mut());
+                    give_back(&mut *ui, unanswered);
+                }
+                match outcome {
+                    crate::Submission::Local | crate::Submission::Rejected => {}
+                    // Nothing left this process, so the text is still the operator's:
+                    // put it back rather than log it away.
+                    crate::Submission::Offline => ui.restore_input(&line),
+                    crate::Submission::Send(msg) => match link.as_ref() {
+                        Some(open) => {
+                            // The command names a session: that session's window
+                            // is drawn, and what the server accepts is kept.
+                            crate::window_input::follow(
+                                &client,
+                                &mut state,
+                                &msg,
+                                &line,
+                                &mut pending,
+                            );
+                            crate::window_sync::sync(&mut client, &state, &window, &mut *ui);
+                            if open.send(msg).await.is_err() {
+                                // Its end went unnoticed: nothing was sent, and the
+                                // line goes back like any other unanswered one.
+                                link = None;
+                                ui.set_server(None);
+                                backoff = RECONNECT_MIN;
+                                attempts = 0;
+                                next_try = tokio::time::Instant::now();
+                                let unanswered = client.set_offline(0, ui.sink().as_mut());
+                                give_back(&mut *ui, unanswered);
+                            }
+                        }
+                        // Raced with the link going down: nothing was sent, so it goes
+                        // back, and the client stops holding it against the server.
+                        None => {
+                            client.never_sent(&msg);
+                            ui.restore_input(&line);
+                        }
+                    },
+                }
+            }
+            Step::Wire(Some(bytes)) => {
+                // Decoding stays in the command layer; this crate never names a protocol type.
+                let decoded = client.handle_bytes(&bytes, ui.sink().as_mut());
+                if let Err(e) = decoded {
+                    ui.sink()
+                        .note(LineKind::Error, &format!("bad message: {e}"));
+                }
+                // Everything waiting goes in before the next frame: one paint
+                // per burst, not per delta.
+                if let Some(open) = link.as_mut() {
+                    while let Some(more) = open.try_recv() {
+                        let decoded = client.handle_bytes(&more, ui.sink().as_mut());
+                        if let Err(e) = decoded {
+                            ui.sink()
+                                .note(LineKind::Error, &format!("bad message: {e}"));
+                            break;
+                        }
+                    }
+                }
+                crate::window_sync::settle(&client, &mut state, &mut pending, &mut *ui);
+                crate::window_sync::sync(&mut client, &state, &window, &mut *ui);
+                // A hole: only a greeting carries the whole list, so dial again.
+                // See `docs/notes/tui-run.md`.
+                if client.take_hole() && link.is_some() {
+                    link = None;
+                    ui.set_server(None);
+                    backoff = RECONNECT_MIN;
+                    attempts = 0;
+                    next_try = tokio::time::Instant::now();
+                    let unanswered = client.set_offline(0, ui.sink().as_mut());
+                    ui.sink().note(
+                        LineKind::System,
+                        "the stream skipped events — reconnecting to read the list again",
+                    );
+                    give_back(&mut *ui, unanswered);
+                }
+            }
+            Step::Wire(None) => {
+                link = None;
+                ui.set_server(None);
+                backoff = RECONNECT_MIN;
+                attempts = 0;
+                next_try = tokio::time::Instant::now();
+                let unanswered = client.set_offline(0, ui.sink().as_mut());
+                ui.sink()
+                    .note(LineKind::System, "server connection lost — reconnecting");
+                give_back(&mut *ui, unanswered);
+            }
+            Step::Dial => {
+                attempts += 1;
+                dialing = Some(Box::pin(dial_now(conn.clone())));
+            }
+            Step::Dialed(outcome) => {
+                // Finished either way: clear it, or a later poll of a dead future panics.
+                drop(dialing.take());
+                match outcome {
+                    Ok((open, greeting)) => {
+                        ui.set_server(Some(whose_server(spawned, &greeting, owner_pid)));
+                        // Applying the greeting is what the server says; what
+                        // this window kept is the other half of the comparison.
+                        greeting.apply(&mut client, ui.sink().as_mut());
+                        crate::window_refill::declare(&mut client, &*ui);
+                        link = Some(open);
+                        backoff = RECONNECT_MIN;
+                    }
+                    Err(failure) if failure.is_fatal() => break Err(failure.into_error()),
+                    Err(failure) => {
+                        let unanswered = client.set_offline(attempts, ui.sink().as_mut());
+                        give_back(&mut *ui, unanswered);
+                        // A spawned server is coming up: a fresh home has no key
+                        // until it writes one, so that is not news yet.
+                        if spawned.is_none() {
+                            // Said every time: the refresh above wipes a note
+                            // said once, and a window that says only
+                            // "reconnecting" looks hung.
+                            ui.sink().note(
+                                LineKind::Error,
+                                &format!(
+                                    "{} (attempt {attempts}) — still trying; Alt+Q leaves",
+                                    failure.message()
+                                ),
+                            );
+                        }
+                        backoff = (backoff * 2).min(RECONNECT_MAX);
+                        next_try =
+                            tokio::time::Instant::now() + wait_for(spawned, attempts, backoff);
+                    }
+                }
+            }
+        }
+        // After the step, never during it: a peer's directory is not a
+        // synchronous answer.
+        crate::window_refill::answer_completion(
+            &mut client,
+            link.as_ref(),
+            &mut *ui,
+            &mut drawn_listings,
+        )
+        .await;
+        // Same place, same reason: what a frame drew decides what is fetched.
+        crate::window_refill::answer_transcripts(&mut client, link.as_ref(), &*ui).await;
+        // And what the operator asked to read above: a page of the past.
+        crate::window_refill::answer_older(&mut client, link.as_ref(), &*ui, &mut owed).await;
+    };
+
+    // SPEC's stop, for the server the bar drew as own, and nothing for one that is
+    // somebody else's: one answer decides both.
+    if ui.server_is_ours()
+        && let Some(open) = link.as_mut()
+    {
+        open.cancel().await;
+    }
+    // Best-effort goodbye: saves the server its idle timeout; failure is harmless.
+    if let Some(open) = link.take() {
+        open.goodbye().await;
+    }
+
+    ui.restore()?;
+    result
 }

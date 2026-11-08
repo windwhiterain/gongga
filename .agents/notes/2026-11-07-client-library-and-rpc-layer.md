@@ -586,3 +586,31 @@ packages, 0 violations · `git diff --check` 0 ·
 interface-only step passed both real-process scripts ·
 `scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local` 0 and `--check`
 0, both "in agreement". Proxy 7890 throughout.
+
+## 2026-11-08: step 2, the loop itself is in the client
+
+`Step`, `Dialing` and the whole `interactive` loop moved from
+`crates/tui/src/run.rs` to `client::runtime::run`; run.rs 465 -> 159 lines,
+runtime.rs 189 -> 502. The loop reaches its UI only through
+`Box<dyn Frontend>` and no `Tui` type appears in the client library.
+
+`run` takes three arguments: `&Args`, `owner_pid: u32`, and a factory
+`FnOnce(SharedCompleter, &Path, &str) -> Result<Box<dyn Frontend>>`. Passing
+`owner_pid` in (instead of reading `std::process::id()` inside the library)
+keeps the 2026-11-07 `--parent` verdict true when the client becomes its own
+process: the UI will hand over the pid it got in argv. `tui::interactive` is
+now a wrapper that builds the `Tui` and passes it as that factory;
+`gongga_tui::main` and `src/main.rs` are unchanged.
+
+The move compiled on the first attempt. One comment preamble on `run` was
+188/120 chars and was split into a short preamble plus an `# Invariant`
+section. Both real-process scripts passed, which is the evidence that moving
+the loop changed no behaviour.
+
+Verified: `cargo check` 0 (23.51s) · `cargo build` 0 (1m30s) ·
+`cargo fmt --check` 0 · `comments-check` 0 violations · `test-layout-check` 8
+packages, 0 violations · `git diff --check` 0 · `gongga-tui --help` 0 ·
+`scripts/client_state_selftest.sh -v` PASS · 4s · client-state · e0e1c62 ·
+`scripts/tui_live.py --script <window-state + cover dismissal>` 0 ·
+`scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local` 0 and `--check`
+0, both "in agreement". Proxy 7890 throughout.

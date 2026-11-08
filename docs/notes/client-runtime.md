@@ -1,9 +1,11 @@
 # client/runtime.rs
 
-The connection lifecycle and the front-end interface, lifted out of
-`crates/tui/src/run.rs`. These are the parts that know nothing about terminals:/nthe reconnect ladder, whether this window starts a server at all, one dial
-attempt, whose server answered, the `Server` enum, and `Frontend` /
-`FrontendEvent` / `give_back`. See `client-frontend.md` for the interface.
+The connection lifecycle, the front-end interface and the whole interactive
+loop, lifted out of `crates/tui/src/run.rs`. These are the parts that know
+nothing about terminals: the reconnect ladder, whether this window starts a
+server at all, one dial attempt, whose server answered, the `Server` enum,
+`Frontend` / `FrontendEvent` / `give_back`, and `run` itself. See
+`client-frontend.md` for the interface.
 
 ## Why `owner_pid` is a parameter
 
@@ -22,13 +24,13 @@ enum, so `Screen::server` and `Tui::set_server` are unchanged.
 
 ## What is still in tui/run.rs
 
-`TuiSink`, the `Step` and `Dialing` types, and the `interactive` loop body.
-The loop now holds a `Box<dyn Frontend>`, so only its one `Tui::new` line names
-the terminal. The input translation, `sync` / `settle`, `declare` / `answer_*`
-and `give_back` have all moved into the client library. `log.rs` / `panes.rs`
-still own the window journal and the ratatui folding. See `tui-run.md` for the
-loop's invariants, `client-frontend.md` for step 2, and `DESIGN.md` §1 for the
-stage order.
+`TuiSink`, the three interface impls (`Sink`, `WindowView`, `Frontend`), and a
+thin `interactive` wrapper that constructs the `Tui` and hands it to
+`runtime::run` as a factory. `Step`, `Dialing`, the loop body, input
+translation, `sync` / `settle`, `declare` / `answer_*` and `give_back` all live
+here in the client library now. `log.rs` / `panes.rs` still own the window
+journal and the ratatui folding. See `tui-run.md` for the loop's invariants,
+`client-frontend.md` for the interface, and `DESIGN.md` §1 for stage order.
 
 Nothing about behaviour changed in this move: the four constants, four
 functions and the enum keep the same logic, with one more explicit argument.

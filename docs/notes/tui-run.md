@@ -19,8 +19,9 @@ As of 2026-11-08 the `submission and filled` and `submission` sections, and the
 `crates/client/src/runtime.rs`; `declare` and the `answer_*` functions live in
 `crates/client/src/window_refill.rs`; `sync` and `settle` live in
 `crates/client/src/window_sync.rs`; `give_back` lives in
-`crates/client/src/runtime.rs`. The loop now drives a `Box<dyn Frontend>` and
-`Step` carries `FrontendEvent`. The sections stay for their invariants. See
+`crates/client/src/runtime.rs`. The loop body, `Step` and `Dialing` now live
+in `client::runtime::run`; this file keeps `TuiSink`, the interface impls and
+the factory wrapper. The sections stay for their invariants. See
 `client-window-input.md`, `client-runtime.md` and `client-frontend.md`.
 
 ## RECONNECT_MIN

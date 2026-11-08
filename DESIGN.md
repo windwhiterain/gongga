@@ -296,15 +296,15 @@ server + client + TUI，WebUI 等自行分发；若指的是别的，说一声�
 `answer_transcripts` / `answer_older`，经只读 `WindowFacts` 取窗口事实；
 `window_sync.rs` 已上提 `sync` / `settle`，经 `WindowView` 呈现状态；
 `window_index.rs` 已上提 `RowIndex` 与 `Ledger`（索引数据，仍由 TUI 的 `Log`
-使用）；`client::runtime::Frontend` / `FrontendEvent` / `give_back` 已落地，
-`interactive` 已改用 `Box<dyn Frontend>`，循环体只剩 `Tui::new` 一行认识终端；
-`TuiSink`、`Step`、`Dialing`、循环本体与 `log.rs` 里的 `Log` / `Panes` /
-ratatui 折行仍待；⑤ client bin target 接管道骨架（要等 ④ 的主循环，
-否则是空壳）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
+使用）；`client::runtime` 已有 `Frontend` / `FrontendEvent` / `give_back` /
+`Step` / `Dialing` 与整个 `run` 循环，循环只经 `Box<dyn Frontend>` 访问 UI；
+`crates/tui/src/run.rs` 只剩 `TuiSink`、三个接口实现与构造 UI 的 `interactive`
+包装；`log.rs` 里的 `Log` / `Panes` / ratatui 折行仍待；⑤ client bin target
+接管道骨架（`run` 已在 client，不再是空壳）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
 payload）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
 主循环上提的接口形状（object-safe `Frontend`、`Box<dyn Sink>`、`FrontendEvent`
-与两步迁移）见 `docs/notes/client-frontend.md`；step 1 只立接口、行为不变，已完成，
-step 2 把循环体机械搬进 `client::runtime::run`。
+与两步迁移）见 `docs/notes/client-frontend.md`；两步均已完成，循环现由
+`client::runtime::run` 持有，TUI 只提供 UI 工厂与 `owner_pid`。
 
 **纠正一处（2026-11-08）**：上一轮把 ④ 写成「定下跨进程补拉查询的形状」。裁定 4 是
 journal 归 client：目标形态下 client 自己持有窗口记录，`stamp_of` / `drawn` /

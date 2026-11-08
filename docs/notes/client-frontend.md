@@ -1,22 +1,22 @@
-# The Frontend contract for lifting the loop
+# The Frontend interface and the lifted loop
 
-## Where step 1 landed
+## Where both steps landed
 
-`FrontendEvent`, the `Frontend` trait and `give_back` now live in
-`crates/client/src/runtime.rs`. `crates/tui/src/run.rs` implements `Frontend`
-for `Tui`, and `interactive` holds a `Box<dyn Frontend>`: every call in the
-loop goes through the interface, and only the one line constructing `Tui`
-still names the terminal. `Step` carries `FrontendEvent` instead of
-`Option<UiEvent>`.
+`FrontendEvent`, the `Frontend` trait, `give_back`, `Step`, `Dialing` and the
+whole `run` loop now live in `crates/client/src/runtime.rs`. The loop reaches
+its one UI only through `Box<dyn Frontend>`; no `Tui` type appears in the
+client library.
 
-`TuiSink`, `Step`, `Dialing` and the loop body are still in the TUI. Everything
-else the loop needs is already in the client library: `runtime.rs` (dial
-cadence, spawn, ownership), `window_input.rs`, `window_sync.rs`,
-`window_refill.rs`, `window_state.rs`, `window_cache.rs`, `window_index.rs`,
-`render_wire.rs`.
+`crates/tui/src/run.rs` is down to 159 lines: `TuiSink`, the three interface
+impls and a thin `interactive` wrapper that builds the `Tui` and passes it to
+`client::runtime::run` as a factory. `owner_pid` is supplied by that wrapper,
+so the `--parent` verdict stays true when the client becomes its own process:
+the UI will pass the pid it got in argv.
 
-Lifting `interactive` is the gate for the client binary: once the loop lives
-in the client, a pipe-driven front-end is just another `Frontend`.
+`log.rs` / `panes.rs` still own the window journal and the ratatui folding.
+Everything else the loop needs is already in the client library:
+`window_input.rs`, `window_sync.rs`, `window_refill.rs`, `window_state.rs`,
+`window_cache.rs`, `window_index.rs`, `render_wire.rs`.
 
 ## The interface as landed
 
@@ -68,13 +68,14 @@ Two borrow details worth keeping: a temporary `Box<dyn Sink>` inside
 `client-window-sync.md`: the client will implement `WindowFacts` from its own
 journal, a front-end over the pipe implements `WindowView`.
 
-## Step 2
+## What the client binary still needs
 
-Move `interactive` and `Step` / `Dialing` into `client::runtime::run`. The
-loop body no longer names `Tui`, so this is a mechanical move: `Tui::new`
-becomes a factory argument and `tui::interactive` keeps only that call.
+`crates/client` is still a library crate. Adding the bin target is the next
+gate: it reads `UiIntent` frames from stdin, feeds them as `FrontendEvent`,
+implements `Frontend` with a `WireSink` that writes `RenderMessage` JSON lines
+to stdout, and passes as `owner_pid` the UI pid it got in argv. One client, one
+UI, one pipe -- see `DESIGN.md` §1 and `client-render-wire.md`.
 
-After that the binary target can read `UiIntent` frames from stdin, feed them
-as `FrontendEvent`, and let a `WireSink` write `RenderMessage` JSON lines to
-stdout. One client, one UI, one pipe -- see `DESIGN.md` §1 and
-`client-render-wire.md`.
+The `WindowFacts` half of `Frontend` is the remaining design debt: today the
+TUI answers those queries from its journal. Once `log.rs` / `panes.rs` move,
+the client implements them locally and a pipe front-end holds no window facts.
