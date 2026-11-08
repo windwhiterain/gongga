@@ -590,18 +590,31 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
     let spawned: Option<u32> = match runtime::starts_a_server(args.client_only) {
         true => match client::server_of(&conn) {
             Ok(addr) => {
-                if let Some(old) = client::stop(&conn, &home, addr).await {
-                    TuiSink(&mut ui).say(
-                        LineKind::System,
-                        &format!("stopped the server that was serving this home (pid {old})"),
-                    );
+                match client::stop(&conn, &home, addr).await {
+                    Ok(old) => {
+                        if let Some(old) = old {
+                            TuiSink(&mut ui).say(
+                                LineKind::System,
+                                &format!(
+                                    "stopped the server that was serving this home (pid {old})"
+                                ),
+                            );
+                        }
+                        // The key this window dials with, so the child does not
+                        // mint another one and refuse the window that started it.
+                        let key = conn.key.clone();
+                        client::spawn(&home, addr, Some(std::process::id()), key.as_deref())
+                            .ok()
+                            .flatten()
+                    }
+                    // A server that would not leave is not started over: it still
+                    // holds the lock, so ours would refuse and the window would be
+                    // left with no server at all and no word about why.
+                    Err(error) => {
+                        TuiSink(&mut ui).say(LineKind::System, &format!("{error}"));
+                        None
+                    }
                 }
-                // The key this window dials with, so the child does not mint
-                // another one and refuse the window that started it.
-                let key = conn.key.clone();
-                client::spawn(&home, addr, Some(std::process::id()), key.as_deref())
-                    .ok()
-                    .flatten()
             }
             Err(_) => None,
         },
