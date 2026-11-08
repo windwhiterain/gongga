@@ -139,20 +139,37 @@ The notice does **not** take the window. It carries a preview for the reader and
 `check` has the rest, because a notice that consumed the output would be the one way
 to lose it: the cursor moves when someone asks, not when the program ends.
 
-## Still owed
+## Still owed: the eighteen go
 
-- A `cmd` name (`GONGGA_CLI`) reaches the command layer through `commands::layer()`, a
-  trait object installed once, holding a weak dispatch: the dispatch owns the agent
-  whose tools call it, so a strong one would keep both alive. The caller's session fills
-  the first argument the target declares as a session, and only when the call named
-  none. A `cancel` a tool runs is a client's: the `self-control` skill is what says a
-  tool may do what a person may.
-- The old eighteen tools are rows marked `offered = false`: the model is told about
-  `new`, `check` and `skill` only, and the rest answer to their names for the command
-  layer (`gongga-cli bash …`) and for a subscription action. They are deleted -- not
-  merely unoffered -- when a name routes to the command layer (`GONGGA_CLI`) and those
-  actions move onto channels of their own. Deleting them first was tried and reverted:
-  each removal takes the helpers a *live* path also uses (`cancel_lets_go`,
-  `ToolContext::peek`, `Shells::names`, the job view), so the two go together.
-- An automatic id carries the program's name (`main/bash/2`). It does not have to: the
-  counter alone would do, and the name is the one thing a rename makes wrong.
+SPEC's tool surface is `new`, `check`, `wait` and the skill table. Everything the
+channel replaced is still here as a row marked `offered = false` **and** as a helper the
+command layer or a subscription still reaches: about 5200 lines across
+`tools/bash.rs`, `tools/python.rs`, `tools/interpreter.rs`, `tools/detached.rs`,
+`tools/exec*.rs`, `tools/python_remote.rs`, `remote/shell.rs`, `remote/shell_set.rs`.
+They are the same names as the channel commands, with different meanings, and a model
+that reaches for one gets the wrong one -- measured: a tool `del_job` wants
+`job_id` (background jobs) while the command `del_job` ends a channel.
+
+Delete in this order, one slice at a time, each slice building and passing
+`channel_selftest.sh`, `channel_remote_selftest.sh` and `tool_selftest.sh`:
+
+1. **Names that mean two things.** The rows `del_job`, `del_bash`, `list_bash`,
+   `check_bash`, `check_job` against the channel commands `ls_job`/`del_job`/
+   `rename_job`. One meaning survives: the channel one. The prose that promises
+   `check_bash`/`check_job` as readers (`bash`'s and `python`'s summaries, the notice
+   text "`check_job` collects it") goes in the same slice.
+2. **Runners.** `tools/bash.rs`, `tools/exec.rs`, `tools/exec_remote.rs` and the
+   `[tool.bash]`/`[tool.remote_bash]`/`[tool.exec]`/`[tool.remote_exec]` rows: a shell
+   is a channel now, so a session's `bash` tool is `new bash`.
+3. **Interpreters.** `tools/python.rs`, `tools/interpreter.rs`,
+   `tools/python_remote.rs`, `remote/shell*.rs` and their rows. Subscriptions already
+   run in a channel; the interpreter's REPL semantics are what a `python` channel gives.
+4. **Detached processes.** `tools/detached.rs` and the `background` carrier: a channel
+   is what outlives a turn, so this is the last to go. It carries `JobRow`, the job
+   view and `cancel_lets_go` -- check each before removing it, because `cancel` and a
+   `resume` after a stop read them.
+
+What stays: `read_file`, `write_file`, `replace` (a model has no other door to a file),
+`list_paths`, `skill`, and every command in `commands.rs` that the channel world added.
+`Shells::names`, `ToolContext::peek` and the job view are used by live paths today; the
+slice that removes their last caller removes them.
