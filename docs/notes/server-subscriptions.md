@@ -7,14 +7,13 @@ SPEC's `subscribe`, as one registry and one matcher.
 ## What a subscription is
 
 Four facts: a *name*, a *pattern*, the *session that runs the match*, and the
-*command* a match runs there. It is armed as `subscribe <name> <pattern> --bash <shell>
---cmd <cmd>`, re-arming a name replaces what the name held, and `del_subscribe <name>`
-drops it -- a name is one subscription, so the two verbs are always one well-defined
-row. The command is what a match *does*: the server no longer speaks for a
-subscription, so a row armed without one fires and does nothing. SPEC still spells the
-action as optional (`[--bash <bash> --cmd <cmd>]`), so arming one without an action is
-allowed and warned about rather than refused -- narrowing the surface is the SPEC's,
-not this module's. The pattern is a regex, matched against an
+*command* a match runs there. It is armed as `subscribe <pattern> <cmd>`, re-arming a
+name replaces what the name held, `ls_subscription <path>` lists what a session holds
+and `del_subscription <name>` drops it -- a name is one subscription, so the verbs are
+always one well-defined row. A call that names no subscription is given the first free
+`sub<n>`, because SPEC makes the name optional and a row nobody can name is a row
+nobody can drop. The command is what a match *does*, and a call that names none is
+refused: a subscription that fires and does nothing is a promise with no keeper. The pattern is a regex, matched against an
 event's name -- which for a log row is its `kind`, and for any other event is its
 own (`status`, `usage`, `sessions`, `log`, ...). When the event is about a session,
 the pattern is matched against `name:session` too, so `turn_end:child/2` is one
@@ -109,21 +108,21 @@ one command where the two are different questions. A client that names no sessio
 a window, a bridge -- is refused rather than armed with no addressee: a subscription
 that fires and tells nobody cannot be noticed by the registry.
 
-## A match can also run something
+## A match runs one command
 
-`--bash <name> --cmd <cmd>` (or `--python <name> --code <code>`) is the action, and a
-match has nothing else: the command runs in the session's *own* persistent interpreter
-of that
-name -- the same shell the `bash` tool uses under the same key, so a subscription
-and its session see each other's `cd` and exports. The name is the interpreter's,
-not the subscription's: the subscription already has one name, and the interpreter
-it runs in is a place, not a label. The outcome is written as an event-log row of
-kind `subscription` -- stdout, stderr and exit code -- so `events` reads what the
-watcher saw. Running the action takes the same `tool_cmd::run` path the tool
-commands use, which is what keeps a subscription's run and a model's call from
-drifting apart. The name it runs under is the subscriber's choice, and a callback is
-worth its own shell: the same name is the same queue, so a callback behind the
-parent's long command is news that arrives late.
+The action is a command -- SPEC's `Cmd`, a name and its named arguments -- and it runs
+through the same layer a tool's `fn <tool>(**args)` uses: the catalog decides what
+exists, refuses what is unknown, and fills the caller's session into the first argument
+that is one. So a subscription cannot reach past what the session that armed it can
+call, and a new command is available to subscriptions the day it is added.
+
+It is stored as one column, `action`, holding `{"name":…,"args":{…}}`; the row is the
+record, so a restart resumes both the watching and the running. The outcome is written
+as an event-log row of kind `subscription` -- whether the command answered, what it
+said, and which command it was -- so `events` reads what the watcher saw.
+
+A match does not wait for anything of its own: the command it runs is what waits, if it
+waits at all, so the shape of a wake is whatever that command does.
 
 ## What a wake looks like now
 

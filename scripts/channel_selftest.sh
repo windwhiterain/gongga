@@ -212,16 +212,17 @@ ok "GONGGA_CLI routes to the command layer" "$(has "$cloned" '"ok":true' && echo
 copied=$("${cli[@]}" get_messages --session copy 2>&1)
 ok "the cmd really ran" "$(has "$copied" 'last_seq' && echo 0 || echo 1)"
 
-# 7. ls_job lists what the session has, and del_job ends one.
-listed=$("${cli[@]}" ls_job --session main "" 2>&1)
+# 7. ls_channel lists what the session has, and del_channel ends one.
+listed=$("${cli[@]}" ls_channel --session main "" 2>&1)
 say "$listed"
-ok "ls_job lists the channels" "$(has "$listed" "$shell_id" && echo 0 || echo 1)"
-ended=$("${cli[@]}" del_job --session main "$shell_id" 2>&1)
-ok "del_job ends a channel" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
+ok "ls_channel lists the channels" "$(has "$listed" "$shell_id" && echo 0 || echo 1)"
+ended=$("${cli[@]}" del_channel --session main "$shell_id" 2>&1)
+ok "del_channel ends a channel" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
 
 # 8. A subscription runs one command per match: the log row is what a match leaves.
-armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe watcher '^channel_selftest$' \
-  '{"name": "trigger_event", "args": {"event": "sub_ran"}}' --persistant true 2>&1)
+armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe '^channel_selftest$' \
+  '{"name": "trigger_event", "args": {"event": "sub_ran"}}' --subscription watcher \
+  --persistant true 2>&1)
 say "$armed"
 ok "a subscription carries the command it runs" \
   "$(has "$armed" '"ok":true' && echo 0 || echo 1)"

@@ -233,9 +233,9 @@ ok "check spoke to the channel new opened" "$(has "$second" 'second' && echo 0 |
 
 # 4. The round trip the whole row exists for: arm a subscription, then `wait` -- the
 #    news it sends cuts the wait, and arrives as the next turn's message.
-armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe "$marker" "^$marker\$" \
+armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe "^$marker\$" \
   '{"name": "send_message", "args": {"message": "news-from-sub", "name": "main"}}' \
-  --persistant true 2>&1)
+  --subscription "$marker" --persistant true 2>&1)
 say "$armed"
 fake_up wait '{"time":30000}' || exit 1
 "${cli[@]}" send_message "wait for the news" --name main >/dev/null 2>&1

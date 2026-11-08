@@ -143,38 +143,39 @@ read_back=$("${cli[@]}" read_file main cmd-selftest.txt 2>&1)
 [[ "$read_back" == *"from-cmd"* ]]
 ok "read_file main <path> (tool command)" $?
 
-# 10. A subscription armed with a named interpreter; trigger_event fires it;
-#     the action runs in that named shell, shared with the bash tool.
-sub=$(GONGGA_SESSION=main "${cli[@]}" subscribe watcher '^cmd_ping$' --persistant true --bash plug --cmd "echo sub-ran >> sub.txt" 2>&1)
+# 10. A subscription armed with a command; trigger_event fires it; the command runs
+#     in the session that armed it, and its log row is the record.
+sub=$(GONGGA_SESSION=main "${cli[@]}" subscribe '^cmd_ping$' \
+  '{"name": "trigger_event", "args": {"event": "sub_ping"}}' --subscription watcher \
+  --persistant true 2>&1)
 [[ "$sub" == *'"ok":true'* ]]
-ok "subscribe watcher '^cmd_ping$' --bash plug --cmd ..." $?
+ok "subscribe watcher '^cmd_ping$' <cmd>" $?
 say "$sub"
 
-"${cli[@]}" bash main "echo warm > sub.txt" >/dev/null 2>&1
 trig=$("${cli[@]}" trigger_event cmd_ping 2>&1)
 [[ "$trig" == *'"ok":true'* ]]
 ok "trigger_event cmd_ping" $?
 sleep 2
-seen=$("${cli[@]}" bash main "cat sub.txt" 2>&1)
-[[ "$seen" == *"sub-ran"* ]]
-ok "the subscription's action ran in the named shell" $?
+seen=$("${cli[@]}" events --kind subscription --session main 2>&1)
+[[ "$seen" == *"sub_ping"* ]]
+ok "the subscription's command ran in the session that armed it" $?
 say "$seen"
 
 # 11. The outcome is a log row the events command reads.
 row=$("${cli[@]}" events --kind subscription --session main 2>&1)
-{ [[ "$row" == *"sub-ran"* ]] || [[ "$row" == *subscription* ]]; } && rc=0 || rc=1
+{ [[ "$row" == *"trigger_event"* ]] || [[ "$row" == *subscription* ]]; } && rc=0 || rc=1
 ok "the outcome is a subscription log row" $rc
 say "$row"
 
-# 12. del_subscribe drops by name.
-dropped=$(GONGGA_SESSION=main "${cli[@]}" del_subscribe watcher 2>&1)
+# 12. del_subscription drops by name.
+dropped=$(GONGGA_SESSION=main "${cli[@]}" del_subscription watcher 2>&1)
 [[ "$dropped" == *'"ok":true'* ]]
-ok "del_subscribe watcher" $?
+ok "del_subscription watcher" $?
 
 # 13. A missed subscription name is a refusal.
-missed=$(GONGGA_SESSION=main "${cli[@]}" del_subscribe watcher 2>&1)
+missed=$(GONGGA_SESSION=main "${cli[@]}" del_subscription watcher 2>&1)
 [[ "$missed" == *"no subscription named"* ]]
-ok "del_subscribe refuses an unknown name" $?
+ok "del_subscription refuses an unknown name" $?
 
 # 14. interrupt_session and the rest of the positional family answer.
 inter=$("${cli[@]}" interrupt_session main 2>&1)

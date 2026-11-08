@@ -203,7 +203,7 @@ impl Channels {
                 {
                     return Err(format!(
                         "channel {path:?} is in use; `check {path}` speaks to it, and \
-                         `del_job {path}` ends it"
+                         `del_channel {path}` ends it"
                     ));
                 }
                 path
@@ -511,7 +511,7 @@ impl Channels {
             .channel_of(session, id)
             .map_err(quiet)?
             .ok_or_else(|| {
-                format!("no channel {id:?} in this session; `ls_job` lists the ones it has")
+                format!("no channel {id:?} in this session; `ls_channel` lists the ones it has")
             })
     }
 

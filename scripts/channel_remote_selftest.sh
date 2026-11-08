@@ -238,7 +238,7 @@ ok "the same channel answers a second command" \
   "$([[ "$(field "$one" output | tr -d '\r\n')" == one && "$(field "$two" output | tr -d '\r\n')" == two ]] && echo 0 || echo 1)"
 
 # 3. The listing names the machine and the directory the peer chose.
-listed=$("${cli[@]}" ls_job --session main "" 2>&1)
+listed=$("${cli[@]}" ls_channel --session main "" 2>&1)
 say "$listed"
 # The answer's message is JSON inside JSON, so it is parsed, not grepped.
 row=$(python - "$listed" "$shell_id" <<'INNER'
@@ -263,7 +263,7 @@ print(row.get("dir", ""))' "$row")
 peer_remote=$(python -c 'import json,sys
 row = json.loads(sys.argv[1]) if sys.argv[1].strip() else {}
 print(row.get("remote") or "")' "$row")
-ok "ls_job says the channel is on $peer_name" "$([[ "$peer_remote" == "$peer_name" ]] && echo 0 || echo 1)"
+ok "ls_channel says the channel is on $peer_name" "$([[ "$peer_remote" == "$peer_name" ]] && echo 0 || echo 1)"
 say "the peer placed it at: $peer_dir"
 # A machine's own home on the peer, not a path this one could have made up.
 ok "the directory is one the peer chose under its own home" \
@@ -280,10 +280,10 @@ say "$after"
 ok "a channel survives the server it was started from" \
   "$([[ "$(field "$after" output | tr -d '\r\n')" == after-restart ]] && echo 0 || echo 1)"
 
-# 5. `del_job` ends it: the program is gone, and the row with it.
-ended=$("${cli[@]}" del_job --session main "$shell_id" 2>&1)
+# 5. `del_channel` ends it: the program is gone, and the row with it.
+ended=$("${cli[@]}" del_channel --session main "$shell_id" 2>&1)
 say "$ended"
-ok "del_job ends a channel on $peer_name" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
+ok "del_channel ends a channel on $peer_name" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
 gone=$("${cli[@]}" check main "$shell_id" --wait 0 2>&1)
 ok "the ended channel is no longer there to read" "$(has "$gone" 'no channel' && echo 0 || echo 1)"
 

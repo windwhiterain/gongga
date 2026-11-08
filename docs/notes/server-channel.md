@@ -127,9 +127,12 @@ the same channel again.
 `tunneled = false`: a channel already is what `background` used to mean, and `wait` is
 the call's own clock (`0` is no wait, absent is this server's default).
 
-`ls_job`, `del_job` and `rename_job` are commands, not tools: `ls` of a session's
-channels, `kill` in a channel's `in`, and one column renamed. `del_session` ends the
-channels its session started, so a name is never left pointing at a dead directory.
+`new_channel`, `input_channel`, `rename_channel`, `ls_channel` and `del_channel` are
+commands, not tools: a program started, one line written, one column renamed, a list,
+and `kill` in a channel's `in`. They are the command layer's door to the same thing the
+`new`/`check` tools are a model's door to, which is what makes a `GONGGA_CLI` channel
+and a subscription able to do what a call does. `del_session` ends the channels its
+session started, so a name is never left pointing at a dead directory.
 
 The watcher is what turns a program's end into a notice. It is a task on the server's
 shutdown token, so a `cancel` announces nothing it just ended; each pass reads `status`
@@ -148,18 +151,17 @@ channel replaced is still here as a row marked `offered = false` **and** as a he
 command layer or a subscription still reaches: about 5200 lines across
 `tools/bash.rs`, `tools/python.rs`, `tools/interpreter.rs`, `tools/detached.rs`,
 `tools/exec*.rs`, `tools/python_remote.rs`, `remote/shell.rs`, `remote/shell_set.rs`.
-They are the same names as the channel commands, with different meanings, and a model
-that reaches for one gets the wrong one -- measured: a tool `del_job` wants
-`job_id` (background jobs) while the command `del_job` ends a channel.
+No name means two things any more: the channel commands are `*_channel`, so a tool
+`del_job` (background jobs) and a command `del_channel` are read without a choice to
+make. What is left is the tools themselves, which no `[tool.*]` row offers and only a
+leftover helper still reaches.
 
 Delete in this order, one slice at a time, each slice building and passing
 `channel_selftest.sh`, `channel_remote_selftest.sh` and `tool_selftest.sh`:
 
-1. **Names that mean two things.** The rows `del_job`, `del_bash`, `list_bash`,
-   `check_bash`, `check_job` against the channel commands `ls_job`/`del_job`/
-   `rename_job`. One meaning survives: the channel one. The prose that promises
-   `check_bash`/`check_job` as readers (`bash`'s and `python`'s summaries, the notice
-   text "`check_job` collects it") goes in the same slice.
+1. **Their promises in prose.** The notice texts that name `check_job`/`check_bash`
+   as the reader of what a program printed (`bash`'s and `python`'s summaries, the
+   finished-job notice) belong to the tools and go with the slice that removes them.
 2. **Runners.** `tools/bash.rs`, `tools/exec.rs`, `tools/exec_remote.rs` and the
    `[tool.bash]`/`[tool.remote_bash]`/`[tool.exec]`/`[tool.remote_exec]` rows: a shell
    is a channel now, so a session's `bash` tool is `new bash`.

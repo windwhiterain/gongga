@@ -345,7 +345,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 };
                 let message = format!(
                     "The channel {:?} you started has {status} after {ran}. `check {}` reads \
-                     what it printed; `del_job {}` forgets it.{said}",
+                     what it printed; `del_channel {}` forgets it.{said}",
                     end.id, end.id, end.id
                 );
                 // Marked: the server talking, so it must not wake an idle session.

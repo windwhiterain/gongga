@@ -347,164 +347,23 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
+            name: "new_session".into(),
+            description: "Create a session under a name nobody holds, and refuse the call \
+                      when one already does: the verb a caller uses to start its own."
+                .into(),
+            args: session_config_args(remotes)
+                .into_iter()
+                .filter(|argument| argument.name != "must_create")
+                .collect(),
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
             name: "set_session".into(),
             description:
                 "Create the session if it does not exist, and apply the given settings to \
                       it. Settings omitted now are left as they are."
                     .into(),
-            args: vec![
-                // SPEC: `--name <session>(sticky)`. A sticky entry keys on the
-                // kind `session`, wherever the argument appears.
-                sticky_arg(
-                    kind_arg(
-                        "name",
-                        "Session to create or reconfigure.",
-                        true,
-                        "session",
-                        Some("name"),
-                        CompletionSource::Sessions,
-                    ),
-                    true,
-                ),
-                // SPEC: `[--model <model>](initial: none)` -- omitted keeps
-                // the session's model; a new one takes the configured default.
-                kind_arg(
-                    "model",
-                    "The model to run this session's turns on, as <provider>/<model \
-                     name>. Omit to keep the session's model, or to take the \
-                     configured default on a new one.",
-                    false,
-                    "model",
-                    Some("model"),
-                    // The greeting's model table, which is the same list with the
-                    // levels each model takes.
-                    CompletionSource::Models,
-                ),
-                kind_arg(
-                    "thinking",
-                    "How hard the model should think, in the roster's spelling (`low`, \
-                     `high`, `max`, ...): what completes is exactly what the model this \
-                     session runs on takes. `default` names the level a model that is \
-                     told nothing uses, clearing one set earlier.",
-                    false,
-                    "thinking",
-                    Some("level"),
-                    // Nothing to offer through a source: the values are what the
-                    // roster lets through, published as `accepts` below.
-                    CompletionSource::None,
-                )
-                .accepting_when(crate::providers::level_accepts)
-                .following("model"),
-                kind_arg(
-                    "ctx_limit",
-                    "The context level at which this session gets a `Context notice`, \
-                     e.g. `30%`. 0 never notices. Initial: a 70% share of the \
-                     model's context window, or the server's token budget when the \
-                     window is unknown.",
-                    false,
-                    "ctx_limit",
-                    Some("n%"),
-                    // Any 0-100 is accepted; the list is the points worth
-                    // offering, not the ones allowed.
-                    CompletionSource::Static(
-                        [
-                            "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
-                        ]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect(),
-                    ),
-                )
-                .following("model"),
-                kind_arg(
-                    "cache_tier",
-                    "The cache tier every request of this session sends, in the model's \
-                     roster spelling. Omit to keep what the session has; name `none` to \
-                     send no tier at all, which is the only way to say so on a model that \
-                     declares none. A session that never named one sends the shortest tier \
-                     its model declares.",
-                    false,
-                    "cache_tier",
-                    Some("name"),
-                    CompletionSource::None,
-                )
-                .accepting_when(crate::providers::tier_accepts)
-                .following("model"),
-                kind_arg(
-                    "cache_keepalive",
-                    "Whether a periodic `(time notice: ...)` message keeps this \
-                     session's prefix warm after every turn. `false` by default; \
-                     `true` keeps sending one per tier window with no last one.",
-                    false,
-                    "cache_keepalive",
-                    Some("true|false"),
-                    CompletionSource::Static(vec!["true".into(), "false".into()]),
-                ),
-                kind_arg(
-                    "mode",
-                    "What this session may do to the workspace. `work` (the default)                      writes as it likes; `explore` refuses `write_file` and `replace`                      outright and tells the session which paths a `bash`, `exec`,                      `python` or `skill` call changed when it ended. Not a jail: a                      program that writes is told, not stopped, so read the changed                      paths and put them back before answering.",
-                    false,
-                    "mode",
-                    Some("work|explore"),
-                    CompletionSource::Static(vec!["work".into(), "explore".into()]),
-                ),
-                // SPEC: `[--remote <remote>](initial: none)`.
-                kind_arg(
-                    "remote",
-                    "Which machine this session's shells run on, named by a `[remotes.<name>]` \
-                     table in this machine's `~/.agents/remotes.toml`. Omit for this \
-                     machine, and name `none` to move a session back here. Naming a \
-                     different one moves an existing session: every shell on the old \
-                     machine is ended first, and a move asked for during a turn waits for \
-                     that turn to end. A session with shells somewhere else reads its \
-                     paths and skills there, so what completes for it is what it can \
-                     open.",
-                    false,
-                    "remote",
-                    Some("name"),
-                    // Exactly the tables this server was started with: `local` is
-                    // what omitting the flag means, and naming it is refused.
-                    CompletionSource::Static({
-                        // `none` first: it is the value that comes home, and the only one
-                        // that is not a table in the config.
-                        let mut names = vec!["none".to_string()];
-                        names.extend(remotes.to_vec());
-                        names
-                    }),
-                ),
-                // SPEC: `[--cwd <cwd>](initial: ".")` -- a session that names
-                // none stands where the server stands.
-                kind_arg(
-                    "cwd",
-                    "Working directory for the session: where a new one is created, and \
-                     where an existing one is moved to. It must be a directory that \
-                     exists on the machine it names -- this one, or the remote's -- or \
-                     the command is refused; completion reads that machine's \
-                     directories. Omit for the server's own directory.",
-                    false,
-                    "cwd",
-                    Some("path"),
-                    // The client lists the filesystem it sits on, which is a hint only.
-                    CompletionSource::Paths,
-                )
-                // SPEC: `--cwd` is `sticky to remote` -- a directory belongs to the
-                // machine it exists on.
-                .following("remote"),
-                arg(
-                    "must_create",
-                    "`true` refuses the command unless the session does not exist yet, so a \
-                     caller that means to start its own session cannot join another one's \
-                     transcript by picking a name that was already taken.",
-                    false,
-                    Some("true|false"),
-                    CompletionSource::Static(
-                        protocol::SHOW_VALUES
-                            .iter()
-                            .map(|s| s.to_string())
-                            .collect(),
-                    ),
-                ),
-            ],
+            args: session_config_args(remotes),
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -543,6 +402,20 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 "session",
                 Some("name"),
                 CompletionSource::Sessions,
+            )],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "ls_session".into(),
+            description: "List sessions by the prefix of their name: what each runs, \
+                      where it stands, and how full its context is."
+                .into(),
+            args: vec![pos(
+                "path",
+                "The sessions whose name starts this way. Omitted is every one.",
+                false,
+                Some("path"),
+                CompletionSource::None,
             )],
         },
         CommandSpec {
@@ -625,15 +498,6 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                       `fn <tool>(**args)` uses."
                 .into(),
             args: vec![
-                arg(
-                    "subscription",
-                    "The name it is armed and dropped by. Arming a name again replaces \
-                     what it held. Omit it to be given one, which `ls_subscription` \
-                     reports.",
-                    false,
-                    Some("name"),
-                    CompletionSource::None,
-                ),
                 pos(
                     "pattern",
                     "A regex, matched against an event's name -- a log row's `kind` \
@@ -663,6 +527,15 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     CompletionSource::Sessions,
                 ),
                 arg(
+                    "subscription",
+                    "The name it is armed and dropped by. Arming a name again replaces \
+                     what it held. Omit it to be given one, which `ls_subscription` \
+                     reports.",
+                    false,
+                    Some("name"),
+                    CompletionSource::None,
+                ),
+                arg(
                     "persistant",
                     "`true` keeps the subscription armed after it fires, so every later \
                      match is news too. Without it one match is the whole subscription.",
@@ -679,15 +552,52 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
-            name: "del_subscribe".into(),
-            description: "Drop one named subscription the caller session armed.".into(),
-            args: vec![pos(
-                "subscription",
-                "The name it was armed by.",
-                true,
-                Some("name"),
-                CompletionSource::None,
-            )],
+            name: "ls_subscription".into(),
+            description: "List a session's armed subscriptions: the name each is dropped \
+                      by, its pattern, and the command a match runs."
+                .into(),
+            args: vec![
+                pos(
+                    "path",
+                    "The subscriptions whose name starts this way. Omitted is every one \
+                     the session has.",
+                    false,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "Session whose subscriptions to list.",
+                    true,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "del_subscription".into(),
+            description: "Drop one named subscription: the caller's own, unless the call \
+                      says whose."
+                .into(),
+            args: vec![
+                pos(
+                    "subscription",
+                    "The name it was armed by.",
+                    true,
+                    Some("name"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "Session that armed it. The caller's own when the call says nothing.",
+                    false,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -707,7 +617,86 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
-            name: "ls_job".into(),
+            name: "new_channel".into(),
+            description: "Start a program under this session and give it a name: the \
+                      command layer's own door to what the `new` tool does."
+                .into(),
+            args: vec![
+                pos(
+                    "id",
+                    "The name it is called by: a path in this session's namespace.",
+                    true,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "name",
+                    "The program, as a `[channel.<name>]` row names it.",
+                    true,
+                    Some("name"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "Session that owns it.",
+                    true,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "input_channel".into(),
+            description: "Write a line into a channel and answer with the part of what it \
+                      said that nobody had read."
+                .into(),
+            args: vec![
+                pos(
+                    "id",
+                    "The channel to write into.",
+                    true,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "input",
+                    "The words to write. A `[channel.<name>]` row decides the framing.",
+                    true,
+                    Some("input"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "Session that owns it.",
+                    true,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+                arg(
+                    "wait",
+                    "How long to wait for the answer, in milliseconds. A limit on waiting, \
+                     not on the program: what has not arrived stays unread for the next \
+                     call. Defaults to 30000.",
+                    false,
+                    Some("ms"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "until",
+                    "A marker to stop at. The window ends before it, and `matched` says \
+                     whether it was there.",
+                    false,
+                    Some("text"),
+                    CompletionSource::None,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "ls_channel".into(),
             description: "List a session's channels: the name each one is called, what it \
                       runs, and how much of what it said nobody has read."
                 .into(),
@@ -732,7 +721,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
-            name: "del_job".into(),
+            name: "del_channel".into(),
             description: "End a channel's program and forget the name. A channel that \
                       had already ended is only forgotten."
                 .into(),
@@ -756,20 +745,20 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
-            name: "rename_job".into(),
+            name: "rename_channel".into(),
             description: "Give a channel another name. Nothing on disk moves: the name \
                       is this server's, not a path."
                 .into(),
             args: vec![
                 pos(
-                    "path",
+                    "id",
                     "The name it has now.",
                     true,
                     Some("path"),
                     CompletionSource::None,
                 ),
                 pos(
-                    "new_path",
+                    "new_id",
                     "The name it takes.",
                     true,
                     Some("path"),
@@ -952,6 +941,168 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
     spec
 }
 
+/// The arguments a session is created or re-tuned with: SPEC's `SessionConfig`.
+///
+/// # Invariant
+///
+/// One list, because `new_session` and `set_session` differ in one thing only -- whether
+/// a name already taken is refused or joined.
+fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
+    vec![
+        // SPEC: `--name <session>(sticky)`. A sticky entry keys on the
+        // kind `session`, wherever the argument appears.
+        sticky_arg(
+            kind_arg(
+                "name",
+                "Session to create or reconfigure.",
+                true,
+                "session",
+                Some("name"),
+                CompletionSource::Sessions,
+            ),
+            true,
+        ),
+        // SPEC: `[--model <model>](initial: none)` -- omitted keeps
+        // the session's model; a new one takes the configured default.
+        kind_arg(
+            "model",
+            "The model to run this session's turns on, as <provider>/<model \
+                 name>. Omit to keep the session's model, or to take the \
+                 configured default on a new one.",
+            false,
+            "model",
+            Some("model"),
+            // The greeting's model table, which is the same list with the
+            // levels each model takes.
+            CompletionSource::Models,
+        ),
+        kind_arg(
+            "thinking",
+            "How hard the model should think, in the roster's spelling (`low`, \
+                 `high`, `max`, ...): what completes is exactly what the model this \
+                 session runs on takes. `default` names the level a model that is \
+                 told nothing uses, clearing one set earlier.",
+            false,
+            "thinking",
+            Some("level"),
+            // Nothing to offer through a source: the values are what the
+            // roster lets through, published as `accepts` below.
+            CompletionSource::None,
+        )
+        .accepting_when(crate::providers::level_accepts)
+        .following("model"),
+        kind_arg(
+            "ctx_limit",
+            "The context level at which this session gets a `Context notice`, \
+                 e.g. `30%`. 0 never notices. Initial: a 70% share of the \
+                 model's context window, or the server's token budget when the \
+                 window is unknown.",
+            false,
+            "ctx_limit",
+            Some("n%"),
+            // Any 0-100 is accepted; the list is the points worth
+            // offering, not the ones allowed.
+            CompletionSource::Static(
+                [
+                    "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ),
+        )
+        .following("model"),
+        kind_arg(
+            "cache_tier",
+            "The cache tier every request of this session sends, in the model's \
+                 roster spelling. Omit to keep what the session has; name `none` to \
+                 send no tier at all, which is the only way to say so on a model that \
+                 declares none. A session that never named one sends the shortest tier \
+                 its model declares.",
+            false,
+            "cache_tier",
+            Some("name"),
+            CompletionSource::None,
+        )
+        .accepting_when(crate::providers::tier_accepts)
+        .following("model"),
+        kind_arg(
+            "cache_keepalive",
+            "Whether a periodic `(time notice: ...)` message keeps this \
+                 session's prefix warm after every turn. `false` by default; \
+                 `true` keeps sending one per tier window with no last one.",
+            false,
+            "cache_keepalive",
+            Some("true|false"),
+            CompletionSource::Static(vec!["true".into(), "false".into()]),
+        ),
+        kind_arg(
+            "mode",
+            "What this session may do to the workspace. `work` (the default)                      writes as it likes; `explore` refuses `write_file` and `replace`                      outright and tells the session which paths a `bash`, `exec`,                      `python` or `skill` call changed when it ended. Not a jail: a                      program that writes is told, not stopped, so read the changed                      paths and put them back before answering.",
+            false,
+            "mode",
+            Some("work|explore"),
+            CompletionSource::Static(vec!["work".into(), "explore".into()]),
+        ),
+        // SPEC: `[--remote <remote>](initial: none)`.
+        kind_arg(
+            "remote",
+            "Which machine this session's shells run on, named by a `[remotes.<name>]` \
+                 table in this machine's `~/.agents/remotes.toml`. Omit for this \
+                 machine, and name `none` to move a session back here. Naming a \
+                 different one moves an existing session: every shell on the old \
+                 machine is ended first, and a move asked for during a turn waits for \
+                 that turn to end. A session with shells somewhere else reads its \
+                 paths and skills there, so what completes for it is what it can \
+                 open.",
+            false,
+            "remote",
+            Some("name"),
+            // Exactly the tables this server was started with: `local` is
+            // what omitting the flag means, and naming it is refused.
+            CompletionSource::Static({
+                // `none` first: it is the value that comes home, and the only one
+                // that is not a table in the config.
+                let mut names = vec!["none".to_string()];
+                names.extend(remotes.to_vec());
+                names
+            }),
+        ),
+        // SPEC: `[--cwd <cwd>](initial: ".")` -- a session that names
+        // none stands where the server stands.
+        kind_arg(
+            "cwd",
+            "Working directory for the session: where a new one is created, and \
+                 where an existing one is moved to. It must be a directory that \
+                 exists on the machine it names -- this one, or the remote's -- or \
+                 the command is refused; completion reads that machine's \
+                 directories. Omit for the server's own directory.",
+            false,
+            "cwd",
+            Some("path"),
+            // The client lists the filesystem it sits on, which is a hint only.
+            CompletionSource::Paths,
+        )
+        // SPEC: `--cwd` is `sticky to remote` -- a directory belongs to the
+        // machine it exists on.
+        .following("remote"),
+        arg(
+            "must_create",
+            "`true` refuses the command unless the session does not exist yet, so a \
+                 caller that means to start its own session cannot join another one's \
+                 transcript by picking a name that was already taken.",
+            false,
+            Some("true|false"),
+            CompletionSource::Static(
+                protocol::SHOW_VALUES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+        ),
+    ]
+}
+
 /// Runs one command, on behalf of whoever `origin` names.
 ///
 /// # Invariant
@@ -1005,13 +1156,17 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => cancel(d, origin).await,
         "get_messages" => get_messages(d, args).await,
-        "ls_job" => ls_job(d, args).await,
-        "del_job" => del_job(d, args).await,
-        "rename_job" => rename_job(d, args).await,
+        "new_channel" => new_channel(d, args).await,
+        "input_channel" => input_channel(d, args).await,
+        "rename_channel" => rename_channel(d, args).await,
+        "ls_channel" => ls_channel(d, args).await,
+        "del_channel" => del_channel(d, args).await,
+        "ls_session" => ls_session(d, args).await,
         "clone_session" => clone_session(d, args).await,
         "events" => events(d, args).await,
         "subscribe" => subscribe(d, args, origin.session()).await,
-        "del_subscribe" => del_subscribe(d, args, origin.session()).await,
+        "del_subscription" => del_subscription(d, args, origin.session()).await,
+        "ls_subscription" => ls_subscription(d, args).await,
         "trigger_event" => trigger_event(d, args).await,
         // Every tool is a command: the registry decides what exists.
         name if d.agent.tools.get(name).is_some() => {
@@ -1685,7 +1840,7 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     Ok(SeqWindow { first, last })
 }
 
-async fn ls_job(d: &Dispatch, args: &Args) -> Outcome {
+async fn ls_channel(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
     let prefix = args.get("path").cloned().unwrap_or_default();
     match d.agent.channels.list(&session).await {
@@ -1703,7 +1858,7 @@ async fn ls_job(d: &Dispatch, args: &Args) -> Outcome {
     }
 }
 
-async fn del_job(d: &Dispatch, args: &Args) -> Outcome {
+async fn del_channel(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
     let path = args["path"].clone();
     match d.agent.channels.stop(&session, &path).await {
@@ -1713,14 +1868,132 @@ async fn del_job(d: &Dispatch, args: &Args) -> Outcome {
     }
 }
 
-async fn rename_job(d: &Dispatch, args: &Args) -> Outcome {
+async fn rename_channel(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
-    let path = args["path"].clone();
-    let new_path = args["new_path"].clone();
+    let path = args["id"].clone();
+    let new_path = args["new_id"].clone();
     match d.agent.channels.rename(&session, &path, &new_path) {
         Ok(()) => Outcome::ok(format!("{path:?} is now {new_path:?}")),
         Err(why) => Outcome::err(why),
     }
+}
+
+async fn new_channel(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let id = args["id"].clone();
+    let name = args["name"].clone();
+    let handle = match d.sessions.get(&session) {
+        Ok(handle) => handle,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    match d
+        .agent
+        .channels
+        .start(
+            &session,
+            &name,
+            &[],
+            handle.remote_name().as_deref(),
+            &handle.cwd(),
+            &handle.env(),
+            Some(id.clone()),
+        )
+        .await
+    {
+        Ok(row) => Outcome::ok_with(
+            format!("channel {id:?} started: {name}, pid {}", row.pid),
+            json!({"id": id, "session": session, "program": name}),
+        ),
+        Err(why) => Outcome::err(why),
+    }
+}
+
+async fn input_channel(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let id = args["id"].clone();
+    let input = args["input"].clone();
+    let wait = match args.get("wait").map(String::as_str) {
+        None => std::time::Duration::from_millis(30_000),
+        Some(raw) => match raw.trim().parse::<u64>() {
+            Ok(ms) => std::time::Duration::from_millis(ms),
+            Err(_) => {
+                return Outcome::err(format!("--wait takes milliseconds, not {raw:?}"));
+            }
+        },
+    };
+    let until = args.get("until").map(String::as_str);
+    let began = std::time::Instant::now();
+    match d
+        .agent
+        .channels
+        .talk(&session, &id, Some(&input), wait, until)
+        .await
+    {
+        Ok(outcome) => Outcome::ok_with(
+            outcome.output.clone(),
+            json!({
+                "id": outcome.id,
+                "output": outcome.output,
+                "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
+                "matched": outcome.matched,
+                "exit": outcome.exit,
+            }),
+        ),
+        Err(why) => Outcome::err(why),
+    }
+}
+
+async fn ls_session(d: &Dispatch, args: &Args) -> Outcome {
+    let prefix = args.get("path").cloned().unwrap_or_default();
+    let rows = match d.store.list_sessions() {
+        Ok(rows) => rows,
+        Err(e) => return Outcome::err(format!("could not read the sessions: {e}")),
+    };
+    let listed: Vec<serde_json::Value> = rows
+        .into_iter()
+        .filter(|row| row.name.starts_with(&prefix))
+        .map(|row| {
+            json!({
+                "name": row.name,
+                "status": format!("{:?}", row.status),
+                "model": row.model,
+                "cwd": row.cwd,
+                "context_limit": row.context_limit,
+                "thinking_effort": row.thinking_effort,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+            })
+        })
+        .collect();
+    if listed.is_empty() {
+        return Outcome::ok(format!("no session matches {prefix:?}"));
+    }
+    Outcome::ok(serde_json::Value::Array(listed).to_string())
+}
+
+async fn ls_subscription(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let prefix = args.get("path").cloned().unwrap_or_default();
+    let rows = match d.store.subscriptions() {
+        Ok(rows) => rows,
+        Err(e) => return Outcome::err(format!("could not read the subscriptions: {e}")),
+    };
+    let listed: Vec<serde_json::Value> = rows
+        .into_iter()
+        .filter(|row| row.session == session && row.name.starts_with(&prefix))
+        .map(|row| {
+            json!({
+                "subscription": row.name,
+                "pattern": row.pattern,
+                "persistant": row.persistent,
+                "action": row.action,
+            })
+        })
+        .collect();
+    if listed.is_empty() {
+        return Outcome::ok(format!("{session}: no subscription matches {prefix:?}"));
+    }
+    Outcome::ok(serde_json::Value::Array(listed).to_string())
 }
 
 async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
@@ -2039,18 +2312,20 @@ fn free_subscription_name(d: &Dispatch, session: &str) -> Result<String, String>
 }
 
 /// Drops one named subscription; the caller drops its own, never another session's.
-async fn del_subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+async fn del_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let name = args
         .get("subscription")
         .map(String::as_str)
         .unwrap_or("")
         .trim();
-    let Some(caller) = caller.filter(|name| !name.trim().is_empty()) else {
+    let given = args.get("session").map(String::as_str).or(caller);
+    let Some(caller) = given.filter(|name| !name.trim().is_empty()) else {
         return Outcome::err(
-            "del_subscribe drops what a session armed, and this client did not say which: \
-             run it from a session's shell, where `$GONGGA_SESSION` is set",
+            "del_subscription drops what a session armed, and neither the call nor its \
+             client named one: run it from a session's shell, where `$GONGGA_SESSION` is set",
         );
     };
+    let caller = caller.trim();
     match d.subscriptions.disarm_name(caller, name).await {
         Ok(0) => Outcome::err(format!("no subscription named {name:?} for {caller}")),
         Ok(n) => Outcome::ok(format!("subscription `{name}` dropped ({n})")),
