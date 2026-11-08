@@ -236,7 +236,7 @@ ok "check spoke to the channel new opened" "$(has "$second" 'second' && echo 0 |
 armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe "$marker" "^$marker\$" --persistant true \
   --bash plug --cmd '"$GONGGA_CLI" send_message --message news-from-sub --name main' 2>&1)
 say "$armed"
-fake_up wait '{"timeout_ms":30000}' || exit 1
+fake_up wait '{"time":30000}' || exit 1
 "${cli[@]}" send_message "wait for the news" --name main >/dev/null 2>&1
 sleep 2
 "${cli[@]}" trigger_event "$marker" >/dev/null 2>&1
@@ -251,9 +251,9 @@ ok "wait ended on the news a subscription sent"   "$(has "$waited" 'nothing arri
 ok "the news reached the session as a message" "$?"
 
 # 5. A call's own clock. `wait` is the one tool whose wait is its work, so the
-#    `timeout_ms` a call names is the ceiling it gets -- the row's default is what a
+#    `time` a call names is the ceiling it gets -- the row's default is what a
 #    call that names none gets. Measured before this test: 5 s asked, 120 s waited.
-fake_up wait '{"timeout_ms":2500}' || exit 1
+fake_up wait '{"time":2500}' || exit 1
 "${cli[@]}" send_message "wait a moment" --name main >/dev/null 2>&1
 wait_turn main
 short=$(last_tool main)

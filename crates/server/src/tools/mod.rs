@@ -2136,7 +2136,7 @@ impl Cmd for WaitTool {
             // A cancel that finds this mark keeps the turn: a wait lives across it.
             let _waiting = ctx.stop.begin_wait();
             let wait = args
-                .get("timeout_ms")
+                .get("time")
                 .and_then(Value::as_u64)
                 .map(Duration::from_millis)
                 .unwrap_or(self.timeout)
