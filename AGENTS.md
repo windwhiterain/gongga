@@ -101,6 +101,21 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
   comments-check --config comments-check.toml
   ```
 
+### 违规靠读，不靠买
+
+**一个 invariant 被破坏，用读代码认定。付钱的运行只用来证明代码和存储行证明不了的事：
+真实 provider 的 cache 命中、墙钟、任务成败。**
+
+- 2026-11-08 的教训：`tool_set_in_force` 里 `has_origin` 那个分支，让 explore→work 那一刻
+  写第二行 `tools`（4,993 → 5,832 字节），随后一次请求 `115,564 input / 1,792 cached /
+  113,772 uncached`。这是六行代码，读完就有；我却先起了三臂 bench 才发现。
+- 起 bench 之前先回答两句：这个结论**代码**能给出吗？**存储行**能给出吗？能，就不要起。
+  "谁写这一行"这种问题，`git grep` 出一个写者还是两个写者，比任何运行都干脆。
+- 仓促起跑另有两个具体的坑，都白烧钱：复用 `run_id` 会被 orchestrator 判成
+  "already completed" 直接跳过（`rc=0`，两秒结束）；不设 `GONGGA_PLAN_FINISH=1` 就永远
+  不会 explore→work，压缩一次都不触发，三种臂跑出来的其实是同一件事。
+- 反过来，该付钱的地方别省：真实 `cached_tokens`、墙钟、任务是否 resolved，探针造不出来。
+
 ### 验证要快：一次真实的执行，别重付
 
 慢的从来不是验证本身，是**每改一行就重新付一遍全栈的钱**（重新链接、重新起服务端、
