@@ -17,7 +17,8 @@ As of 2026-11-08 the `submission and filled` and `submission` sections, and the
 `follow` part of `sync, follow and settle`, describe code that now lives in
 `crates/client/src/window_input.rs`; `RECONNECT_MIN` and `dial_now` live in
 `crates/client/src/runtime.rs`; `declare` and the `answer_*` functions live in
-`crates/client/src/window_refill.rs`. The sections stay for their invariants. See
+`crates/client/src/window_refill.rs`; `sync` and `settle` live in
+`crates/client/src/window_sync.rs`. The sections stay for their invariants. See
 `client-window-input.md` and `client-runtime.md`.
 
 ## RECONNECT_MIN

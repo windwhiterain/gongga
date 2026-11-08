@@ -7,6 +7,7 @@ use client::render_wire::UiIntent;
 use client::runtime;
 use client::window_input;
 use client::window_refill;
+use client::window_sync;
 use client::{DialFailure, Greeting, Layout, LineKind, Link, Sink};
 
 use crate::{Server, Tui, UiEvent, closing};
@@ -105,59 +106,20 @@ impl TuiSink<'_> {
     }
 }
 
-/// Tells the view and the completion what the window's own state is now.
-///
-/// # Invariant
-///
-/// One place sets all of it, after any change: the block size, the margin, the
-/// sticky session, the sessions drawn beside the list, and the completion's own
-/// vocabulary. A front-end that set half of it would draw one state and complete
-/// against another.
-fn sync(client: &mut client::Client, state: &State, window: &command::Window, ui: &mut Tui) {
-    ui.set_block_size(state.block_size().0);
-    ui.set_box_edge(state.box_edge().0);
-    ui.set_sticky_session(state.sticky().get("session"));
-    client.set_sticky_vocabulary(&state.sticky().names(), state.sticky().get("session"));
-    client.set_shown(state.shown_names());
-    window.refresh(client, state);
-    ui.refresh_completion();
-    client.refresh(&mut TuiSink(ui));
-}
-
-/// Applies what the window kept for the commands the server has now answered.
-///
-/// # Invariant
-///
-/// Only an *accepted* command writes its entries back: a refusal leaves the file
-/// as it was, which is why nothing was written when the line was sent.
-fn settle(
-    client: &client::Client,
-    state: &mut State,
-    pending: &mut Vec<(u64, client::window_state::Follow)>,
-    ui: &mut Tui,
-) {
-    for (id, ok) in ui.take_settled() {
-        let Some(at) = pending.iter().position(|(other, _)| *other == id) else {
-            continue;
-        };
-        let (_, pairs) = pending.remove(at);
-        if !ok {
-            continue;
-        }
-        let written: Vec<String> = pairs.iter().map(|(kind, _)| kind.clone()).collect();
-        let mut changed: Vec<String> = Vec::new();
-        for (kind, value) in &pairs {
-            if state.change_sticky(kind, value).unwrap_or(false) {
-                changed.push(kind.clone());
-            }
-        }
-        // SPEC's `sticky to xxx`: what follows a changed model is forgotten, unless
-        // this command stated it too.
-        for (kind, parent) in command::follows(client) {
-            if changed.contains(&parent) && !written.contains(&kind) {
-                let _ = state.del_sticky(&kind);
-            }
-        }
+impl client::window_sync::WindowView for Tui {
+    fn show_state(&mut self, state: &State) {
+        self.set_block_size(state.block_size().0);
+        self.set_box_edge(state.box_edge().0);
+        self.set_sticky_session(state.sticky().get("session"));
+    }
+    fn refresh_completion(&mut self) {
+        Tui::refresh_completion(self);
+    }
+    fn refresh_lines(&mut self, client: &client::Client) {
+        client.refresh(&mut TuiSink(self));
+    }
+    fn take_settled(&mut self) -> Vec<(u64, bool)> {
+        Tui::take_settled(self)
     }
 }
 
@@ -223,7 +185,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
     client.seed_listed(known);
     // Nothing has been sent yet: a fresh client owes nobody a line.
     let _ = client.set_offline(0, &mut TuiSink(&mut ui));
-    sync(&mut client, &state, &window, &mut ui);
+    window_sync::sync(&mut client, &state, &window, &mut ui);
 
     let mut link: Option<client::Link> = None;
     let mut dialing: Option<Dialing> = None;
@@ -297,7 +259,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                     command::operate(&mut client, &mut state, operation, &mut TuiSink(&mut ui));
                 // Whatever the gesture changed of the window's own state reaches
                 // the drawing and the completion before the next event.
-                sync(&mut client, &state, &window, &mut ui);
+                window_sync::sync(&mut client, &state, &window, &mut ui);
                 if let client::Submission::Send(msg) = outcome
                     && let Some(open) = link.as_ref()
                     && let Err(e) = open.send(msg).await
@@ -319,7 +281,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                 );
                 // Whatever the line changed of the window's own state reaches
                 // the screen and the completion before the next keystroke.
-                sync(&mut client, &state, &window, &mut ui);
+                window_sync::sync(&mut client, &state, &window, &mut ui);
                 // A `connect_server` moved the address: drop the link and let
                 // the next dial find the new one.
                 if let Some(addr) = moved {
@@ -346,7 +308,7 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                             // The command names a session: that session's window
                             // is drawn, and what the server accepts is kept.
                             window_input::follow(&client, &mut state, &msg, &line, &mut pending);
-                            sync(&mut client, &state, &window, &mut ui);
+                            window_sync::sync(&mut client, &state, &window, &mut ui);
                             if open.send(msg).await.is_err() {
                                 // Its end went unnoticed: nothing was sent, and the
                                 // line goes back like any other unanswered one.
@@ -383,8 +345,8 @@ pub async fn interactive(args: &client::Args) -> anyhow::Result<()> {
                         }
                     }
                 }
-                settle(&client, &mut state, &mut pending, &mut ui);
-                sync(&mut client, &state, &window, &mut ui);
+                window_sync::settle(&client, &mut state, &mut pending, &mut ui);
+                window_sync::sync(&mut client, &state, &window, &mut ui);
                 // A hole: only a greeting carries the whole list, so dial again.
                 // See `docs/notes/tui-run.md`.
                 if client.take_hole() && link.is_some() {

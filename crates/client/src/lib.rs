@@ -14,6 +14,7 @@ pub mod window_command;
 pub mod window_input;
 pub mod window_refill;
 pub mod window_state;
+pub mod window_sync;
 
 pub use crate::catalog::Catalog;
 pub use crate::complete::{

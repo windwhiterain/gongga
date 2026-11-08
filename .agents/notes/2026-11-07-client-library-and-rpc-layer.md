@@ -457,3 +457,37 @@ PASS · 4s · client-state · 3eff4d2 · `scripts/tui_live.py --script
 <window-state + cover dismissal>` 0 · `scripts/skill_contract.sh` PASS 8 ·
 `ship.sh --check --local` 0 and `--check` 0, both "in agreement".
 Proxy 7890 throughout.
+
+## 2026-11-08: state sync and settled commands
+
+`sync` and `settle` moved from `crates/tui/src/run.rs` into the new
+`crates/client/src/window_sync.rs` (run.rs 480 -> 442 lines). Both take
+`&mut dyn WindowView` instead of `&mut Tui`; the TUI implements it in `run.rs`
+next to `TuiSink`, because `refresh_lines` builds that sink itself. The six
+steps of `sync` and the accepted-only rule of `settle` are unchanged.
+
+`WindowView` is deliberately separate from `window_refill.rs`'s read-only
+`WindowFacts`, and does not extend it: verdict 4 puts the journal in the client,
+which will implement `WindowFacts` locally, while a front-end over the pipe
+implements `WindowView` and holds no window facts. Both are local interfaces,
+not a cross-process query protocol. See `docs/notes/client-window-sync.md`.
+
+The `log.rs` / `panes.rs` index was not moved this turn: it is a 3000-line split
+of journal data from ratatui folding (`Style` / `Line` / `Span`), and `room_of`
+depends on frame height. It stays one full step, not a partial move.
+
+Disk was the first action: C: had 1.99 GB free at 100%. `clean-disk.ps1
+-NoElevate` reported `freed_bytes` 9,971,073,024 (9.29 GB, 1.99 -> 11.28 GB)
+in 361.2s; `recycle_left` 15.90 GB / 365517 files belongs to another account
+and needs elevation. It also removed 307 MB of unpacked cargo registry sources,
+so `cargo check` rebuilt them (4m13s). No project target outside this worktree
+was touched.
+
+Verified: `cargo build` 0 on retry (52.17s; first attempt 101 from the known
+Windows `invoked.timestamp` os error 5 lock) · `cargo check` 0 ·
+`cargo fmt --check` 0 · `comments-check` 0 violations · `test-layout-check` 8
+packages, 0 violations · `git diff --check` 0 · `gongga-tui --help` 0 ·
+`scripts/client_state_selftest.sh -v` PASS · 4s · client-state · f138366 ·
+`scripts/tui_live.py --script <window-state + cover dismissal>` 0 ·
+`scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local` 0 and `--check`
+0, both "in agreement".
