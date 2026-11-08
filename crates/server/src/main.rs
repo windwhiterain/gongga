@@ -35,6 +35,9 @@ struct Command {
     /// Stop when this process ends: the window that started this server.
     #[arg(long, value_name = "PID")]
     parent: Option<u32>,
+    /// The build of that window, so one this build cannot serve is not followed.
+    #[arg(long, value_name = "BUILD")]
+    parent_build: Option<String>,
     /// Run one tool call and write its answer: how a detached call outlives the server.
     #[arg(long, value_name = "FILE", hide = true)]
     run_tool: Option<PathBuf>,
@@ -51,6 +54,7 @@ impl From<Command> for Args {
             log: c.log,
             log_format: c.log_format,
             parent: c.parent,
+            parent_build: c.parent_build,
         }
     }
 }

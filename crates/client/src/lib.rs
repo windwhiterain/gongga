@@ -2830,14 +2830,44 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
     };
 
     let msg = decode_server(&greeting)
-        .context("decoding server greeting")
-        .map_err(DialFailure::Temporary)?;
+        .map_err(|e| DialFailure::Temporary(anyhow!(unreadable_greeting(&greeting, &e))))?;
     if let ServerMessage::Denied { reason } = &msg {
         return Err(DialFailure::Fatal(anyhow!(
             "server refused the connection: {reason}"
         )));
     }
     Ok((Link { sink: wire, stream }, Greeting(msg)))
+}
+
+/// Why a greeting could not be read, naming the build on each side.
+///
+/// # Invariant
+///
+/// One field of the raw bytes and nothing else: two builds whose messages have
+/// diverged keep the same protocol version, so the refusal has to say *which*
+/// builds met or the reader is left with a decoder's complaint. Never a second
+/// parser -- a greeting that is not JSON at all answers with what the decoder said.
+fn unreadable_greeting(raw: &[u8], error: &serde_json::Error) -> String {
+    let server = serde_json::from_slice::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|json| {
+            json.pointer("/v/server/build")
+                .and_then(|build| build.as_str())
+                .map(str::to_owned)
+        });
+    match server {
+        Some(build) if build != protocol::BUILD => format!(
+            "the server runs build {build}, this window is build {}: they cannot read each \
+             other's messages. Start the window from the same build, or put the server on \
+             this one.",
+            protocol::BUILD
+        ),
+        Some(build) => format!(
+            "the server answers as build {build}, the same as this window, and its greeting \
+             still could not be read: {error}"
+        ),
+        None => format!("decoding server greeting: {error}"),
+    }
 }
 
 /// The server's greeting, already decoded and opaque to a front-end.
