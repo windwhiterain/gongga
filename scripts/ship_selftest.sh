@@ -27,12 +27,26 @@ work="$root/.dev/ship-selftest"
 fails=0
 started=$(date +%s)
 
+# The protocol this build reads, and one it does not. Every scenario that says
+# "content this build can read" means the first number, and every one that says
+# "a protocol no build here does" means the second -- so moving the build to a
+# newer protocol does not leave a scenario behind asserting the old one.
+proto=$(awk -F' = ' '$1 == "protocol" { print $2 }' "$root/crates/server/ship.toml" | sed 's/[[:space:]]*$//')
+[[ -n "$proto" ]] || { echo "no protocol in $root/crates/server/ship.toml" >&2; exit 1; }
+drift=$((proto + 1))
+
 say() { printf '  %s\n' "$*"; }
 ok() { if [[ "$2" == 0 ]]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
 
 [[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
   echo "build first: cargo build -p gongga-server" >&2; exit 1; }
 server_bin="$bin/gongga-server.exe"; [[ -x "$server_bin" ]] || server_bin="$bin/gongga-server"
+# The content checkout whose shapes the scratch repositories are seeded from: the
+# submodule, or wherever `GONGGA_SHIP_CONTENT` points -- a linked worktree has no
+# submodule of its own. Only read here, never written.
+reference="${GONGGA_SHIP_CONTENT:-$root/ship}"
+[[ -d "$reference" ]] || {
+  echo "no content at $reference: git submodule update --init ship" >&2; exit 1; }
 
 free_port() {
   python -c 'import socket
@@ -104,7 +118,7 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 seed_content() {
   local repo=$1
   mkdir -p "$repo/config" "$repo/skills/marker"
-  cp "$root/ship/config/config.toml" "$repo/config/config.toml"
+  cp "$reference/config/config.toml" "$repo/config/config.toml"
   git -C "$repo" init -q -b main
 }
 
@@ -132,8 +146,8 @@ SKILL
 
 content=$work/content
 seed_content "$content"
-content_commit "$content" 1 "A" "protocol 1: A" >/dev/null
-commit_b=$(content_commit "$content" 1 "B" "protocol 1: B")
+content_commit "$content" "$proto" "A" "protocol $proto: A" >/dev/null
+commit_b=$(content_commit "$content" "$proto" "B" "protocol $proto: B")
 
 remote=$work/remote.git
 git clone -q --bare "$content" "$remote" 2>/dev/null
@@ -248,7 +262,7 @@ wait_file "$home/skills/local-note/SKILL.md"; rc=$?
 ok "the personal branch's own skill landed in the home" $rc
 stop_server "$pid" "$home"
 
-commit_d=$(content_commit "$content" 1 "D" "protocol 1: D")
+commit_d=$(content_commit "$content" "$proto" "D" "protocol $proto: D")
 git -C "$content" push -q origin main
 log=$work/home-3.log
 pid=$(start_server "$home" "$remote" "$log")
@@ -263,7 +277,7 @@ ok "with the personal commit rebased onto the new upstream" $rc
 stop_server "$pid" "$home"
 
 say "== content that moves to a newer protocol still installs what this build reads"
-commit_c=$(content_commit "$content" 2 "C" "protocol 2: C")
+commit_c=$(content_commit "$content" "$drift" "C" "protocol $drift: C")
 git -C "$content" push -q origin main
 was=$(installed_commit "$home")
 log=$work/home-4.log
@@ -273,21 +287,21 @@ ok "the install moved the home's pin to this content" $rc
 got=$(installed_commit "$home")
 git -C "$checkout" cat-file -e "$got^{commit}"; rc=$?
 ok "and that commit is one the content has (${got:0:7})" $rc
-git -C "$checkout" show "$got:ship.toml" | grep -q '^protocol = 1$'; rc=$?
+git -C "$checkout" show "$got:ship.toml" | grep -q "^protocol = $proto$"; rc=$?
 ok "which speaks this build's protocol" $rc
 stop_server "$pid" "$home"
 
 say "== a content with no commit this build can read refuses, and says which protocols it found"
 fresh=$work/content-2; mkdir -p "$fresh"
 seed_content "$fresh"
-content_commit "$fresh" 7 "seven" "protocol 7 only" >/dev/null
+content_commit "$fresh" "$drift" "seven" "protocol $drift only" >/dev/null
 remote7=$work/remote7.git
 git clone -q --bare "$fresh" "$remote7" 2>/dev/null
 home7=$work/home-7; mkdir -p "$home7"; log7=$work/home-7.log
 pid=$(start_server "$home7" "$remote7" "$log7")
-wait_log "$log7" 'no commit on main speaks protocol 1'; rc=$?
+wait_log "$log7" "no commit on main speaks protocol $proto"; rc=$?
 ok "the server refuses to start and names the protocol" $rc
-wait_log "$log7" 'the newest one speaks 7'; rc=$?
+wait_log "$log7" "the newest one speaks $drift"; rc=$?
 ok "and names what the content does speak" $rc
 stop_server "$pid" "$home7"
 
@@ -317,7 +331,7 @@ cp "$root/crates/server/src/fork.rs" "$tool/crates/server/src/fork.rs"
 # scenario left on the branch.
 toolcontent=$work/tool-content
 seed_content "$toolcontent"
-tool_tip=$(content_commit "$toolcontent" 1 "T" "protocol 1: T")
+tool_tip=$(content_commit "$toolcontent" "$proto" "T" "protocol $proto: T")
 toolremote=$work/tool-remote.git
 git clone -q --bare "$toolcontent" "$toolremote" 2>/dev/null
 git -C "$toolcontent" remote add origin "$toolremote"
@@ -333,11 +347,11 @@ ship --push-main >"$work/check-pushmain.txt" 2>&1; rc=$?
 [[ $rc == 2 ]]; rc=$?
 ok "--push-main is refused as usage, not silently accepted" $rc
 
-sed -i 's/^protocol = 1$/protocol = 2/' "$tool/ship/ship.toml"
+sed -i "s/^protocol = $proto$/protocol = $drift/" "$tool/ship/ship.toml"
 ship --check >"$work/check-drift.txt" 2>&1; rc=$?
 [[ $rc == 1 ]]; rc=$?
 ok "--check refuses content that speaks a protocol this build cannot read" $rc
-grep -q 'speaks protocol 2; this build reads 1' "$work/check-drift.txt"; rc=$?
+grep -q "speaks protocol $drift; this build reads $proto" "$work/check-drift.txt"; rc=$?
 ok "and says which number is whose" $rc
 git -C "$tool/ship" checkout -q -- ship.toml
 
@@ -346,7 +360,7 @@ GONGGA_SHIP_REMOTE="$work/no-such-remote.git" ship --check >"$work/check-silent.
 [[ $rc == 3 ]]; rc=$?
 ok "a remote that does not answer is 3, not a disagreement" $rc
 
-ship -m "protocol 1: this machine's marker" >"$work/publish.txt" 2>&1; rc=$?
+ship -m "protocol $proto: this machine's marker" >"$work/publish.txt" 2>&1; rc=$?
 ok "publishing content succeeds (exit $rc)" $rc
 here=$(git -C "$tool/ship" rev-parse HEAD); there=$(git -C "$toolremote" rev-parse main)
 [[ "$here" == "$there" ]]; rc=$?
