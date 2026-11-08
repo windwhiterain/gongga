@@ -21,7 +21,14 @@ pub struct Transcript {
     session_id: i64,
     upto_seq: i64,
     after_seq: i64,
-    /// Permanent-prefix end and latest ordinary-round start, once compacted.
+    /// Where the permanent prefix ends and the latest ordinary round starts.
+    ///
+    /// # Invariant
+    ///
+    /// The first number is the starting checkpoint: `start_live_compact` writes the
+    /// session's position at the explore -> work switch, so everything said while
+    /// exploring is sent byte for byte and a summary replaces only the segment after
+    /// it. See `docs/notes/server-live-compact.md`.
     projection: Option<(i64, i64)>,
 }
 
@@ -34,6 +41,7 @@ impl Transcript {
         )?;
         let latest = conn
             .query_row(
+                // `live_compact_origin_seq` is the prefix end, not a first row.
                 "SELECT s.live_compact_origin_seq, c.round_start_seq
                  FROM live_compact_checkpoints c
                  JOIN sessions s ON s.id = c.session_id
@@ -44,7 +52,7 @@ impl Transcript {
             )
             .optional()?;
         let projection =
-            latest.and_then(|(origin, round_start)| origin.map(|origin| (origin, round_start)));
+            latest.and_then(|(prefix_end, round_start)| prefix_end.map(|end| (end, round_start)));
         Ok(Self {
             conn,
             session_id,

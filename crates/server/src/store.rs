@@ -1785,36 +1785,22 @@ impl Store {
             params![session_id],
             |row| row.get(0),
         )?;
-        let first = {
-            let mut stmt = tx.prepare(
-                "SELECT seq, display FROM messages
-                 WHERE session_id = ?1 AND kind = 'text' ORDER BY seq ASC",
-            )?;
-            let rows = stmt.query_map(params![session_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?;
-            let mut found = None;
-            for row in rows {
-                let (seq, display) = row?;
-                let value: serde_json::Value = serde_json::from_str(&display).unwrap_or_default();
-                let real = value.get("role").and_then(|r| r.as_str()) == Some("user")
-                    && value.get("harness").is_none();
-                if real {
-                    found = Some(seq);
-                    break;
-                }
-            }
-            found
-        };
-        let Some(origin) = first else {
-            anyhow::bail!("no operator message anchors this lineage yet");
-        };
+        // The permanent prefix ends here, at the switch: a summary replaces the
+        // segment after it (server-live-compact.md).
+        let boundary: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        if boundary == 0 {
+            anyhow::bail!("no rows anchor this lineage yet");
+        }
         tx.execute(
             "UPDATE sessions SET live_compact_origin_seq = ?2,
                     live_compact_baseline_tokens = CASE WHEN ?3 > 0 THEN ?3 ELSE NULL END,
                     live_compact_started = 1
              WHERE id = ?1 AND live_compact_origin_seq IS NULL",
-            params![session_id, origin, context_tokens],
+            params![session_id, boundary, context_tokens],
         )?;
         tx.commit()?;
         Ok(())

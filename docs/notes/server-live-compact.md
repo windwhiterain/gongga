@@ -42,6 +42,21 @@ without opening it again. It is the agent's call, and the notice and the tool's
 parameter description say what it costs rather than whether to use it: an
 embedded file travels in every later request, and a summary is never a cache hit.
 
+## The prefix ends at the switch
+
+`start_live_compact` records the session's position at the moment of the explore ->
+work switch -- the last message seq then -- as `live_compact_origin_seq`, and the
+projection reads that column as the end of the permanent prefix. It used to hold
+the first operator message, which put the boundary at message two: a summary then
+sat at the head of the request and every byte after it was re-sent cold, 114,624
+uncached tokens in one request on sympy__sympy-13091.
+
+A summary replaces the segment it summarizes and belongs where that segment began,
+so what was said while exploring is sent byte for byte and only the segment after
+the switch is replaced. A home stamped before this change keeps its stored value,
+which the projection still reads as a prefix end: nothing is lost, and it holds the
+shorter prefix it was stamped with until a new lineage opens.
+
 ## The schema is stored, not offered per request
 
 See `docs/notes/server-tools.md`: the tool list is a stored row, so the
