@@ -63,13 +63,15 @@ arguments (`--model`, `--thinking`, `--ctx_limit`, `--cache_tier`, `--remote`, `
 The nesting is a *value* shape: is a command line supposed to spell the tables, e.g.
 `--model_config '{"model": "x/y"}'`, or is the flat spelling the CLI's own?
 
-**Q5 — `fn <tool>(**args)` forwards tool → cmd; today the dispatch maps cmd → tool.** In
-`commands.rs` a name that is not a command falls through to
-`tool_cmd::dispatch_tool`, i.e. the *command* surface reaches the *tool* registry. SPEC
-inverts it: `new`/`check`/`wait` are the only tools with a meaning of their own, and
-every other tool is a command. Doing that collapses the tool table into the catalog —
-which is the "eighteen go" plus the `[tool.*]` rows — and it changes which door refuses
-an unknown name. It is the biggest remaining slice and I did not start it.
+**Q5 — the forward is in; the collapse is not.** `tools/mod.rs` now falls back to a
+`Forward` command for any `[tool.<name>] cmd = "<what>"` row this build has no type for,
+so the forwarding SPEC writes works today. What is *not* done is moving the existing rows
+onto it: `bash`, `python`, `exec`, `remote_*`, `check_*`, `del_*`, `list_*`, `read_file`,
+`write_file`, `replace`, `skill`, `live_compact` still have Rust implementations behind
+their rows. The command layer also still reaches *back* into the tool registry
+(`tool_cmd::dispatch_tool`) for a name that is not a command, which is the opposite
+direction; removing it is the "eighteen go" and it changes which door answers an unknown
+name.
 
 **Q6 — the `## Python Cmd` section is not started.** `ls_skill`, `run_skill`,
 `get_messages`, `clone_session` are named as a shipped uv package there; today `skill`
