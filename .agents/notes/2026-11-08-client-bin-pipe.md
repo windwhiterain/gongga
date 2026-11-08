@@ -23,9 +23,10 @@ checkout is left alone: it is on `main` at `f3826a5` and has an uncommitted
   `scripts/skill_contract.sh`, `scripts/ship.sh --check --local` (0), the L3 state
   selftest (`PASS · 4s`) and `scripts/tui_live.py` window-state (0). Recorded in
   `.dev/verify/<sha>-pipe.json`.
-- `scripts/ship.sh --check` (with the remote) returned **3**: GitHub did not
-  answer through either user proxy (7890: empty reply, 7897: schannel close).
-  That is "cannot tell", not a protocol drift; `--check --local` is green.
+- `scripts/ship.sh --check` (with the remote) returned **3**: 7890/7897 refused
+  the CONNECT tunnel; 1080 answers a direct `git ls-remote` but the script's own
+  `ls-remote` stays empty on every attempt. That is "cannot tell", not a protocol
+  drift; `--check --local` is green and the pre-commit hook passed.
 - The L3 state selftest needed a stale `.dev/selftest/state-home` cleaned first:
   its `server.lock` still named pid 20128 with a watchdog restarting on port
   60004. Killed only that home's watchdog trees by pid (11332/20128 before,
