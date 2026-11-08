@@ -455,6 +455,55 @@ pub trait Cmd: Send + Sync {
     }
 }
 
+/// SPEC's `fn <tool>(**args)`: one command, called as a tool.
+///
+/// # Invariant
+///
+/// The command layer resolves the name when the call is made, so a row may offer a
+/// `ServerScript`, a skill's entry or any other command with no Rust type behind it, and
+/// a name nobody answers is refused there -- in the command's own words, rather than as a
+/// missing tool. It must never leave as a worker: a worker has no command layer.
+pub struct Forward {
+    name: String,
+}
+
+impl Cmd for Forward {
+    fn run<'a>(
+        &'a self,
+        args: Value,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let Some(layer) = crate::commands::layer() else {
+                return ToolOutcome::err(format!(
+                    "{} is a command, and this process has no command layer: it runs one \
+                     call and answers with a file",
+                    self.name
+                ));
+            };
+            let words = match args.as_object() {
+                Some(table) => new_check::named_words(table),
+                None => protocol::Args::new(),
+            };
+            let began = std::time::Instant::now();
+            let outcome = layer.run(&ctx.session, &self.name, words).await;
+            let answer = json!({
+                "id": Value::Null,
+                "output": outcome.message,
+                "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
+                "matched": false,
+                "exit": if outcome.ok { 0 } else { 1 },
+                "data": outcome.data,
+            });
+            if outcome.ok {
+                ToolOutcome::ok(answer.to_string())
+            } else {
+                ToolOutcome::err(answer.to_string())
+            }
+        })
+    }
+}
+
 /// One row of the config, offered as the tool the model and the operator call.
 pub struct Specd {
     /// The row's name: the key it is declared under.
@@ -802,7 +851,11 @@ impl ToolRegistry {
                 }
             }
             "live_compact" => Box::new(live_compact::LiveCompactTool),
-            other => return Err(format!("this build carries no command {other:?}")),
+            // SPEC's `fn <tool>(**args)`: a name this build has no implementation of its
+            // own for is the command it names.
+            other => Box::new(Forward {
+                name: other.to_string(),
+            }),
         })
     }
 

@@ -178,17 +178,7 @@ async fn route(ctx: &ToolContext, name: &str, args: &Value) -> ToolOutcome {
              as in {{\"cmd\": \"send_message\", \"message\": \"hi\"}}"
         ));
     };
-    let mut words: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    for (key, value) in table {
-        if key == "cmd" {
-            continue;
-        }
-        let text = match value {
-            Value::String(text) => text.clone(),
-            other => other.to_string(),
-        };
-        words.insert(key.clone(), text);
-    }
+    let words = named_words(table);
     let Some(cmd) = table.get("cmd").and_then(Value::as_str) else {
         return ToolOutcome::err(format!(
             "{name:?} needs `args.cmd`: the command to run, e.g. \"send_message\""
@@ -208,6 +198,28 @@ async fn route(ctx: &ToolContext, name: &str, args: &Value) -> ToolOutcome {
     } else {
         ToolOutcome::err(answer.to_string())
     }
+}
+
+/// A tool call's arguments as the words a command reads.
+///
+/// # Invariant
+///
+/// A string is itself and anything else is its JSON, because a command's arguments are
+/// words: `cmd` is the one key this drops, since it names the command rather than one of
+/// its arguments. See `docs/notes/server-tools-new-check.md`.
+pub(crate) fn named_words(table: &serde_json::Map<String, Value>) -> protocol::Args {
+    let mut words = protocol::Args::new();
+    for (key, value) in table {
+        if key == "cmd" {
+            continue;
+        }
+        let text = match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        words.insert(key.clone(), text);
+    }
+    words
 }
 
 /// How long this call waits: absent is the default, `0` is not waiting at all.

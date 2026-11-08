@@ -18,6 +18,22 @@ index; `with_python` adds the persistent interpreter and the three file verbs
 described in `server-tools-python.md`; `check_bash` carries the optional wait,
 so there is no `wait_bash`.
 
+## A row that names a command this build has no type for
+
+SPEC's tool surface is `new`, `check` and `wait`; everything else is a command,
+`fn <tool>(**args)`. So a `[tool.<name>] cmd = "<what>"` row whose `<what>` this build
+carries no implementation of is offered as the command it names: the call's arguments
+become that command's named words (a string is itself, anything else is its JSON) and the
+command layer runs it with the caller's session.
+
+The table is therefore the registry on both sides. A row may offer a `ServerScript`, a
+skill's entry or a command added tomorrow, and the answer to a name nobody answers comes
+from the command layer, in its words, rather than from this module saying "no such tool".
+
+Such a row must not leave as a worker (`tunneled = false`, or a carrier that is `Here`): a
+worker runs one call with no dispatch, so it has no command layer to forward to, and the
+call says so instead of pretending.
+
 ## Descriptions point at `bash` instead of repeating it
 
 Every tool's description rides every request, so a sentence said twice is paid on
