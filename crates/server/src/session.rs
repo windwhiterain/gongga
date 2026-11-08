@@ -16,8 +16,6 @@ use crate::remote::shell_set::ShellSet;
 use crate::store::{SessionRow, Store};
 use crate::tools::detached::DetachedRegistry;
 
-use std::collections::HashMap as PythonMap;
-
 /// The name of the shell every session starts with.
 pub const DEFAULT_BASH: &str = "default";
 
@@ -483,7 +481,6 @@ struct SessionInner {
     /// What a program this session starts is given before its own rows. See `env`.
     script_env: Vec<(String, String)>,
     /// The persistent Python interpreters, named like shells.
-    pythons: Arc<AsyncMutex<PythonMap<String, Arc<crate::tools::interpreter::Interpreter>>>>,
     cancel: Mutex<CancellationToken>,
     /// How many times the operator has cancelled; a queued turn compares it across the wait.
     cancels: AtomicU64,
@@ -625,12 +622,6 @@ impl SessionHandle {
         let mut env = self.inner.script_env.clone();
         env.extend(session_vars(&self.inner.store, &self.inner.name));
         env
-    }
-
-    pub fn pythons(
-        &self,
-    ) -> Arc<AsyncMutex<PythonMap<String, Arc<crate::tools::interpreter::Interpreter>>>> {
-        self.inner.pythons.clone()
     }
 
     /// Ends every shell this session owns, retired ones included, and waits for
@@ -1808,7 +1799,6 @@ impl SessionManager {
                 store: self.store.clone(),
                 shells: Arc::new(Mutex::new(shells)),
                 script_env: self.script_env.clone(),
-                pythons: Arc::new(AsyncMutex::new(PythonMap::new())),
                 cancel: Mutex::new(CancellationToken::new()),
                 cancels: AtomicU64::new(0),
                 inbox: Arc::new(AtomicU64::new(0)),

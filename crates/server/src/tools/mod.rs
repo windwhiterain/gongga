@@ -25,12 +25,10 @@ pub mod bash;
 pub mod channel;
 pub mod detached;
 pub mod file;
-pub mod interpreter;
 #[cfg(windows)]
 pub mod job;
 pub mod live_compact;
 pub mod new_check;
-pub mod python;
 pub mod python_remote;
 pub mod skill;
 pub mod spec;
@@ -64,9 +62,6 @@ pub struct ToolContext {
     /// The session's named shells, on this machine and -- when it names one --
     /// on its remote. See `crate::session::Shells`.
     pub shells: Arc<StdMutex<Shells>>,
-    /// The session's interpreters, named like shells: one name, one interpreter.
-    pub pythons:
-        Arc<tokio::sync::Mutex<std::collections::HashMap<String, Arc<interpreter::Interpreter>>>>,
     /// The connection this session's references are read through, when its
     /// directory is on a remote.
     pub reader: Option<Arc<crate::remote::Reader>>,
@@ -763,26 +758,15 @@ impl ToolRegistry {
             "del_bash" => Box::new(DelBashTool),
             "del_job" => Box::new(DelJobTool),
             "list_bash" => Box::new(ListBashTool),
-            "python" | "check_python" | "del_python" | "list_python" | "read_file"
-            | "write_file" | "replace" => {
-                let (python, lib) = self
+            // The environment's own Python, once per call: no interpreter is kept.
+            "read_file" | "write_file" | "replace" => {
+                let (python, _lib) = self
                     .settings
                     .python
                     .as_ref()
                     .ok_or("this build configures no Python")?;
                 let cap = row.max_output_chars.unwrap_or(python.max_output_chars);
                 match row.cmd.as_str() {
-                    "python" => Box::new(python::PythonTool {
-                        machine,
-                        program: python.program.clone(),
-                        args: python.args.clone(),
-                        timeout: python.timeout,
-                        max_output_chars: cap,
-                        lib: lib.clone(),
-                    }),
-                    "check_python" => Box::new(python::CheckPythonTool),
-                    "del_python" => Box::new(python::DelPythonTool),
-                    "list_python" => Box::new(python::ListPythonTool),
                     "read_file" => Box::new(file::ReadFileTool {
                         program: python.program.clone(),
                         args: python.args.clone(),
@@ -1332,13 +1316,6 @@ pub(crate) fn json_type(value: &Value) -> &'static str {
 fn background_notifier(ctx: &ToolContext, shell: &str) -> bash::BackgroundNotifier {
     let what = format!("in shell `{shell}`");
     let where_to_read = format!("`check_bash` with name `{shell}` collects it");
-    notice_background_end(ctx, what, where_to_read)
-}
-
-/// The same notice for an interpreter.
-fn python_notifier(ctx: &ToolContext, tool: &str, name: &str) -> bash::BackgroundNotifier {
-    let what = format!("with `{tool}` in `{name}`");
-    let where_to_read = format!("`check_python` with name `{name}` collects it");
     notice_background_end(ctx, what, where_to_read)
 }
 

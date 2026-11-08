@@ -1460,7 +1460,6 @@ impl Agent {
             home: self.home.clone(),
             output_dir: self.output_dir.clone(),
             shells: session.shells(),
-            pythons: session.pythons(),
             reader: session.reader(),
             machine,
             remote: session.remote_name(),

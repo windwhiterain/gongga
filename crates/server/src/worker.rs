@@ -156,7 +156,6 @@ async fn call(request: &Request) -> Answer {
         shells: Arc::new(std::sync::Mutex::new(crate::session::Shells::empty(
             program,
         ))),
-        pythons: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         reader: None,
         machine: crate::session::Machine::Local,
         remote: None,

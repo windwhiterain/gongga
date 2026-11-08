@@ -509,7 +509,6 @@ fn adopted(
         shells: Arc::new(std::sync::Mutex::new(crate::session::Shells::empty(
             cfg.bash.program.clone().unwrap_or_default(),
         ))),
-        pythons: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         reader: None,
         machine: crate::session::Machine::Local,
         remote: None,

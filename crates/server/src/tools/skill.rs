@@ -156,7 +156,7 @@ pub fn programs(cfg: &crate::config::Config) -> ::skill::Programs {
             .python
             .program
             .clone()
-            .or_else(|| crate::tools::python::detect().ok()),
+            .or_else(|| crate::config::detect_python()),
         powershell: which::which("pwsh")
             .or_else(|_| which::which("powershell"))
             .ok(),

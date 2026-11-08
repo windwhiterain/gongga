@@ -37,7 +37,6 @@ pub async fn run(
         home: agent.home.clone(),
         output_dir: agent.output_dir.clone(),
         shells: handle.shells(),
-        pythons: handle.pythons(),
         reader: handle.reader(),
         machine: handle.owner(),
         remote: handle.remote_name(),
