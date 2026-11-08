@@ -201,8 +201,16 @@ impl Subscriptions {
         let outcome = self
             .run_in_channel(&row.session, program, &name, &line)
             .await;
+        // `exit` is `None` while the program runs and when the channel never
+        // answered; neither is a success.
         let (ok, said) = match outcome {
-            Ok(outcome) => (outcome.exit.unwrap_or(0) == 0, outcome.output),
+            Ok(outcome) => match outcome.exit {
+                Some(exit) => (exit == 0, outcome.output),
+                None => (
+                    false,
+                    format!("the shell never answered: {}", outcome.output),
+                ),
+            },
             Err(why) => (false, why),
         };
         let payload = json!({
@@ -219,9 +227,10 @@ impl Subscriptions {
     ///
     /// # Invariant
     ///
-    /// The channel is the named one the row gives, under the session: a subscription
-    /// that fires twice writes into the same shell, which is what "the subscriber's own
-    /// interpreter" means now that a shell is a channel.
+    /// Two things hold: the channel is the named one the row gives, under the session,
+    /// so a subscription that fires twice writes into the same shell; and it runs on
+    /// the machine the *program* belongs to -- `bash` and `python` are this machine's,
+    /// a peer is reached through `remote_bash`. See `docs/notes/server-subscriptions.md`.
     async fn run_in_channel(
         &self,
         session: &str,
@@ -233,14 +242,19 @@ impl Subscriptions {
         let id = format!("{session}/{name}");
         if channels.live(session, &id).is_none() {
             let handle = self.sessions.get(session).map_err(|e| e.to_string())?;
+            // Where this machine's own `bash` stands, not the peer's path.
+            let cwd = handle
+                .shells()
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .reported_cwd(crate::session::Machine::Local);
             channels
-                // A subscription's action runs where its session stands.
                 .start(
                     session,
                     program,
                     &[],
-                    handle.remote_name().as_deref(),
-                    &handle.cwd(),
+                    None,
+                    &cwd,
                     &handle.env(),
                     Some(id.clone()),
                 )
