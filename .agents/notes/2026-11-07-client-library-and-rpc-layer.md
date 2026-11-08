@@ -491,3 +491,34 @@ packages, 0 violations · `git diff --check` 0 · `gongga-tui --help` 0 ·
 `scripts/tui_live.py --script <window-state + cover dismissal>` 0 ·
 `scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local` 0 and `--check`
 0, both "in agreement".
+
+## 2026-11-08: the first index piece, and a smaller build
+
+`RowIndex` moved from `crates/tui/src/log.rs` to the new
+`crates/client/src/window_index.rs` (log.rs 2475 -> 2405 lines). It is a
+1-based Fenwick tree with no ratatui, no unicode width and no frame state; the
+five methods became `pub` and the `tree` field stayed private. All 14 call
+sites are `Ledger.index` inside `log.rs`, so this is type ownership only. It
+is the first cut of the index split: `Ledger` / `Log` / `Panes` / `Hit` still
+mix journal data with `Style` / `Line` / `Span` folding, and `room_of` depends
+on frame height, so they stay one larger step. See
+`docs/notes/client-window-index.md`.
+
+The disk loop is broken structurally. Instead of rebuilding a 4.4 GB target
+and cleaning it every turn, this worktree now builds with
+`CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0` and its own
+`CARGO_TARGET_DIR`: `cargo check` left 428 MB, a full `cargo build` 1.3 GB.
+Debug info and incremental caches are not needed for the L3 scripts, and the
+target is kept between turns so the next build is incremental. No clean-disk
+run was needed this turn; no project target outside this worktree was touched.
+
+Verified: `cargo check` 0 (2m09s) · `cargo build` 0 on retry (32.74s; first
+attempt 101 from the known Windows `invoked.timestamp` os error 5 lock) ·
+`cargo fmt --check` 0 · `comments-check` 0 violations · `test-layout-check` 8
+packages, 0 violations · `git diff --check` 0 · `gongga-tui --help` 0 ·
+`gongga-server --help` 0 · `scripts/client_state_selftest.sh -v` PASS · 4s ·
+client-state · b231bbd · `scripts/tui_live.py --script <window-state + cover
+dismissal>` 1 on the first run (the server never logged "listening"; proxy
+200, ship submodule intact), 0 on the unchanged retry -- transient ·
+`scripts/skill_contract.sh` PASS 8 · `ship.sh --check --local` 0 and `--check`
+0, both "in agreement". Proxy 7890 throughout.

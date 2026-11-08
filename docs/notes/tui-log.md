@@ -254,6 +254,10 @@ invisible bytes would never break.
 
 ## RowIndex
 
+As of 2026-11-08 the type lives in `crates/client/src/window_index.rs`. These
+sections stay for its invariants; `client-window-index.md` says why it moved.
+See `client-render-wire.md` for the pipe it does not cross.
+
 Prefix sums over the per-line row counts.
 
 A plain `Vec` of running totals would work for appends and break on streams: a

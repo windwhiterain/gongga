@@ -11,6 +11,7 @@ pub mod server;
 pub mod skill_command;
 pub mod window_cache;
 pub mod window_command;
+pub mod window_index;
 pub mod window_input;
 pub mod window_refill;
 pub mod window_state;
