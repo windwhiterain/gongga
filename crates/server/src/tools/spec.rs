@@ -224,7 +224,11 @@ impl ToolSpec {
         let mut properties = serde_json::Map::new();
         let mut required: Vec<String> = Vec::new();
         for argument in &self.parameters {
-            let mut property = json!({ "type": argument.kind });
+            // `a|b` is a union: JSON Schema spells it as a list of types.
+            let mut property = match argument.kind.split('|').collect::<Vec<_>>().as_slice() {
+                [one] => json!({ "type": one }),
+                several => json!({ "type": several }),
+            };
             if let Some(items) = &argument.items {
                 property["items"] = json!({ "type": items });
             }

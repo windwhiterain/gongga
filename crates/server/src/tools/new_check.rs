@@ -41,6 +41,22 @@ impl Cmd for NewTool {
             {
                 args["args"] = parsed;
             }
+            // A one-element list holding a table is that table: SPEC's `args` is
+            // `list[str] | dict[str]`.
+            if let Some(Value::Array(one)) = args.get("args")
+                && one.len() == 1
+            {
+                let only = match &one[0] {
+                    Value::Object(_) => Some(one[0].clone()),
+                    Value::String(spelled) => serde_json::from_str::<Value>(spelled)
+                        .ok()
+                        .filter(Value::is_object),
+                    _ => None,
+                };
+                if let Some(table) = only {
+                    args["args"] = table;
+                }
+            }
             let Some(name) = args.get("name").and_then(Value::as_str) else {
                 return ToolOutcome::err("`new` needs the `name` of the program to start");
             };
