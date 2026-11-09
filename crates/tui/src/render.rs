@@ -524,8 +524,12 @@ fn layout_input(text: &str, cursor: usize, width: usize) -> InputLayout {
 fn draw_header(f: &mut Frame, s: &Screen, area: Rect) {
     // The bar spans the row: a strip that stops where the text stops reads as
     // a selection. The server comes first.
-    let mut title = match &s.server {
-        Some(server) => format!(" gongga · {} · {} ", server.label(), s.status),
+    let label = s
+        .server_text
+        .clone()
+        .or_else(|| s.server.as_ref().map(|server| server.label()));
+    let mut title = match label {
+        Some(label) => format!(" gongga · {label} · {} ", s.status),
         None => format!(" gongga · {} ", s.status),
     };
     let used = UnicodeWidthStr::width(title.as_str()).min(area.width as usize);

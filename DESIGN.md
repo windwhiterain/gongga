@@ -36,7 +36,7 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实，`Log` / `Panes` 共用一份 | UI 改为 spawn 这个 bin、只做绘制（A-3）；`log.rs` 的 `Entry` 折行态与 `Ledger` 实例仍留 TUI（A-4）；四类控制帧已完成（见下）、多 client L3 |
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实，`Log` / `Panes` 共用一份 | UI 改为 spawn 这个 bin、只做绘制（A-3 已完成，见下）；`log.rs` 的 `Entry` 折行态与 `Ledger` 实例仍留 TUI（A-4）；多 client L3（⑧） |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
 | `[tui]` binary | `crates/tui`，`run.rs` 仍装着 `interactive` 主循环、`TuiSink` 与窗口 journal | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
@@ -306,7 +306,7 @@ journal，pipe 前端自己实例化这两者；`client::runtime` 已有 `Fronte
 包装；`log.rs` 的 `Log` 与 ratatui 折行仍留 TUI，但它已不持有 `Cache`，磁盘读写全
 走 client 的 `WindowJournal`（A-2，见下）；`Panes` 的窗口事实也已上提到同一份
 `WindowJournal`（A-1）；⑤ client bin target
-接管道骨架（已完成，见下一节）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（已完成，见下）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
+接管道骨架（已完成，见下一节）；⑥ TUI 改为 spawn client 并只做绘制（已完成，见下）；⑦ bundle 布线（已完成，见下）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
 主循环上提的接口形状（object-safe `Frontend`、`Box<dyn Sink>`、`FrontendEvent`
 与两步迁移）见 `docs/notes/client-frontend.md`；两步均已完成，循环现由
 `client::runtime::run` 持有，TUI 只提供 UI 工厂与 `owner_pid`。
@@ -372,6 +372,33 @@ pipe 前端没有块可重写，追加 `Floor` + `Stamp` 已经能回答补拉�
 白名单也认 `gongga-client`，免得旧 build 的目录在 client 还活着时被删。
 `gongga-client` 不是用户直接敲的程序，所以没有加进 `WORDS` / `by_file_name`。
 
+### 形态 2 的第六步：TUI 已是管道前端（2026-11-09）
+
+`gongga-tui` 现在默认启动 `gongga-client`（同目录的二进制，bundle 把两者一起解包），
+stdin 一行一个 `UiIntent`、stdout 一行一个 `RenderMessage`，stderr 进
+`<client-home>/client.log`。`crates/tui/src/pipe.rs` 是宿主：一个 task 独占 stdout
+把帧送进无界队列，主循环在键盘事件与帧之间 `select!`，并监听控制台关闭。stdin
+关闭是 UI 走了，stdout 结束是 client 走了，都不轮询 pid。
+
+- **绘制仍是同一个 `TuiSink`**：`run.rs::apply_frame` 把 12 个绘制帧转回 `Sink`
+  调用，所以一条线只画一次；控制帧落在窗口自己的视图状态（`Draft` 归还输入、
+  `Server` 写 header、`Repoint` 清窗口、`Vocabulary` 触发一次 `Complete`、
+  `Completion` 打开 popup、`StickySession` 改 sticky）。
+- **completion 不再本地算**：`Tui::for_pipe` 用空 `Completer`，输入变化就发
+  `UiIntent::Complete`，候选由 client 的 `SharedCompleter` 回答。
+- **TUI 不再写记录**：`for_pipe` 用 `Panes::new()`（无 `Cache`）并 `keep_bodies()`
+  关掉 `end_frame` 的 evict —— 没有盘可读回，bodies 就常驻内存。`set_layout`
+  在 pipe 模式跳过 `Roster::know`，会话列表由 client 写。
+- **一个临时逃生口**：`GONGGA_TUI_IN_PROCESS=1` 仍可走同进程 `interactive()`，
+  用于对比；形态 2 稳定后应删掉它和 `Tui` 上的 `Frontend` / `WindowFacts` /
+  `WindowView` impl。
+- **实测**：`tui_live` 的 window-state 与 wheel 在默认管道模式下都是 0，
+  `client.log` 证明子进程真的起来了；L3 客户端状态仍 PASS。见
+  `.dev/verify/<sha>-a3.json`。
+
+`Entry` 的 ratatui 折行态与 `Ledger.pages` 仍在 TUI（A-4），但已不是 ⑥ 的前置：
+client 侧 `WindowJournal` 用追加记录回答补拉，TUI 只负责把重发的行画出来。
+
 ### 裁定 A：先搬 journal，再让 TUI 退成前端（2026-11-09）
 
 ⑥ 的三条路里你选了 A：`log.rs` / `panes.rs` 的数据层先归 client，`WindowFacts`
@@ -398,9 +425,10 @@ pipe 前端没有块可重写，追加 `Floor` + `Stamp` 已经能回答补拉�
 同理 `Ledger` 的类型早就在 client，但 `pages` / `page_first` 的实例仍在 TUI 的
 `views`，A-4 一并收。
 
-**A-3**：TUI 改为 spawn `gongga-client`，键盘出 `UiIntent`、`RenderMessage` 入绘制；
-此时 ⑥ 只剩布线。四类控制帧（completion 词表、server 归属、`repoint` 清理、
-draft 归还）已在 A-3 之前补齐，都是 `RenderMessage` 的语义变体，不是第二套协议：
+**A-3（已完成，2026-11-09）**：TUI 默认 spawn `gongga-client`，键盘出
+`UiIntent`、`RenderMessage` 入绘制；⑥ 的布线到此为止，细节见下一节。四类控制帧
+（completion 词表、server 归属、`repoint` 清理、draft 归还）已在 A-3 之前补齐，
+都是 `RenderMessage` 的语义变体，不是第二套协议：
 `UiIntent::Complete` + `Frontend::show_completion` 把候选计算放在 client，
 `WindowFacts::refresh_completion(version)` 带的是 client 的真实 `paths_version`。
 

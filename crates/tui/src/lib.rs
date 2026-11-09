@@ -15,6 +15,7 @@ mod log;
 mod markdown;
 mod notice;
 mod panes;
+pub mod pipe;
 pub mod program;
 mod render;
 mod roster;
@@ -88,7 +89,13 @@ pub fn main(args: client::Args) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(interactive(&args))
+    // Shape 2 is the default; the in-process loop stays reachable for a
+    // comparison while the pipe host is proved.
+    if std::env::var_os("GONGGA_TUI_IN_PROCESS").is_some() {
+        runtime.block_on(interactive(&args))
+    } else {
+        runtime.block_on(pipe::run(&args))
+    }
 }
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
@@ -210,6 +217,8 @@ pub struct Screen {
     pub status_kind: LineKind,
     /// Whose server this window is on, once a dial has answered.
     pub server: Option<Server>,
+    /// The header's own / not own words, spelled by a client over the pipe.
+    pub server_text: Option<String>,
     pub placeholder: String,
     /// The session the sticky `session` argument names: what the keys scroll
     /// and what a click sets.
@@ -548,6 +557,17 @@ pub struct Tui {
     /// `cmd`), so the link's answer is the only one that can be right.
     /// See `docs/notes/tui-cache.md`.
     note_window: String,
+    /// True when a client process owns the records and the command vocabulary.
+    pipe: bool,
+}
+
+/// A vocabulary with no words: a pipe window asks its client for candidates.
+struct EmptyCompleter;
+
+impl Completer for EmptyCompleter {
+    fn complete(&self, _line: &str, _cursor: usize) -> client::Offered {
+        client::Offered::default()
+    }
 }
 
 /// The terminal's own answer about the pictures it can be drawn with.
@@ -675,6 +695,27 @@ impl Tui {
         client_home: &Path,
         endpoint: &str,
     ) -> anyhow::Result<Self> {
+        Self::assemble(completer, client_home, endpoint, false)
+    }
+
+    /// A window that only draws: the client keeps the records and the words.
+    pub fn for_pipe(client_home: &Path, endpoint: &str) -> anyhow::Result<Self> {
+        let mut window = Self::assemble(
+            std::sync::Arc::new(EmptyCompleter),
+            client_home,
+            endpoint,
+            true,
+        )?;
+        window.screen.panes.keep_bodies();
+        Ok(window)
+    }
+
+    fn assemble(
+        completer: SharedCompleter,
+        client_home: &Path,
+        endpoint: &str,
+        pipe: bool,
+    ) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
         // Before the alternate screen: the platform's thread must find it here.
         let watched = closing::watch();
@@ -708,12 +749,17 @@ impl Tui {
             cursor_hidden: false,
             screen: Screen {
                 cover: Some(cover),
-                panes: Panes::with_cache(client_home, endpoint),
+                panes: if pipe {
+                    Panes::new()
+                } else {
+                    Panes::with_cache(client_home, endpoint)
+                },
                 completion: None,
                 input: InputLine::default(),
                 status: "connecting".to_string(),
                 status_kind: LineKind::System,
                 server: None,
+                server_text: None,
                 placeholder: "message the agent, or / for a command (Tab completes)".to_string(),
                 sticky_session: None,
             },
@@ -736,6 +782,7 @@ impl Tui {
             pending: Vec::new(),
             settled: None,
             stashed: None,
+            pipe,
         };
         // Said once: a window that cannot hear the console closing leaves
         // it in raw mode when it goes.
@@ -778,6 +825,36 @@ impl Tui {
             self.screen.server = server;
             self.dirty = true;
         }
+    }
+
+    /// The header's words, spelled by the client rather than a local `Server`.
+    pub fn set_server_text(&mut self, label: Option<String>) {
+        if self.screen.server_text != label {
+            self.screen.server_text = label;
+            self.dirty = true;
+        }
+    }
+
+    /// Candidates the client computed from its own catalog.
+    pub fn set_completion(&mut self, completion: Option<Completion>) {
+        self.screen.completion = completion;
+        self.dirty = true;
+    }
+
+    /// The line the operator is on, for a `Complete` intent.
+    pub fn input_line(&self) -> (String, usize) {
+        (
+            self.screen.input.text().to_string(),
+            self.screen.input.cursor(),
+        )
+    }
+
+    /// Drops the rows on screen when the client moved to another endpoint.
+    pub fn drop_windows(&mut self) {
+        for name in self.screen.panes.windows() {
+            self.screen.panes.forget(&name);
+        }
+        self.dirty = true;
     }
 
     /// A `connect_server` moved the address: the rows on screen are the old
@@ -826,8 +903,9 @@ impl Tui {
             self.note_window = layout.command.clone();
         }
         self.screen.panes.layout(layout);
-        // One file, written by the frames that drew a list.
-        if let Err(e) = self.roster.know(&layout.listed)
+        // The client owns the roster now: a pipe window only draws the list.
+        if !self.pipe
+            && let Err(e) = self.roster.know(&layout.listed)
             && !self.roster_failed
         {
             self.roster_failed = true;

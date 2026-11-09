@@ -4,6 +4,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use client::render_wire::{RenderMessage, UiIntent};
 use client::runtime;
 use client::{Layout, LineKind, Sink};
 
@@ -91,6 +92,104 @@ impl Sink for TuiSink<'_> {
 
     fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
         self.0.landed(window, created, drawn, floor);
+    }
+}
+
+/// Applies one frame to the terminal view, answering with an intent to send back.
+///
+/// # Invariant
+///
+/// The twelve drawing frames become `Sink` calls on the same `TuiSink` the
+/// in-process loop used, so a pipe window draws a line exactly once. Control
+/// frames are not drawings: they land on the window's own view state.
+pub(crate) fn apply_frame(tui: &mut Tui, frame: RenderMessage) -> Option<UiIntent> {
+    match frame {
+        RenderMessage::Draft { text } => {
+            tui.restore_input(&text);
+            None
+        }
+        RenderMessage::Server { label, .. } => {
+            tui.set_server_text(label);
+            None
+        }
+        RenderMessage::Repoint { .. } => {
+            tui.drop_windows();
+            None
+        }
+        // The words changed: ask again for the line the operator is on.
+        RenderMessage::Vocabulary { .. } => Some(complete_intent(tui)),
+        RenderMessage::Completion {
+            start,
+            end,
+            subject,
+            candidates,
+        } => {
+            let popup = (!candidates.is_empty()).then_some(client::Completion {
+                start,
+                end,
+                subject,
+                candidates,
+                selected: 0,
+            });
+            tui.set_completion(popup);
+            None
+        }
+        RenderMessage::StickySession { name } => {
+            tui.set_sticky_session(name.as_deref());
+            None
+        }
+        drawing => {
+            let mut sink = TuiSink(tui);
+            draw(&mut sink, drawing);
+            None
+        }
+    }
+}
+
+/// The client's vocabulary is not this window's; it asks for its own line.
+fn complete_intent(tui: &Tui) -> UiIntent {
+    let (line, cursor) = tui.input_line();
+    UiIntent::Complete { line, cursor }
+}
+
+/// Turns one drawing frame back into the `Sink` call that produced it.
+fn draw(sink: &mut TuiSink<'_>, frame: RenderMessage) {
+    match frame {
+        RenderMessage::Line { window, kind, text } => sink.line(&window, kind, &text),
+        RenderMessage::Stream {
+            window,
+            key,
+            kind,
+            prefix,
+            text,
+            done,
+        } => sink.stream(&window, &key, kind, &prefix, &text, done),
+        RenderMessage::Status { text } => sink.status(&text),
+        RenderMessage::Note { kind, text } => sink.note(kind, &text),
+        RenderMessage::Layout { layout } => sink.layout(&layout),
+        RenderMessage::Rewrite { window, key, text } => sink.rewrite(&window, &key, &text),
+        RenderMessage::ToolCall {
+            window,
+            key,
+            head,
+            streamed,
+        } => sink.tool_call(&window, &key, &head, streamed),
+        RenderMessage::Relabel {
+            window,
+            key,
+            tag,
+            kind,
+        } => sink.relabel(&window, &key, &tag, kind),
+        RenderMessage::Forget { window } => sink.forget(&window),
+        RenderMessage::Clear { window } => sink.clear(&window),
+        RenderMessage::Stopped { session, failed } => sink.stopped(&session, failed),
+        // The six control frames were answered by `apply_frame`.
+        RenderMessage::Draft { .. }
+        | RenderMessage::Server { .. }
+        | RenderMessage::Repoint { .. }
+        | RenderMessage::Vocabulary { .. }
+        | RenderMessage::Completion { .. }
+        | RenderMessage::StickySession { .. } => {}
     }
 }
 

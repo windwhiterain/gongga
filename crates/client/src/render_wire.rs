@@ -316,6 +316,11 @@ pub fn decode_intent(line: &str) -> anyhow::Result<UiIntent> {
     Ok(serde_json::from_str(line)?)
 }
 
+/// Writes one intent as one JSON line, the mirror of `encode_frame`.
+pub fn encode_intent(intent: &UiIntent) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(intent)? + "\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +370,15 @@ mod tests {
                 cursor: 6,
             }
         );
+    }
+
+    #[test]
+    fn an_intent_round_trips_as_one_line() {
+        let intent = UiIntent::Submit {
+            line: "one\ntwo".to_string(),
+        };
+        let encoded = encode_intent(&intent).unwrap();
+        assert_eq!(encoded.lines().count(), 1);
+        assert_eq!(decode_intent(&encoded).unwrap(), intent);
     }
 }

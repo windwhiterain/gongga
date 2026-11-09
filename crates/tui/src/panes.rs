@@ -132,6 +132,8 @@ pub struct Panes {
     unseen: std::collections::BTreeSet<String>,
     /// SPEC's `active_quota` row, as the command layer spelled it.
     quota: Option<crate::QuotaRow>,
+    /// Whether a frame may drop the bodies it did not draw.
+    evicts: bool,
 }
 
 impl Panes {
@@ -144,6 +146,7 @@ impl Panes {
             folded: std::collections::BTreeSet::new(),
             unseen: std::collections::BTreeSet::new(),
             quota: None,
+            evicts: true,
         }
     }
 
@@ -157,6 +160,7 @@ impl Panes {
             folded: std::collections::BTreeSet::new(),
             unseen: std::collections::BTreeSet::new(),
             quota: None,
+            evicts: true,
         }
     }
 
@@ -220,6 +224,16 @@ impl Panes {
         self.log.journal_mut().mark_drawn(window);
     }
 
+    /// Every window this view holds blocks for.
+    pub fn windows(&self) -> Vec<String> {
+        self.log.windows()
+    }
+
+    /// Keeps every body in memory: a pipe window has no journal to read back.
+    pub fn keep_bodies(&mut self) {
+        self.evicts = false;
+    }
+
     /// How many rows a pane could draw, as the last frame found it.
     ///
     /// # Invariant
@@ -248,6 +262,9 @@ impl Panes {
     /// session's blocks and the rows above and below every pane.
     /// See `docs/notes/tui-cache.md`.
     pub fn end_frame(&mut self) {
+        if !self.evicts {
+            return;
+        }
         let drawn = self.log.journal().drawn().to_vec();
         for window in self.log.windows() {
             if !drawn.iter().any(|name| *name == window) {

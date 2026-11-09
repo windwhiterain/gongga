@@ -71,8 +71,9 @@ the pipe exists. See `client-window-journal.md`.
 | `restore_input` | `Draft { text }` puts the unsent line back in the input | — |
 
 None of these adds a second protocol: they are variants of `RenderMessage` plus a
-local journal. All four control-frame gaps are now closed (2026-11-09); what
-remains is ⑥ wiring and the A-4 fold-state split.
+local journal. All four control-frame gaps are now closed and the TUI speaks the
+pipe by default (A-3, 2026-11-09); what remains is the A-4 fold-state split and
+the multi-client L3. See `tui-pipe.md`.
 
 ## Verification (real process, 2026-11-08)
 
