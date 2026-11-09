@@ -154,6 +154,7 @@ write_launcher() {
     -e "s|@@CLEAN@@|$(fill "$clean")|g" \
     -e "s|@@LEASE@@|$(fill "$LEASE")|g" \
     -e "s|@@BUNDLE@@|$(fill "$bundle")|g" \
+    -e "s|@@SERVEDFILE@@|$(fill "$RUN/evolve-$stamp-launch.served")|g" \
     > "$path" <<'LAUNCH'
 #!/usr/bin/env bash
 # Successor for @@STAMP@@: waits outside the old server, then takes the home.
@@ -264,6 +265,12 @@ while :; do
     # The home is this process's now: a claim left behind would block the next
     # handover until somebody noticed it was stale.
     rm -rf '@@LEASE@@'
+    # This process is the server from here on. A pid file left behind reads as a
+    # successor still waiting, and `clean` kills waiters -- it would follow this
+    # pid down the tree and take the server with it. The heartbeat goes too: it
+    # is the one thing `swap` reads as "somebody is ready to take the home".
+    rm -f '@@PIDFILE@@' '@@BEATFILE@@'
+    printf '%s\n' "$(date +%s)" > '@@SERVEDFILE@@'
     if [ '@@BUNDLE@@' = "1" ]; then
       GONGGA_HOME="$NEW_HOME" exec "$NEW" server "${ARGS[@]}"
     fi
@@ -363,10 +370,12 @@ server_cmdline() { # pid
   local pid="$1"
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
-      # `wmic` is deprecated but present wherever Git Bash is; `//value` drops
-      # the column header, and every line still carries the `CommandLine=` key.
-      wmic process where "ProcessId=$pid" get CommandLine //value 2>/dev/null \
-        | sed -n 's/^CommandLine=//p' | tr -d '\r' | sed '/^$/d'
+      # Through PowerShell, not `wmic`: this machine's security policy blacklists
+      # wmic.exe, and a blocked program is not a program that can be retried. The
+      # query is the same one `parent_of` already makes.
+      powershell -NoProfile -Command \
+        "(Get-CimInstance Win32_Process -Filter 'ProcessId=$pid').CommandLine" \
+        2>/dev/null | tr -d '\r' | sed '/^$/d'
       ;;
     *)
       [ -r "/proc/$pid/cmdline" ] || return 1
@@ -931,6 +940,7 @@ cmd_clean() {
   removed=$(find "$RUN" -maxdepth 1 -type f \
     \( -name 'evolve-*-launch.sh' -o -name 'evolve-*-launch.pid' \
        -o -name 'evolve-*-launch.beat' -o -name 'evolve-*-launch.outside' \
+       -o -name 'evolve-*-launch.served' \
        -o -name 'evolve-*-launch.log' \
        -o -name 'evolve-*-gongga.exe' -o -name 'evolve-*-server.exe' \
        -o -name 'evolve-*.txt' \) \
