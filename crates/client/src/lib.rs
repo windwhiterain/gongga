@@ -331,12 +331,16 @@ impl LineKind {
         }
     }
 
-    /// Whether an item of this kind is SPEC's `abstract`: a call, its result, or the
-    /// reasoning behind it.
+    /// Whether an item of this kind is SPEC's `abstraction`.
+    /// reasoning behind it, or the harness speaking.
     pub fn folds(self) -> bool {
         matches!(
             self,
-            LineKind::Reasoning | LineKind::ToolCall | LineKind::ToolOutput | LineKind::ToolError
+            LineKind::Reasoning
+                | LineKind::ToolCall
+                | LineKind::ToolOutput
+                | LineKind::ToolError
+                | LineKind::Inject
         )
     }
 }
