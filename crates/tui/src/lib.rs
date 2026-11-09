@@ -63,7 +63,7 @@ pub use client::runtime::Server;
 /// does forward. One predicate, so the click and the wheel cannot disagree about
 /// which modifiers exist. See `docs/notes/tui-lib.md`.
 fn gesture_modifiers() -> KeyModifiers {
-    KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL
+    KeyModifiers::SHIFT | KeyModifiers::CONTROL
 }
 
 /// Runs the window: its own runtime, because the loop owns every task in it.
@@ -99,6 +99,13 @@ const GLUE_GAP: Duration = Duration::from_millis(150);
 
 /// Text keys inside one [`PASTE_GAP`] that a keyboard cannot produce.
 const MACHINE_RUN: usize = 3;
+
+/// Text keys back to back a hand cannot produce, so the `Enter` after them is the
+/// paste's. See `docs/notes/tui-paste.md`.
+const PASTE_BURST: usize = 20;
+
+/// The gap two keys of a burst may have and still be one. See `docs/notes/tui-paste.md`.
+const BURST_GAP: Duration = Duration::from_millis(40);
 
 /// What Alt+<key> does to the terminal itself, rather than to the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -492,6 +499,13 @@ pub struct Tui {
     pending: Vec<KeyEvent>,
     /// When the last run ended, and how many text keys it carried.
     settled: Option<(std::time::Instant, usize)>,
+    /// The console's own paste gesture, off for this window's life. Held, never
+    /// read: dropping it is what puts the mode back.
+    #[allow(dead_code)]
+    quick_edit: QuickEdit,
+    /// Text keys that arrived back to back, and when the newest one did.
+    fast: usize,
+    fast_at: Option<std::time::Instant>,
     /// An event read while deciding whether a keystroke began a paste.
     stashed: Option<std::io::Result<TermEvent>>,
     /// The input as the last frame saw it: typing may have put console ink on
@@ -651,6 +665,73 @@ fn cell_shaped(size: FontSize) -> bool {
     (1..=32).contains(&size.width) && (1..=64).contains(&size.height) && size.height >= size.width
 }
 
+/// The console's own QuickEdit, off for as long as this window is up.
+///
+/// # Invariant
+///
+/// With QuickEdit on, a right-click pastes the clipboard into the prompt as
+/// keystrokes, and a pasted line break arrives as the operator's `Enter` -- the one
+/// thing a paste rule cannot tell apart. Turning the mode off is not a heuristic: the
+/// console stops delivering that gesture at all. See `docs/notes/tui-paste.md`.
+#[cfg(windows)]
+struct QuickEdit(Option<u32>);
+
+#[cfg(windows)]
+impl QuickEdit {
+    /// Clears the mode, keeping the word it replaced so it can be put back.
+    fn off() -> Self {
+        use windows_sys::Win32::System::Console::{
+            ENABLE_EXTENDED_FLAGS, ENABLE_QUICK_EDIT_MODE, GetConsoleMode, GetStdHandle,
+            STD_INPUT_HANDLE, SetConsoleMode,
+        };
+        // SAFETY: `GetStdHandle` takes a constant, and the two mode calls take the
+        // handle it returned plus a word this function owns.
+        unsafe {
+            let handle = GetStdHandle(STD_INPUT_HANDLE);
+            if handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                return Self(None);
+            }
+            let mut mode = 0u32;
+            if GetConsoleMode(handle, &mut mode) == 0 {
+                return Self(None);
+            }
+            let quiet = (mode & !ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS;
+            if SetConsoleMode(handle, quiet) == 0 {
+                return Self(None);
+            }
+            Self(Some(mode))
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for QuickEdit {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE, SetConsoleMode};
+        let Some(mode) = self.0 else {
+            return;
+        };
+        // SAFETY: the same handle `off` changed, put back to the word it held.
+        unsafe {
+            let handle = GetStdHandle(STD_INPUT_HANDLE);
+            if !handle.is_null() {
+                SetConsoleMode(handle, mode);
+            }
+        }
+    }
+}
+
+/// QuickEdit is a Windows console mode; elsewhere there is nothing to turn off.
+#[cfg(not(windows))]
+struct QuickEdit;
+
+#[cfg(not(windows))]
+impl QuickEdit {
+    fn off() -> Self {
+        Self
+    }
+}
+
 impl Tui {
     /// The window, whose rows are written down under this client's own root.
     pub fn new(
@@ -659,6 +740,8 @@ impl Tui {
         endpoint: &str,
     ) -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
+        // Before the window draws a prompt the console could paste into.
+        let quick_edit = QuickEdit::off();
         // Before the alternate screen: the platform's thread must find it here.
         let watched = closing::watch();
         let initialized = (|| {
@@ -718,6 +801,9 @@ impl Tui {
             dirty: true,
             pending: Vec::new(),
             settled: None,
+            quick_edit,
+            fast: 0,
+            fast_at: None,
             stashed: None,
         };
         // Said once: a window that cannot hear the console closing leaves
@@ -1093,7 +1179,7 @@ impl Tui {
                     Ok(Some(Ok(TermEvent::Key(key))))
                         if Self::actionable(&key) && Self::paste_key(&key) =>
                     {
-                        self.pending.push(key);
+                        self.hold(key);
                         continue;
                     }
                     // Anything else is not part of a paste, and is kept for later.
@@ -1124,7 +1210,7 @@ impl Tui {
                         continue;
                     }
                     // Held until the pause that says whether this was a paste.
-                    self.pending.push(key);
+                    self.hold(key);
                 }
                 Ok(TermEvent::Mouse(mouse)) => {
                     // A click must not operate the window hidden under the cover.
@@ -1143,6 +1229,40 @@ impl Tui {
                 _ => {}
             }
         }
+    }
+
+    /// Holds one key the loop may find to be part of a paste, counting a burst.
+    ///
+    /// # Invariant
+    ///
+    /// [`Self::fast`] counts text keys that arrived within [`PASTE_GAP`] of the one
+    /// before, and goes back to zero at the first gap a hand could have made. It is
+    /// what [`Self::burst_break`] reads, and it survives a flush: a slow replay is
+    /// many runs of one key, and only the count across them says "this was a paste".
+    fn hold(&mut self, key: KeyEvent) {
+        let now = std::time::Instant::now();
+        let fast = self
+            .fast_at
+            .is_some_and(|at| now.duration_since(at) <= BURST_GAP);
+        self.fast = if fast { self.fast + 1 } else { 0 };
+        self.fast_at = Some(now);
+        self.pending.push(key);
+    }
+
+    /// Whether this lone break ends a burst no hand typed.
+    ///
+    /// # Invariant
+    ///
+    /// The count is spent when it answers, so one paste's break cannot excuse the
+    /// `Enter` a person presses after it. See `docs/notes/tui-paste.md`.
+    fn burst_break(&mut self, keys: &[KeyEvent]) -> bool {
+        let lone = keys.len() == 1 && is_paste_newline(&keys[0]);
+        let recent = self.fast_at.is_some_and(|at| at.elapsed() <= GLUE_GAP);
+        let pasted = lone && recent && self.fast >= PASTE_BURST;
+        if pasted {
+            self.fast = 0;
+        }
+        pasted
     }
 
     /// Whether a key event drives the UI: presses and repeats, never releases.
@@ -1180,7 +1300,7 @@ impl Tui {
                 self.settled = None;
                 None
             }
-            None if glue_break(&keys, run) => {
+            None if glue_break(&keys, run) || self.burst_break(&keys) => {
                 self.paste("\n");
                 // The paste may continue after this break, so the run stays open.
                 self.settled = Some((std::time::Instant::now(), MACHINE_RUN));
@@ -1202,42 +1322,43 @@ impl Tui {
         action.or_else(|| self.completer.wants().then_some(UiEvent::Recomplete))
     }
 
-    /// The one key that is not editing: leaving, on Alt+Q. See `docs/notes/tui-lib.md`.
+    /// The one key that is not editing: leaving, on Ctrl+Q. See `docs/notes/tui-lib.md`.
+    ///
+    /// # Invariant
+    ///
+    /// Ctrl, not Alt: the console's own gestures are off ([`QuickEdit`]), so the
+    /// plain key reaches this window, and Alt is left for the terminal's own menu on
+    /// the platforms that have one.
     fn shortcut(key: &KeyEvent) -> Option<UiEvent> {
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            // Case-insensitive: Shift+Alt+Q arrives as 'Q'.
-            KeyCode::Char('q' | 'Q') if alt => Some(UiEvent::Intent(UiIntent::Quit)),
+            // Case-insensitive: Shift+Ctrl+Q arrives as 'Q'.
+            KeyCode::Char('q' | 'Q') if control => Some(UiEvent::Intent(UiIntent::Quit)),
             _ => None,
         }
     }
 
     /// The keys that act on the terminal, not on the conversation.
     fn console_key(key: &KeyEvent) -> Option<ConsoleAction> {
-        if !key.modifiers.contains(KeyModifiers::ALT) {
+        if !key.modifiers.contains(KeyModifiers::CONTROL) {
             return None;
         }
         match key.code {
-            KeyCode::Char('y' | 'Y') => Some(ConsoleAction::Copy),
             KeyCode::Char('c' | 'C') => Some(ConsoleAction::CopySelection),
-            KeyCode::Char('m' | 'M') => Some(ConsoleAction::Mouse),
             _ => None,
         }
     }
 
-    /// Whether this key asks for the clipboard: SPEC's `Alt+V`, and `Ctrl+V`
-    /// where a terminal forwards it, case either way.
+    /// Whether this key asks for the clipboard: `Ctrl+V`.
     ///
     /// # Invariant
     ///
-    /// Alt alone is the binding, not Alt as a tolerated extra. A terminal that
-    /// keeps Ctrl+V for its own paste -- VS Code does -- never forwards the bare
-    /// key, and the keystroke it sends for Ctrl+Alt+V reaches no console app at
-    /// all, so a Ctrl spelling would leave an operator there with no key. See
-    /// `docs/notes/tui-paste.md`.
+    /// The console's own paste was turned off ([`QuickEdit`]), so the key this window
+    /// reads is the key the operator pressed rather than a replay the terminal made.
+    /// A terminal that still keeps Ctrl+V for itself pastes the text instead, which
+    /// reaches this window as a whole `Paste`; either way the clipboard is read once.
     fn clipboard_paste(key: &KeyEvent) -> bool {
-        key.modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('v' | 'V'))
     }
 
@@ -1373,12 +1494,9 @@ impl Tui {
             return self.handle_arrow(key);
         }
 
-        // The other modifier bindings use Alt too: a terminal that eats Ctrl+K is common.
+        // Alt is the terminal's: no menu of this window's is on it, so its keys are
+        // swallowed here rather than typed into a prompt.
         if key.modifiers.contains(KeyModifiers::ALT) {
-            if matches!(key.code, KeyCode::Char('k' | 'K')) {
-                self.close_completion();
-                self.screen.input.kill_to_end();
-            }
             return None;
         }
 

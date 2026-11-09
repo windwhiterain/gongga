@@ -286,3 +286,21 @@ indistinguishable from typing; nothing here can fix that, because the terminal
 sends no marker. A real paste into a real terminal is the open check: a ConPTY
 driver was attempted and hung the shell twice, so it was removed rather than left
 as a trap.
+
+## The burst that crosses runs
+
+A right-click on a long clipboard posted it a line at a time, and the rule above
+could not see it: that rule asks how many keys landed in *one* run, and a
+line-by-line replay gives every character a run of its own -- `MACHINE_RUN` never
+arms, so each line's `Enter` was read as the operator pressing send.
+
+The loop now also counts keys that arrive back to back, in
+[`BURST_GAP`](../../crates/tui/src/lib.rs) each, and keeps the count across
+flushes. A lone `Enter` after [`PASTE_BURST`](../../crates/tui/src/lib.rs) of them is
+the paste's own line break whatever runs they landed in, and the count is spent when
+it answers, so one paste cannot excuse the `Enter` a person presses after it.
+
+The two numbers are chosen so that no hand can arm it: twenty keys at most forty
+milliseconds apart is twenty-five characters a second, held without a pause. A paste
+is the only thing that reaches it, which is what makes "a copy never sends anything"
+true rather than likely.

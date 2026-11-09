@@ -212,12 +212,11 @@ events (vertical) :=
 - hot-key
   - Shift+Enter: new line in cmd_input.
   - PageUp/PageDown (Fn+Up/Down): scroll the sticky session.
-  - Alt+Down: scroll the sticky session to bottom.
   - Shift+Delete: delete sticky session.
-  - Alt+V: paste (text/image).
-  - Alt+C: copy the selection.
+  - Ctrl+V: paste (text/image).
+  - Ctrl+C: copy the selection.
   - Shift+Up/Down: last/next cmd input.
-  - Alt+Q: exit.
+  - Ctrl+Q: exit.
 
 ## Sticky
 stikcy argument will auto fill in missing argument in function call with corresponding type.
