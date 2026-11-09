@@ -1157,7 +1157,7 @@ impl Store {
     pub fn append_message(
         &self,
         session_id: i64,
-        kind: &str,
+        kind: Kind,
         content: &serde_json::Value,
     ) -> anyhow::Result<i64> {
         Self::append_message_conn(&self.lock(), session_id, kind, content)
@@ -1166,7 +1166,7 @@ impl Store {
     fn append_message_conn(
         conn: &rusqlite::Connection,
         session_id: i64,
-        kind: &str,
+        kind: Kind,
         content: &serde_json::Value,
     ) -> anyhow::Result<i64> {
         let seq: i64 = conn.query_row(
@@ -1183,10 +1183,8 @@ impl Store {
              RETURNING seq",
             params![
                 session_id,
-                kind,
-                Kind::parse(kind)
-                    .and_then(|known| wire_item(known, content))
-                    .map(|item| item.to_string()),
+                kind.as_str(),
+                wire_item(kind, content).map(|item| item.to_string()),
                 serde_json::to_string(content)?,
                 content.get("call_id").and_then(|v| v.as_str()),
                 now_millis()
@@ -1399,7 +1397,7 @@ impl Store {
     /// Stores the prompt the next request is built from, bytes and all.
     pub fn append_prompt(&self, session_id: i64, prompt: &Prompt) -> anyhow::Result<i64> {
         let payload = serde_json::to_value(prompt)?;
-        self.append_message(session_id, "system", &payload)
+        self.append_message(session_id, Kind::System, &payload)
     }
 
     /// The newest stored tool set, or nothing before a session's first stamp.
@@ -1421,7 +1419,7 @@ impl Store {
     /// Stores the tool set the next request is built from, bytes and all.
     pub fn append_tool_set(&self, session_id: i64, tool_set: &ToolSet) -> anyhow::Result<i64> {
         let payload = serde_json::to_value(tool_set)?;
-        self.append_message(session_id, "tools", &payload)
+        self.append_message(session_id, Kind::Tools, &payload)
     }
 
     // -- what a stream has said so far -------------------------------------
@@ -1508,12 +1506,12 @@ impl Store {
             // Appended last; see `docs/notes/server-store.md`.
             let stored = match part.as_str() {
                 "output" => Some((
-                    "text",
+                    Kind::Text,
                     json!({"role": "assistant", "text": text, "interrupted": true,
                            "item_id": item_id, "turn": turn}),
                 )),
                 "reasoning" => Some((
-                    "reasoning",
+                    Kind::Reasoning,
                     json!({"summary": text, "item_id": item_id,
                            "interrupted": true, "turn": turn}),
                 )),
@@ -1582,7 +1580,7 @@ impl Store {
         for (call_id, name, step) in &open {
             self.append_message(
                 session_id,
-                "tool_result",
+                Kind::ToolResult,
                 &json!({
                     "call_id": call_id,
                     "output": interrupted_call(),
@@ -1933,7 +1931,7 @@ impl Store {
         drop(statement);
         artifacts.push(call_seq);
 
-        let result_seq = Self::append_message_conn(&tx, session_id, "tool_result", content)?;
+        let result_seq = Self::append_message_conn(&tx, session_id, Kind::ToolResult, content)?;
         tx.execute(
             "INSERT INTO live_compact_checkpoints
              (session_id, segment_after_seq, request_seq, round_start_seq,
@@ -2193,7 +2191,7 @@ impl Store {
         tx: &rusqlite::Transaction<'_>,
         session_id: i64,
         expanded: &crate::meta::Expanded,
-        kind: &str,
+        kind: Kind,
     ) -> anyhow::Result<i64> {
         let no_text = tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM messages
@@ -2254,7 +2252,7 @@ impl Store {
             ],
         )?;
         let id = tx.last_insert_rowid();
-        let seq = self.append_user_conn(&tx, session_id, expanded, "text")?;
+        let seq = self.append_user_conn(&tx, session_id, expanded, Kind::Text)?;
         tx.commit()?;
         Ok((
             id,
@@ -2426,7 +2424,7 @@ impl Store {
 
             let expanded = crate::meta::Expanded::from_json(&payload)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
-            written.seq = self.append_user_conn(&tx, session_id, &expanded, "inject")?;
+            written.seq = self.append_user_conn(&tx, session_id, &expanded, Kind::Inject)?;
             written.lines.push(OperatorLine {
                 text: expanded.text.clone(),
                 injected: true,
@@ -2442,7 +2440,7 @@ impl Store {
                 Self::append_message_conn(
                     &tx,
                     session_id,
-                    crate::live_compact::REQUEST_KIND,
+                    Kind::LiveCompactRequest,
                     &serde_json::to_value(request)?,
                 )?;
             }
