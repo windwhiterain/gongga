@@ -13,8 +13,146 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::session::Machine;
-use crate::tools::python::{DRIVER, PythonRepl, Reply, reply_text};
+
 use crate::tools::{Cmd, ToolContext, ToolOutcome};
+
+pub(crate) const DRIVER: &str = r#"
+import ast, builtins, contextlib, io, json, os, stat, sys, tempfile, traceback
+# `import gongga_skill` works here: the skill contract is installed beside the home,
+# and this is the one place a session's Python learns where.
+_skill_lib = os.environ.get("GONGGA_SKILL_LIB")
+if _skill_lib and _skill_lib not in sys.path:
+    sys.path.insert(0, _skill_lib)
+_ns = {"__name__": "__main__", "__builtins__": builtins}
+
+def _atomic_write(path, data):
+    path = os.path.abspath(path)
+    parent = os.path.dirname(path) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, temp = tempfile.mkstemp(prefix=".gongga-", dir=parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        if os.path.exists(path):
+            os.chmod(temp, stat.S_IMODE(os.stat(path).st_mode))
+        os.replace(temp, path)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+def _read(request):
+    path = request["path"]
+    offset = int(request.get("offset", 0))
+    limit = int(request.get("limit", 0))
+    if offset < 0 or limit < 0:
+        raise ValueError("offset and limit must not be negative")
+    with open(path, "rb") as handle:
+        text = handle.read().decode("utf-8")
+    lines = text.splitlines(keepends=True)
+    chunk = lines[offset:] if limit == 0 else lines[offset:offset + limit]
+    sys.stdout.write("".join(chunk))
+
+def _write(request):
+    path = request["path"]
+    data = request["content"].encode("utf-8")
+    _atomic_write(path, data)
+    print(f"wrote {len(data)} bytes to {path}")
+
+def _replace(request):
+    path = request["path"]
+    old = request["old"]
+    new = request["new"]
+    every = bool(request.get("all", False))
+    if not old:
+        raise ValueError("old must not be empty")
+    with open(path, "rb") as handle:
+        text = handle.read().decode("utf-8")
+    count = text.count(old)
+    if every:
+        if count == 0:
+            raise ValueError("old does not occur in the file")
+        updated = text.replace(old, new)
+    else:
+        if count != 1:
+            raise ValueError(f"old occurs {count} times; pass all=true or make it unique")
+        updated = text.replace(old, new, 1)
+    _atomic_write(path, updated.encode("utf-8"))
+    print(f"replaced {count} occurrence(s) in {path}")
+
+def _run(request):
+    op = request.get("op", "exec")
+    out = io.StringIO()
+    err = io.StringIO()
+    ok = True
+    saved_stdin = sys.stdin
+    sys.stdin = io.StringIO("")
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                if op == "read":
+                    _read(request)
+                elif op == "write":
+                    _write(request)
+                elif op == "replace":
+                    _replace(request)
+                elif op == "exec":
+                    code = request.get("code", "")
+                    tree = ast.parse(code, "<python>", "exec")
+                    if len(tree.body) == 1 and isinstance(tree.body[0], ast.Expr):
+                        value = eval(compile(ast.Expression(tree.body[0].value), "<python>", "eval"), _ns)
+                        if value is not None:
+                            print(repr(value))
+                    else:
+                        exec(compile(tree, "<python>", "exec"), _ns)
+                else:
+                    raise ValueError(f"unknown op {op!r}")
+            except BaseException:
+                ok = False
+                traceback.print_exc()
+    finally:
+        sys.stdin = saved_stdin
+        sys.__stdout__.write(json.dumps({"ok": ok, "stdout": out.getvalue(), "stderr": err.getvalue()}) + "\n")
+        sys.__stdout__.flush()
+
+for line in sys.stdin:
+    try:
+        request = json.loads(line)
+    except Exception:
+        continue
+    _run(request)
+"#;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct Reply {
+    pub ok: bool,
+    #[serde(default)]
+    pub stdout: String,
+    #[serde(default)]
+    pub stderr: String,
+}
+
+pub(crate) fn detect() -> anyhow::Result<PathBuf> {
+    for candidate in ["python3", "python"] {
+        if let Ok(path) = which::which(candidate) {
+            return Ok(path);
+        }
+    }
+    anyhow::bail!("no python3 or python on PATH; set GONGGA_PYTHON or [tools.python] program")
+}
+
+pub(crate) fn reply_text(reply: &Reply) -> String {
+    let mut text = reply.stdout.clone();
+    if !reply.stderr.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&reply.stderr);
+    }
+    text
+}
 
 /// One file operation: a fresh driver, one request, one answer. File state is
 /// the file, not a namespace.
@@ -25,9 +163,44 @@ async fn one_shot(
     request: Value,
     timeout: Duration,
 ) -> anyhow::Result<Reply> {
-    let mut repl = PythonRepl::spawn(program, args, cwd, None, &[])?;
-    let reply = repl.run_request(&request, timeout).await;
-    repl.kill().await;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let program = match program {
+        Some(path) => path.to_path_buf(),
+        None => detect()?,
+    };
+    let mut child = tokio::process::Command::new(&program)
+        .args(args)
+        .arg("-u")
+        .arg("-c")
+        .arg(DRIVER)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("spawning {}: {e}", program.display()))?;
+    let mut stdin = child.stdin.take().expect("stdin piped");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+    let line = request.to_string();
+    stdin
+        .write_all(format!("{line}\n").as_bytes())
+        .await
+        .map_err(|e| anyhow::anyhow!("writing to the Python driver: {e}"))?;
+    stdin.flush().await.ok();
+    let mut answer = String::new();
+    let read = tokio::time::timeout(timeout, stdout.read_line(&mut answer)).await;
+    let reply = match read {
+        Err(_) => Err(anyhow::anyhow!(
+            "the Python call did not finish within {}s",
+            timeout.as_secs()
+        )),
+        Ok(Ok(0)) => Err(anyhow::anyhow!("the Python interpreter exited")),
+        Ok(Ok(_)) => serde_json::from_str::<Reply>(answer.trim())
+            .map_err(|e| anyhow::anyhow!("a malformed Python reply: {e}")),
+        Ok(Err(e)) => Err(anyhow::anyhow!("reading from the Python driver: {e}")),
+    };
+    let _ = child.kill().await;
     reply
 }
 
@@ -85,7 +258,7 @@ fn file_remote(args: &Value, ctx: &ToolContext, tool: &str) -> Result<bool, Stri
 
 /// The endpoint of the session's remote, for a file call that named it.
 fn remote_endpoint(ctx: &ToolContext) -> Option<crate::remote::Endpoint> {
-    ctx.shells
+    ctx.workspace
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .endpoint(Machine::Remote)

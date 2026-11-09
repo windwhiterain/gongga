@@ -401,7 +401,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         context_limit_percent: cfg.agent.context_limit_percent,
         home: cfg.home.clone(),
         output_dir: output_dir.clone(),
-        detached: detached.clone(),
         jobs: crate::tools::tunnel::JobRegistry::new(),
     });
 
@@ -592,7 +591,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let _ = detached_watch.await;
     // Every exit from `serve` lands here, so nothing it started outlives the
     // stop decision. See `docs/notes/server-main.md`.
-    sessions.close_shells().await;
+    sessions.closing();
     let stopped = scripts.stop_all().await;
     if stopped > 0 {
         tracing::info!(stopped, "stopped scripts still running at the stop");

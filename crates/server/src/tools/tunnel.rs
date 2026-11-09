@@ -506,19 +506,12 @@ fn adopted(
         )),
         home: cfg.home.clone(),
         output_dir: output_dir.to_path_buf(),
-        shells: Arc::new(std::sync::Mutex::new(crate::session::Shells::empty(
+        workspace: Arc::new(std::sync::Mutex::new(crate::session::Workspace::empty(
             cfg.bash.program.clone().unwrap_or_default(),
         ))),
-        pythons: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         reader: None,
         machine: crate::session::Machine::Local,
         remote: None,
-        detached: crate::tools::detached::DetachedRegistry::new(
-            store.clone(),
-            cfg.bash.program.clone(),
-            cfg.home.join("detached"),
-            Vec::new(),
-        ),
         jobs: JobRegistry::new(),
         events: None,
         cancel: CancellationToken::new(),

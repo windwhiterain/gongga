@@ -153,19 +153,12 @@ async fn call(request: &Request) -> Answer {
         home: request.home.clone(),
         output_dir: request.home.join("outputs"),
         // No shells, no interpreters, no jobs: one call, and the tools that need none.
-        shells: Arc::new(std::sync::Mutex::new(crate::session::Shells::empty(
+        workspace: Arc::new(std::sync::Mutex::new(crate::session::Workspace::empty(
             program,
         ))),
-        pythons: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         reader: None,
         machine: crate::session::Machine::Local,
         remote: None,
-        detached: crate::tools::detached::DetachedRegistry::new(
-            store.clone(),
-            cfg.bash.program.clone(),
-            request.home.join("detached"),
-            request.env.clone(),
-        ),
         jobs: crate::tools::tunnel::JobRegistry::new(),
         events: None,
         cancel: tokio_util::sync::CancellationToken::new(),

@@ -30,10 +30,25 @@ ok() { # name, condition-result
 [[ -d "$root/ship/.git" || -f "$root/ship/.git" ]] || {
   echo "no content repository at $root/ship: git submodule update --init" >&2; exit 1; }
 
-pin=$(sed -n 's/^commit = "\([0-9a-f]*\)"/\1/p' "$root/crates/server/ship.toml")
-content="$root/ship"
-git -C "$content" cat-file -e "$pin" 2>/dev/null || {
-  echo "$content has no $pin: the submodule is not at the pinned commit" >&2; exit 1; }
+# The content this run compares against: the submodule in a checkout, or wherever
+# `GONGGA_SHIP_CONTENT` points -- a linked worktree has no submodule of its own, and
+# the commits asked for here are the same commits in either place.
+content="${GONGGA_SHIP_CONTENT:-$root/ship}"
+# The pin is not carried by this build any more: the server walks the content's
+# `main` back, first parents only, to the newest commit that speaks the protocol
+# it reads (`ship::newest_for`), and installs that one. A home would install it,
+# so that is the pin this test reconciles against -- and a build whose protocol
+# has no content yet says so before a home is made.
+protocol=$(awk -F' = ' '$1 == "protocol" { print $2 }' "$root/crates/server/ship.toml" | sed 's/[[:space:]]*$//')
+[[ -n "$protocol" ]] || { echo "no protocol in $root/crates/server/ship.toml" >&2; exit 1; }
+speaks() { git -C "$content" show "$1:ship.toml" 2>/dev/null | awk -F' = ' '$1 == "protocol" { print $2 }' | sed 's/[[:space:]]*$//'; }
+pin=""
+for commit in $(git -C "$content" rev-list --first-parent HEAD); do
+  [[ "$(speaks "$commit")" == "$protocol" ]] && { pin=$commit; break; }
+done
+[[ -n "$pin" ]] || {
+  echo "$content has no commit speaking protocol $protocol: publish content for this build" >&2
+  exit 1; }
 
 alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
 child_pid() { tr -d '\r\n' < "$home/server.lock" 2>/dev/null; }
@@ -73,7 +88,7 @@ trap cleanup EXIT
 start() {
   : > "$log"
   port=$(free_port)
-  env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
+  GONGGA_SHIP_URL="$content" env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
   for _ in $(seq 1 150); do grep -q "shipped content" "$log" && break; sleep 0.2; done
   server_pid=$(child_pid); sup=$(parent_of "$server_pid")
   report=$(grep -o 'shipped content.*' "$log" | head -1)
@@ -115,8 +130,10 @@ if [[ -n "${left// /}" ]]; then
   sleep 2
 fi
 rm -rf "$home"; mkdir -p "$home"
-# This machine's real cache: the check must not reach the network.
-cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
+# The home clones the content this run measures, so the commit the check expects
+# and the commit the home installs come from one history -- which is the whole
+# scenario, and what two different checkouts cannot promise. The URL is a path, so
+# the clone is local and no start reaches the network.
 
 say "== an install of another pin is not an edit"
 seed skills/heir/SKILL.md stale
