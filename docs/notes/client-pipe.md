@@ -30,8 +30,9 @@ UI (parent)                gongga-client (child)                  server
 
 `PipeSink` exists because `Frontend::sink()` returns `Box<dyn Sink + '_>` and the
 loop calls it many times per iteration. It owns a `WireSink` for exactly one call
-and drains it in `Drop`: render frames go to the writer task, cursor frames update
-`Facts`. Nothing in the library knows the pipe exists.
+and drains it in `Drop`: render frames go to the writer task, cursor frames are
+consumed by `client::window_journal::WindowJournal`. Nothing in the library knows
+the pipe exists. See `client-window-journal.md`.
 
 ## Decisions worth keeping
 
@@ -62,7 +63,8 @@ and drains it in `Drop`: render frames go to the writer task, cursor frames upda
 
 | gap | today | where it goes |
 | --- | --- | --- |
-| `WindowFacts` | `stamp_of` / `floor_of` from `CursorMessage`, `drawn` from `Layout.shown`, `room_of` = 0, `known_list` = empty | the client's own journal once `log.rs` / `panes.rs` move |
+| `WindowFacts` | answered locally by `WindowJournal` from `CursorMessage` and the frame's `Layout`; `known_list` is still empty | stamps and floors persisted once `Log::landed` / `rewind` move (A-2) |
+| `room_of` | the pipe front-end never calls `note_room`, so it answers 1 | a viewport report from the UI, or a client-side fold (A-2) |
 | completion vocabulary | `refresh_completion` is a no-op | a control frame carrying the catalog, or completion moves client-side |
 | server ownership | kept in `server` only for `server_is_ours` | a frame for the header's own / not own label |
 | `repoint` | no-op | a frame telling the UI to clear the old endpoint's windows |

@@ -301,7 +301,8 @@ server + client + TUI，WebUI 等自行分发；若指的是别的，说一声�
 使用）；`client::runtime` 已有 `Frontend` / `FrontendEvent` / `give_back` /
 `Step` / `Dialing` 与整个 `run` 循环，循环只经 `Box<dyn Frontend>` 访问 UI；
 `crates/tui/src/run.rs` 只剩 `TuiSink`、三个接口实现与构造 UI 的 `interactive`
-包装；`log.rs` 里的 `Log` / `Panes` / ratatui 折行仍待；⑤ client bin target
+包装；`log.rs` 的 `Log` 与 ratatui 折行仍待，`Panes` 的窗口事实已上提到
+`window_journal.rs`（A-1，见下）；⑤ client bin target
 接管道骨架（已完成，见下一节）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
 payload）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
 主循环上提的接口形状（object-safe `Frontend`、`Box<dyn Sink>`、`FrontendEvent`
@@ -346,16 +347,42 @@ ratatui 折行与 `materialize` 留在 TUI。等窗口索引也上提，`declare
   `exit=0`、stderr 空、每行都是合法 JSON；带换行的文本被转义成一个帧。逐条记录在
   `.dev/verify/<sha>-pipe.json`。
 
-**这仍是骨架**：`WindowFacts` 由 `PipeFrontend` 从自己产出的帧里答（stamp / floor /
-drawn），`room_of` 目前返回 0（`ask_transcript` 会兜到 1 行），`known_list` 为空。
-`log.rs` / `panes.rs` 的 journal 搬进 client 后，这些答案都从本地 journal 出，
-不再依赖帧的副产物。`WindowView` 里还欠四类过线的控制帧：completion 词表刷新、
+**⑤ 之后仍是骨架**：`WindowFacts` 现在由 client 本地的 `WindowJournal` 回答 —— A-1
+已把 `Panes` 的 `drawn` / `room` / `wants` 与 pipe 前端的 stamp / floor / settled
+统一到同一个类型，两个前端不再各存一份。但 stamp / floor 仍由 TUI 的 `Log` 写磁盘、
+pipe 前端只存内存，`known_list` 为空；A-2 要把 `Log::landed` / `rewind` 里缠着
+ratatui 折行态的 `Entry` 拆成「数据块归 client、折行视图归 TUI」，让 journal 真正
+持久化。`WindowView` 里还欠四类过线的控制帧：completion 词表刷新、
 server 归属（header 画 own / not own）、`repoint` 后的窗口清理、以及把未发出的输入
 还给 UI 的 draft（现在退化成一条 `Note`）。这些是 ⑥ 的前置，不是第二套协议。
 
 裁定 2 的 bundle 布线（⑦）还没做：`gongga-client` 现在能被 cargo 构建出来，但
 `crates/bundle` 的 payload 白名单仍只认 `gongga-server` / `gongga-tui` /
 `gongga-cli`，分发包里还没有它。
+
+### 裁定 A：先搬 journal，再让 TUI 退成前端（2026-11-09）
+
+⑥ 的三条路里你选了 A：`log.rs` / `panes.rs` 的数据层先归 client，`WindowFacts`
+由 client 本地回答，⑥ 因此变小。不选 B（把 `CursorMessage` 过线）是因为它会破
+「cursor 只在 client 内消费」，不选 C（让 UI 上报 viewport 查询）是因为它会把
+`WindowFacts` 变成跨进程查询协议。A 的代价是 `Entry` 里数据块与 ratatui 折行态
+（`starts` / `col` / `styled` / `source`）缠在一起，不能整文件搬，必须切开。
+
+**A-1（已完成）**：`crates/client/src/window_journal.rs` 新增 `WindowJournal`，
+无终端类型；`Panes` 的 `drawn` / `room` / `wants` 与 pipe 前端私有的 `Facts` /
+`settled` 全部收进去，`CursorMessage` 由它消费。`Panes` 与 `PipeFrontend` 都改成
+委托，两个前端第一次共用一份窗口事实。`Panes::forget` 顺带清掉被删会话的事实，
+免得残留的 `wants` 去补拉一个已不存在的会话。见
+`docs/notes/client-window-journal.md`。
+
+**A-2（待做）**：把 `Log::stamp` / `landed` / `rewind` / `stamp_of` / `floor_of`
+的磁盘状态机搬进 `WindowJournal`，让它自己持有 `Cache` 与每窗口 `Ledger`；
+`Entry` 拆成 client 的数据块与 TUI 的折行视图。做完这步 pipe 前端的 stamp / floor
+才跨重启有效，`known_list` 也有来源。
+
+**A-3**：TUI 改为 spawn `gongga-client`，键盘出 `UiIntent`、`RenderMessage` 入绘制；
+此时 ⑥ 只剩布线。四类控制帧（completion 词表、server 归属、`repoint` 清理、
+draft 归还）仍要在 A-3 之前补齐，都是 `RenderMessage` 的语义变体，不是第二套协议。
 
 ## 2. 传输层：可靠 UDP
 

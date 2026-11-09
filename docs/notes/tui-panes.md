@@ -39,6 +39,19 @@ piece of text once the view changes shape: `last_height` and `last_rows` are wha
 last frame drew, and `Pane::anchor` needs both to know which row the operator was
 actually reading.
 
+## The client owns the window facts
+
+Which windows a frame drew, how many rows each could draw and which ones the
+operator scrolled past are not drawing facts. They used to be three fields here,
+duplicated by a private `Facts` struct in the client's pipe front-end. Both now
+delegate to `client::window_journal::WindowJournal`; `Panes` holds one and calls
+`begin_frame` / `mark_drawn` / `note_room` / `want` / `forget`. See
+`client-window-journal.md`. A window that is deleted takes its facts with it.
+
+`stamp_of` and `floor_of` still come from `Log`'s disk journal, because
+`Log::landed` and `Log::rewind` walk the folded `Entry` bodies. That is the next
+slice of the migration, not a change to this file's contract.
+
 ## Panes::begin_frame, end_frame, evict
 
 A frame says which windows it drew, and a window nobody drew holds no bodies: its

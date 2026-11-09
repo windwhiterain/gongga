@@ -2,7 +2,6 @@
 //!
 //! See `docs/notes/client-pipe.md`.
 
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -11,6 +10,7 @@ use gongga_client::render_wire::{
     CursorMessage, RenderMessage, UiIntent, WireSink, decode_intent, encode_frame,
 };
 use gongga_client::runtime::{self, Frontend, FrontendEvent, Server};
+use gongga_client::window_journal::WindowJournal;
 use gongga_client::window_refill::WindowFacts;
 use gongga_client::window_state::State;
 use gongga_client::window_sync::WindowView;
@@ -54,24 +54,10 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 
-/// What this process can say about its windows until the journal moves here.
-///
-/// # Invariant
-///
-/// Answers come from frames it produced, never a query over the pipe: the journal
-/// is the client's own to hold. See `docs/notes/client-pipe.md`.
-#[derive(Default)]
-struct Facts {
-    stamps: BTreeMap<String, (i64, i64)>,
-    floors: BTreeMap<String, i64>,
-    drawn: Vec<String>,
-}
-
 struct PipeFrontend {
     lines: Lines<BufReader<Stdin>>,
     out: mpsc::UnboundedSender<String>,
-    facts: Facts,
-    settled: Vec<(u64, bool)>,
+    journal: WindowJournal,
     server: Option<Server>,
     sticky: Option<String>,
     draft: bool,
@@ -82,8 +68,7 @@ impl PipeFrontend {
         Self {
             lines,
             out,
-            facts: Facts::default(),
-            settled: Vec::new(),
+            journal: WindowJournal::new(),
             server: None,
             sticky: None,
             draft: false,
@@ -94,7 +79,10 @@ impl PipeFrontend {
     /// would lose a line the operator is waiting for.
     fn send(&mut self, message: RenderMessage) {
         if let RenderMessage::Layout { layout } = &message {
-            self.facts.drawn = layout.shown.clone();
+            self.journal.begin_frame();
+            for name in &layout.shown {
+                self.journal.mark_drawn(name);
+            }
         }
         match encode_frame(&message) {
             Ok(frame) => {
@@ -106,27 +94,7 @@ impl PipeFrontend {
 
     /// Eats the cursor half: those answers are the client's, never the UI's.
     fn consume(&mut self, cursor: CursorMessage) {
-        match cursor {
-            CursorMessage::Settled { id, ok } => self.settled.push((id, ok)),
-            CursorMessage::Transcript {
-                session,
-                created,
-                seq,
-            } => {
-                self.facts.stamps.insert(session, (created, seq));
-            }
-            CursorMessage::Landed {
-                window,
-                created,
-                drawn,
-                floor,
-            } => {
-                self.facts.stamps.insert(window.clone(), (created, drawn));
-                self.facts.floors.insert(window, floor);
-            }
-            // The stamp survives a rewind, and an older page does not move it.
-            CursorMessage::Rewind { .. } | CursorMessage::Older { .. } => {}
-        }
+        self.journal.consume(cursor);
     }
 
     fn note(&mut self, text: String) {
@@ -139,17 +107,16 @@ impl PipeFrontend {
 
 impl WindowFacts for PipeFrontend {
     fn stamp_of(&self, window: &str) -> Option<(i64, i64)> {
-        self.facts.stamps.get(window).copied()
+        self.journal.stamp_of(window)
     }
     fn floor_of(&self, window: &str) -> Option<i64> {
-        self.facts.floors.get(window).copied()
+        self.journal.floor_of(window)
     }
-    // A pane's height is a UI fact; it has no frame yet, and the ask floors at 1.
-    fn room_of(&self, _window: &str) -> usize {
-        0
+    fn room_of(&self, window: &str) -> usize {
+        self.journal.room_of(window)
     }
     fn drawn(&self) -> &[String] {
-        &self.facts.drawn
+        self.journal.drawn()
     }
     fn refresh_completion(&mut self) {}
 }
@@ -168,7 +135,7 @@ impl WindowView for PipeFrontend {
         client.refresh(&mut sink);
     }
     fn take_settled(&mut self) -> Vec<(u64, bool)> {
-        std::mem::take(&mut self.settled)
+        self.journal.take_settled()
     }
 }
 
