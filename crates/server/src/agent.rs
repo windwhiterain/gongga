@@ -20,7 +20,7 @@ use crate::config::ModelConfig;
 use crate::llm::{LlmClient, LlmEvent};
 use crate::providers::{self};
 use crate::session::SessionHandle;
-use crate::store::Store;
+use crate::store::{Kind, Store};
 use crate::tools::{ToolContext, ToolRegistry};
 
 /// How much of a turn's answer a `turn_end` row carries.
@@ -1060,7 +1060,10 @@ impl Agent {
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);
                     self.settle_item(session, &item_id);
-                    self.announce_row(name, self.store.append_message(id, "reasoning", &payload));
+                    self.announce_row(
+                        name,
+                        self.store.append_message(id, Kind::Reasoning, &payload),
+                    );
                 }
                 // The provider executed this one; keeping the item verbatim is
                 // what lets the next request carry the same transcript.
@@ -1076,7 +1079,7 @@ impl Agent {
                         name,
                         self.store.append_message(
                             id,
-                            "builtin_call",
+                            Kind::BuiltinCall,
                             &json!({"item": item, "replayable": replayable}),
                         ),
                     );
@@ -1096,7 +1099,7 @@ impl Agent {
                     self.announce_row(
                         name,
                         self.store
-                            .append_message(id, "notice", &json!({"text": text})),
+                            .append_message(id, Kind::Notice, &json!({"text": text})),
                     );
                 }
                 LlmEvent::Output { item_id, text } => {
@@ -1107,7 +1110,7 @@ impl Agent {
                             name,
                             self.store.append_message(
                                 id,
-                                "text",
+                                Kind::Text,
                                 &json!({"role":"assistant","text":text}),
                             ),
                         );
@@ -1135,7 +1138,7 @@ impl Agent {
                         name,
                         self.store.append_message(
                             id,
-                            "tool_call",
+                            Kind::ToolCall,
                             &json!({"call_id": call_id, "name": tool, "arguments": arguments,
                                     "step": step}),
                         ),
@@ -1581,7 +1584,10 @@ impl Agent {
             )
             .to_string();
             content["output"] = json!(output.clone());
-            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            self.announce_row(
+                name,
+                self.store.append_message(id, Kind::ToolResult, &content),
+            );
             tail = output.clone();
         } else if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
             status = "error";
@@ -1589,11 +1595,17 @@ impl Agent {
             output = format!("ERROR: live_compact checkpoint was not committed: {reason}");
             content["output"] = json!(output.clone());
             content["ok"] = json!(false);
-            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            self.announce_row(
+                name,
+                self.store.append_message(id, Kind::ToolResult, &content),
+            );
             let _ = self.store.reset_live_compact_request(id);
             tail = output.clone();
         } else if !checkpointed {
-            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            self.announce_row(
+                name,
+                self.store.append_message(id, Kind::ToolResult, &content),
+            );
         }
         let tool_ok = status == "ok";
         tracing::info!(
@@ -1654,7 +1666,7 @@ impl Agent {
             name,
             self.store.append_message(
                 id,
-                "tool_result",
+                Kind::ToolResult,
                 &json!({
                     "call_id": call_id,
                     "output": said,
@@ -1758,11 +1770,11 @@ impl Agent {
             if !text.trim().is_empty() {
                 let stored = match part {
                     ResponsePart::Output => Some((
-                        "text",
+                        Kind::Text,
                         json!({"role": "assistant", "text": text, "interrupted": true}),
                     )),
                     ResponsePart::Reasoning => Some((
-                        "reasoning",
+                        Kind::Reasoning,
                         json!({"summary": text, "item_id": item_id.clone(),
                                "interrupted": true}),
                     )),
@@ -1806,7 +1818,7 @@ impl Agent {
     fn append_thinking_mark(&self, id: i64, session: &str) {
         match self.store.append_message(
             id,
-            "thinking_mark",
+            Kind::ThinkingMark,
             &json!({"text": crate::store::THINKING_MARK}),
         ) {
             Ok(seq) => {
@@ -1828,7 +1840,7 @@ impl Agent {
         self.announce_row(
             session,
             self.store
-                .append_message(id, "notice", &json!({"text": said})),
+                .append_message(id, Kind::Notice, &json!({"text": said})),
         );
         self.bus.publish(Event::Log {
             level: LogLevel::Error,
