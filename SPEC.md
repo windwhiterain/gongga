@@ -37,16 +37,29 @@ standard OpenAI Response API/Anthropic API.
 path, rendered in hierarchy.
 
 ## Tool
+all tool call have extra parameter `discription: optional[str] = none`
+
 Channel := path
 Result := {id: Channel, output: str, time: time, mactehd: bool, exit: int|none}
-fn new(name: str, args: list[str] | dict[str], input: optional[str] = none, id: optional[Channel] = none, wait: optional[time] = none, until: optional[str] = none, remote: optional[str] = <session's remote>, cwd: optional[path] = <session's cwd>) -> Result
-fn check(id: Channel, input: optional[str] = none, wait: optional[time] = none, until: optional[str] = none) -> result
+fn new(
+  name: str #abstraction,
+  args: list[str] | dict[str],
+  input: optional[str] = none,
+  id: optional[Channel] = none,
+  wait: optional[time] = none #abstraction,
+  until: optional[str] = none,
+  remote: optional[str] = <session's remote>,
+  cwd: optional[path] = <session's cwd>) -> Result
+fn check(id: Channel, input: optional[str] = none, wait: optional[time] = none, until: optional[str] = none) -> Result
 fn wait(time: time)
-- interrup will end the call.
 fn <tool>(**args)
 - route to server cmd with caller session as extra argument
+- extra tool's schema is not registered in tools but dynamic found via skill.
 
-chennel finished in backgrpund will also notice caller with result.
+- new/check set the wait flag to a channel, a channel notice the session with Result when:
+  - it has wait flag.
+  - finished or output matched the util.
+  the clear the wait flag
 
 - wait: if none, wait default time, if 0, return immediately.
 - util: use corresponding sticky value according to name, e.g. "python"/"bash".
@@ -86,10 +99,12 @@ fn del_session(id: Session)
 fn ls_session(path: path)
 fn send_message(message: str, session: Session)
   # inject message when step end.
-  # interrupt if waiting.
+  # interrupt if tool waiting.
 fn interrupt_session(id: Session):
-  # stop llm streaming.
-  # turn waiting channel into background.
+  # stop llm streaming, everything received must be saved to context.
+  # end tool waiting.
+  # set interrupted flag to that session, restart will consume and continue sesisons with interrupted flag.
+  # for sessions idle or calling `wait`, do not set interrupted flag.
 fn trigger_event(event: Event)
 Subscription := path
 fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, session: Session):
@@ -97,7 +112,7 @@ fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, sessio
 fn del_subscription(id: Subscription, session: Session)
 fn ls_subsscription(path: path, sesssion: Session)
 cancel(keep_alive: bool = false):
-  # interrupt every session then quit, by default kill all channel, optionally make everychannel background, keep them alive so retart will adopt them.
+  # interrupt every running session then quit, by default kill all channel, optionally make everychannel background, keep them alive so retart will adopt them.
 ```
 ## Python Cmd
 provided by a shipped uv python package.
@@ -160,26 +175,29 @@ for the first user message to a empty session, find all meta references recursiv
     - `<pure text>` expand to `/send_message --message "<pure text>"`: need escape.
   - hot-keys reminder
 
-- event
-  - | user_message
-  - | assistant_message_item{reasoning | toolcall | output}: streaming.
-  - | tool_result:
-    - bash's output streaming.
+event :=
+  | user_message
+  | harness_injection
+  | assistant_message_item{reasoning | toolcall | output}: streaming.
+  | tool_result:
+    - channel's output streaming.
+  | session related cmd
+  | session related cmd result
 
-- events (vertical)
-  - [
-      |abstract{
-        symbol (colored), content (gray),
-        |reasoning{beginning (line), ending (line)} (vertical)
-        |toolcall{tool_name·description, {name, background, timeout} (bash) | ...} (line)
-        |tool_result{ok, time (spent)} (line)
-      } (horizontal, 点击展开, block_size, box_edge, scroll 不溢出到外层)
-      |output (colored markdown): a table is laid out in the events width, its
-       columns shrinking to fit and its cells wrapping inside them
-      |(server cmd/cmd_result that related to this session){symbol (colored), content (gray)}
-      |error{symbol (colored), content (gray)}
-    ] (vertical scroll)
-  - streaming: currently stream, block_size, scorll if block_size!=0
+events (vertical) :=
+  [
+    |abstraction{
+      symbol (colored), content (gray),
+      |reasoning{beginning (line), ending (line)} (vertical)
+      |toolcall{tool_name·[*abstraction_args]·description}
+      |tool_result{ok, time}
+      |harness_injection{beginning (line)}
+    } (horizontal, click fold/unfold(show all non-abstraction information), block_size, inner scroll, horizontal_scroll_margin)
+    | output: colored markdown
+    | user message: symbol (colored), content (white)
+    | cmd/cmd_result: symbol (colored), content (gray)
+  ] (vertical scroll),
+  streaming: currently stream, block_size, scorll if block_size!=0
 
 - scroll
   - if scrolled from bottom, do not auto scroll, show a go to bottom button.
