@@ -160,6 +160,7 @@ library holds the loop it runs.
 | [`client-window-input.md`](client-window-input.md) | `crates/client/src/window_input.rs` |
 | [`client-window-index.md`](client-window-index.md) | `crates/client/src/window_index.rs` |
 | [`client-window-journal.md`](client-window-journal.md) | `crates/client/src/window_journal.rs` |
+| [`client-multi-client.md`](client-multi-client.md) | `scripts/multi_client_selftest.sh` (two clients, one server) |
 | [`client-frontend.md`](client-frontend.md) | the loop-lifting contract (`crates/client/src/runtime.rs`) |
 | [`client-refill.md`](client-refill.md) | `crates/client/src/window_refill.rs` |
 | [`client-window-sync.md`](client-window-sync.md) | `crates/client/src/window_sync.rs` |

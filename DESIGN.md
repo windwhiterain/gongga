@@ -36,7 +36,7 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实，`Log` / `Panes` 共用一份 | UI 改为 spawn 这个 bin、只做绘制（A-3 已完成，见下）；`log.rs` 的 `Entry` 折行态与 `Ledger` 实例仍留 TUI（A-4）；多 client L3（⑧） |
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实，`Log` / `Panes` 共用一份 | A-3 / ⑦ / ⑧ 均已完成（见下）；只剩 `log.rs` 的 `Entry` 折行态与 `Ledger` 实例仍留 TUI（A-4） |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
 | `[tui]` binary | `crates/tui`，`run.rs` 仍装着 `interactive` 主循环、`TuiSink` 与窗口 journal | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
@@ -306,7 +306,7 @@ journal，pipe 前端自己实例化这两者；`client::runtime` 已有 `Fronte
 包装；`log.rs` 的 `Log` 与 ratatui 折行仍留 TUI，但它已不持有 `Cache`，磁盘读写全
 走 client 的 `WindowJournal`（A-2，见下）；`Panes` 的窗口事实也已上提到同一份
 `WindowJournal`（A-1）；⑤ client bin target
-接管道骨架（已完成，见下一节）；⑥ TUI 改为 spawn client 并只做绘制（已完成，见下）；⑦ bundle 布线（已完成，见下）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
+接管道骨架（已完成，见下一节）；⑥ TUI 改为 spawn client 并只做绘制（已完成，见下）；⑦ bundle 布线（已完成，见下）；⑧ 多 client 连同一 server L3（已完成，见下）。
 主循环上提的接口形状（object-safe `Frontend`、`Box<dyn Sink>`、`FrontendEvent`
 与两步迁移）见 `docs/notes/client-frontend.md`；两步均已完成，循环现由
 `client::runtime::run` 持有，TUI 只提供 UI 工厂与 `owner_pid`。
@@ -371,6 +371,28 @@ pipe 前端没有块可重写，追加 `Floor` + `Stamp` 已经能回答补拉�
 `include_bytes!` 表（`gongga-runner` 照旧随行）；`payload_impl.rs` 的退役进程
 白名单也认 `gongga-client`，免得旧 build 的目录在 client 还活着时被删。
 `gongga-client` 不是用户直接敲的程序，所以没有加进 `WORDS` / `by_file_name`。
+
+### 形态 2 的第八步：两个 client 共享一个 server（2026-11-09）
+
+`scripts/multi_client_selftest.sh`（2026-11-09 用户授权新增）起一个不归属任何窗口的
+server，再起两个 `--client_only` 的 `gongga-client`，各带自己的 `--home` /
+`--client-home` / `--parent`，都拨同一个地址与 key。27 项断言，一行 verdict：
+
+- 两边的 `Server` 帧都是 `ours=false` 且 pid 相同，等于我们起的那个 server；
+  `from-a` / `from-b` 两个会话都能被第三个一次性拨号读回，证明两个 child 写的是
+  同一份 server 状态，不是各起一个 server。
+- 各自的 `client.toml` sticky 不串；A 发 `quit` 退出后 `server.lock` 的 pid 不变、
+  B 仍能写、一次性拨号仍答 —— 「不是自己起的 server，窗口退出不 cancel」有了
+  真进程证据。
+- 第三个 child 指向非 loopback 地址且不带 `--client_only`，既不 spawn 也不 stop：
+  `stop()` / `spawn()` 里的 `starts_here` 第一句就返回。两个 client 的 stdout 每行
+  都是合法 JSON。
+
+脚本按 `AGENTS.md` 的 L3 规约写：临时 home、内核分配端口、显式 key、起服务端时
+scrub 模型变量、就绪看日志里的 listening、一行 `PASS · 耗时 · build sha`。收尾有个
+实测坑：watchdog 200 ms 就会重启 child，只杀 `server.lock` 的 pid 会留下占着 home 的
+进程树；日志的 `supervisor=<pid>` 正是那个 watchdog，先杀它的树才删得掉 home。
+见 `docs/notes/client-multi-client.md`。
 
 ### 形态 2 的第六步：TUI 已是管道前端（2026-11-09）
 
