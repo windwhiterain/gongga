@@ -353,14 +353,17 @@ describes the Responses face, which is still what every provider but one speaks.
 `build_head` sends `prompt_cache_options` only when the configured tier appears
 in the roster's `cache_ttl_tiers` for that provider, and `prompt_cache_key` only
 when the roster's `[[provider]] cache_affinity` says this provider documents it (or
-this home overrides that). The key names the session's directory -- the unit whose
-requests share a head -- never the conversation; `docs/notes/server-prefix-cache.md`
-has what each provider does with it. A separate switch
-adds an `X-Session-ID` header with the same value, for the endpoints
-that pin an inference instance that way -- declared the same way, by
-`[[provider]] cache_session_header` in the roster, because it is the same kind of fact;
-the header travels through
-`stream_once` -> `read_stream` -> `read_stream_inner` beside the key. A tier's
+this home overrides that). The key carries the per-conversation id -- the stable
+session database id, prefixed `gongga-` -- because the vendors that document it ask
+for session isolation, not a directory; `docs/notes/server-prefix-cache.md`
+has what each provider does with it. The same id also goes out in headers, named by
+the roster's `session_id_headers` list rather than one switch per vendor
+(`X-Session-ID`, `x-opencode-session`, ...): each listed name gets the same value.
+The list travels through
+`stream_once` -> `read_stream` -> `read_stream_inner` as `(name, value)` pairs and is
+silent -- no header -- when empty. The plan's other requirement, a client-specific
+`User-Agent`, is the construction-time `gongga-harness/<version>`, so no request can
+forget it. A tier's
 window is a claim about the provider, not a constant of this module: a probe
 330 seconds into a nominal 300-second tier has too little margin, and no
 control case, to say anything about it. See

@@ -22,6 +22,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// `docs/notes/server-llm.md`.
 const HARNESS_AGENT: &str = concat!("gongga-harness/", env!("CARGO_PKG_VERSION"));
 
+/// Prefix for the per-conversation id every session-id header carries; the
+/// session's database id follows, so it is stable across restarts and pure ASCII.
+const SESSION_ID_PREFIX: &str = "gongga-";
+
 /// The request shape a provider is spoken in, named by the roster's endpoint.
 ///
 /// # Invariant
@@ -94,10 +98,10 @@ pub struct LlmClient {
     /// `None` unless the roster states this provider can be asked for that tier:
     /// a field the endpoint ignores would price the plan for the wrong tier.
     cache_tier: Option<String>,
-    /// Route affinity, off unless a machine states its endpoint accepts it.
+    /// Whether to send `prompt_cache_key`, carrying the per-conversation id.
     cache_affinity: bool,
-    /// Pin the inference instance with an `X-Session-ID` header.
-    cache_session_header: bool,
+    /// Header names that carry the per-conversation id; empty sends nothing.
+    session_id_headers: Vec<String>,
     /// Tiers the roster names; the last check before a directive goes on the wire.
     cache_tiers: Vec<String>,
 }
@@ -188,7 +192,7 @@ impl LlmClient {
                 .clone()
                 .filter(|tier| cfg.cache_tiers.contains_key(tier)),
             cache_affinity: cfg.cache_affinity,
-            cache_session_header: cfg.cache_session_header,
+            session_id_headers: cfg.session_id_headers.clone(),
             cache_tiers: cfg.cache_tiers.keys().cloned().collect(),
         })
     }
@@ -245,7 +249,6 @@ impl LlmClient {
         index: Option<&str>,
         tail: Option<&str>,
         source: &RequestSource,
-        affinity: &str,
         tools: &Value,
         effort: Option<&str>,
         cache_tier: Option<&str>,
@@ -253,16 +256,23 @@ impl LlmClient {
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
+        // One per-conversation id, the stable database id; every affinity field the
+        // roster names -- body key and headers -- carries this same value.
+        let session_id = format!("{SESSION_ID_PREFIX}{}", source.session_id);
         let head = self.build_head(
             instructions,
             index,
             tail,
-            affinity,
+            &session_id,
             tools,
             effort,
             cache_tier,
         );
-        let session_header = self.cache_session_header.then(|| affinity.to_string());
+        let session_headers: Vec<(String, String)> = self
+            .session_id_headers
+            .iter()
+            .map(|name| (name.clone(), session_id.clone()))
+            .collect();
         // Owned, because the attempt below records it after this body is gone.
         let effort_sent = effort.map(str::to_string);
         let build_head_ms = build_started.elapsed().as_millis() as u64;
@@ -324,7 +334,7 @@ impl LlmClient {
                     idle_timeout,
                     cancel.clone(),
                     probe,
-                    session_header.clone(),
+                    session_headers.clone(),
                 )
                 .await;
                 let mut produced = false;
@@ -490,7 +500,7 @@ impl LlmClient {
         instructions: &str,
         index: Option<&str>,
         card: Option<&str>,
-        affinity: &str,
+        session_id: &str,
         tools: &Value,
         effort: Option<&str>,
         cache_tier: Option<&str>,
@@ -524,9 +534,10 @@ impl LlmClient {
         if let Some(tier) = directive {
             body["prompt_cache_options"] = json!({"mode": "implicit", "ttl": tier});
         }
-        // Invariant: the key names the unit that shares a prefix, not a conversation.
+        // Invariant: vendors that document the key ask for session isolation, so its
+        // value is the per-conversation id, the same one the headers carry.
         if self.cache_affinity {
-            body["prompt_cache_key"] = json!(affinity);
+            body["prompt_cache_key"] = json!(session_id);
         }
         if !instructions.is_empty() {
             body["instructions"] = json!(instructions);
@@ -980,7 +991,7 @@ async fn stream_once(
     idle_timeout: Duration,
     cancel: CancellationToken,
     probe: crate::probe::AttemptProbe,
-    session_header: Option<String>,
+    session_headers: Vec<(String, String)>,
 ) -> mpsc::Receiver<LlmEvent> {
     let (tx, rx) = mpsc::channel(256);
     let url = url.to_string();
@@ -1001,7 +1012,7 @@ async fn stream_once(
             &cancel,
             &tx,
             probe,
-            session_header,
+            session_headers,
         ))
         .catch_unwind()
         .await;
@@ -1032,7 +1043,7 @@ async fn read_stream(
     cancel: &CancellationToken,
     tx: &mpsc::Sender<LlmEvent>,
     mut probe: crate::probe::AttemptProbe,
-    session_header: Option<String>,
+    session_headers: Vec<(String, String)>,
 ) {
     let outcome = AssertUnwindSafe(read_stream_inner(
         face,
@@ -1046,7 +1057,7 @@ async fn read_stream(
         cancel,
         tx,
         &mut probe,
-        session_header,
+        session_headers,
     ))
     .catch_unwind()
     .await;
@@ -1079,7 +1090,7 @@ async fn read_stream_inner(
     cancel: &CancellationToken,
     tx: &mpsc::Sender<LlmEvent>,
     probe: &mut crate::probe::AttemptProbe,
-    session_header: Option<String>,
+    session_headers: Vec<(String, String)>,
 ) {
     let started = Instant::now();
     tracing::info!(%url, "model request: sending");
@@ -1090,8 +1101,9 @@ async fn read_stream_inner(
         .header("Accept", "text/event-stream")
         .header("Content-Type", "application/json")
         .bearer_auth(api_key);
-    if let Some(session) = session_header {
-        request = request.header("X-Session-ID", session);
+    // Every vendor extension the roster names, each carrying the same session id.
+    for (name, value) in session_headers {
+        request = request.header(name, value);
     }
     let request = request.body(reqwest::Body::wrap_stream(body));
 

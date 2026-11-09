@@ -958,18 +958,11 @@ impl Agent {
         phases.llm_started = Some(requested);
         // One tier for the whole turn, settled before its first request.
         let tier = self.cache_tier(llm, tier);
-        // The directory, not the session name, is the unit that shares a prefix.
-        let affinity = if prompt.cwd.is_empty() {
-            name.to_string()
-        } else {
-            prompt.cwd.clone()
-        };
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.index.as_deref(),
             prompt.tail.as_deref(),
             &source,
-            &affinity,
             &tools.tools,
             effort,
             tier.as_deref(),

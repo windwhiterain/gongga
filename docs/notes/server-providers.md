@@ -84,6 +84,30 @@ the per-model fields this server ignores (`tier`, `params`) are carried through
 untouched: the roster is also read by tools that want them, and a parser that
 dropped what it did not understand would make the file un-annotatable.
 
+## models_script, attach_scripted_models
+
+A relay can offer more models than anyone would name by hand, and the set moves
+with the subscription. Such a provider names a `models_script` instead of a list
+of static `[[provider.model]]` rows: the script GETs the relay's own catalogue
+and prints a `FileModel` array on stdout, which is read exactly like a static
+row. The key is never an argument -- the script reads the variable the entry's
+`key_env` names, the same contract the quota scripts use.
+
+`attach_scripted_models` joins the scripted rows to whatever static rows exist.
+A scripted id a static row already names is skipped and the static row is kept, so
+the two sources never duplicate an id; a provider with no static rows is simply
+all script. The script's output is parsed through `model_from_file`, so the JSON
+field names are the ones this crate deserialises -- `max_output_tokens`, not the
+TOML-only `max_output`.
+
+The run is a bounded child process (`run_bounded`): stdout and stderr are pumped
+on their own threads so a pipe that fills cannot deadlock the child, and a
+watchdog kills a child that overruns `SCRIPT_TIMEOUT`. A failure is never fatal
+to the roster -- no Python, a bad exit, a timeout, or bad JSON is a
+`tracing::warn!` and the static rows stay in place, never emptied. A relay whose
+catalogue is momentarily unreachable still answers on every model it already had
+rather than coming up with none.
+
 ## QuotaQuery, resolve_scripts
 
 `[[provider.quota_query]]` is how this machine reads what a provider still
