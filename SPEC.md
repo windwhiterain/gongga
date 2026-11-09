@@ -39,22 +39,24 @@ path, rendered in hierarchy.
 ## Tool
 all tool call have extra parameter `discription: optional[str] = none`
 
+```python
 Channel := path
 Result := {id: Channel, output: str, time: time, mactehd: bool, exit: int|none}
 fn new(
-  name: str #abstraction,
+  name: str, #summary
   args: list[str] | dict[str],
   input: optional[str] = none,
-  id: optional[Channel] = none,
-  wait: optional[time] = none #abstraction,
+  path: optional[path] = none,
+  wait: optional[time] = none #summary,
   until: optional[str] = none,
   remote: optional[str] = <session's remote>,
   cwd: optional[path] = <session's cwd>) -> Result
 fn check(id: Channel, input: optional[str] = none, wait: optional[time] = none, until: optional[str] = none) -> Result
 fn wait(time: time)
-fn <tool>(**args)
-- route to server cmd with caller session as extra argument
-- extra tool's schema is not registered in tools but dynamic found via skill.
+fn <tool>(**args):
+  # route to server cmd with caller session as extra argument
+  # extra tool's schema is not registered in tools but dynamic found via skill.
+```
 
 - new/check set the wait flag to a channel, a channel notice the session with Result when:
   - it has wait flag.
@@ -74,7 +76,7 @@ sytax:
 ```python
 Cmd := {name: str, args: dict[str, any]}
 Session := path
-fn new_channel(id: Channel, name: str, session: Session):
+fn new_channel(id: optional[Channel] = none, name: str, session: Session):
 fn input_channel(id: Channel, input: str, session: Session)
 fn rename_channel(id: Channel, new_id: path, session: Session)
 fn ls_channel(path: path, session: Session)
@@ -94,10 +96,10 @@ SessionConfig := {
 }
 fn new_session(id: Session, config: SessionConfig)
 fn set_session(id: Session, config_delta: SessionConfig{..})
-fn del_session(id: Session)
-  # also delete all channel under the session.
 fn ls_session(path: path)
-fn send_message(message: str, session: Session)
+fn del_session(path: path)
+  # also delete all channel under the session.
+fn send_message(session: Session, message: str)
   # inject message when step end.
   # interrupt if tool waiting.
 fn interrupt_session(id: Session):
@@ -109,7 +111,7 @@ fn trigger_event(event: Event)
 Subscription := path
 fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, session: Session):
     # when pattern matched triggered event, run the cmd.
-fn del_subscription(id: Subscription, session: Session)
+fn del_subscription(path: path, session: Session)
 fn ls_subsscription(path: path, sesssion: Session)
 cancel(keep_alive: bool = false):
   # interrupt every running session then quit, by default kill all channel, optionally make everychannel background, keep them alive so retart will adopt them.
@@ -183,19 +185,21 @@ event :=
     - channel's output streaming.
   | session related cmd
   | session related cmd result
+  | error
 
 events (vertical) :=
   [
-    |abstraction{
+    |summary{
       symbol (colored), content (gray),
       |reasoning{beginning (line), ending (line)} (vertical)
-      |toolcall{tool_name·[*abstraction_args]·description}
+      |toolcall{tool_name·[*summary_args]·description}
       |tool_result{ok, time}
       |harness_injection{beginning (line)}
-    } (horizontal, click fold/unfold(show all non-abstraction information), block_size, inner scroll, horizontal_scroll_margin)
+    } (horizontal, click fold/unfold(show all non-summary information), block_size, inner scroll, horizontal_scroll_margin)
     | output: colored markdown
     | user message: symbol (colored), content (white)
     | cmd/cmd_result: symbol (colored), content (gray)
+    | error(red)
   ] (vertical scroll),
   streaming: currently stream, block_size, scorll if block_size!=0
 

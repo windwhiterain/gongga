@@ -278,11 +278,11 @@ child_index=$(query "select length(json_extract(display,'\$.index')) from messag
 [[ "${child_index:-0}" -gt 100 ]]
 ok "F and the child's index carries their bodies: $child_index bytes" $?
 await probe 2 || hard "the notice never woke the parent"
-notice=$(query "select json_extract(display,'\$.text') from messages where session_id=(select id from sessions where name='probe') and kind='text' and display like '%turn_end probe/impl:%'")
+notice=$(query "select json_extract(display,'$.text') from messages where session_id=(select id from sessions where name='probe') and kind='text' and display like '%probe/impl finished its turn%'")
 # The server speaks for no subscription: a match runs the row's command, and for a
-# subagent that command is `send_message` carrying `$GONGGA_EVENT_*` (222847e).
-[[ "$notice" == *'turn_end probe/impl: '* && "$notice" == *'"outcome":"done"'* ]]
-ok "G the child's turn end is a message in the parent's transcript" $?
+# subagent that command is `send_message` naming the role that finished -- the action
+# carries no event fields, so which role it was comes from which watch fired.
+[[ "$notice" == *'probe/impl finished its turn'* ]]
 
 # --- H: a reference named later does not join the stamped head ------------------
 # Counted before the send: this parent answers in milliseconds, so a count taken
@@ -324,9 +324,9 @@ ok "J the caller is the parent, so a grandchild is <child>/<role>: $grand" $?
 "${cli[@]}" send_message --name "$grand" --message 'Answer with one word.' >"$work/grand.out" 2>&1
 await "$grand" 1 || hard "the grandchild's turn never ended"
 sleep 1
-[[ "$(query "select count(*) from messages where session_id=(select id from sessions where name='probe/impl') and kind='text' and display like '%turn_end probe/impl/review:%'")" == "1" ]]
+[[ "$(query "select count(*) from messages where session_id=(select id from sessions where name='probe/impl') and kind='text' and display like '%probe/impl/review finished its turn%'")" == "1" ]]
 ok "J its own parent is told exactly once" $?
-[[ "$(query "select count(*) from messages where session_id=(select id from sessions where name='probe') and kind='text' and display like '%turn_end probe/impl/review:%'")" == "0" ]]
+[[ "$(query "select count(*) from messages where session_id=(select id from sessions where name='probe') and kind='text' and display like '%probe/impl/review finished its turn%'")" == "0" ]]
 ok "J and the grandparent is not told at all" $?
 
 # --- K: deleting a session takes its own subscriptions, not its children's -------
