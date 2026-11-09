@@ -648,6 +648,39 @@ impl Channels {
             .map_err(quiet)
     }
 
+    /// Ends every channel of every session: what a stop that keeps none asks for.
+    ///
+    /// A channel this server cannot reach is left as the row it is: its machine is
+    /// not this one, and killing what nobody can ask about is not this server's.
+    ///
+    /// # Invariant
+    ///
+    /// `kill` in the command file and the row gone: the pair `stop_session` writes one
+    /// session at a time. A row left behind would be adopted by the next start as a
+    /// channel that answers nothing.
+    pub async fn stop_every(&self) -> usize {
+        let rows = match self.store.live_channels() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("could not read the live channels: {e}");
+                return 0;
+            }
+        };
+        let mut ended = 0;
+        for row in rows {
+            match self.place_of(&row).await {
+                Ok(place) => {
+                    if place.append("in", "kill\n").await.is_ok() {
+                        ended += 1;
+                    }
+                    let _ = self.store.delete_channel(&row.session, &row.path);
+                }
+                Err(e) => tracing::warn!(channel = %row.path, "{e}"),
+            }
+        }
+        ended
+    }
+
     /// Ends every channel of one session, for `del_session`.
     pub async fn stop_session(&self, session: &str) -> usize {
         let rows = match self.store.channels_of(session) {

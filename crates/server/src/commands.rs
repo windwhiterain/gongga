@@ -445,9 +445,19 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                       unfinished is kept for the next start. This is the only stop that lets \
                       background jobs go: they are processes of their own, outlive this server \
                       and are adopted on the next start. Any other stop -- a signal, a window \
-                      closing, a killed process -- ends every job it started with it."
+                      closing, a killed process -- ends every job it started with it. Channels \
+                      are ended too unless `keep_alive` asks for them: their programs are \
+                      processes of their own, and one left running is adopted by the next start \
+                      instead of the session losing the shell it was using."
                 .into(),
-            args: vec![],
+            args: vec![arg(
+                "keep_alive",
+                "`true` leaves every channel's program running so the next start adopts it; a \
+                 channel that is not kept ends with this server.",
+                false,
+                Some("true|false"),
+                CompletionSource::None,
+            )],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -1154,7 +1164,17 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "del_session" => del_session(d, args).await,
         "list_paths" => list_paths(d, args).await,
         "interrupt_session" => interrupt_session(d, args).await,
-        "cancel" => cancel(d, origin).await,
+        "cancel" => {
+            // SPEC's flag: `cancel` takes the bool, the signal path passes false.
+            let keep_alive = match args.get("keep_alive") {
+                None => false,
+                Some(raw) => match parse_bool(raw) {
+                    Ok(kept) => kept,
+                    Err(e) => return Outcome::err(e),
+                },
+            };
+            cancel(d, origin, keep_alive).await
+        }
         "get_messages" => get_messages(d, args).await,
         "new_channel" => new_channel(d, args).await,
         "input_channel" => input_channel(d, args).await,
@@ -2698,7 +2718,7 @@ pub(crate) async fn stop(d: &Dispatch) {
     let reason = crate::signal::reason()
         .unwrap_or("a signal reached the server")
         .to_string();
-    let said = cancel(d, &Origin::Signal { reason }).await;
+    let said = cancel(d, &Origin::Signal { reason }, false).await;
     tracing::info!(answer = %said.message, "stopped as a signal asks");
 }
 
@@ -2710,7 +2730,7 @@ pub(crate) async fn stop(d: &Dispatch) {
 /// learns the server is stopping, and its `payload.by` is the only place that
 /// says who asked. The status that follows from it states the fact, not the
 /// name -- see `docs/notes/server-commands.md`.
-async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
+async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
     // The listen loop keeps dispatching through the notice window.
     d.shutting_down.store(true, Ordering::SeqCst);
     // SPEC: every *running* session; an idle one has nothing to interrupt.
@@ -2734,6 +2754,11 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
         Origin::Signal { .. } => (0, d.sessions.detached().stop_all().await),
     };
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
+    // SPEC: without `keep_alive`, a cancel ends every channel with it.
+    let channels = match keep_alive {
+        true => None,
+        false => Some(d.agent.channels.stop_every().await),
+    };
     let by = origin.describe();
     d.agent.log_event(
         None,
@@ -2744,6 +2769,8 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
             "pending": pending,
             "released": released,
             "killed": killed,
+            "channels": channels.unwrap_or(0),
+            "kept_channels": keep_alive,
         }),
     );
     // Wait before shutting down: the acknowledgement is published after this returns.
@@ -2763,8 +2790,12 @@ async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
             killed
         ),
     };
+    let channels = match channels {
+        Some(ended) => format!("; {ended} channel(s) ended with this server"),
+        None => "; every channel was kept alive, and the next start adopts them".to_string(),
+    };
     let said = format!(
-        "interrupted {} session(s); nothing is left for the next start; {jobs}",
+        "interrupted {} session(s); nothing is left for the next start; {jobs}{channels}",
         running.len()
     );
     tracing::warn!(
