@@ -750,13 +750,33 @@ a successor started from one with it -- run '$0 launch $stamp' and swap again"
   echo "old server pid $pid; successor $exe (pid $launch_pid) is waiting"
   echo "cancelling: this turn is cancelled and preserved, the successor resumes it"
   # `keep_alive` because the successor was handed to a channel, and `keep_turn`
-  # because the whole point of a handover is that this turn comes back: without
-  # it the cancel drops the work it was started to continue. A server that
-  # predates the flags has neither, so it is asked plainly.
-  "$CLI" cancel --keep_alive true --keep_turn true || {
-    echo "note: this server does not take keep_alive/keep_turn; cancelling plainly" >&2
-    "$CLI" cancel
-  }
+  # because a handover is the one stop that wants this turn back.
+  #
+  # # Invariant
+  #
+  # A refused *argument* means nothing was cancelled -- the arg table is read
+  # before the command runs -- so dropping one and asking again is safe. Any
+  # other failure is not: the cancel may have been carried out and only the
+  # answer lost, and a second one can reach the successor that has just bound.
+  # So only that refusal is retried, and it is recognised by its own words.
+  local out
+  if ! out="$("$CLI" cancel --keep_alive true --keep_turn true 2>&1)"; then
+    case "$out" in
+    *"has no argument --keep_turn"*)
+      echo "note: this server predates keep_turn; asking for keep_alive only" >&2
+      if ! out="$("$CLI" cancel --keep_alive true 2>&1)"; then
+        case "$out" in
+        *"has no argument --keep_alive"*)
+          echo "note: it predates keep_alive too; cancelling plainly" >&2
+          "$CLI" cancel
+          ;;
+        *) echo "$out" >&2 ;;
+        esac
+      fi
+      ;;
+    *) echo "$out" >&2 ;;
+    esac
+  fi
 }
 
 cmd_status() {
