@@ -306,7 +306,9 @@ impl LineKind {
         match self {
             // SPEC names no item for these: the harness's remarks, the prose the
             // operator typed, and the answer carry no mark.
-            LineKind::System | LineKind::User | LineKind::Assistant => "",
+            LineKind::System | LineKind::Assistant => "",
+            // SPEC: a user message carries a symbol too, and it is the pink.
+            LineKind::User => "\u{276f}",
             LineKind::Inject => "\u{21b3}",
             LineKind::Command => "$",
             LineKind::Reasoning => "\u{25c7}",

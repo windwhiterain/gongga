@@ -837,9 +837,23 @@ fn item_row(kind: LineKind, text: &str) -> Line<'static> {
     match rest {
         Some(rest) => Line::from(vec![
             Span::styled(mark, style_for(kind)),
-            Span::styled(rest.to_string(), dim()),
+            Span::styled(rest.to_string(), content_for(kind)),
         ]),
-        None => Line::from(Span::styled(text.to_string(), dim())),
+        None => Line::from(Span::styled(text.to_string(), content_for(kind))),
+    }
+}
+
+/// The ink a kind's own words are written in.
+///
+/// # Invariant
+///
+/// SPEC gives the operator's message a white content and leaves the
+/// abstraction's quiet: the mark says what an item is, and the reader's own
+/// words are the one body that must not be dimmed.
+fn content_for(kind: LineKind) -> Style {
+    match kind {
+        LineKind::User => Style::default().fg(Color::White),
+        _ => dim(),
     }
 }
 

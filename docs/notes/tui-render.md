@@ -478,9 +478,9 @@ Two inks, and which one a row gets is the question the row answers.
 
 A mark is the one thing that says what a row *is* -- `▸` a call, `✓` what it
 printed, `!` a failure -- so it keeps the kind's colour, and the table in `style_for` is
-the palette of marks. Everything printed beside it is the one quiet gray: a call's
-arguments, a result, the harness's remarks. Ten colours down the body of the log is a
-screen where nothing stands out, and a palette exists so that something does.
+the palette of marks. Everything printed beside it is the kind's content ink --
+the quiet gray, except the operator's own message, whose content SPEC makes
+white (`content_for`): a call's arguments, a result, the harness's remarks.
 
 `output` is the exception, and it is why the rest may go quiet: it is what the operator
 came to read, so its rows are drawn as the markdown they print -- `markdown::colored_row`,
@@ -507,7 +507,7 @@ like a narrower block floating in blank columns.
 A row of a pane arrives two ways, and the difference is who decided how it is drawn.
 `Shown::Styled` is an answer's row: the log holds the document's runs, and the frame
 draws them as they are -- no mark, no gray, no re-reading of the text. `Shown::Text` is
-every other row: the kind's mark in its colour, then the quiet gray.
+every other row: the kind's mark in its colour, then its content ink.
 
 The split is not a shortcut for the answer. It is what makes a break harmless: the ink
 was decided before the width was, so a row a fold split carries the same runs on both
