@@ -3375,7 +3375,8 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
         // Records a request reads, not messages it sends: the prompt and the tool
         // set in force keep their payload in `display`.
         "system" | "tools" => None,
-        "text" => {
+        // An injection is a user turn to the model: the kind names the reader's block.
+        "text" | "inject" => {
             let role = text_of("role");
             Some(if role == "assistant" {
                 json!({"role": "assistant", "content": [{"type": "output_text", "text": text_of("text")}]})
