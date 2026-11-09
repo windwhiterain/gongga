@@ -159,12 +159,6 @@ async fn call(request: &Request) -> Answer {
         reader: None,
         machine: crate::session::Machine::Local,
         remote: None,
-        detached: crate::tools::detached::DetachedRegistry::new(
-            store.clone(),
-            cfg.bash.program.clone(),
-            request.home.join("detached"),
-            request.env.clone(),
-        ),
         jobs: crate::tools::tunnel::JobRegistry::new(),
         events: None,
         cancel: tokio_util::sync::CancellationToken::new(),

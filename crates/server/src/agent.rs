@@ -1463,7 +1463,6 @@ impl Agent {
             reader: session.reader(),
             machine,
             remote: session.remote_name(),
-            detached: self.detached.clone(),
             jobs: self.jobs.clone(),
             events: Some(tx),
             cancel: tool_cancel.clone(),

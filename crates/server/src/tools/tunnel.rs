@@ -512,12 +512,6 @@ fn adopted(
         reader: None,
         machine: crate::session::Machine::Local,
         remote: None,
-        detached: crate::tools::detached::DetachedRegistry::new(
-            store.clone(),
-            cfg.bash.program.clone(),
-            cfg.home.join("detached"),
-            Vec::new(),
-        ),
         jobs: JobRegistry::new(),
         events: None,
         cancel: CancellationToken::new(),

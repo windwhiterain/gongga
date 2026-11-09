@@ -40,7 +40,6 @@ pub async fn run(
         reader: handle.reader(),
         machine: handle.owner(),
         remote: handle.remote_name(),
-        detached: agent.detached.clone(),
         jobs: agent.jobs.clone(),
         events: None,
         cancel: CancellationToken::new(),
