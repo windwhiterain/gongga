@@ -2,8 +2,10 @@
 //!
 //! See `docs/notes/cli-complete.md`.
 
+use serde::{Deserialize, Serialize};
+
 /// One completion option.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Candidate {
     /// Text that replaces the token being completed.
     pub insert: String,

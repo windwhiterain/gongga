@@ -65,13 +65,14 @@ the pipe exists. See `client-window-journal.md`.
 | --- | --- | --- |
 | `WindowFacts` | `WindowJournal` answers from `CursorMessage`, the frame's `Layout` and the disk `Cache`; stamps and floors survive a restart | `Log::landed`'s `Record::Seal` rewrite (A-4) is not needed for a refill |
 | `room_of` | the pipe front-end never calls `note_room`, so it answers 1 | a viewport report from the UI, or a client-side fold (A-4) |
-| `known_list` / `repoint` | `Roster` and `WindowJournal` are built from `client_home` + `endpoint`; `Layout` writes the list, `Forget` clears the journal and its files, `repoint` re-points both | a frame telling the UI to clear the old endpoint's windows |
-| completion vocabulary | `refresh_completion` is a no-op | a control frame carrying the catalog, or completion moves client-side |
-| server ownership | kept in `server` only for `server_is_ours` | a frame for the header's own / not own label |
-| `restore_input` | emits a `Note` with the unsent line | a draft frame that puts the text back in the input |
+| `known_list` / `repoint` | `Roster` and `WindowJournal` are built from `client_home` + `endpoint`; `Layout` writes the list, `Forget` clears the journal and its files, `repoint` re-points both and sends `Repoint` | — |
+| completion vocabulary | `Vocabulary { version }` on a real `paths_version` change; `Complete` intent is answered by `Completion` from the client's own completer | — |
+| server ownership | `Server { label, ours }` on every `set_server`, spelled from `Server::label` | — |
+| `restore_input` | `Draft { text }` puts the unsent line back in the input | — |
 
 None of these adds a second protocol: they are variants of `RenderMessage` plus a
-local journal. The journal and roster rows are done (A-2); the rest are ⑥ wiring.
+local journal. All four control-frame gaps are now closed (2026-11-09); what
+remains is ⑥ wiring and the A-4 fold-state split.
 
 ## Verification (real process, 2026-11-08)
 
@@ -98,3 +99,21 @@ the old endpoint's stamp. The real-process table above was re-run after A-2 with
 the same results; an empty `Layout` writes no roster file, which is
 `Roster::know`'s intended no-op. Machine-readable record:
 `.dev/verify/<sha>-journal2.json`.
+
+## Verification of the control frames (2026-11-09)
+
+`render_wire.rs` carries `#[cfg(test)]` cases that round-trip all five new frames
+and decode a `Complete` intent. A real process under a throwaway home produced
+`completion` (twice, one with a cursor inside a UTF-8 character, clamped safely),
+`draft` (offline submit), `repoint` and `server` (`/connect_server`) frames, all
+`exit=0` with empty stderr. `vocabulary` is covered by the round-trip test: an
+offline run never changes `paths_version`. Record:
+`.dev/verify/<sha>-frames.json`.
+
+**Isolate `client_home` in every real-process run.** It comes from
+`--client-home` / `GONGGA_CLIENT_HOME`, *not* `--home` / `GONGGA_HOME`. One early
+run used only `--home` and therefore read the operator's real
+`~/.gongga-client/roster`, then wrote the normalised offline statuses back to it.
+That is what a TUI start does too, but a verification must never touch it. Pass
+both `--home`, `--client-home`, `GONGGA_HOME` and `GONGGA_CLIENT_HOME` pointing
+at the throwaway directory.

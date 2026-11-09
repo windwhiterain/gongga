@@ -130,6 +130,8 @@ impl runtime::Frontend for Tui {
     fn known_list(&self) -> Vec<client::Listed> {
         Tui::known_list(self)
     }
+    // The terminal computes its own popup from its own input line.
+    fn show_completion(&mut self, _completion: &client::Completion) {}
     fn set_server(&mut self, server: Option<Server>) {
         Tui::set_server(self, server);
     }

@@ -164,6 +164,8 @@ pub trait Frontend: WindowFacts + WindowView {
     fn sink(&mut self) -> Box<dyn Sink + '_>;
     /// The sessions this window already knew before a greeting.
     fn known_list(&self) -> Vec<Listed>;
+    /// Candidates for the token under the cursor, computed by the client.
+    fn show_completion(&mut self, completion: &crate::Completion);
     fn set_server(&mut self, server: Option<Server>);
     fn repoint(&mut self, client_home: &Path, endpoint: &str);
     fn restore_input(&mut self, text: &str);
@@ -314,6 +316,23 @@ pub async fn run(
             // Not input: the key changed nothing to submit. The drain below is
             // what the completion was waiting for.
             Step::Input(FrontendEvent::Recomplete) => {}
+            // The catalog stays here: a UI sends its line and gets words back.
+            Step::Input(FrontendEvent::Intent(UiIntent::Complete { line, cursor })) => {
+                // A byte cursor from another language may land inside a character.
+                let mut at = cursor.min(line.len());
+                while at > 0 && !line.is_char_boundary(at) {
+                    at -= 1;
+                }
+                let offered = window.shared().complete(&line, at);
+                let (start, end, _) = crate::token_bounds(&line, at);
+                ui.show_completion(&crate::Completion {
+                    start: offered.start.unwrap_or(start),
+                    end,
+                    subject: offered.subject,
+                    candidates: offered.candidates,
+                    selected: 0,
+                });
+            }
             // A scroll past the oldest row a window holds: a page above it.
             Step::Input(FrontendEvent::Intent(UiIntent::Older { windows })) => owed.extend(windows),
             Step::Input(FrontendEvent::Intent(UiIntent::Quit)) => break Ok(()),

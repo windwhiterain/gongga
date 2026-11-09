@@ -15,9 +15,9 @@ See `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` for the verdict.
 
 | enum | direction | variants |
 | --- | --- | --- |
-| `RenderMessage` | client -> front-end | the 12 drawing methods of `Sink` |
+| `RenderMessage` | client -> front-end | the 12 drawing methods of `Sink`, plus 5 control frames |
 | `CursorMessage` | client -> itself | the 5 journal methods of `Sink` |
-| `UiIntent` | front-end -> client | `Submit`, `Operate`, `Older`, `Quit` |
+| `UiIntent` | front-end -> client | `Submit`, `Operate`, `Older`, `Complete`, `Quit` |
 
 `RenderMessage` is semantic, not pixel-level: `LineKind` says *what* a row is and
 the front-end decides its colour, column width and wrapping. Putting a colour on
@@ -32,10 +32,31 @@ was drawn. A stateless front-end neither holds a journal nor answers those
 questions, so the daemon consumes these itself. Encoding them in Rust keeps one
 place where every `Sink` method has a name, without putting them on the wire.
 
-`UiIntent` is the only definition of the four gestures. `tui::UiEvent` is a
-wrapper over it: `Intent(UiIntent)` or `Recomplete`. `Recomplete` is a
-terminal-only signal that the completion wants the loop to go round; it is not
-an intent and never crosses the wire.
+`UiIntent` is the only definition of the gestures. `tui::UiEvent` is a wrapper
+over it: `Intent(UiIntent)` or `Recomplete`. `Recomplete` is a terminal-only
+signal that the completion wants the loop to go round; it is not an intent and
+never crosses the wire.
+
+## The five control frames
+
+A `Sink` can only say "draw this". Four things the window does are not drawings,
+so they are `RenderMessage` variants rather than a second protocol:
+
+| frame | sent by | what the UI does |
+| --- | --- | --- |
+| `Draft { text }` | `restore_input` | put the unsent line back in the input |
+| `Server { label, ours }` | `set_server` | draw the header's own / not own label |
+| `Repoint { endpoint }` | `repoint` | drop the old endpoint's window rows |
+| `Vocabulary { version }` | `refresh_completion` | re-ask for the current line's words |
+| `Completion { start, end, subject, candidates }` | `show_completion` | open the popup |
+
+`UiIntent::Complete { line, cursor }` is the request behind the last two. The
+loop clamps a byte cursor to a character boundary, asks the client's own
+`SharedCompleter`, and hands a `Completion` to `Frontend::show_completion`: the
+catalog never crosses to the UI, so command syntax stays in the client. The TUI
+computes its own popup locally and ignores that callback; the pipe front-end
+encodes it. `Vocabulary` carries the client's real `paths_version`, so a UI can
+dedupe refreshes. `Candidate` gained serde derives for this.
 
 ## Why `WireSink` overrides `tool_call`
 
@@ -65,16 +86,18 @@ on a malformed value.
 These are pure functions on purpose. The writer is **not** a `Sink`: `Sink` is
 synchronous `&mut`, and a blocking `write_all` to a pipe whose reader is slow
 would stall the client's state machine. The runtime sends encoded frames to a
-writer task over a bounded queue with `try_send`, and the UI drains stdout
-continuously. `WireSink` collects the messages; this module only spells them.
+writer task over an unbounded queue, and the UI drains stdout continuously.
+Dropping a frame when a pipe is full would lose a line the operator waits for.
+`WireSink` collects the messages; this module only spells them.
 
 ## Not done yet
 
-`WireSink` and the two frame functions are not connected to any runtime.
-Missing, in order: a binary target for `crates/client` that the UI spawns over
-pipes, a `Runtime` that owns one `Client`, the window journal's move into the
-client (`log.rs`, `cache.rs`, `panes.rs`), a TUI reduced to a protocol client,
-and bundle routing.
+`gongga-client` is a real binary, `runtime::run` owns the loop and one `Client`,
+and `WindowJournal` / `Roster` hold the window's records in the client library.
+The five control frames above are wired through `PipeFrontend`. Still missing,
+in order: the TUI spawning that binary and shrinking to a protocol-only
+front-end (A-3), splitting `Entry`'s fold state away from its data (A-4), and
+bundle routing (step 7).
 
 Two different links, two different transports. UI <-> client is one-to-one and
 local: stdin carries `UiIntent`, stdout carries `RenderMessage`, one JSON value

@@ -17,8 +17,8 @@ pub trait WindowFacts {
     fn room_of(&self, window: &str) -> usize;
     /// The windows a frame drew last.
     fn drawn(&self) -> &[String];
-    /// The completion's own vocabulary changed.
-    fn refresh_completion(&mut self);
+    /// The vocabulary changed; `version` names the new one so a UI can dedupe.
+    fn refresh_completion(&mut self, version: u64);
 }
 
 /// One input line, handed to the command layer or sent as a message.
@@ -47,7 +47,7 @@ pub async fn answer_completion(
     let version = client.paths_version();
     if version != *seen {
         *seen = version;
-        ui.refresh_completion();
+        ui.refresh_completion(version);
     }
 }
 

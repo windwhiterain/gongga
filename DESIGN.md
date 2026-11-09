@@ -362,10 +362,10 @@ journal，`consume` 把 `Transcript` / `Landed` / `Rewind` 写成 `Record::Stamp
 
 **剩下的骨架**：`Log::landed` 仍要遍历带 ratatui 折行态的 `Entry` 才能 `rewrite`
 出 `Record::Seal`，`Ledger.pages` 也仍住在 TUI —— 这是 A-4，不是 ⑥ 的前置：
-pipe 前端没有块可重写，追加 `Floor` + `Stamp` 已经能回答补拉。`WindowView`
-里还欠四类过线的控制帧：completion 词表刷新、
-server 归属（header 画 own / not own）、`repoint` 后的窗口清理、以及把未发出的输入
-还给 UI 的 draft（现在退化成一条 `Note`）。这些是 ⑥ 的前置，不是第二套协议。
+pipe 前端没有块可重写，追加 `Floor` + `Stamp` 已经能回答补拉。四类过线的控制帧已补齐（2026-11-09）：`Draft` / `Server` /
+`Repoint` / `Vocabulary` / `Completion` 都是 `RenderMessage` 变体，配上
+`UiIntent::Complete` 让 completion 词表留在 client 侧（`Frontend::show_completion`），
+既没有第二套协议，也没有把 catalog 过线。见 `docs/notes/client-render-wire.md`。
 
 裁定 2 的 bundle 布线（⑦）还没做：`gongga-client` 现在能被 cargo 构建出来，但
 `crates/bundle` 的 payload 白名单仍只认 `gongga-server` / `gongga-tui` /
@@ -399,7 +399,9 @@ server 归属（header 画 own / not own）、`repoint` 后的窗口清理、以
 
 **A-3**：TUI 改为 spawn `gongga-client`，键盘出 `UiIntent`、`RenderMessage` 入绘制；
 此时 ⑥ 只剩布线。四类控制帧（completion 词表、server 归属、`repoint` 清理、
-draft 归还）仍要在 A-3 之前补齐，都是 `RenderMessage` 的语义变体，不是第二套协议。
+draft 归还）已在 A-3 之前补齐，都是 `RenderMessage` 的语义变体，不是第二套协议：
+`UiIntent::Complete` + `Frontend::show_completion` 把候选计算放在 client，
+`WindowFacts::refresh_completion(version)` 带的是 client 的真实 `paths_version`。
 
 **A-4**：把 `Entry` 拆成 client 的数据块与 TUI 的折行视图，把 `Ledger.pages` 的
 实例收进 `WindowJournal`，让 `landed` 的 `Record::Seal` 由 client 组织。做完 TUI

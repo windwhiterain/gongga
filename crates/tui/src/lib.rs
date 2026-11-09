@@ -65,7 +65,7 @@ impl client::window_refill::WindowFacts for Tui {
     fn drawn(&self) -> &[String] {
         Tui::drawn(self)
     }
-    fn refresh_completion(&mut self) {
+    fn refresh_completion(&mut self, _version: u64) {
         Tui::refresh_completion(self)
     }
 }

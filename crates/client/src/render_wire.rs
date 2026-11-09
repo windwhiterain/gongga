@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Layout, LineKind, Sink, protocol};
+use crate::{Candidate, Layout, LineKind, Sink, protocol};
 
 /// What a front-end draws: semantic kinds and text, never colours or columns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,6 +63,30 @@ pub enum RenderMessage {
         session: String,
         failed: bool,
     },
+    /// The unsent line goes back into the input, not into a note.
+    Draft {
+        text: String,
+    },
+    /// The header's own / not own label, already spelled for the operator.
+    Server {
+        label: Option<String>,
+        ours: bool,
+    },
+    /// `connect_server` moved the address: drop the old endpoint's rows.
+    Repoint {
+        endpoint: String,
+    },
+    /// The command vocabulary changed: ask again for the current line's words.
+    Vocabulary {
+        version: u64,
+    },
+    /// The candidates for one `Complete` intent, and the token they replace.
+    Completion {
+        start: usize,
+        end: usize,
+        subject: Option<String>,
+        candidates: Vec<Candidate>,
+    },
 }
 
 /// The cursor half of `Sink`: what a client and its window journal say to each other.
@@ -116,6 +140,8 @@ pub enum UiIntent {
     Operate { operation: protocol::Operation },
     /// The operator asked to read above what these windows hold.
     Older { windows: Vec<String> },
+    /// The client answers with candidates, so syntax stays out of the UI.
+    Complete { line: String, cursor: usize },
     /// Alt+Q: leave.
     Quit,
 }
@@ -288,4 +314,56 @@ pub fn encode_frame(message: &RenderMessage) -> anyhow::Result<String> {
 /// Reads one intent from a line the front-end wrote.
 pub fn decode_intent(line: &str) -> anyhow::Result<UiIntent> {
     Ok(serde_json::from_str(line)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_frames_round_trip() {
+        let frames = vec![
+            RenderMessage::Draft {
+                text: "keep this line\nand this one".to_string(),
+            },
+            RenderMessage::Server {
+                label: Some("own #42".to_string()),
+                ours: true,
+            },
+            RenderMessage::Server {
+                label: None,
+                ours: false,
+            },
+            RenderMessage::Repoint {
+                endpoint: "127.0.0.1:9000".to_string(),
+            },
+            RenderMessage::Vocabulary { version: 7 },
+            RenderMessage::Completion {
+                start: 2,
+                end: 5,
+                subject: Some("--model".to_string()),
+                candidates: vec![Candidate::word("flash", "a model")],
+            },
+        ];
+        for frame in frames {
+            let encoded = encode_frame(&frame).unwrap();
+            assert_eq!(encoded.lines().count(), 1);
+            assert_eq!(
+                serde_json::from_str::<RenderMessage>(&encoded).unwrap(),
+                frame
+            );
+        }
+    }
+
+    #[test]
+    fn a_complete_intent_carries_the_line_and_cursor() {
+        let intent = decode_intent(r#"{"intent":"complete","line":"/set m","cursor":6}"#).unwrap();
+        assert_eq!(
+            intent,
+            UiIntent::Complete {
+                line: "/set m".to_string(),
+                cursor: 6,
+            }
+        );
+    }
 }

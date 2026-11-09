@@ -137,7 +137,10 @@ impl WindowFacts for PipeFrontend {
     fn drawn(&self) -> &[String] {
         self.journal.drawn()
     }
-    fn refresh_completion(&mut self) {}
+    // Only a real vocabulary change is a frame; the UI asks for candidates itself.
+    fn refresh_completion(&mut self, version: u64) {
+        self.send(RenderMessage::Vocabulary { version });
+    }
 }
 
 impl WindowView for PipeFrontend {
@@ -148,6 +151,7 @@ impl WindowView for PipeFrontend {
             self.send(RenderMessage::StickySession { name });
         }
     }
+    // A popup is the UI's own; only a vocabulary change crosses the pipe.
     fn refresh_completion(&mut self) {}
     fn refresh_lines(&mut self, client: &Client) {
         let mut sink = PipeSink::new(self);
@@ -195,18 +199,32 @@ impl Frontend for PipeFrontend {
     fn known_list(&self) -> Vec<Listed> {
         self.roster.load()
     }
+    fn show_completion(&mut self, completion: &gongga_client::Completion) {
+        self.send(RenderMessage::Completion {
+            start: completion.start,
+            end: completion.end,
+            subject: completion.subject.clone(),
+            candidates: completion.candidates.clone(),
+        });
+    }
     fn set_server(&mut self, server: Option<Server>) {
         self.server = server;
+        self.send(RenderMessage::Server {
+            label: server.map(|s| s.label()),
+            ours: server.is_some_and(Server::is_ours),
+        });
     }
     fn repoint(&mut self, client_home: &Path, endpoint: &str) {
         self.journal.repoint(client_home, endpoint);
         self.roster.repoint(client_home, endpoint);
+        self.send(RenderMessage::Repoint {
+            endpoint: endpoint.to_string(),
+        });
     }
     fn restore_input(&mut self, text: &str) {
         self.draft = true;
-        self.send(RenderMessage::Note {
-            kind: LineKind::System,
-            text: format!("nothing was sent; keep this line: {text}"),
+        self.send(RenderMessage::Draft {
+            text: text.to_string(),
         });
     }
     fn has_draft(&self) -> bool {
