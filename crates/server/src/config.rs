@@ -242,6 +242,28 @@ pub struct ToolsConfig {
     /// refused and told to go `detached`, and what it started keeps running. See
     /// `SPEC`, "Tool", and `docs/notes/server-tools-mod.md`.
     pub max_wait: Duration,
+    /// Every tool this home declares, in the order the names sort.
+    ///
+    /// # Invariant
+    ///
+    /// The one table: what the model is offered, what the operator may type and what
+    /// this build carries are all read from here. See
+    /// `docs/notes/server-tools-spec.md`.
+    pub rows: std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>,
+    /// Every name `new` knows: what it starts, and how a reply of it is framed.
+    ///
+    /// # Invariant
+    ///
+    /// A name absent here is a program started with the call's own words: the table
+    /// says what is *not* raw, and nothing else.
+    pub channels: std::collections::BTreeMap<String, crate::tools::spec::ChannelSpec>,
+    /// The tunnel's own arguments, in the words every tool that takes them shares.
+    ///
+    /// # Invariant
+    ///
+    /// Said once, because one tunnel offers them: a row that worded them again would
+    /// be a second answer to one question, and twenty rows would drift.
+    pub arguments: std::collections::BTreeMap<String, String>,
 }
 
 /// What a conversation with a peer costs when the peer is silent.
@@ -329,6 +351,12 @@ struct FileConfig {
     #[serde(alias = "provider")]
     model: Option<FileModel>,
     tools: Option<FileTools>,
+    /// `[tool.<name>]`: one row per tool this home declares. See `server-tools-spec`.
+    tool: Option<std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>>,
+    /// `[channel.<name>]`: what a name is, as `new` reads it. See `server-channel`.
+    channel: Option<std::collections::BTreeMap<String, crate::tools::spec::ChannelSpec>>,
+    /// Where the rows used to live. Read for nothing, so an old home is not refused.
+    tool_text: Option<toml::Table>,
     /// Never honoured: `crate::remotes` reads them from the machine.
     #[serde(alias = "targets")]
     remotes: Option<std::collections::BTreeMap<String, crate::remotes::FileRemote>>,
@@ -386,6 +414,9 @@ struct FileTools {
     bash: Option<FileBash>,
     python: Option<FilePython>,
     max_wait_ms: Option<u64>,
+    /// `[tools.arguments]`: what the tunnel's own arguments are for, said once for
+    /// every tool that takes them.
+    arguments: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -669,6 +700,9 @@ impl Config {
                     .or_else(|| env_or("GONGGA_TOOL_MAX_WAIT_MS").and_then(|v| v.parse().ok()))
                     .unwrap_or(DEFAULT_TOOL_MAX_WAIT_MS),
             ),
+            rows: file.tool.unwrap_or_default(),
+            channels: file.channel.unwrap_or_default(),
+            arguments: tools_file.arguments.clone().unwrap_or_default(),
         };
 
         let scripts_file = file.scripts.unwrap_or_default();
@@ -906,7 +940,13 @@ fn read_file(path: &Path) -> anyhow::Result<FileConfig> {
     toml::from_str(&text).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
 }
 
-fn home_dir() -> PathBuf {
+/// The home this program has when nobody names one: `GONGGA_HOME`, else `~/.gongga`.
+///
+/// # Invariant
+///
+/// The one definition of it, so a runner on a peer keeps its channels where a
+/// server on that machine would. See `docs/notes/server-channel.md`.
+pub(crate) fn home_dir() -> PathBuf {
     env_path("GONGGA_HOME")
         .or_else(|| dirs::home_dir().map(|h| h.join(".gongga")))
         .unwrap_or_else(|| PathBuf::from(".gongga"))

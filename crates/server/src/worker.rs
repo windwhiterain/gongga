@@ -124,8 +124,13 @@ async fn call(request: &Request) -> Answer {
         }
     };
     let lib = crate::pylib::install(&request.home).ok();
+    let channels = Arc::new(crate::tools::channel::Channels::for_home(
+        &cfg,
+        store.clone(),
+        Arc::new(|_| {}),
+    ));
     let tools = Arc::new(
-        crate::tools::ToolRegistry::with_builtins(
+        crate::tools::ToolRegistry::settings(
             cfg.tools.max_wait,
             cfg.bash.timeout,
             cfg.bash.max_output_chars,
@@ -136,12 +141,15 @@ async fn call(request: &Request) -> Answer {
             lib,
             cfg.bash.timeout,
             cfg.bash.max_output_chars,
-        ),
+        )
+        .build(&cfg.tools.rows, &cfg.tools.arguments),
     );
     let program = cfg.bash.program.clone().unwrap_or_default();
     let ctx = crate::tools::ToolContext {
         session: request.session.clone(),
         call_id: request.call_id.clone(),
+        tool: request.tool.clone(),
+        channels: channels.clone(),
         home: request.home.clone(),
         output_dir: request.home.join("outputs"),
         // No shells, no interpreters, no jobs: one call, and the tools that need none.

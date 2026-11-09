@@ -250,22 +250,30 @@ pub async fn run(
     // server on the address is stopped first.
     let spawned: Option<u32> = match starts_a_server(args.client_only) {
         true => match crate::server_of(&conn) {
-            Ok(addr) => {
-                if let Some(old) = crate::stop(&conn, &home, addr).await {
-                    ui.sink().note(
-                        LineKind::System,
-                        &format!("stopped the server that was serving this home (pid {old})"),
-                    );
+            Ok(addr) => match crate::stop(&conn, &home, addr).await {
+                Ok(old) => {
+                    if let Some(old) = old {
+                        ui.sink().note(
+                            LineKind::System,
+                            &format!("stopped the server that was serving this home (pid {old})"),
+                        );
+                    }
+                    // The key this window dials with, so the child does not mint
+                    // another one and refuse the window that started it.
+                    let key = conn.key.clone();
+                    // `--parent` names the UI: a crashed client must not take the
+                    // server from a window that is still there.
+                    crate::spawn(&home, addr, Some(owner_pid), key.as_deref())
+                        .ok()
+                        .flatten()
                 }
-                // The key this window dials with, so the child does not mint
-                // another one and refuse the window that started it.
-                let key = conn.key.clone();
-                // `--parent` names the UI: a crashed client must not take the
-                // server from a window that is still there.
-                crate::spawn(&home, addr, Some(owner_pid), key.as_deref())
-                    .ok()
-                    .flatten()
-            }
+                // A server that would not leave still holds the lock, so ours
+                // would refuse: say so instead of starting one.
+                Err(error) => {
+                    ui.sink().note(LineKind::System, &format!("{error}"));
+                    None
+                }
+            },
             Err(_) => None,
         },
         false => None,

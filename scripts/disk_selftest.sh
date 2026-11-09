@@ -171,12 +171,12 @@ echo "--- the threshold is read from the home, and the first call is below it"
 grep -q "threshold=104857600000000" "$log"
 ok "the server read the threshold this home declared" $?
 
-"${cli[@]}" set_session spill --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" set_session --name spill --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
 # A tool call that WORKS. A disk on its way out serves ordinary commands happily,
 # so waiting for one of them to fail waits for the first big write -- which on a
 # server that mostly reads may be never. That is the whole reason the reading
 # happens after every call.
-tool_ok=$("${cli[@]}" bash spill "echo hello" 2>&1)
+tool_ok=$("${cli[@]}" bash --session spill --command "echo hello" 2>&1)
 [[ "$tool_ok" == *hello* ]]
 ok "the tool call succeeded" $?
 
@@ -198,8 +198,8 @@ INNER
 ok "the event carries the session, the tool, the threshold and the volumes" $?
 
 # The same low disk on the next call is not news: one call is not an episode.
-"${cli[@]}" bash spill "echo again" >/dev/null 2>&1
-"${cli[@]}" bash spill "echo and again" >/dev/null 2>&1
+"${cli[@]}" bash --session spill --command "echo again" >/dev/null 2>&1
+"${cli[@]}" bash --session spill --command "echo and again" >/dev/null 2>&1
 python - "$home" <<'INNER'
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)

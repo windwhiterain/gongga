@@ -122,6 +122,13 @@ rename over one with "access denied" for a few tens of milliseconds.
 
 ## payload::retire
 
+`<home>/payload/` is not this file's alone: `remote/pick.rs` puts a peer's pair for one
+protocol in it, under the protocol's number. So a directory this file may retire is one
+carrying its marker (`<dir>/.payload`, the stamp it was placed for), and the marker is
+read **before** anything in it is asked to stop -- an unmarked directory is somebody
+else's, and a `cancel` sent into it is not undoable. A directory placed before the marker
+existed stays where it is; leaving a dead one is cheaper than stopping a live one.
+
 A build this one replaces is asked to stop, then removed: a server through its own
 `cancel`, which interrupts its turns and lets its background jobs go, so the
 handover keeps what was started to outlive it.

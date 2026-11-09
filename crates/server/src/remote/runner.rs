@@ -187,6 +187,8 @@ impl Runner {
             Op::Read { path, offset } => read(&path, offset).await,
             Op::List { path } => list(&path),
             Op::Space { path } => space(&path),
+            Op::Append { path, data } => append(&path, &data),
+            Op::Relay { cwd, words } => relay(cwd.as_deref(), &words),
         };
         self.reply(id, result).await;
     }
@@ -630,6 +632,132 @@ async fn send(pid: u32, signal: &str) -> bool {
         let _ = (pid, signal);
         false
     }
+}
+
+/// Starts this payload's relay for one channel, detached, and answers where that
+/// channel lives and the pid it runs.
+///
+/// # Invariant
+///
+/// The relay outlives this connection: it is started out of every job this process
+/// is in, so a channel on a peer means what one here means. The directory is this
+/// machine's to choose, because only this machine knows which home it has.
+fn relay(cwd: Option<&str>, words: &str) -> Result<Value, String> {
+    let Some(words) = crate::base64::decode(words) else {
+        return Err("the channel's words are not base64".to_string());
+    };
+    let dir = crate::config::home_dir()
+        .join("channels")
+        .join(format!("ch-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Both files exist before the relay runs: it reads the words once, as it starts,
+    // and looks at `in` from its first pass.
+    std::fs::write(dir.join("cmd"), &words).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::write(dir.join("in"), b"").map_err(|e| format!("{}: {e}", dir.display()))?;
+    let server = beside("server")?;
+    let log = dir.join("relay.log");
+    let out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .map_err(|e| format!("{}: {e}", log.display()))?;
+    let err = out.try_clone().map_err(|e| e.to_string())?;
+    let mut command = Command::new(&server);
+    command
+        .arg("--relay")
+        .arg(&dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(out)
+        .stderr(err)
+        .kill_on_drop(false);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    // Out of every job this connection is in: a channel that stayed would end with
+    // the ssh.
+    #[cfg(windows)]
+    let child = {
+        const BREAKAWAY: u32 = 0x0100_0000;
+        const DETACHED: u32 = 0x0000_0008;
+        command.creation_flags(BREAKAWAY | DETACHED);
+        match command.spawn() {
+            Ok(child) => child,
+            // A job that does not allow breakaway has nothing to break out of.
+            Err(e) if e.raw_os_error() == Some(5) => {
+                command.creation_flags(DETACHED);
+                command
+                    .spawn()
+                    .map_err(|e| format!("starting the relay: {e}"))?
+            }
+            Err(e) => return Err(format!("starting the relay: {e}")),
+        }
+    };
+    #[cfg(unix)]
+    let child = {
+        // SAFETY: `setsid` is async-signal-safe and touches nothing of this process.
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        command
+            .spawn()
+            .map_err(|e| format!("starting the relay: {e}"))?
+    };
+    let pid = child.id().unwrap_or(0);
+    // The child is this machine's now: this process must not wait for it, and must
+    // not take it down on the way out.
+    std::mem::drop(child);
+    // The path the client stores is spelled this endpoint's own way: the only one it
+    // can hand back to `read` and `append`.
+    Ok(json!({
+        "pid": pid,
+        "dir": spelling(&dir),
+        "log": log.display().to_string(),
+    }))
+}
+
+/// The program beside this one: the payload keeps them together.
+fn beside(name: &str) -> Result<PathBuf, String> {
+    let me = std::env::current_exe().map_err(|e| format!("this program's own path: {e}"))?;
+    let dir = me
+        .parent()
+        .ok_or_else(|| "this program has no directory".to_string())?;
+    // The payload names every program `gongga-<what>`, beside this one.
+    let program = dir.join(format!("gongga-{name}{}", std::env::consts::EXE_SUFFIX));
+    if program.is_file() {
+        return Ok(program);
+    }
+    Err(format!(
+        "no {name} beside {}: this payload does not carry a relay",
+        me.display()
+    ))
+}
+
+/// Appends bytes to a file, creating it and its parents.
+///
+/// # Invariant
+///
+/// Append, never rewrite: a channel's `in` is written by whoever speaks to it, and a
+/// rewrite would drop the line another writer put there between two reads.
+fn append(path: &str, data: &str) -> Result<Value, String> {
+    let Some(bytes) = crate::base64::decode(data) else {
+        return Err("append data is not base64".to_string());
+    };
+    let path = Path::new(path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    use std::io::Write;
+    file.write_all(&bytes)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(json!({"bytes": bytes.len()}))
 }
 
 /// The peer's own disk, read by the peer.

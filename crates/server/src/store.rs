@@ -326,12 +326,31 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     cmd        TEXT,
     python     TEXT,
     code       TEXT,
+    action     TEXT,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS subscriptions_by_session ON subscriptions(session);
 
 -- The pictures a message named, copied into this home: the row names the copy by
 -- id, and the bytes live beside the database. See `docs/notes/server-pictures.md`.
+CREATE TABLE IF NOT EXISTS channels (
+    id           INTEGER PRIMARY KEY,
+    session      TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    program      TEXT NOT NULL,
+    remote       TEXT,
+    dir          TEXT NOT NULL,
+    pid          INTEGER NOT NULL,
+    started_at   INTEGER NOT NULL,
+    ended_at     INTEGER,
+    exit         INTEGER,
+    upto         INTEGER NOT NULL DEFAULT 0,
+    -- When this channel was last written to: what a call's `time` is measured
+    -- from. NULL until the first write, so the program's start stands then.
+    wrote_at     INTEGER,
+    UNIQUE (session, path)
+);
+
 CREATE TABLE IF NOT EXISTS pictures (
     id         INTEGER PRIMARY KEY,
     path       TEXT NOT NULL,
@@ -527,6 +546,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     add_column_if_missing(
         conn,
+        "channels",
+        "wrote_at",
+        "ALTER TABLE channels ADD COLUMN wrote_at INTEGER",
+    )?;
+    add_column_if_missing(
+        conn,
         "subscriptions",
         "name",
         "ALTER TABLE subscriptions ADD COLUMN name TEXT NOT NULL DEFAULT ''",
@@ -536,6 +561,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("cmd", "ALTER TABLE subscriptions ADD COLUMN cmd TEXT"),
         ("python", "ALTER TABLE subscriptions ADD COLUMN python TEXT"),
         ("code", "ALTER TABLE subscriptions ADD COLUMN code TEXT"),
+        ("action", "ALTER TABLE subscriptions ADD COLUMN action TEXT"),
     ] {
         add_column_if_missing(conn, "subscriptions", column, ddl)?;
     }
@@ -2600,23 +2626,6 @@ impl Store {
         Ok(id)
     }
 
-    /// The job one call became, if it is still one.
-    ///
-    /// # Invariant
-    ///
-    /// By call id, because that is the only name a tool holds while it runs: a call
-    /// whose wait ended before it answered is a job the model has to be able to name.
-    pub fn job_of_call(&self, session: &str, call_id: &str) -> anyhow::Result<Option<i64>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id FROM tool_jobs WHERE session = ?1 AND call_id = ?2 ORDER BY id DESC LIMIT 1",
-        )?;
-        let id = stmt
-            .query_row(params![session, call_id], |row| row.get::<_, i64>(0))
-            .ok();
-        Ok(id)
-    }
-
     /// Writes how a job ended, and queues the notice that says so, in one act.
     ///
     /// # Invariant
@@ -2661,6 +2670,123 @@ impl Store {
         self.lock().execute(
             "UPDATE tool_jobs SET pid = ?2, answer = ?3 WHERE id = ?1",
             params![id, i64::from(pid), answer.display().to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Records a channel this session started: its name, and where it lives.
+    pub fn add_channel(
+        &self,
+        session: &str,
+        path: &str,
+        program: &str,
+        remote: Option<&str>,
+        // The machine's own spelling: a peer's directory is not a path this one has.
+        dir: &str,
+        pid: u32,
+    ) -> anyhow::Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO channels (session, path, program, remote, dir, pid, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                session,
+                path,
+                program,
+                remote,
+                dir,
+                i64::from(pid),
+                now_millis()
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Every channel a session has, alive or ended.
+    pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
+             FROM channels WHERE session = ?1 ORDER BY path",
+        )?;
+        let rows = stmt
+            .query_map(params![session], channel_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Every channel whose program has not ended yet, across sessions: what a watcher
+    /// has to look at.
+    pub fn live_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
+             FROM channels WHERE ended_at IS NULL ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], channel_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// One channel of one session, by the name it is called.
+    pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
+             FROM channels WHERE session = ?1 AND path = ?2",
+        )?;
+        let mut rows = stmt.query(params![session, path])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(channel_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Where this reader has read to: taking the window is what advances it.
+    pub fn set_channel_upto(&self, id: i64, upto: u64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET upto = ?2 WHERE id = ?1",
+            params![id, i64::try_from(upto).unwrap_or(i64::MAX)],
+        )?;
+        Ok(())
+    }
+
+    /// Records that this channel was written to: what a call's `time` is measured
+    /// from. See `docs/notes/server-channel.md`.
+    pub fn set_channel_wrote(&self, session: &str, path: &str, at: i64) -> anyhow::Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "UPDATE channels SET wrote_at = ?3 WHERE session = ?1 AND path = ?2",
+            params![session, path, at],
+        )?;
+        Ok(())
+    }
+
+    /// Says what became of a channel that ended.
+    pub fn finish_channel(&self, id: i64, exit: i32) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET ended_at = ?2, exit = ?3 WHERE id = ?1 AND ended_at IS NULL",
+            params![id, now_millis(), exit],
+        )?;
+        Ok(())
+    }
+
+    /// Gives a channel another name. The directory does not move: the name is a key
+    /// of this table, not a place on disk.
+    pub fn rename_channel(&self, session: &str, path: &str, new_path: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET path = ?3 WHERE session = ?1 AND path = ?2",
+            params![session, path, new_path],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets one channel: the program is gone and nothing it said is left to read.
+    pub fn delete_channel(&self, session: &str, path: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "DELETE FROM channels WHERE session = ?1 AND path = ?2",
+            params![session, path],
         )?;
         Ok(())
     }
@@ -2763,14 +2889,9 @@ impl Store {
         persistent: bool,
         action: Option<crate::subscriptions::Action>,
     ) -> anyhow::Result<SubscriptionRow> {
-        let (bash, cmd, python, code) = match action {
-            Some(crate::subscriptions::Action::Bash { name, cmd }) => {
-                (Some(name), Some(cmd), None, None)
-            }
-            Some(crate::subscriptions::Action::Python { name, code }) => {
-                (None, None, Some(name), Some(code))
-            }
-            None => (None, None, None, None),
+        let action = match action {
+            Some(action) => Some(serde_json::to_string(&action)?),
+            None => None,
         };
         let conn = self.lock();
         // One name is one subscription: arming replaces the row it held.
@@ -2780,19 +2901,9 @@ impl Store {
         )?;
         conn.execute(
             "INSERT INTO subscriptions
-                 (session, name, pattern, persistent, bash, cmd, python, code, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                session,
-                name,
-                pattern,
-                persistent,
-                bash,
-                cmd,
-                python,
-                code,
-                now_millis()
-            ],
+                 (session, name, pattern, persistent, action, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![session, name, pattern, persistent, action, now_millis()],
         )?;
         Ok(SubscriptionRow {
             id: conn.last_insert_rowid(),
@@ -2800,10 +2911,7 @@ impl Store {
             name: name.to_string(),
             pattern: pattern.to_string(),
             persistent,
-            bash,
-            cmd,
-            python,
-            code,
+            action,
         })
     }
 
@@ -2811,7 +2919,7 @@ impl Store {
     pub fn subscriptions(&self) -> anyhow::Result<Vec<SubscriptionRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, name, pattern, persistent, bash, cmd, python, code
+            "SELECT id, session, name, pattern, persistent, action
              FROM subscriptions ORDER BY id",
         )?;
         let rows = stmt
@@ -2822,10 +2930,7 @@ impl Store {
                     name: r.get(2)?,
                     pattern: r.get(3)?,
                     persistent: r.get(4)?,
-                    bash: r.get(5)?,
-                    cmd: r.get(6)?,
-                    python: r.get(7)?,
-                    code: r.get(8)?,
+                    action: r.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2874,14 +2979,8 @@ pub struct SubscriptionRow {
     pub pattern: String,
     /// Whether it stays armed after it fires.
     pub persistent: bool,
-    /// The session's named shell a match runs in, when it carries one.
-    pub bash: Option<String>,
-    /// The bash command run on a match.
-    pub cmd: Option<String>,
-    /// The session's named interpreter a match runs in, when it carries one.
-    pub python: Option<String>,
-    /// The Python code run on a match.
-    pub code: Option<String>,
+    /// The cmd a match runs, as `{"name":…,"args":{…}}`, when it carries one.
+    pub action: Option<String>,
 }
 
 /// The operator's own lines a transaction wrote, and where the transcript ended.
@@ -2950,6 +3049,50 @@ pub struct JobRow {
     pub pid: Option<i64>,
     /// The file that process writes its answer to.
     pub answer: Option<String>,
+}
+
+/// One channel: the name a session calls it by, and what became of its program.
+///
+/// # Invariant
+///
+/// `path` is this table's key and `dir` is where the bytes are: the name is not a
+/// place on disk, so a rename moves one column and nothing else. See
+/// `docs/notes/server-channel.md`.
+#[derive(Debug, Clone)]
+pub struct ChannelRow {
+    pub id: i64,
+    pub session: String,
+    pub path: String,
+    /// The program it runs, as it was started: a name, not a path.
+    pub program: String,
+    /// The machine it runs on, by the name the operator gave it; `None` is this one.
+    pub remote: Option<String>,
+    pub dir: String,
+    pub pid: i64,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub exit: Option<i64>,
+    /// How far this reader has read: taking the window is what advances it.
+    pub upto: u64,
+    /// When this channel was last written to; `None` before the first write.
+    pub wrote_at: Option<i64>,
+}
+
+fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
+    Ok(ChannelRow {
+        id: row.get(0)?,
+        session: row.get(1)?,
+        path: row.get(2)?,
+        program: row.get(3)?,
+        remote: row.get(4)?,
+        dir: row.get(5)?,
+        pid: row.get(6)?,
+        started_at: row.get(7)?,
+        ended_at: row.get(8)?,
+        exit: row.get(9)?,
+        upto: row.get::<_, i64>(10)?.max(0) as u64,
+        wrote_at: row.get(11)?,
+    })
 }
 
 fn job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {

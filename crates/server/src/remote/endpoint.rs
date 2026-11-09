@@ -2,12 +2,12 @@
 //!
 //! See `docs/notes/server-remote.md`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::process::Command;
 
-use crate::remote::transport::{ProtocolMismatch, Runner, ShellHandle};
+use crate::remote::transport::{ProtocolMismatch, ShellHandle};
 
 /// One argument of a command line, quoted when it carries a space.
 ///
@@ -17,6 +17,21 @@ fn quoted(value: &str) -> String {
         format!("\"{value}\"")
     } else {
         value.to_string()
+    }
+}
+
+/// One word as the peer's own shell must receive it.
+///
+/// # Invariant
+///
+/// `ssh` joins what follows the host into one line the peer's shell parses, so a word
+/// carrying a space arrives as several words unless it is quoted here -- a script has
+/// to arrive as one argument to `bash -lc`.
+pub(crate) fn peer_quote(word: &str) -> String {
+    if word.contains(char::is_whitespace) || word.contains('\'') {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    } else {
+        word.to_string()
     }
 }
 
@@ -113,7 +128,7 @@ impl Endpoint {
     /// replaced and this machine's remote pointed at the new one. The refusal
     /// carries that command, because a refusal naming only two numbers leaves
     /// the reader to work the repair out alone.
-    fn explain(&self, error: anyhow::Error) -> anyhow::Error {
+    pub(crate) fn explain(&self, error: anyhow::Error) -> anyhow::Error {
         match error.downcast::<ProtocolMismatch>() {
             Ok(mismatch) => match self.remedy() {
                 Some(remedy) => anyhow::anyhow!("{}: {mismatch}; {remedy}", self.describe()),
@@ -176,8 +191,45 @@ impl Endpoint {
     pub fn runner_command(&self) -> anyhow::Result<Command> {
         match self {
             Self::Local { .. } => anyhow::bail!("the local endpoint has no runner"),
-            Self::Direct { runner } => {
+            Self::Direct { .. } => self.peer_command(&[]),
+            Self::Remote { runner, .. } => {
+                let words = runner_words(runner);
+                if words.is_empty() {
+                    anyhow::bail!("this target names an empty runner command");
+                }
+                self.peer_command(&words)
+            }
+        }
+    }
+
+    /// The runner this machine's remotes file names, when it names one.
+    ///
+    /// # Invariant
+    ///
+    /// A name is a candidate, not the answer: what a runner says at its greeting is
+    /// what chooses it. See [`crate::remote::pick`].
+    pub fn configured_runner(&self) -> Option<&str> {
+        match self {
+            Self::Remote { runner, .. } => Some(runner.as_str()).filter(|r| !r.trim().is_empty()),
+            _ => None,
+        }
+    }
+
+    /// The command that runs `words` where this endpoint's shells run.
+    ///
+    /// # Invariant
+    ///
+    /// One spelling of reaching a peer, so a shell, a file read and a placement step
+    /// cannot disagree about which machine they were meant for.
+    pub fn peer_command(&self, words: &[&str]) -> anyhow::Result<Command> {
+        match self {
+            Self::Local { .. } => anyhow::bail!("the local endpoint is not a peer"),
+            Self::Direct { .. } => {
+                let Self::Direct { runner } = self else {
+                    unreachable!("matched above")
+                };
                 let mut command = Command::new(runner);
+                command.args(words);
                 command.kill_on_drop(true);
                 Ok(command)
             }
@@ -188,7 +240,6 @@ impl Endpoint {
                         port,
                         identity,
                     },
-                runner,
                 ..
             } => {
                 let mut command = Command::new("ssh");
@@ -211,11 +262,45 @@ impl Endpoint {
                 }
                 // `ssh` joins what follows the host, so two words arrive as two.
                 command.arg(host).arg("--");
-                let words = runner_words(runner);
-                if words.is_empty() {
-                    anyhow::bail!("this target names an empty runner command");
+                command.args(words.iter().map(|word| peer_quote(word)));
+                command.kill_on_drop(true);
+                Ok(command)
+            }
+        }
+    }
+
+    /// The command that copies one file to the peer, at a path its side resolves.
+    ///
+    /// # Invariant
+    ///
+    /// A program is bytes and `ssh`'s shell is not: a copy goes through `scp`, and the
+    /// destination is home-relative, which is the one spelling both ends agree on.
+    /// `cat` through the shell was measured to lose bytes (1048576 arrived as 947256).
+    pub fn copy_command(&self, local: &Path, remote: &str) -> anyhow::Result<Command> {
+        match self {
+            Self::Local { .. } | Self::Direct { .. } => {
+                anyhow::bail!("the local endpoint is not a peer")
+            }
+            Self::Remote {
+                transport:
+                    Reach::Ssh {
+                        host,
+                        port,
+                        identity,
+                    },
+                ..
+            } => {
+                let mut command = Command::new("scp");
+                // A full path, spelled so `scp` and the peer's own sftp agree on it.
+                command.arg("-o").arg("BatchMode=yes");
+                if let Some(port) = port {
+                    command.arg("-P").arg(port.to_string());
                 }
-                command.args(&words);
+                if let Some(identity) = identity {
+                    command.arg("-i").arg(identity);
+                }
+                command.arg(local);
+                command.arg(format!("{host}:{remote}"));
                 command.kill_on_drop(true);
                 Ok(command)
             }
@@ -244,10 +329,7 @@ impl Endpoint {
         program: Option<&str>,
         args: Option<&[String]>,
     ) -> anyhow::Result<ShellHandle> {
-        let command = self.runner_command()?;
-        let runner = Runner::spawn(command, self.answer_timeout())
-            .await
-            .map_err(|e| self.explain(e))?;
+        let runner = crate::remote::pick::runner(self, self.answer_timeout()).await?;
         runner
             .open_with(cwd, program, args)
             .await

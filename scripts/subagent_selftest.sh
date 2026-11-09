@@ -206,11 +206,11 @@ cli=("$home/bin/gongga-cli")
 await() { local n; for _ in $(seq 1 240); do n=$(grep -cE "turn end session=$1( |$)" "$log"); [[ $n -ge $2 ]] && return 0; sleep 0.5; done; echo "  note: $1 has $n turn end(s), wanted $2" >&2; return 1; }
 turns_of() { grep -cE "turn end session=$1( |$)" "$log"; }
 
-"${cli[@]}" set_session probe --model fake/flash-fake --cwd "$project" --ctx_limit 20% >"$work/parent.out" 2>&1
+"${cli[@]}" set_session --name probe --model fake/flash-fake --cwd "$project" --ctx_limit 20% >"$work/parent.out" 2>&1
 
 # The parent speaks first, and this one message is what its head will carry for
 # ever: `prompt_in_force` writes prose and index once and returns the row after.
-"${cli[@]}" send_message --name probe 'Start here with @file(early.md) please.' >"$work/parent-first.out" 2>&1
+"${cli[@]}" send_message --name probe --message 'Start here with @file(early.md) please.' >"$work/parent-first.out" 2>&1
 await probe 1 || hard "the parent's first turn never ended"
 rooted=$(query "select json_extract(display,'\$.rooted') from messages where session_id=(select id from sessions where name='probe') and kind='system'")
 [[ "$rooted" == '["@file(early.md)"]' ]]
@@ -268,7 +268,7 @@ ok "E a caller that is not a session is refused: $e_said" $?
 ok "E and nothing was created" $?
 
 # --- F and G: the brief, and the child's turn end reaching the parent ----------
-"${cli[@]}" send_message --name probe/impl \
+"${cli[@]}" send_message --name probe/impl --message \
   'Implement @file(early.md), following @skill(late). Answer done.' >"$work/brief.out" 2>&1
 await probe/impl 1 || hard "the child's turn never ended"
 kept=$(query "select json_extract(display,'\$.text') from messages where session_id=(select id from sessions where name='probe/impl') and kind='text' and display like '%@file%'" | head -1)
@@ -288,7 +288,7 @@ ok "G the child's turn end is a message in the parent's transcript" $?
 # Counted before the send: this parent answers in milliseconds, so a count taken
 # after it may already include the turn being waited for.
 before=$(turns_of probe)
-"${cli[@]}" send_message --name probe \
+"${cli[@]}" send_message --name probe --message \
   'Also read @file(late.md) and @skill(late), then stop.' >"$work/later.out" 2>&1
 await probe $(( before + 1 )) || hard "the parent's second turn never ended"
 later=$(query "select json_extract(display,'\$.text') from messages where session_id=(select id from sessions where name='probe') and kind='text' and display like '%late.md%'")
@@ -321,7 +321,7 @@ ok "H and one request later there is still exactly one head row" $?
 grand=$(GONGGA_SESSION=probe/impl "${cli[@]}" skill subagent spawn review --model fake/flash-fake 2>/dev/null)
 [[ "$grand" == "probe/impl/review" ]]
 ok "J the caller is the parent, so a grandchild is <child>/<role>: $grand" $?
-"${cli[@]}" send_message --name "$grand" 'Answer with one word.' >"$work/grand.out" 2>&1
+"${cli[@]}" send_message --name "$grand" --message 'Answer with one word.' >"$work/grand.out" 2>&1
 await "$grand" 1 || hard "the grandchild's turn never ended"
 sleep 1
 [[ "$(query "select count(*) from messages where session_id=(select id from sessions where name='probe/impl') and kind='text' and display like '%turn_end probe/impl/review:%'")" == "1" ]]
@@ -330,7 +330,7 @@ ok "J its own parent is told exactly once" $?
 ok "J and the grandparent is not told at all" $?
 
 # --- K: deleting a session takes its own subscriptions, not its children's -------
-"${cli[@]}" del_session probe/impl >"$work/del.out" 2>&1
+"${cli[@]}" del_session --name probe/impl >"$work/del.out" 2>&1
 [[ "$(query "select count(*) from subscriptions where session='probe/impl'")" == "0" ]]
 ok "K the deleted session's subscriptions go with it" $?
 kept=$(query "select group_concat(pattern,' ') from subscriptions where session='probe'")
@@ -342,9 +342,9 @@ ok "K and its child session is still there, now unheard" $?
 # --- L: `wait` waits for the NEXT thing, and no subscription means it sits ------
 # 2.5 s is the bound the fake asks for, so a timeout is 2.5 s of wall clock and an
 # early answer is not: the two are told apart by time as well as by the words.
-"${cli[@]}" set_session alone --model waitfake/wait-fake >"$work/alone.out" 2>&1
+"${cli[@]}" set_session --name alone --model waitfake/wait-fake >"$work/alone.out" 2>&1
 started=$(date +%s%3N)
-"${cli[@]}" send_message --name alone 'open by waiting' >"$work/alone-msg.out" 2>&1
+"${cli[@]}" send_message --name alone --message 'open by waiting' >"$work/alone-msg.out" 2>&1
 await alone 1 || hard "the waiting session's turn never ended"
 spent=$(( $(date +%s%3N) - started ))
 # The last result of that session, as one value: an `output` is multi-line, so a
@@ -359,13 +359,13 @@ ok "L with no subscription, wait sits to its timeout: $spent ms, '$waits'" $?
 start_wait_fake
 child_from_alone=$(GONGGA_SESSION=alone "${cli[@]}" skill subagent spawn impl --model waitfake/wait-fake 2>/dev/null)
 [[ "$child_from_alone" == "alone/impl" ]]; ok "M a second parent gets its own child: $child_from_alone" $?
-"${cli[@]}" send_message --name alone 'wait while the child works' >"$work/alone-wait.out" 2>&1
+"${cli[@]}" send_message --name alone --message 'wait while the child works' >"$work/alone-wait.out" 2>&1
 for _ in $(seq 1 100); do
   [[ $(query "select count(*) from messages where session_id=(select id from sessions where name='alone') and kind='tool_call'") -ge 2 ]] && break
   sleep 0.2
 done
 before=$(turns_of alone)
-"${cli[@]}" send_message --name "$child_from_alone" 'answer at once' >"$work/child-quick.out" 2>&1
+"${cli[@]}" send_message --name "$child_from_alone" --message 'answer at once' >"$work/child-quick.out" 2>&1
 await "$child_from_alone" 1 || hard "the child's turn never ended"
 await alone $(( before + 1 )) || hard "the parent's waiting turn never ended"
 last=$(query "select json_extract(display,'\$.output') from messages where session_id=(select id from sessions where name='alone') and kind='tool_result' order by seq desc limit 1")

@@ -104,15 +104,16 @@ impl FileRemote {
             tracing::warn!(%name, "a remote needs a `host`");
             return None;
         }
-        // Words, not a path: the default is the distribution's own
-        // `gongga runner`. See `docs/notes/server-remote.md`.
-        let runner = self
+        // Absent means this build's own, placed on the peer and greeted.
+        if self
             .runner
-            .unwrap_or_else(|| crate::remote::runner::DEFAULT_RUNNER.to_string());
-        if runner.trim().is_empty() {
-            tracing::warn!(%name, "a remote's `runner` must not be empty");
+            .as_ref()
+            .is_some_and(|runner| runner.trim().is_empty())
+        {
+            tracing::warn!(%name, "a remote's `runner` is empty; leave it out instead");
             return None;
         }
+        let runner = self.runner.unwrap_or_default();
         Some(RemoteConfig {
             name,
             endpoint: Endpoint::Remote {

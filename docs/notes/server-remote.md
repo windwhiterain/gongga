@@ -120,45 +120,55 @@ whose read end is closed fails at once on unix, and was observed to *block* unde
 Windows. The closed-reader test is therefore unix-only; the Windows case is bounded
 backpressure, not a lost frame.
 
-## Getting the runner onto a peer
+## The channel operations
 
-The runner ships inside the distribution, so there is nothing extra to build or
-install: **`runner` is the second word of the one file**, and the default target
-runs exactly that.
+`Relay` is the one operation that starts something: it is what makes a channel on a peer
+mean what one here means, and it is described in `docs/notes/server-channel.md`. In short:
+it carries the channel's `cmd` words rather than a directory, and answers the directory the
+peer chose and the pid it runs -- the peer is the only side that knows which home it has.
+`Append` and `Read` are what this process then speaks with, and both are ordinary file
+operations: append to `in`, read `out` from the row's cursor, read `status` whole.
 
-1. On the peer, put the distribution on `PATH` under the name `gongga`:
+The protocol version was raised for each of them in turn -- `Append` is 3, `Relay` 4 and
+`Relay`'s words 5 -- so a client refuses a peer it cannot speak to instead of discovering it
+mid-command.
 
-       scp gongga peer:/usr/local/bin/gongga && ssh peer chmod +x /usr/local/bin/gongga
+## Getting the runner onto a peer: this build places it
 
-   Nothing else is needed. The file carries `gongga-cli`, `gongga-server`,
-   `gongga-tui` and `gongga-runner`, and it dispatches on its first word, so the
-   whole remote side is the one file `ssh` already has to be able to execute.
+A runner speaks one protocol and a server speaks one, so what a pair has to agree on is
+that protocol -- not the commit either was built from. Naming a path per build made it an
+operator's problem: a path says where a program is, never what it says, and two builds of
+one protocol would each have been copied to a peer that could have served both.
 
-2. A remote in this machine's remotes file — `~/.agents/remotes.toml`, and nothing
-   else. It is not the home's `config.toml`; why is
-   `docs/notes/server-remotes.md`.
+So the payload is named by what it promises: `<peer home>/.gongga/payload/<protocol>/`
+holds this protocol's `gongga-runner` and the `gongga-server` a channel's relay needs
+beside it. Three rules follow, and each is a consequence of the first.
 
-       [remotes.build]
-       host = "peer"
+1. **A `runner` key in the remote's table is a preference.** It is greeted first, and kept
+   only if it greets this protocol; anything else about it is reported and run past.
+2. **A peer that already holds the directory is answered without a transfer**, whichever
+   build put it there. Identity is what the greeting says: a runner that answers this
+   protocol *is* this protocol's runner, and the pair stands as it is. That is what makes
+   a rebuild harmless -- the earlier failure was a size of a file on disk deciding whether
+   two machines could talk, a fact the other end can neither see nor answer.
+3. **The directory is written once and never replaced.** A program the peer may be running
+   cannot be overwritten while it runs, so asking for that is the failure this rule
+   removes: each copy goes to a staging name of its own and is renamed into place whole,
+   which makes "present" mean "whole", and two clients placing at the same moment do not
+   share a staging file. A pair that is present and does not answer is reported, never
+   replaced -- replacing it is a decision for a human.
 
-   That means `ssh peer -- gongga runner`. `port`, `identity` and `runner` are the
-   only other keys; `identity` is an `ssh -i` path on *this* machine, and `runner`
-   is the peer's command, spelled in as many words as it takes:
+A copy goes through `scp`, not through the shell: `ssh … bash -lc 'cat > file'` was
+measured to deliver 947256 bytes of a 1048576-byte file, and an executable that arrived
+short is not a program. A transfer can still fail for its own reasons (the network, a full
+disk, a permission), and that is why it is off the path that decides whether two ends can
+talk: it can only make the *first* placement fail, never make a peer that already answers
+stop answering.
 
-       [remotes.build]
-       host = "peer"
-       port = 2222
-       identity = "C:/keys/build"
-       runner = "gongga runner"          # the default, written out
-       # runner = "gongga-runner"       # a copy of gongga-runner on the peer's PATH
-       # runner = "/opt/gongga/build"   # any other program that speaks the protocol
-
-3. A session on it:
-
-       gongga-cli set_session build <provider>/<model> --remote build
-
-   `--cwd` is optional and, when given, is a path **on the peer**: the endpoint
-   canonicalises it and refuses one it does not have.
+The first use on a peer that holds nothing for this protocol costs one copy of this build
+(tens of megabytes over ssh); every use after it, from any client, is a greeting.
+`remotes.toml` needs no per-build edit. Payloads of retired builds are left where they are:
+nothing reads a directory whose number this build does not speak.
 
 ### The same architecture, not just the same kernel
 

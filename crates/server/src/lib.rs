@@ -31,6 +31,7 @@ mod prompts;
 mod providers;
 mod pylib;
 mod quota;
+pub mod relay;
 pub mod remote;
 pub mod remotes;
 mod script;
@@ -83,6 +84,8 @@ pub struct Args {
     pub log_format: LogFormat,
     /// The process that started this server, when its death should stop it.
     pub parent: Option<u32>,
+    /// That process's build, when the one that started this named it.
+    pub parent_build: Option<String>,
 }
 
 /// The same as an empty command line: every value comes from the home's config.
@@ -97,6 +100,7 @@ impl Default for Args {
             log: "info".to_string(),
             log_format: LogFormat::Text,
             parent: None,
+            parent_build: None,
         }
     }
 }
@@ -215,8 +219,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             installed.pin,
         );
     }
-    // What a tool says it is: the code's own words, as this home rewrote them.
-    tools::text::install(&cfg.config_path);
     let overridden = prompts::shared().overridden();
     tracing::info!(
         file = %cfg.config_path.display(),
@@ -316,14 +318,64 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(problem = %problem, "a script could not be read");
     }
 
+    // The channels `new` and `check` speak to: a table of names, not processes.
+    let channels = Arc::new(crate::tools::channel::Channels::for_home(
+        &cfg,
+        store.clone(),
+        {
+            let store = store.clone();
+            Arc::new(move |end: crate::tools::channel::ChannelEnd| {
+                // A deleted session owes nothing, and its rows would be stranded.
+                if matches!(store.get_session(&end.session), Ok(None)) {
+                    return;
+                }
+                let status = match end.exit {
+                    Some(0) => "finished successfully".to_string(),
+                    Some(code) => format!("finished with exit status {code}"),
+                    None => "ended, though its exit status could not be read".to_string(),
+                };
+                let ran = crate::agent::spent(end.time.as_millis() as u64);
+                // A preview: `check` still holds the window, because a notice that
+                // consumed it would be the one way to lose the output.
+                let said = if end.output.trim().is_empty() {
+                    String::new()
+                } else {
+                    let preview: String = end.output.chars().take(500).collect();
+                    format!("\n\nWhat it said since you last read it:\n{preview}")
+                };
+                let message = format!(
+                    "The channel {:?} you started has {status} after {ran}. `check {}` reads \
+                     what it printed; `del_channel {}` forgets it.{said}",
+                    end.id, end.id, end.id
+                );
+                // Marked: the server talking, so it must not wake an idle session.
+                if let Err(e) = store.add_pending_task(
+                    &end.session,
+                    "inject",
+                    &serde_json::json!({
+                        "session": end.session,
+                        "message": message,
+                        "notice": "channel",
+                    }),
+                ) {
+                    tracing::warn!(
+                        session = %end.session, channel = %end.id,
+                        error = %e, "could not notice a finished channel"
+                    );
+                }
+            })
+        },
+    ));
+
     let agent = Arc::new(Agent {
         store: store.clone(),
         providers: providers::Handle,
         model_config: cfg.model.clone(),
         clients: std::sync::Mutex::new(std::collections::HashMap::new()),
         default_context: cfg.model.context,
+        channels: channels.clone(),
         tools: Arc::new(
-            ToolRegistry::with_builtins(
+            ToolRegistry::settings(
                 cfg.tools.max_wait,
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
@@ -335,7 +387,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 skill_lib,
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
-            ),
+            )
+            .build(&cfg.tools.rows, &cfg.tools.arguments),
         ),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,
@@ -352,20 +405,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         jobs: crate::tools::tunnel::JobRegistry::new(),
     });
 
-    // A tool without sentences still runs; the whole-check is
-    // `tools::text::tests` now, where a build is checked.
-
     // Turns in flight and subscription actions: a stop waits for both.
     let active = Arc::new(AtomicUsize::new(0));
     // Read from the database, so a restart resumes what was asked for; the
     // actions it runs take the agent's tools.
-    let subscriptions = crate::subscriptions::Subscriptions::load(
-        store.clone(),
-        bus.clone(),
-        agent.clone(),
-        sessions.clone(),
-        active.clone(),
-    );
+    let subscriptions =
+        crate::subscriptions::Subscriptions::load(store.clone(), bus.clone(), active.clone());
 
     let dispatch = Arc::new(Dispatch {
         agent,
@@ -417,8 +462,50 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         "detached jobs adopted from the previous run"
     );
 
-    // A detached bash that ends while this server runs is news for its session.
+    // The command layer a tool reaches. Weak: the dispatch owns the agent.
+    struct Layer(std::sync::Weak<Dispatch>);
+    impl crate::commands::CmdLayer for Layer {
+        fn run<'a>(
+            &'a self,
+            session: &'a str,
+            name: &'a str,
+            mut args: protocol::Args,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::commands::Outcome> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                let Some(dispatch) = self.0.upgrade() else {
+                    return crate::commands::Outcome::err("the server is stopping");
+                };
+                // The caller's session fills the first argument the target declares as
+                // one, and only when the call did not name it.
+                if let Some(spec) = dispatch
+                    .catalog()
+                    .await
+                    .into_iter()
+                    .find(|spec| spec.name == name)
+                    && let Some(argument) = spec
+                        .args
+                        .iter()
+                        .find(|argument| argument.kind.as_deref() == Some("session"))
+                {
+                    args.entry(argument.name.clone())
+                        .or_insert_with(|| session.to_string());
+                }
+                let origin = crate::commands::Origin::Tool {
+                    session: session.to_string(),
+                };
+                crate::commands::dispatch(&dispatch, name, &args, &origin).await
+            })
+        }
+    }
+    if !crate::commands::install_layer(std::sync::Arc::new(Layer(Arc::downgrade(&dispatch)))) {
+        tracing::warn!("a command layer was already installed; a tool runs the first one");
+    }
+
     let detached_watch = detached.watch(dispatch.shutdown.clone());
+    // A channel's end is news while this server is up; the token ends the watching.
+    let _channels_watch = channels.watch(dispatch.shutdown.clone());
 
     // Alive until the drain ends. See `docs/notes/server-subscriptions.md`.
     let watching = subscriptions.clone();
@@ -491,9 +578,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     // A signal, or a dead window: a stop request, on the path `cancel` takes.
     let signalled = dispatch.clone();
-    signal::watch(args.parent, move || async move {
-        commands::stop(&signalled).await
-    });
+    signal::watch(
+        args.parent,
+        args.parent_build.as_deref(),
+        move || async move { commands::stop(&signalled).await },
+    );
 
     let served = net::serve(Arc::new(cfg), dispatch, bus).await;
     // Nothing new may fire once the socket stopped; turns were interrupted already.

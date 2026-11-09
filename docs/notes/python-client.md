@@ -32,8 +32,26 @@ started from it; four things it did not have to care about cost an hour each:
 - **A frame carries a sequence and a message id, and a repeat of either is dropped.** Two
   commands sent with the same pair are one command as far as the channel is concerned, so
   both counters are per-send.
-- **`ack` is the peer's last sequence**, not zero. The handshake tolerates zero; a command
-  after it does not.
+- **`ack` is the next sequence expected**, not zero and not the highest number seen. The
+  handshake tolerates zero; a command after it does not, and an ack that skipped a gap
+  would retire a packet the peer never delivered.
+
+## Acknowledgement, or the connection dies after a second
+
+The channel retransmits what the peer has not acknowledged and gives up on the connection
+when it has retransmitted enough -- about a second and a half at loopback timings. A client
+that only ever *sends* frames therefore dies exactly when it is waiting: one command in
+flight, no reply yet, nothing to piggyback an ack on.
+
+Measured: `check --input 'sleep 3; echo slow'` answered nothing and the caller gave up after
+its own 30 s, while the server logged the program's output and `client disconnected` 1.6 s
+after the connection opened. `gongga-cli` showed it as `check was sent and never answered`.
+
+So `_whole` acknowledges every data frame it accepts (`_acknowledge`), whether or not the
+message it belongs to is complete yet: the sequence numbers are the frame's, not the
+message's, and the sender retires a frame, not a message. `_expected` is the next sequence
+expected and `_ahead` holds what arrived past a gap, so the ack stays cumulative -- the same
+rule `crates/protocol`'s receiver applies when it answers the peer.
 
 ## `_event` — three envelopes, not two
 

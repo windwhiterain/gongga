@@ -9,11 +9,11 @@ use serde_json::Value;
 ///
 /// # Invariant
 ///
-/// Raised when a request gains a meaning an older runner would silently ignore: a
-/// runner that dropped `args` would run the program it was given with a shell's
-/// flags, which is a wrong answer rather than a missing one. 2 added `args` to
-/// `Open`, which is how a program other than a shell is started.
-pub const PROTOCOL: u32 = 2;
+/// Raised when a request gains a meaning an older runner would ignore (2 `Open.args`,
+/// 3 `Append`, 4 `Relay`, 5 `Relay.words`), and when a channel directory's shape changes:
+/// both ends read it, so a number that stayed would promise a layout the other build does
+/// not keep. A peer's payload is named by it too: `<home>/.gongga/payload/<protocol>/`.
+pub const PROTOCOL: u32 = 5;
 
 /// One request; `id` is the client's, and the reply repeats it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +80,31 @@ pub enum Op {
     Space {
         path: String,
     },
+    /// Starts this payload's relay for one channel, detached, and answers its directory.
+    ///
+    /// # Invariant
+    ///
+    /// The relay outlives this connection: it is started out of every job this process
+    /// is in, and only a native process may ask for it. The peer also chooses the
+    /// channel's directory, because only the peer knows which home it has, so no client
+    /// ever names a path it was not answered. See `docs/notes/server-channel.md`.
+    Relay {
+        /// Where the relay itself stands, when the call named a directory.
+        cwd: Option<String>,
+        /// The channel's `cmd` file, base64: the relay reads it as it starts, so it
+        /// travels with the request that starts it.
+        words: String,
+    },
+    /// Bytes for the end of a file, created with its parents when it is not there.
+    ///
+    /// # Invariant
+    ///
+    /// Append, never rewrite: two writers to one command file interleave, which is
+    /// what a channel's `in` is. `data` is base64 because a line has no binary.
+    Append {
+        path: String,
+        data: String,
+    },
 }
 
 impl Op {
@@ -101,6 +126,8 @@ impl Op {
             Op::Read { .. } => "read",
             Op::List { .. } => "list",
             Op::Space { .. } => "space",
+            Op::Append { .. } => "append",
+            Op::Relay { .. } => "relay",
         }
     }
 }

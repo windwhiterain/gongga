@@ -4,6 +4,7 @@
 
 pub mod endpoint;
 pub mod files;
+pub mod pick;
 pub mod protocol;
 pub mod runner;
 pub mod shell;

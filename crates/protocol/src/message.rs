@@ -1189,6 +1189,13 @@ pub enum CompletionSource {
     StickyArguments,
     /// Complete against the models this server could send a request on.
     Models,
+    /// Complete against the machines this server knows as remotes.
+    ///
+    /// # Invariant
+    ///
+    /// A machine is named, not addressed: what a reader completes is a name from the
+    /// operator's `[remotes]`, and the address behind it stays on this side.
+    Remotes,
     /// Complete against the skills the line's session can open.
     ///
     /// # Invariant

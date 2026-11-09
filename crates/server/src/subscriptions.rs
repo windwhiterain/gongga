@@ -4,34 +4,38 @@
 //!
 //! # Invariant
 //!
-//! Subscribing registers and answers at once, and a match runs the action the row
-//! carries in the subscriber's own interpreter -- nothing else. The server tells
-//! nobody by itself: a subscription that must reach a session says so in its
-//! action (`send_message` to the caller), which is why the news survives a restart
-//! as the pending row that action writes.
+//! Subscribing registers and answers at once, and a match runs the command the row
+//! carries, in the session that armed it -- nothing else. The server tells nobody by
+//! itself: a subscription that must reach a session runs `send_message`, which is
+//! why the news survives a restart as the pending row that command writes.
 
 use std::sync::Arc;
 
 use serde_json::json;
 
 use crate::bus::EventBus;
-use crate::session::SessionManager;
 use crate::store::{Store, SubscriptionRow};
 
-/// What a subscription runs on a match, in the session's own named
-/// interpreter -- the same one the session's tools use.
-#[derive(Debug, Clone)]
-pub enum Action {
-    Bash { name: String, cmd: String },
-    Python { name: String, code: String },
+/// What a subscription runs on a match: one command, in the subscriber's session.
+///
+/// # Invariant
+///
+/// A match runs the command layer -- the same door a tool's `fn <tool>(**args)` uses --
+/// so a subscription can do exactly what a session's own call can, and nothing else.
+/// Its address is the record it writes, not a program of its own.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Action {
+    /// The command's name, as the catalog spells it.
+    pub name: String,
+    /// Its named arguments.
+    #[serde(default)]
+    pub args: protocol::Args,
 }
 
 /// The armed subscriptions, and the one task that matches events against them.
 pub struct Subscriptions {
     store: Store,
     bus: EventBus,
-    agent: Arc<crate::agent::Agent>,
-    sessions: SessionManager,
     /// The same slot a turn takes: a stop waits for the action too.
     active: Arc<std::sync::atomic::AtomicUsize>,
     /// The database's rows, compiled: the pattern is parsed once, not per event.
@@ -48,8 +52,6 @@ impl Subscriptions {
     pub fn load(
         store: Store,
         bus: EventBus,
-        agent: Arc<crate::agent::Agent>,
-        sessions: SessionManager,
         active: Arc<std::sync::atomic::AtomicUsize>,
     ) -> Arc<Self> {
         let armed = match store.subscriptions() {
@@ -65,8 +67,6 @@ impl Subscriptions {
         Arc::new(Self {
             store,
             bus,
-            agent,
-            sessions,
             active,
             armed: tokio::sync::Mutex::new(armed),
         })
@@ -171,15 +171,14 @@ impl Subscriptions {
         }
     }
 
-    /// Runs what one fired row carries, and writes the outcome where `events`
+    /// Sends what one fired row carries, and writes the outcome where `events`
     /// reads it.
     ///
     /// # Invariant
     ///
-    /// The action is the whole of what a match does: it runs the path a model's call
-    /// runs, so a subscription and its session see the same shell. It holds a slot in
-    /// `Dispatch::active`, so a stop waits for it -- a `send_message` issued during a
-    /// drain lands as a pending row instead of dying with the process.
+    /// The send is the whole of what a match does. It holds a slot in
+    /// `Dispatch::active`, so a stop waits for it -- a `send_message` issued during
+    /// a drain lands as a pending row instead of dying with the process.
     async fn run_action(
         self: Arc<Self>,
         row: SubscriptionRow,
@@ -187,33 +186,35 @@ impl Subscriptions {
         event: protocol::Event,
     ) {
         let _slot = crate::commands::ActiveGuard::new(self.active.clone());
-        let stated = event_prefix(&event);
-        let (tool, args) = match &action {
-            Action::Bash { name, cmd } => (
-                "bash",
-                json!({"name": name, "command": format!("( {stated}{cmd} )")}),
-            ),
-            // A python action carries no event: assignments would stay in the REPL
-            // afterwards, so the row is what it reads.
-            Action::Python { name, code } => ("python", json!({"name": name, "code": code})),
+        let (ok, said) = match self.run_cmd(&row.session, &action).await {
+            Ok(outcome) => (outcome.ok, outcome.message),
+            Err(why) => (false, why),
         };
-        let outcome = crate::tool_cmd::run(
-            &self.agent,
-            &self.sessions,
-            &self.store,
-            &row.session,
-            tool,
-            args,
-        )
-        .await;
         let payload = json!({
             "subscription": row.name,
             "session": row.session,
             "event": event.name(),
-            "ok": outcome.ok,
-            "output": outcome.message,
+            "cmd": action.name,
+            "ok": ok,
+            "output": said,
         });
         self.log(&row, &payload);
+    }
+
+    /// Runs one subscription's command in the session that armed it.
+    ///
+    /// # Invariant
+    ///
+    /// The command layer is the whole door: a name the catalog does not know is
+    /// refused there, so a subscription cannot reach past what its session can call.
+    async fn run_cmd(
+        &self,
+        session: &str,
+        action: &Action,
+    ) -> Result<crate::commands::Outcome, String> {
+        let layer = crate::commands::layer()
+            .ok_or_else(|| "this process has no command layer to run a match in".to_string())?;
+        Ok(layer.run(session, &action.name, action.args.clone()).await)
     }
 
     /// Writes one outcome row and announces it, in that order.
@@ -258,20 +259,11 @@ impl Subscriptions {
 }
 
 impl Action {
-    /// What a row carries, when it carries anything.
+    /// What a row carries, when it carries anything: one command.
     fn of(row: &SubscriptionRow) -> Option<Action> {
-        match (&row.bash, &row.cmd, &row.python, &row.code) {
-            (Some(name), Some(cmd), _, _) => Some(Action::Bash {
-                name: name.clone(),
-                cmd: cmd.clone(),
-            }),
-            (_, _, Some(name), Some(code)) => Some(Action::Python {
-                name: name.clone(),
-                code: code.clone(),
-            }),
-            // A half-written row names an interpreter and no code.
-            _ => None,
-        }
+        let stored = row.action.as_deref()?.trim();
+        let action: Action = serde_json::from_str(stored).ok()?;
+        (!action.name.trim().is_empty()).then_some(action)
     }
 }
 
@@ -280,9 +272,8 @@ impl Action {
 /// # Invariant
 ///
 /// The pattern is matched against the event's name, and -- when the event is about
-/// a session -- against `name:session`. One pattern language, the same one
-/// `del_bash` and `list_bash` speak: a regex, unanchored, so `turn_end` also
-/// matches `turn_end:child/2`.
+/// a session -- against `name:session`. One pattern language everywhere: a regex,
+/// unanchored, so `turn_end` also matches `turn_end:child/2`.
 fn matches(pattern: &regex::Regex, event: &protocol::Event) -> bool {
     if pattern.is_match(event.name()) {
         return true;
@@ -291,30 +282,6 @@ fn matches(pattern: &regex::Regex, event: &protocol::Event) -> bool {
         Some(session) => pattern.is_match(&format!("{}:{}", event.name(), session)),
         None => false,
     }
-}
-
-/// What fired, as assignments the action's own words can read.
-///
-/// # Invariant
-///
-/// Three statements ending in `;`, all inside one subshell. `VAR=x cmd "$VAR"` is the
-/// shape that does not work: a simple command's words expand before its own
-/// assignments land, so the command reads nothing. In a subshell the values are gone
-/// when the action ends, and the status stays the action's own.
-fn event_prefix(event: &protocol::Event) -> String {
-    let kind = quote(event.name());
-    let session = quote(event.session().unwrap_or_default());
-    let body = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
-    let body = serde_json::to_string(&body).unwrap_or_else(|_| body.to_string());
-    format!(
-        "GONGGA_EVENT_KIND={kind}; GONGGA_EVENT_SESSION={session}; GONGGA_EVENT_PAYLOAD={payload}; ",
-        payload = quote(&body)
-    )
-}
-
-/// One value as a shell sees it: single quotes, an inner quote closed and reopened.
-fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 fn compiled(store: &Store, row: SubscriptionRow) -> Option<Armed> {

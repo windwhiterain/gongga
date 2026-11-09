@@ -119,16 +119,20 @@ const GONE_POLL: Duration = Duration::from_millis(100);
 ///
 /// The key is the one this process would *dial* with, never the home's: a client started
 /// with `--key` proves it by using it. See `docs/notes/cli-server.md`.
-pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> Option<u32> {
+pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> anyhow::Result<Option<u32>> {
     if !starts_here(&addr) {
-        return None;
+        return Ok(None);
     }
-    let key = crate::resolve_key(conn).or_else(|| crate::key_of(home))?;
-    let (mut link, greeting) = dial(Endpoint { addr, key }).await.ok()?;
+    let Some(key) = crate::resolve_key(conn).or_else(|| crate::key_of(home)) else {
+        return Ok(None);
+    };
+    let Some((mut link, greeting)) = dial(Endpoint { addr, key }).await.ok() else {
+        return Ok(None);
+    };
     let pid = greeting.pid();
     link.cancel().await;
     if waits_out(pid, CANCEL_GRACE).await {
-        return Some(pid);
+        return Ok(Some(pid));
     }
     // The watchdog first: a server killed under a live one is started again.
     let supervisor = greeting.supervisor();
@@ -136,8 +140,14 @@ pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> Option<u3
         kill(supervisor);
     }
     kill(pid);
-    waits_out(pid, CANCEL_GRACE).await;
-    Some(pid)
+    if waits_out(pid, CANCEL_GRACE).await {
+        return Ok(Some(pid));
+    }
+    // A server that survives this still holds `server.lock`, so a new one refuses.
+    anyhow::bail!(
+        "the server on {addr} is still there after cancel and kill (pid {pid}); \
+         it holds this home's lock, so a new server would refuse to start"
+    )
 }
 
 /// Whether `pid` is gone before `grace` runs out.
@@ -187,18 +197,19 @@ pub fn alive(pid: u32) -> bool {
 /// The tree, not the process: a server's shells are its children, and one left
 /// behind holds the console it came from.
 #[cfg(windows)]
-fn kill(pid: u32) {
+fn kill(pid: u32) -> bool {
     let mut kill = std::process::Command::new("taskkill");
     kill.args(["/PID", &pid.to_string(), "/T", "/F"]);
     console::apply(&mut kill, 0);
-    let _ = kill.output();
+    kill.output().is_ok_and(|out| out.status.success())
 }
 
 #[cfg(not(windows))]
-fn kill(pid: u32) {
-    let _ = std::process::Command::new("kill")
+fn kill(pid: u32) -> bool {
+    std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])
-        .output();
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// Whether a server on `addr` is this machine's to start.
@@ -271,8 +282,10 @@ fn start(
 fn command(server: &Path, home: &Path, addr: SocketAddr, owner: Option<u32>) -> Command {
     let mut cmd = server_command(server, home, &addr.to_string());
     if let Some(owner) = owner {
-        // Nobody is left to cancel it once the window is gone.
+        // Nobody is left to cancel it once the window is gone; a window of
+        // another build is not followed at all.
         cmd.arg("--parent").arg(owner.to_string());
+        cmd.arg("--parent-build").arg(protocol::BUILD);
     }
     cmd
 }

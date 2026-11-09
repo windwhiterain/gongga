@@ -19,7 +19,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::session::Machine;
-use crate::tools::{Cut, Tool, ToolContext, ToolOutcome};
+use crate::tools::{Cmd, Cut, ToolContext, ToolOutcome};
 
 const DEFAULT_NAME: &str = "default";
 
@@ -405,52 +405,50 @@ pub struct PythonTool {
     pub lib: Option<PathBuf>,
 }
 
-impl Tool for PythonTool {
-    fn name(&self) -> &'static str {
-        match self.machine {
-            Machine::Local => "python",
-            Machine::Remote => "remote_python",
-        }
-    }
-
-    fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Machine {
-        self.machine
-    }
-
-    fn is_remote(&self) -> bool {
-        self.machine == Machine::Remote
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    /// An interpreter's `background` is a call of that interpreter, read by
-    /// `check_python`.
-    fn handles_background(&self) -> bool {
-        true
-    }
-
-    /// An interpreter turns a long wait into its own background call: the clock is its own.
-    fn owns_its_wait(&self) -> bool {
-        true
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "code": {"type": "string"},
-                "name": {"type": "string"},
-                "description": {"type": "string"},
-                "timeout_ms": {"type": "integer"},
-                "restart": {"type": "boolean"},
-                "background": {"type": "boolean"}
-            },
-            "required": ["code"]
+impl Cmd for PythonTool {
+    /// The interpreter ends with the call whose reply nobody is left to read.
+    ///
+    /// # Invariant
+    ///
+    /// A foreground call reads its own reply line under the interpreter's lock, so a
+    /// call that returns without reading it would hand that line to the next caller
+    /// as the answer to another question. Ending the interpreter keeps "one name, one
+    /// interpreter" true. See `docs/notes/server-tools-python.md`.
+    fn cut<'a>(
+        &'a self,
+        args: &'a Value,
+        ctx: &'a ToolContext,
+        why: Cut,
+        _started: std::time::Instant,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let name = args["name"]
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(DEFAULT_NAME)
+                .to_string();
+            let handle = ctx.pythons.lock().await.get(&name).cloned();
+            if let Some(handle) = handle {
+                handle.kill().await;
+                let mut pythons = ctx.pythons.lock().await;
+                if pythons
+                    .get(&name)
+                    .is_some_and(|current| Arc::ptr_eq(current, &handle))
+                {
+                    pythons.remove(&name);
+                }
+            }
+            ToolOutcome::err(format!(
+                "the call in interpreter {name:?} was stopped: {why}. An interpreter reads one \
+                 call's reply at a time, and nobody was left to read this one, so {name:?} was \
+                 ended -- what it was running is gone and its output with it. The next `{}` \
+                 call to that name starts with a fresh namespace.",
+                ctx.tool,
+                why = why.because()
+            ))
         })
     }
-
     fn run<'a>(
         &'a self,
         args: Value,
@@ -523,7 +521,7 @@ impl Tool for PythonTool {
                             Err(e) => {
                                 return ToolOutcome::err(format!(
                                     "{} {name:?} did not start: {e}",
-                                    self.name()
+                                    ctx.tool
                                 ));
                             }
                         };
@@ -544,12 +542,12 @@ impl Tool for PythonTool {
 
             let request = json!({ "code": code });
             if background {
-                let notify = crate::tools::python_notifier(ctx, self.name(), name);
+                let notify = crate::tools::python_notifier(ctx, &ctx.tool, name);
                 handle.spawn_background(request, Some(notify));
                 return ToolOutcome::ok(format!(
                     "started a background {} call in `{name}`; run `check_python` to collect \
                      what it printed, and this session is told when it ends",
-                    self.name()
+                    ctx.tool
                 ));
             }
             let mut repl = handle.inner.lock().await;
@@ -573,25 +571,23 @@ impl Tool for PythonTool {
                     ToolOutcome::err(format!(
                         "{e}. Interpreter {name:?} was stopped; the next `{}` call to that \
                          name starts with a fresh namespace.",
-                        self.name()
+                        ctx.tool
                     ))
                 }
             }
         })
     }
+}
 
-    /// The interpreter ends with the call whose reply nobody is left to read.
-    ///
-    /// # Invariant
-    ///
-    /// A foreground call reads its own reply line under the interpreter's lock, so a
-    /// call that returns without reading it would hand that line to the next caller
-    /// as the answer to another question. Ending the interpreter keeps "one name, one
-    /// interpreter" true. See `docs/notes/server-tools-python.md`.
+/// The collector for interpreters: `check_bash`'s shape, for `python`.
+pub struct CheckPythonTool;
+
+impl Cmd for CheckPythonTool {
+    /// A read never stopped anything: the calls it was waiting for are still there.
     fn cut<'a>(
         &'a self,
         args: &'a Value,
-        ctx: &'a ToolContext,
+        _ctx: &'a ToolContext,
         why: Cut,
         _started: std::time::Instant,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
@@ -600,55 +596,14 @@ impl Tool for PythonTool {
                 .as_str()
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
-                .unwrap_or(DEFAULT_NAME)
-                .to_string();
-            let handle = ctx.pythons.lock().await.get(&name).cloned();
-            if let Some(handle) = handle {
-                handle.kill().await;
-                let mut pythons = ctx.pythons.lock().await;
-                if pythons
-                    .get(&name)
-                    .is_some_and(|current| Arc::ptr_eq(current, &handle))
-                {
-                    pythons.remove(&name);
-                }
-            }
+                .unwrap_or(DEFAULT_NAME);
             ToolOutcome::err(format!(
-                "the call in interpreter {name:?} was stopped: {why}. An interpreter reads one \
-                 call's reply at a time, and nobody was left to read this one, so {name:?} was \
-                 ended -- what it was running is gone and its output with it. The next `{}` \
-                 call to that name starts with a fresh namespace.",
-                self.name(),
-                why = why.because()
+                "check_python stopped waiting for {name}: {}. The calls it was waiting for are \
+                 still running, and `check_python` reads what they print.",
+                why.because()
             ))
         })
     }
-}
-
-/// The collector for interpreters: `check_bash`'s shape, for `python`.
-pub struct CheckPythonTool;
-
-impl Tool for CheckPythonTool {
-    fn name(&self) -> &'static str {
-        "check_python"
-    }
-
-    /// The read waits for `wait_ms`; that wait is the whole work.
-    fn owns_its_wait(&self) -> bool {
-        true
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "wait_ms": {"type": "integer"}
-            },
-            "additionalProperties": false
-        })
-    }
-
     fn run<'a>(
         &'a self,
         args: Value,
@@ -689,48 +644,11 @@ impl Tool for CheckPythonTool {
             ))
         })
     }
-
-    /// A read never stopped anything: the calls it was waiting for are still there.
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        _ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let name = args["name"]
-                .as_str()
-                .map(str::trim)
-                .filter(|name| !name.is_empty())
-                .unwrap_or(DEFAULT_NAME);
-            ToolOutcome::err(format!(
-                "check_python stopped waiting for {name}: {}. The calls it was waiting for are \
-                 still running, and `check_python` reads what they print.",
-                why.because()
-            ))
-        })
-    }
 }
 
 pub struct DelPythonTool;
 
-impl Tool for DelPythonTool {
-    fn name(&self) -> &'static str {
-        "del_python"
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name_regex": {"type": "string"},
-                "description": {"type": "string"}
-            },
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for DelPythonTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -771,22 +689,7 @@ impl Tool for DelPythonTool {
 
 pub struct ListPythonTool;
 
-impl Tool for ListPythonTool {
-    fn name(&self) -> &'static str {
-        "list_python"
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name_regex": {"type": "string"},
-                "description": {"type": "string"}
-            },
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for ListPythonTool {
     fn run<'a>(
         &'a self,
         args: Value,
@@ -840,22 +743,7 @@ impl Tool for ListPythonTool {
     }
 }
 
-/// One file operation: a fresh driver, one request, one answer. File state is
-/// the file, not a namespace.
-async fn one_shot(
-    program: Option<&Path>,
-    args: &[String],
-    cwd: &Path,
-    request: Value,
-    timeout: Duration,
-) -> anyhow::Result<Reply> {
-    let mut repl = PythonRepl::spawn(program, args, cwd, None, &[])?;
-    let reply = repl.run_request(&request, timeout).await;
-    repl.kill().await;
-    reply
-}
-
-fn reply_text(reply: &Reply) -> String {
+pub(crate) fn reply_text(reply: &Reply) -> String {
     let mut text = reply.stdout.clone();
     if !reply.stderr.is_empty() {
         if !text.is_empty() && !text.ends_with('\n') {
@@ -864,425 +752,4 @@ fn reply_text(reply: &Reply) -> String {
         text.push_str(&reply.stderr);
     }
     text
-}
-
-/// The remote a file call's `remote` names, when it names one.
-///
-/// # Invariant
-///
-/// `none` and an empty value are this machine, the same reading
-/// `crate::session::remote_request` gives a `--remote` everywhere else.
-fn stated_remote(args: &Value) -> Option<String> {
-    let stated = args.get("remote").and_then(Value::as_str).map(str::trim)?;
-    crate::session::remote_request(stated)
-}
-
-/// The machine a file call runs on: the session's remote when its `remote` names it.
-///
-/// # Invariant
-///
-/// A file tool's paths belong to the machine its `remote` names; a name that is not
-/// the session's own is refused in `run`, so this is the machine the call ran on.
-fn file_machine(args: &Value, ctx: &ToolContext) -> Machine {
-    match stated_remote(args) {
-        Some(name) if ctx.remote.as_deref() == Some(name.as_str()) => Machine::Remote,
-        _ => Machine::Local,
-    }
-}
-
-/// Whether a file call runs on the session's remote, and the refusal when its
-/// `remote` names another machine.
-///
-/// # Invariant
-///
-/// A session works on one machine: its directory is on the remote it names, and a
-/// second peer would have no directory to be in. See `docs/notes/server-remote.md`.
-fn file_remote(args: &Value, ctx: &ToolContext, tool: &str) -> Result<bool, String> {
-    let Some(stated) = stated_remote(args) else {
-        return Ok(false);
-    };
-    if ctx.remote.as_deref() == Some(stated.as_str()) {
-        return Ok(true);
-    }
-    Err(match &ctx.remote {
-        Some(here) => format!(
-            "`{tool}` ran nothing: this session's directory is on remote {here:?}, and its \
-             files are there -- {stated:?} is another machine, which this session has no \
-             directory on. A session works on one machine: `set_session --remote {stated}` \
-             moves it there, and ends these shells first."
-        ),
-        None => format!(
-            "`{tool}` ran nothing: this session names no remote, so it has no peer to work \
-             on, and {stated:?} is not one it can reach from here."
-        ),
-    })
-}
-
-/// The endpoint of the session's remote, for a file call that named it.
-fn remote_endpoint(ctx: &ToolContext) -> Option<crate::remote::Endpoint> {
-    ctx.shells
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .endpoint(Machine::Remote)
-}
-
-/// One file operation on the session's remote, through an interpreter there.
-///
-/// # Invariant
-///
-/// The same driver as this machine's, started by name on the peer: a path this
-/// machine holds is not evidence about one the peer has.
-async fn one_shot_remote(
-    endpoint: &crate::remote::Endpoint,
-    cwd: &Path,
-    request: Value,
-    timeout: Duration,
-) -> anyhow::Result<Reply> {
-    let mut repl = crate::tools::python_remote::RemoteRepl::spawn(endpoint, cwd, DRIVER).await?;
-    let reply = repl.run_request(&request, timeout).await;
-    repl.kill().await;
-    reply
-}
-
-/// The `remote` argument the file tools take: the session's remote, or this machine.
-///
-/// # Invariant
-///
-/// Offered only to a session that has a remote: `definitions` drops it otherwise, so
-/// the argument is its own whole explanation and the descriptions below never mention
-/// a second machine.
-fn remote_arg() -> Value {
-    json!({
-        "type": "string"
-    })
-}
-
-pub struct ReadFileTool {
-    pub program: Option<PathBuf>,
-    pub args: Vec<String>,
-    pub timeout: Duration,
-    pub max_output_chars: usize,
-}
-
-impl Tool for ReadFileTool {
-    /// One file, read or written, is a one-shot a worker can own.
-    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
-        crate::tools::tunnel::Carried::Worker
-    }
-
-    fn name(&self) -> &'static str {
-        "read_file"
-    }
-
-    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
-        file_machine(args, ctx)
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", },
-                "remote": remote_arg(),
-                "offset": {"type": "integer"},
-                "limit": {"type": "integer"},
-                "description": {"type": "string"}
-            },
-            "required": ["path"]
-        })
-    }
-
-    fn run<'a>(
-        &'a self,
-        args: Value,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let Some(path) = args["path"].as_str() else {
-                return ToolOutcome::err("read_file requires a string `path`");
-            };
-            let on_remote = match file_remote(&args, ctx, "read_file") {
-                Ok(on_remote) => on_remote,
-                Err(why) => return ToolOutcome::err(why),
-            };
-            let description = args
-                .get("description")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let request = json!({
-                "op": "read",
-                "path": path,
-                "offset": args["offset"].as_u64().unwrap_or(0),
-                "limit": args["limit"].as_u64().unwrap_or(0),
-            });
-            // The wait the tunnel resolved for this call, not this tool's built-in one.
-            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout);
-            let outcome = if on_remote {
-                let Some(endpoint) = remote_endpoint(ctx) else {
-                    return ToolOutcome::err(
-                        "read_file ran nothing: this session names a remote, but it has no \
-                         endpoint to reach",
-                    );
-                };
-                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, wait).await
-            } else {
-                one_shot(
-                    self.program.as_deref(),
-                    &self.args,
-                    &ctx.dir(Machine::Local),
-                    request,
-                    wait,
-                )
-                .await
-            };
-            let machine = if on_remote {
-                Machine::Remote
-            } else {
-                Machine::Local
-            };
-            match outcome {
-                Ok(reply) if reply.ok => {
-                    let text = if reply.stdout.is_empty() {
-                        "(empty file)".to_string()
-                    } else {
-                        reply.stdout
-                    };
-                    ToolOutcome::ok(ctx.cap(
-                        machine,
-                        "read_file",
-                        description,
-                        text,
-                        self.max_output_chars,
-                    ))
-                }
-                Ok(reply) => ToolOutcome::err(reply_text(&reply)),
-                Err(e) => ToolOutcome::err(format!("read_file did not run: {e}")),
-            }
-        })
-    }
-}
-
-pub struct WriteFileTool {
-    pub program: Option<PathBuf>,
-    pub args: Vec<String>,
-    pub timeout: Duration,
-    pub max_output_chars: usize,
-}
-
-impl Tool for WriteFileTool {
-    /// One file, read or written, is a one-shot a worker can own.
-    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
-        crate::tools::tunnel::Carried::Worker
-    }
-
-    /// The arguments are the write, so there is nothing to weigh.
-    fn writes(&self) -> bool {
-        true
-    }
-
-    fn name(&self) -> &'static str {
-        "write_file"
-    }
-
-    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
-        file_machine(args, ctx)
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", },
-                "remote": remote_arg(),
-                "content": {"type": "string"},
-                "description": {"type": "string"}
-            },
-            "required": ["path", "content"]
-        })
-    }
-
-    fn run<'a>(
-        &'a self,
-        args: Value,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let (Some(path), Some(content)) = (args["path"].as_str(), args["content"].as_str())
-            else {
-                return ToolOutcome::err("write_file requires string `path` and `content`");
-            };
-            let on_remote = match file_remote(&args, ctx, "write_file") {
-                Ok(on_remote) => on_remote,
-                Err(why) => return ToolOutcome::err(why),
-            };
-            let description = args
-                .get("description")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let request = json!({"op": "write", "path": path, "content": content});
-            // The wait the tunnel resolved for this call, not this tool's built-in one.
-            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout);
-            let outcome = if on_remote {
-                let Some(endpoint) = remote_endpoint(ctx) else {
-                    return ToolOutcome::err(
-                        "write_file ran nothing: this session names a remote, but it has no \
-                         endpoint to reach",
-                    );
-                };
-                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, wait).await
-            } else {
-                one_shot(
-                    self.program.as_deref(),
-                    &self.args,
-                    &ctx.dir(Machine::Local),
-                    request,
-                    wait,
-                )
-                .await
-            };
-            let machine = if on_remote {
-                Machine::Remote
-            } else {
-                Machine::Local
-            };
-            match outcome {
-                Ok(reply) if reply.ok => ToolOutcome::ok(ctx.cap(
-                    machine,
-                    "write_file",
-                    description,
-                    reply_text(&reply),
-                    self.max_output_chars,
-                )),
-                Ok(reply) => ToolOutcome::err(reply_text(&reply)),
-                Err(e) => ToolOutcome::err(format!("write_file did not run: {e}")),
-            }
-        })
-    }
-}
-
-pub struct ReplaceTool {
-    pub program: Option<PathBuf>,
-    pub args: Vec<String>,
-    pub timeout: Duration,
-    pub max_output_chars: usize,
-}
-
-impl Tool for ReplaceTool {
-    /// One file, read or written, is a one-shot a worker can own.
-    fn detached_carrier(&self) -> crate::tools::tunnel::Carried {
-        crate::tools::tunnel::Carried::Worker
-    }
-
-    /// The arguments are the write, so there is nothing to weigh.
-    fn writes(&self) -> bool {
-        true
-    }
-
-    fn name(&self) -> &'static str {
-        "replace"
-    }
-
-    fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
-        file_machine(args, ctx)
-    }
-
-    fn default_timeout(&self) -> Option<Duration> {
-        Some(self.timeout)
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", },
-                "remote": remote_arg(),
-                "old": {"type": "string", },
-                "new": {"type": "string", },
-                "all": {"type": "boolean"},
-                "description": {"type": "string"}
-            },
-            "required": ["path", "old", "new"]
-        })
-    }
-
-    fn run<'a>(
-        &'a self,
-        args: Value,
-        ctx: &'a ToolContext,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            let (Some(path), Some(old), Some(new)) = (
-                args["path"].as_str(),
-                args["old"].as_str(),
-                args["new"].as_str(),
-            ) else {
-                return ToolOutcome::err("replace requires string `path`, `old` and `new`");
-            };
-            if old.is_empty() {
-                return ToolOutcome::err("replace requires a non-empty `old`");
-            }
-            let on_remote = match file_remote(&args, ctx, "replace") {
-                Ok(on_remote) => on_remote,
-                Err(why) => return ToolOutcome::err(why),
-            };
-            let description = args
-                .get("description")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
-            let request = json!({
-                "op": "replace",
-                "path": path,
-                "old": old,
-                "new": new,
-                "all": args["all"].as_bool().unwrap_or(false),
-            });
-            // The wait the tunnel resolved for this call, not this tool's built-in one.
-            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout);
-            let outcome = if on_remote {
-                let Some(endpoint) = remote_endpoint(ctx) else {
-                    return ToolOutcome::err(
-                        "replace ran nothing: this session names a remote, but it has no \
-                         endpoint to reach",
-                    );
-                };
-                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, wait).await
-            } else {
-                one_shot(
-                    self.program.as_deref(),
-                    &self.args,
-                    &ctx.dir(Machine::Local),
-                    request,
-                    wait,
-                )
-                .await
-            };
-            let machine = if on_remote {
-                Machine::Remote
-            } else {
-                Machine::Local
-            };
-            match outcome {
-                Ok(reply) if reply.ok => ToolOutcome::ok(ctx.cap(
-                    machine,
-                    "replace",
-                    description,
-                    reply_text(&reply),
-                    self.max_output_chars,
-                )),
-                Ok(reply) => ToolOutcome::err(reply_text(&reply)),
-                Err(e) => ToolOutcome::err(format!("replace did not run: {e}")),
-            }
-        })
-    }
 }

@@ -7,7 +7,10 @@ The machines this server may run a session's shells on, and where that list is k
     ~/.agents/remotes.toml        # $GONGGA_AGENTS_HOME, or $GONGGA_REMOTES_CATALOG
 
 A remote is made of three facts about this machine: a `host`, an `identity` — the path
-of a private key — and a `runner`, a path on the peer that changes with every build.
+of a private key — and, optionally, a `runner`, one program on the peer preferred over
+the one this build places there. What a runner *says* is what chooses it, so a path
+that names another build's distribution is run past rather than obeyed; see
+`docs/notes/server-remote.md`.
 None of them belongs in `<home>/config.toml`, which is the **pinned content's**: the
 install pass merges it three ways on every pin move (`ship.rs`), so a value written
 there is a value that can be published, merged into somebody else's file, and carried

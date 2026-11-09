@@ -1,38 +1,14 @@
 //! The agent-written checkpoint artifact; the agent loop commits it with its result.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::tools::{Tool, ToolContext, ToolOutcome};
+use crate::tools::{Cmd, ToolContext, ToolOutcome};
 
 pub const LIVE_COMPACT_TOOL: &str = "live_compact";
 
 pub struct LiveCompactTool;
 
-impl Tool for LiveCompactTool {
-    fn name(&self) -> &'static str {
-        LIVE_COMPACT_TOOL
-    }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "summary": {
-                    "type": "string",
-                    "description": "What a later turn cannot recover from the transcript: \
-        the decisions, the paths and identifiers the next step needs, the open question, and \
-        the facts it depends on. The server keeps the latest complete tool-call round and every \
-        earlier summary verbatim, so do not restate them. The summary may also cite a file as \
-        @file(<path>): the citation embeds that file whole into the summary, so a later turn \
-        reads the content without opening it again -- at the cost of carrying it in every later \
-        request. Keep it short."
-                }
-            },
-            "required": ["summary"],
-            "additionalProperties": false
-        })
-    }
-
+impl Cmd for LiveCompactTool {
     fn run<'a>(
         &'a self,
         args: Value,

@@ -424,6 +424,41 @@ impl Runner {
         Ok(reply["free"].as_u64())
     }
 
+    /// Starts one channel's relay on the peer, which places it in its own home.
+    ///
+    /// # Invariant
+    ///
+    /// The directory comes back from the endpoint, never from this side: a path this
+    /// machine spells is not evidence about one the peer has. See
+    /// `docs/notes/server-channel.md`.
+    pub async fn relay(&self, cwd: Option<&str>, words: &[u8]) -> anyhow::Result<RelayStart> {
+        let reply = self
+            .request(Op::Relay {
+                cwd: cwd.map(str::to_string),
+                words: crate::base64::encode(words),
+            })
+            .await?;
+        Ok(RelayStart {
+            dir: reply["dir"].as_str().unwrap_or_default().to_string(),
+            pid: reply["pid"].as_u64().unwrap_or_default() as u32,
+            log: reply["log"].as_str().unwrap_or_default().to_string(),
+        })
+    }
+
+    /// Bytes for the end of a peer file, creating it and its parents.
+    ///
+    /// # Invariant
+    ///
+    /// Append, never rewrite: a channel's `in` takes a line from either side.
+    pub async fn append(&self, path: &str, bytes: &[u8]) -> anyhow::Result<()> {
+        self.request(Op::Append {
+            path: path.to_string(),
+            data: crate::base64::encode(bytes),
+        })
+        .await?;
+        Ok(())
+    }
+
     /// The peer's own pid for the runner process, once it has greeted.
     pub fn pid(&self) -> u32 {
         self.inner.pid.load(Ordering::SeqCst)
@@ -598,6 +633,17 @@ impl Runner {
             .unwrap_or_else(|e| e.into_inner())
             .is_none()
     }
+}
+
+/// What starting a peer's relay answered: where the channel lives, and its pid.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayStart {
+    /// The directory, in the endpoint's own spelling.
+    pub dir: String,
+    /// The relay process on the peer.
+    pub pid: u32,
+    /// Its log, for the answer that has to say where it went wrong.
+    pub log: String,
 }
 
 /// One entry of an endpoint directory.

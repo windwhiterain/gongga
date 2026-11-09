@@ -45,6 +45,8 @@ fn run() -> Result<u8, String> {
         payload::place(&dir, name, bytes)
             .map_err(|e| format!("placing {name} in {}: {e}", dir.display()))?;
     }
+    // Marked first: only a directory carrying the mark is ours to replace.
+    payload::mark(&dir, &stamp).map_err(|e| format!("marking {}: {e}", dir.display()))?;
     // A build this replaces is asked to stop, then removed -- a server through
     // its own `cancel`, so its turn survives.
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1 + skip).collect();
@@ -82,7 +84,7 @@ fn keeps_the_server(program: &str, args: &[std::ffi::OsString]) -> bool {
 mod payload {
     include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
 
-    pub use crate::payload_impl::{file_name, place, retire, stamp};
+    pub use crate::payload_impl::{file_name, mark, place, retire, stamp};
 }
 
 /// Which program to run, and how many arguments that choice consumed.

@@ -32,6 +32,8 @@ pub async fn run(
     let ctx = crate::tools::ToolContext {
         session: session.to_string(),
         call_id: format!("cmd-{}", uuid::Uuid::new_v4().simple()),
+        tool: tool.to_string(),
+        channels: agent.channels.clone(),
         home: agent.home.clone(),
         output_dir: agent.output_dir.clone(),
         shells: handle.shells(),
@@ -75,19 +77,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
     tools
         .iter()
         .map(|tool| {
-            // The model's schema, so every argument a call may carry is spellable.
-            let schema = crate::tools::general_parameters(tool);
-            let positional = positional_of(tool.name());
-            let required = schema
-                .get("required")
-                .and_then(Value::as_array)
-                .map(|names| names.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-                .unwrap_or_default();
-            let properties = schema
-                .get("properties")
-                .and_then(Value::as_object)
-                .cloned()
-                .unwrap_or_default();
+            let row = tool.spec();
             let mut args = vec![protocol::ArgSpec {
                 name: "session".into(),
                 description: "The session the tool runs as; its shells, its directory.".into(),
@@ -100,20 +90,27 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 sticky_to: None,
                 sticky: false,
             }];
-            for (name, spec) in ordered_properties(&properties, positional) {
-                let is_positional = positional.contains(&name.as_str());
+            // The row's order, object first: a bare word binds the first unfilled one.
+            let mut ordered: Vec<&crate::tools::spec::Argument> = row
+                .parameters
+                .iter()
+                .filter(|argument| argument.positional.is_some())
+                .collect();
+            ordered.sort_by_key(|argument| argument.positional);
+            ordered.extend(
+                row.parameters
+                    .iter()
+                    .filter(|argument| argument.positional.is_none()),
+            );
+            for argument in ordered {
                 args.push(protocol::ArgSpec {
-                    name: name.clone(),
-                    description: spec
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    required: required.contains(&name.as_str()),
-                    positional: is_positional,
-                    kind: None,
-                    value_hint: Some(crate::tools::kind_of(spec)),
-                    completions: protocol::CompletionSource::None,
+                    name: argument.name.clone(),
+                    description: argument.sentence.clone().unwrap_or_default(),
+                    required: argument.required,
+                    positional: argument.positional.is_some(),
+                    kind: Some(argument.kind.clone()),
+                    value_hint: argument.hint.clone(),
+                    completions: argument.completion.source(),
                     accepts: None,
                     sticky_to: None,
                     sticky: false,
@@ -127,48 +124,6 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
             }
         })
         .collect()
-}
-
-/// The properties a command lists in: the positional object first, then
-/// the rest in the schema's order.
-///
-/// # Invariant
-///
-/// A bare word binds the first unfilled parameter at the line's cursor, so this
-/// order is the order position reaches: `<session>`, then the object, then the
-/// switches. The schema's own order serves the model's keyword calls, where
-/// every name is spelled.
-fn ordered_properties<'a>(
-    properties: &'a serde_json::Map<String, serde_json::Value>,
-    positional: &[&str],
-) -> Vec<(&'a String, &'a serde_json::Value)> {
-    let mut out = Vec::with_capacity(properties.len());
-    for name in positional {
-        if let Some(entry) = properties.get_key_value(*name) {
-            out.push(entry);
-        }
-    }
-    out.extend(
-        properties
-            .iter()
-            .filter(|(name, _)| !positional.contains(&name.as_str())),
-    );
-    out
-}
-
-/// Which arguments a command spells positionally: the object, not switches.
-fn positional_of(tool: &str) -> &'static [&'static str] {
-    match tool {
-        "bash" | "remote_bash" => &["command"],
-        "exec" => &["command"],
-        "python" | "remote_python" => &["code"],
-        "del_bash" | "del_python" | "list_bash" | "list_python" => &["name_regex"],
-        "read_file" => &["path"],
-        "write_file" => &["path", "content"],
-        "replace" => &["path", "old", "new"],
-        "skill" => &["name", "args"],
-        _ => &[],
-    }
 }
 
 /// Types a command's string arguments by the tool's own schema.
