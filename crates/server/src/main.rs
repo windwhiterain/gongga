@@ -38,6 +38,9 @@ struct Command {
     /// The build of that window, so one this build cannot serve is not followed.
     #[arg(long, value_name = "BUILD")]
     parent_build: Option<String>,
+    /// Stop whatever holds `--bind`; without it a taken port is an error.
+    #[arg(long)]
+    force: bool,
     /// Run one tool call and write its answer: how a detached call outlives the server.
     #[arg(long, value_name = "FILE", hide = true)]
     run_tool: Option<PathBuf>,
@@ -59,6 +62,7 @@ impl From<Command> for Args {
             log_format: c.log_format,
             parent: c.parent,
             parent_build: c.parent_build,
+            force: c.force,
         }
     }
 }

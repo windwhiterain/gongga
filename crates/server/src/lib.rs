@@ -86,6 +86,9 @@ pub struct Args {
     pub parent: Option<u32>,
     /// That process's build, when the one that started this named it.
     pub parent_build: Option<String>,
+    /// Stop whatever holds `--bind` and listen anyway. Without it a taken port
+    /// is an error: see `net::bind_address`.
+    pub force: bool,
 }
 
 /// The same as an empty command line: every value comes from the home's config.
@@ -101,6 +104,7 @@ impl Default for Args {
             log_format: LogFormat::Text,
             parent: None,
             parent_build: None,
+            force: false,
         }
     }
 }
@@ -568,6 +572,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         "gongga server starting"
     );
 
+    // Before the shutdown path: a server that never listened must not wait on
+    // tasks it never started.
+    let socket = std::sync::Arc::new(net::bind_address(cfg.bind, args.force).await?);
+
     // A signal, or a dead window: a stop request, on the path `cancel` takes.
     let signalled = dispatch.clone();
     signal::watch(
@@ -576,7 +584,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         move || async move { commands::stop(&signalled).await },
     );
 
-    let served = net::serve(Arc::new(cfg), dispatch, bus).await;
+    let served = net::serve(std::sync::Arc::new(cfg), socket, dispatch, bus).await;
     // Nothing new may fire once the socket stopped; turns were interrupted already.
     stop_watching.cancel();
     let _ = matcher.await;
