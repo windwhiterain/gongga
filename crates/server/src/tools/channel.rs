@@ -51,6 +51,26 @@ impl Outcome {
             },
         })
     }
+
+    /// A call's answer, capped like every tool's output.
+    ///
+    /// # Invariant
+    ///
+    /// One builder for the call and for the notice.
+    pub fn result(&self, max_output_chars: usize, output_dir: &std::path::Path) -> Value {
+        let mut answer = self.to_json();
+        if let Some(window) = answer.get("output").and_then(Value::as_str) {
+            let capped = crate::tools::spill::cap_output(
+                crate::prompts::shared(),
+                window,
+                max_output_chars,
+                Some(output_dir),
+                &self.id,
+            );
+            answer["output"] = json!(capped);
+        }
+        answer
+    }
 }
 
 /// What a channel owes the session waiting on it: an end, or the marker a call asked
@@ -735,6 +755,9 @@ impl Channels {
                         // another writer's to do, and a refusal here is no failure.
                         let _ = channels.store.finish_channel(row.id, exit);
                     }
+                    // A notice is a read: it carries the window, so the cursor
+                    // moves with it.
+                    let _ = channels.store.set_channel_upto(row.id, looked.upto);
                     (channels.notify)(ChannelEnd {
                         session: row.session.clone(),
                         id: row.path.clone(),

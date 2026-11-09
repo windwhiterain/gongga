@@ -307,6 +307,7 @@ impl LineKind {
             // SPEC names no item for these: the harness's remarks, the prose the
             // operator typed, and the answer carry no mark.
             LineKind::System | LineKind::User | LineKind::Assistant => "",
+            LineKind::Inject => "\u{21b3}",
             LineKind::Command => "$",
             LineKind::Reasoning => "\u{25c7}",
             LineKind::ToolCall => "\u{25b8}",
@@ -352,6 +353,13 @@ impl LineKind {
 pub enum LineKind {
     /// The harness talking about itself: connected, offline, a status word.
     System,
+    /// The harness writing into the session: a start card, a notice, advice.
+    ///
+    /// # Invariant
+    ///
+    /// Its own kind, not `User`: the model reads the row as a user turn, and the
+    /// reader has to see who wrote it. See `docs/notes/client-lib.md`.
+    Inject,
     /// A command line, echoed: `/cmd` as typed, or `cmd --args` as it ran.
     ///
     /// # Invariant
@@ -1412,9 +1420,13 @@ impl Client {
         };
         // The operator's own words, replayed: a line, exactly as the echo that
         // wrote them live put it there.
-        if e.part == ResponsePart::Input {
+        if matches!(e.part, ResponsePart::Input | ResponsePart::Inject) {
+            let kind = match e.part {
+                ResponsePart::Inject => LineKind::Inject,
+                _ => LineKind::User,
+            };
             let window = e.session.clone();
-            sink.line(&window, LineKind::User, &e.text);
+            sink.line(&window, kind, &e.text);
             return;
         }
         let (kind, label) = match e.part {
@@ -1429,7 +1441,7 @@ impl Client {
             ResponsePart::Activity => (LineKind::ToolCall, "provider: "),
             ResponsePart::Output => (LineKind::Assistant, ""),
             // Handled above; the block path never sees one.
-            ResponsePart::Input => (LineKind::User, ""),
+            ResponsePart::Input | ResponsePart::Inject => (LineKind::User, ""),
         };
         // The tag says which part of the answer this is; the window says who speaks.
         let prefix = self.tag(&e.session, label);

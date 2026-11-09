@@ -155,9 +155,11 @@ queues an `inject` row marked `notice: "channel"` -- the same door a finished ba
 job uses, and marked so it cannot wake an idle session. The flag lives in the channel's
 row (`wait_marker`), so an offer to notice survives a restart.
 
-The notice does **not** take the window. It carries a preview for the reader and says
-`check` has the rest, because a notice that consumed the output would be the one way
-to lose it: the cursor moves when someone asks, not when the program ends.
+The notice **is** the answer: the same `Result` a `check` returns, built by
+`Outcome::result` with the same cap, and it takes the window with it -- a notice that
+carried the bytes and left the cursor where it was would be the way to hand the same
+window over twice. The row is stored as `inject`, so the reader draws it as the harness
+talking while the model still reads a user turn.
 
 ## Still owed: the eighteen go
 

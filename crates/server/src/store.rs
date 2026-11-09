@@ -622,7 +622,7 @@ fn settle_handover(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         tx.execute(
             "INSERT INTO messages (session_id, seq, kind, content, display, call_id, created_at)
              VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1),
-                     'text', ?2, ?3, NULL, ?4)",
+                     'inject', ?2, ?3, NULL, ?4)",
             params![
                 session_id,
                 wire_item("text", &value).map(|item| item.to_string()),
@@ -2189,6 +2189,7 @@ impl Store {
         tx: &rusqlite::Transaction<'_>,
         session_id: i64,
         expanded: &crate::meta::Expanded,
+        kind: &str,
     ) -> anyhow::Result<i64> {
         let no_text = tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM messages
@@ -2219,7 +2220,7 @@ impl Store {
         Ok(Self::append_message_conn(
             tx,
             session_id,
-            "text",
+            kind,
             &user_row(expanded),
         )?)
     }
@@ -2249,12 +2250,15 @@ impl Store {
             ],
         )?;
         let id = tx.last_insert_rowid();
-        let seq = self.append_user_conn(&tx, session_id, expanded)?;
+        let seq = self.append_user_conn(&tx, session_id, expanded, "text")?;
         tx.commit()?;
         Ok((
             id,
             OperatorRows {
-                lines: vec![expanded.text.clone()],
+                lines: vec![OperatorLine {
+                    text: expanded.text.clone(),
+                    injected: false,
+                }],
                 seq,
             },
         ))
@@ -2418,8 +2422,11 @@ impl Store {
 
             let expanded = crate::meta::Expanded::from_json(&payload)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
-            written.seq = self.append_user_conn(&tx, session_id, &expanded)?;
-            written.lines.push(expanded.text.clone());
+            written.seq = self.append_user_conn(&tx, session_id, &expanded, "inject")?;
+            written.lines.push(OperatorLine {
+                text: expanded.text.clone(),
+                injected: true,
+            });
             if let Some((round, segment_after, generation)) = compact_round {
                 let request = crate::live_compact::Request {
                     request_seq: written.seq,
@@ -3031,9 +3038,17 @@ pub struct SubscriptionRow {
 #[derive(Debug, Clone, Default)]
 pub struct OperatorRows {
     /// The lines, in the order they landed.
-    pub lines: Vec<String>,
+    pub lines: Vec<OperatorLine>,
     /// The seq of the last row this transaction wrote.
     pub seq: i64,
+}
+
+/// One line a transaction wrote, and whose words they are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorLine {
+    pub text: String,
+    /// The harness's own words: drawn as its own block, never as the operator's.
+    pub injected: bool,
 }
 
 /// A row of unfinished work, replayed on the next start.
@@ -3294,7 +3309,7 @@ impl MessageRow {
                 row.elapsed_ms = value.get("elapsed_ms").and_then(|v| v.as_u64());
             }
             // The harness talking to the reader: no role, no answer in the model's mouth.
-            "notice" | "thinking_mark" => row.text = str_of("text").unwrap_or_default(),
+            "notice" | "thinking_mark" | "inject" => row.text = str_of("text").unwrap_or_default(),
             // The reader sees which prompt was in force, not 10k characters of it.
             "system" => {
                 let cwd = str_of("cwd").unwrap_or_default();

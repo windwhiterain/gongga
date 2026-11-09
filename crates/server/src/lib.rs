@@ -324,31 +324,23 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         store.clone(),
         {
             let store = store.clone();
+            let capped_at = cfg.bash.max_output_chars;
+            let spill_dir = output_dir.clone();
             Arc::new(move |end: crate::tools::channel::ChannelEnd| {
                 // A deleted session owes nothing, and its rows would be stranded.
                 if matches!(store.get_session(&end.session), Ok(None)) {
                     return;
                 }
-                let status = match (end.matched, end.exit) {
-                    (_, Some(0)) => "finished successfully".to_string(),
-                    (_, Some(code)) => format!("finished with exit status {code}"),
-                    (true, None) => "said the line you were waiting for".to_string(),
-                    (false, None) => "ended, though its exit status could not be read".to_string(),
+                // The notice is the call's own answer, late: the same `Result` a
+                // `check` returns, built by the same one builder.
+                let outcome = crate::tools::channel::Outcome {
+                    id: end.id.clone(),
+                    output: end.output.clone(),
+                    time: end.time,
+                    matched: end.matched,
+                    exit: end.exit,
                 };
-                let ran = crate::agent::spent(end.time.as_millis() as u64);
-                // A preview: `check` still holds the window, because a notice that
-                // consumed it would be the one way to lose the output.
-                let said = if end.output.trim().is_empty() {
-                    String::new()
-                } else {
-                    let preview: String = end.output.chars().take(500).collect();
-                    format!("\n\nWhat it said since you last read it:\n{preview}")
-                };
-                let message = format!(
-                    "The channel {:?} you started has {status} after {ran}. `check {}` reads \
-                     what it printed; `del_channel {}` forgets it.{said}",
-                    end.id, end.id, end.id
-                );
+                let message = outcome.result(capped_at, &spill_dir).to_string();
                 // Marked: the server talking, so it must not wake an idle session.
                 if let Err(e) = store.add_pending_task(
                     &end.session,

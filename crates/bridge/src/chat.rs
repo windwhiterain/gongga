@@ -110,7 +110,7 @@ impl Row {
                 ResponsePart::Activity => "builtin_call",
                 // A replayed message of the operator's own: the chat already
                 // shows what was asked, so it is not a row of the answer.
-                ResponsePart::Input => "text",
+                ResponsePart::Input | ResponsePart::Inject => "text",
             },
             text: text.to_string(),
         }

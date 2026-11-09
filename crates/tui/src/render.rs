@@ -1245,10 +1245,12 @@ fn style_for(kind: LineKind) -> Style {
     match kind {
         // The harness about itself: the quietest thing on screen.
         LineKind::System => dim(),
-        // What was asked for: magenta matches nothing else.
-        LineKind::Command => Style::default().fg(Color::LightMagenta),
-        // What the operator typed as prose: the other half of "asked for".
-        LineKind::User => Style::default().fg(Color::LightCyan),
+        // What was asked for: purple matches nothing else.
+        LineKind::Command => Style::default().fg(Color::Magenta),
+        // What the operator typed as prose: pink, the other half of "asked for".
+        LineKind::User => Style::default().fg(Color::LightMagenta),
+        // The harness talking: cyan, and never the operator's ink.
+        LineKind::Inject => Style::default().fg(Color::LightCyan),
         // The answer.
         LineKind::Assistant => Style::default().fg(Color::White),
         // The model thinking: dark gray, italic. Not `Gray`: near-white here.

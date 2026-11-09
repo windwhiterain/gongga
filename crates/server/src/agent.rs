@@ -1700,11 +1700,17 @@ impl Agent {
     /// See `docs/notes/server-agent.md`.
     pub(crate) fn announce_operator_rows(&self, session: &str, rows: crate::store::OperatorRows) {
         for line in &rows.lines {
+            // The harness's own words are its own block: the operator's echo is
+            // drawn as theirs, and this as the harness talking.
+            let part = match line.injected {
+                true => ResponsePart::Inject,
+                false => ResponsePart::Input,
+            };
             self.bus.publish(Event::Response(ResponseEvent {
                 session: session.to_string(),
                 turn: protocol::REPLAY_TURN,
-                part: ResponsePart::Input,
-                text: line.clone(),
+                part,
+                text: line.text.clone(),
                 done: true,
                 call_id: None,
             }));
@@ -1762,7 +1768,10 @@ impl Agent {
                     )),
                     // A call's text is its arguments; an activity is progress;
                     // the operator's words are not the model's to store.
-                    ResponsePart::ToolCall | ResponsePart::Activity | ResponsePart::Input => None,
+                    ResponsePart::ToolCall
+                    | ResponsePart::Activity
+                    | ResponsePart::Input
+                    | ResponsePart::Inject => None,
                 };
                 if let Some((kind, payload)) = stored {
                     self.announce_row(name, self.store.append_message(id, kind, &payload));
@@ -2296,5 +2305,6 @@ fn part_name(part: ResponsePart) -> &'static str {
         ResponsePart::Activity => "activity",
         // Never streamed: a replayed message is a row, and a row is not drafted.
         ResponsePart::Input => "input",
+        ResponsePart::Inject => "inject",
     }
 }

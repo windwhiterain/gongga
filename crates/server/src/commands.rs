@@ -2472,6 +2472,18 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
     if row.text.trim().is_empty() {
         return None;
     }
+    // The harness's own words: a row the model reads as a user turn, drawn as the
+    // harness rather than as the operator.
+    if row.kind == "inject" {
+        return Some(Event::Response(ResponseEvent {
+            session: name.to_string(),
+            turn: REPLAY_TURN,
+            part: ResponsePart::Inject,
+            text: row.text.clone(),
+            done: true,
+            call_id: None,
+        }));
+    }
     // The operator's own message: a line, exactly where the echo put it.
     if row.role.as_deref() == Some("user") {
         return Some(Event::Response(ResponseEvent {
