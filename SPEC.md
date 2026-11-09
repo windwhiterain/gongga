@@ -37,26 +37,78 @@ standard OpenAI Response API/Anthropic API.
 path, rendered in hierarchy.
 
 ## Tool
-result := {id, output, time, mactehd: bool, exit: int|none}
-new(name: str, args: list[str] | dict[str], input: optional[str], id: optional[path], wait: optional[time], until: optional[str]) -> result:
-  create a new channel.
-  - if name is "GONGGA_CLI", route to cmd with session arg sticky to caller.
-check(id: path, input: optional[str], wait: optional[time], until: optional[str]) -> result
+Channel := path
+Result := {id: Channel, output: str, time: time, mactehd: bool, exit: int|none}
+fn new(name: str, args: list[str] | dict[str], input: optional[str] = none, id: optional[Channel] = none, wait: optional[time] = none, until: optional[str] = none, remote: optional[str] = <session's remote>, cwd: optional[path] = <session's cwd>) -> Result
+fn check(id: Channel, input: optional[str] = none, wait: optional[time] = none, until: optional[str] = none) -> result
+fn wait(time: time)
+- interrup will end the call.
+fn <tool>(**args)
+- route to server cmd with caller session as extra argument
 
 chennel finished in backgrpund will also notice caller with result.
 
 - wait: if none, wait default time, if 0, return immediately.
 - util: use corresponding sticky value according to name, e.g. "python"/"bash".
-- id: auto generate if not provided.
+- id: in each session's namespace, auto generate if not provided.
 - output: new output since last read.
-- time: total time cost since the job start.
+- time: time cost since last input.
 
+## Server Cmd
+sytax:
+- `<struct>{..}`: struct update type, e.g. `{a: int, b: float}: {a: int, b: float, c: str}{..}`.
 
-## Cmd(refactor version)
-- rename_job(id: path, new_id: path, session: path) -> result
-- ls_job(path: path, session: path) -> list[job]
-- del_job(path: path, session: path) -> result
+```python
+Cmd := {name: str, args: dict[str, any]}
+Session := path
+fn new_channel(id: Channel, name: str, session: Session):
+fn input_channel(id: Channel, input: str, session: Session)
+fn rename_channel(id: Channel, new_id: path, session: Session)
+fn ls_channel(path: path, session: Session)
+fn del_channel(path: path, session: Session)
+Model := {provider, model}
+ModelConfig := {
+  model: Model,
+  thinking: Thinking = provider_default(), # re-default if model change
+  ctx_limit = 70%, # re-default if model change
+  cache_tier = provider_default() # re-default if model change
+}
+Workspace := {remote: optional[Remote] = none, cwd: path = "."}
+SessionConfig := {
+  model_config: ModelConfig,
+  workspace: Workspace,
+  keep_alive: bool, # if auto send message to interrup waiting when approaching the cache alive deadline.
+}
+fn new_session(id: Session, config: SessionConfig)
+fn set_session(id: Session, config_delta: SessionConfig{..})
+fn del_session(id: Session)
+  # also delete all channel under the session.
+fn ls_session(path: path)
+fn send_message(message: str, session: Session)
+  # inject message when step end.
+  # interrupt if waiting.
+fn interrupt_session(id: Session):
+  # stop llm streaming.
+  # turn waiting channel into background.
+fn trigger_event(event: Event)
+Subscription := path
+fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, session: Session):
+    # when pattern matched triggered event, run the cmd.
+fn del_subscription(id: Subscription, session: Session)
+fn ls_subsscription(path: path, sesssion: Session)
+cancel(keep_alive: bool = false):
+  # interrupt every session then quit, by default kill all channel, optionally make everychannel background, keep them alive so retart will adopt them.
+```
+## Python Cmd
+provided by a shipped uv python package.
 
+```python
+Skill := path # abstract naming space
+fn ls_skill(path: path, session: Sesssion)
+fn run_skill(id: Skill, cmd: Cmd, sesssion: Session)
+fn get_messages(sesssion: Sesssion, range: Range)
+fn clone_sesssion(id: Sesssion, new_id: path)
+```
 
 ## Server State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
@@ -88,6 +140,7 @@ for the first user message to a empty session, find all meta references recursiv
 - when agent switch from explore to build, set the starting checkpoint of compaction.
 - after the starting checkpoint, every time reach a context increase limit, ask the agent to call live compact to compact the history since the last checkpoint.
 - live compact summary can reference meta that directly embed in the summary, creating a new checkpoint.
+- the summary replace the history to compact.
 
 ## monitor
 - providers: spawn/notice when a session failed on an llm request (refused, or the
@@ -144,38 +197,13 @@ for the first user message to a empty session, find all meta references recursiv
   - Alt+Q: exit.
 
 ## Sticky
-stikcy argument will auto fill:
-- non optional corresponding argument in cmd if missing.
-- optional corresponding argument's initial value (if it has).
-stikcy to xxx means del its sticky if sticky xxx is changed
+stikcy argument will auto fill in missing argument in function call with corresponding type.
+use argument with certain type will set the sticky value of that type.
+use struct update type will also update the corresponding value of that type.
 
 
-## Cmd
+## Client Cmd
 all named argument's name can be ommited via argument order.
-
-- server:
-  - `set_session --name <session>(sticky) [--model <model>](initial: none)(sticky) [--thinking <thinking>](initial: default)(stikcy to model) [--ctx_limit <ctx_limit%>](initial: "70%")(tsikcy to model) [--cache_iter <cache_iter>](initial: shortest)(sticky over model) [--remote <remote>](initial: none) [--cwd <cwd>](initial: ".")(sticky to remote) [--must_create <bool>](initial: false)`:
-    - `--must_create true` refuses the command when the session already exists: a caller
-      that starts its own session must not join another one's transcript by reusing a name.
-  - `del_session --name <session>(sticky)`: also delete all bash with the session name in key.
-  - `send_message --message <message> --name <session>(sticky)`: inject message instantly, turn waiting bash to backgound.
-  - `interrupt_session --name <session>(sticky)`
-  - `cancel --keep_alive <keep_alive>`: interrupt every session then quit, by default kill all channel, optionally make every channel background, keep them alive so retart will adopt them.
-  - `trigger_event --event <event>`
-  - `subscribe --name <subscription> --pattern <pattern> [--persistant <bool>] [--bash <bash> --cmd <cmd>] [--python <python> --code <code>]`:
-    when pattern matched triggered event, run bash cmd or python code in persistant bash or python interpreter.
-  - `ls_subscribe --name_regex <subscription>`
-  - `del_subscribe --name_regex <subscription>`
-  - `skill --name <skill> --action <action>`
-    `--action run --entry <entry> <args...>`: run a python function the skill provide as cmd
-    `--action ls`: list all skills' metadata.
-- server_script: that registered by external python scripts
-  - `get_messages [--range <begin:end>] --session <session>(sticky) [--replay <bool>]`: return the items in closed range <begin:end> (negative number count from end, missing number means boundary).
-    - `--replay true` answers as a window draws: only the rows a window shows, the
-      operator's messages as their own lines, and the parts still streaming under
-      the turn they belong to. The result states `last_seq` and `as_of`; `as_of` is
-      the stream position the answer is a picture of.
-  - `clone_session --session <session> --name <name>`
 - client:
   - `set_sticky --type <type> --value <value>`:
   - `del_sticky --type <type>`
@@ -187,6 +215,9 @@ all named argument's name can be ommited via argument order.
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <home>](default: "~/.gongga")`
 
+## Remote
+Auto detect, validate and install remote runner with latest compatible version.
+
 ## Git Managed Config
 auto choose the latest commit within same protocol, personal(local) change rebase on official(remote).
 
@@ -196,20 +227,20 @@ provider uv python package, API can be called by harness cmd or python import.
 ## Skill: Self Control
 do whatever user can do to the server.
 
-## Skill: subagent
+## Skill: Subagent
 - create a new session under caller session's name.
 - subscribe new session's turn end event.
 - send_message to new session.
 - optionaly wait.
 
-## Skill: evolve
-restart server should still keep its lifetime, e.g. tui spawned server's lifetime bound to tui.
+## Skill: Evolve
+restart server should still keep its lifetime unchange, e.g. tui spawned server's lifetime bound to tui.
 
 ## Skill: Polity
 agents play certain roles to keep context focus.
 
 roles:
-- justice (pro/sota): talk to the user, understand user.
+- justice (pro/sota): talk to the user, record user's requirements.
   - judge if plan is conform to the spec and approve to implment.
   - judge if report is conform to the spec and approve.
   - judge if proposal is in spirit of the spec and send to user for approval.
@@ -222,6 +253,7 @@ roles:
   - present proposal of changes to the spec.
 
 record:
+- requirement{proposals, plans, reports, solved}
 - proposal{example, expected, actual, actual_spec, expected_spec}
 - plan
 - report
