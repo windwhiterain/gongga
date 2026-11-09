@@ -625,7 +625,7 @@ fn settle_handover(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
                      'inject', ?2, ?3, NULL, ?4)",
             params![
                 session_id,
-                wire_item("text", &value).map(|item| item.to_string()),
+                wire_item(Kind::Inject, &value).map(|item| item.to_string()),
                 value.to_string(),
                 now_millis()
             ],
@@ -661,7 +661,9 @@ fn backfill_wire_items(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         conn.execute(
             "UPDATE messages SET content = ?1, call_id = ?2 WHERE id = ?3",
             params![
-                wire_item(&kind, &value).map(|item| item.to_string()),
+                Kind::parse(&kind)
+                    .and_then(|kind| wire_item(kind, &value))
+                    .map(|item| item.to_string()),
                 value.get("call_id").and_then(|v| v.as_str()),
                 id
             ],
@@ -1182,7 +1184,9 @@ impl Store {
             params![
                 session_id,
                 kind,
-                wire_item(kind, content).map(|item| item.to_string()),
+                Kind::parse(kind)
+                    .and_then(|known| wire_item(known, content))
+                    .map(|item| item.to_string()),
                 serde_json::to_string(content)?,
                 content.get("call_id").and_then(|v| v.as_str()),
                 now_millis()
@@ -3273,6 +3277,62 @@ pub struct MessageRow {
     pub elapsed_ms: Option<u64>,
 }
 
+/// What one row of the transcript is, as a closed set.
+///
+/// # Invariant
+///
+/// Matched exhaustively wherever a row is decided about -- what a request sends,/// what a reader draws -- so a new kind is a build error at each. It was a `&str`,/// and the kind that reached a wildcard stored a message the model never got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Text,
+    Reasoning,
+    ToolCall,
+    ToolResult,
+    Notice,
+    ThinkingMark,
+    Inject,
+    System,
+    Tools,
+    BuiltinCall,
+    LiveCompactRequest,
+}
+
+impl Kind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Kind::Text => "text",
+            Kind::Reasoning => "reasoning",
+            Kind::ToolCall => "tool_call",
+            Kind::ToolResult => "tool_result",
+            Kind::Notice => "notice",
+            Kind::ThinkingMark => "thinking_mark",
+            Kind::Inject => "inject",
+            Kind::System => "system",
+            Kind::Tools => "tools",
+            Kind::BuiltinCall => "builtin_call",
+            Kind::LiveCompactRequest => crate::live_compact::REQUEST_KIND,
+        }
+    }
+
+    /// The variant a stored kind names; `None` is a row this build cannot name.
+    pub(crate) fn parse(kind: &str) -> Option<Self> {
+        match kind {
+            "text" => Some(Kind::Text),
+            "reasoning" => Some(Kind::Reasoning),
+            "tool_call" => Some(Kind::ToolCall),
+            "tool_result" => Some(Kind::ToolResult),
+            "notice" => Some(Kind::Notice),
+            "thinking_mark" => Some(Kind::ThinkingMark),
+            "inject" => Some(Kind::Inject),
+            "system" => Some(Kind::System),
+            "tools" => Some(Kind::Tools),
+            "builtin_call" => Some(Kind::BuiltinCall),
+            other if other == crate::live_compact::REQUEST_KIND => Some(Kind::LiveCompactRequest),
+            _ => None,
+        }
+    }
+}
+
 impl MessageRow {
     /// Flatten one stored row, for callers with no store at hand.
     pub(crate) fn parse(seq: i64, kind: &str, content: &str) -> Self {
@@ -3289,18 +3349,18 @@ impl MessageRow {
             ok: None,
             elapsed_ms: None,
         };
-        match kind {
-            "text" => {
+        match Kind::parse(kind) {
+            Some(Kind::Text) => {
                 row.role = str_of("role");
                 row.text = str_of("text").unwrap_or_default();
             }
-            "reasoning" => row.text = str_of("summary").unwrap_or_default(),
-            "tool_call" => {
+            Some(Kind::Reasoning) => row.text = str_of("summary").unwrap_or_default(),
+            Some(Kind::ToolCall) => {
                 row.call_id = str_of("call_id");
                 row.name = str_of("name");
                 row.text = str_of("arguments").unwrap_or_default();
             }
-            "tool_result" => {
+            Some(Kind::ToolResult) => {
                 row.call_id = str_of("call_id");
                 row.text = str_of("output").unwrap_or_default();
                 // Absent on a row written before the outcome was kept: a read
@@ -3309,9 +3369,11 @@ impl MessageRow {
                 row.elapsed_ms = value.get("elapsed_ms").and_then(|v| v.as_u64());
             }
             // The harness talking to the reader: no role, no answer in the model's mouth.
-            "notice" | "thinking_mark" | "inject" => row.text = str_of("text").unwrap_or_default(),
+            Some(Kind::Notice | Kind::ThinkingMark | Kind::Inject) => {
+                row.text = str_of("text").unwrap_or_default()
+            }
             // The reader sees which prompt was in force, not 10k characters of it.
-            "system" => {
+            Some(Kind::System) => {
                 let cwd = str_of("cwd").unwrap_or_default();
                 let chars = str_of("instructions").unwrap_or_default().chars().count();
                 row.text = format!(
@@ -3320,11 +3382,21 @@ impl MessageRow {
             }
             // Something that ran at the provider, not here: it has no output to
             // show, so the line describes what it did instead.
-            "builtin_call" => {
+            // The set in force: how big it is, not the schema the model reads.
+            Some(Kind::Tools) => {
+                let count = value
+                    .get("tools")
+                    .and_then(|v| v.as_array())
+                    .map(|list| list.len())
+                    .unwrap_or(0);
+                row.text = format!("tool set in force: {count} tool(s)");
+            }
+            Some(Kind::LiveCompactRequest) => row.text = "live compact requested".to_string(),
+            Some(Kind::BuiltinCall) => {
                 let item = value.get("item").unwrap_or(&serde_json::Value::Null);
                 row.text = activity_brief(item);
             }
-            other => tracing::warn!("unknown message kind {other}"),
+            None => tracing::warn!("unknown message kind {kind}"),
         }
         row
     }
@@ -3362,7 +3434,7 @@ fn user_row(expanded: &crate::meta::Expanded) -> serde_json::Value {
     row
 }
 
-fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value> {
+fn wire_item(kind: Kind, value: &serde_json::Value) -> Option<serde_json::Value> {
     let text_of = |key: &str| {
         value
             .get(key)
@@ -3374,9 +3446,9 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
     match kind {
         // Records a request reads, not messages it sends: the prompt and the tool
         // set in force keep their payload in `display`.
-        "system" | "tools" => None,
+        Kind::System | Kind::Tools => None,
         // An injection is a user turn to the model: the kind names the reader's block.
-        "text" | "inject" => {
+        Kind::Text | Kind::Inject => {
             let role = text_of("role");
             Some(if role == "assistant" {
                 json!({"role": "assistant", "content": [{"type": "output_text", "text": text_of("text")}]})
@@ -3384,7 +3456,7 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
                 json!({"role": role, "content": text_of("text")})
             })
         }
-        "reasoning" => {
+        Kind::Reasoning => {
             // Byte for byte, never rebuilt; see `docs/notes/server-store.md`.
             if let Some(item) = value.get("item").filter(|item| item.is_object()) {
                 return Some(item.clone());
@@ -3407,20 +3479,20 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             }
             Some(item)
         }
-        "tool_call" => Some(json!({
+        Kind::ToolCall => Some(json!({
             "type": "function_call",
             "call_id": text_of("call_id"),
             "name": text_of("name"),
             "arguments": text_of("arguments"),
         })),
         // A boundary the harness draws, not a thing the reader said.
-        "thinking_mark" => Some(json!({"role": "user", "content": text_of("text")})),
-        "tool_result" => Some(json!({
+        Kind::ThinkingMark => Some(json!({"role": "user", "content": text_of("text")})),
+        Kind::ToolResult => Some(json!({
             "type": "function_call_output",
             "call_id": text_of("call_id"),
             "output": text_of("output"),
         })),
-        "builtin_call" => {
+        Kind::BuiltinCall => {
             let item = value.get("item")?;
             if item.is_null() {
                 return None;
@@ -3432,7 +3504,8 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             // Read back now, not at send time: replayability is the row's property.
             crate::llm::sendable_activity(item, replayable, crate::blobs::dir())
         }
-        _ => None,
+        // Records a request reads rather than messages it sends: the harness.
+        Kind::Notice | Kind::LiveCompactRequest => None,
     }
 }
 
