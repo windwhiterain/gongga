@@ -3380,8 +3380,6 @@ impl MessageRow {
                     "[prompt in force] {chars} characters of instructions, read from {cwd}"
                 );
             }
-            // Something that ran at the provider, not here: it has no output to
-            // show, so the line describes what it did instead.
             // The set in force: how big it is, not the schema the model reads.
             Some(Kind::Tools) => {
                 let count = value
@@ -3392,6 +3390,8 @@ impl MessageRow {
                 row.text = format!("tool set in force: {count} tool(s)");
             }
             Some(Kind::LiveCompactRequest) => row.text = "live compact requested".to_string(),
+            // Something that ran at the provider, not here: it has no output to
+            // show, so the line describes what it did instead.
             Some(Kind::BuiltinCall) => {
                 let item = value.get("item").unwrap_or(&serde_json::Value::Null);
                 row.text = activity_brief(item);
