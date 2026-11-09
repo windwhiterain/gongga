@@ -290,7 +290,10 @@ fn running_in(dir: &Path) -> Vec<Process> {
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            if !matches!(name.as_str(), "gongga-server" | "gongga-tui" | "gongga-cli") {
+            if !matches!(
+                name.as_str(),
+                "gongga-server" | "gongga-tui" | "gongga-client" | "gongga-cli"
+            ) {
                 return None;
             }
             Some(Process {

@@ -36,7 +36,7 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实，`Log` / `Panes` 共用一份 | UI 改为 spawn 这个 bin、只做绘制（A-3）；`log.rs` 的 `Entry` 折行态与 `Ledger` 实例仍留 TUI（A-4）；四类控制帧、bundle 布线、多 client L3 |
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实，`Log` / `Panes` 共用一份 | UI 改为 spawn 这个 bin、只做绘制（A-3）；`log.rs` 的 `Entry` 折行态与 `Ledger` 实例仍留 TUI（A-4）；四类控制帧已完成（见下）、多 client L3 |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
 | `[tui]` binary | `crates/tui`，`run.rs` 仍装着 `interactive` 主循环、`TuiSink` 与窗口 journal | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
@@ -306,8 +306,7 @@ journal，pipe 前端自己实例化这两者；`client::runtime` 已有 `Fronte
 包装；`log.rs` 的 `Log` 与 ratatui 折行仍留 TUI，但它已不持有 `Cache`，磁盘读写全
 走 client 的 `WindowJournal`（A-2，见下）；`Panes` 的窗口事实也已上提到同一份
 `WindowJournal`（A-1）；⑤ client bin target
-接管道骨架（已完成，见下一节）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
-payload）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
+接管道骨架（已完成，见下一节）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（已完成，见下）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
 主循环上提的接口形状（object-safe `Frontend`、`Box<dyn Sink>`、`FrontendEvent`
 与两步迁移）见 `docs/notes/client-frontend.md`；两步均已完成，循环现由
 `client::runtime::run` 持有，TUI 只提供 UI 工厂与 `owner_pid`。
@@ -367,9 +366,11 @@ pipe 前端没有块可重写，追加 `Floor` + `Stamp` 已经能回答补拉�
 `UiIntent::Complete` 让 completion 词表留在 client 侧（`Frontend::show_completion`），
 既没有第二套协议，也没有把 catalog 过线。见 `docs/notes/client-render-wire.md`。
 
-裁定 2 的 bundle 布线（⑦）还没做：`gongga-client` 现在能被 cargo 构建出来，但
-`crates/bundle` 的 payload 白名单仍只认 `gongga-server` / `gongga-tui` /
-`gongga-cli`，分发包里还没有它。
+裁定 2 的 bundle 布线（⑦）已完成：`crates/bundle/build.rs` 现在同时构建
+`gongga-server` / `gongga-tui` / `gongga-client` 并把四个二进制写进
+`include_bytes!` 表（`gongga-runner` 照旧随行）；`payload_impl.rs` 的退役进程
+白名单也认 `gongga-client`，免得旧 build 的目录在 client 还活着时被删。
+`gongga-client` 不是用户直接敲的程序，所以没有加进 `WORDS` / `by_file_name`。
 
 ### 裁定 A：先搬 journal，再让 TUI 退成前端（2026-11-09）
 

@@ -90,7 +90,14 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         .join("../../target/bundle-payload");
     let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string()));
     cmd.args(["build", "--profile", profile])
-        .args(["-p", "gongga-server", "-p", "gongga-tui"])
+        .args([
+            "-p",
+            "gongga-server",
+            "-p",
+            "gongga-tui",
+            "-p",
+            "gongga-client",
+        ])
         .current_dir(Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../.."))
         .env("CARGO_TARGET_DIR", &target)
         // The payload is built for this compile: inheriting the feature would
@@ -106,17 +113,22 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         String::from_utf8_lossy(&output.stderr)
     );
     let suffix = if cfg!(windows) { ".exe" } else { "" };
-    // No command line: it is this home's Python. The runner rides along because a
-    // peer's shells need it.
-    ["gongga-server", "gongga-tui", "gongga-runner"]
-        .into_iter()
-        .map(|name| {
-            (
-                name,
-                target
-                    .join(if profile == "dev" { "debug" } else { profile })
-                    .join(format!("{name}{suffix}")),
-            )
-        })
-        .collect()
+    // A window starts the client as its child, so the pipe protocol travels in
+    // the same file as the window that speaks it.
+    [
+        "gongga-server",
+        "gongga-tui",
+        "gongga-client",
+        "gongga-runner",
+    ]
+    .into_iter()
+    .map(|name| {
+        (
+            name,
+            target
+                .join(if profile == "dev" { "debug" } else { profile })
+                .join(format!("{name}{suffix}")),
+        )
+    })
+    .collect()
 }
