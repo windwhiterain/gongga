@@ -2217,6 +2217,9 @@ fn summary_keys(tool: &str) -> &'static [&'static str] {
         // SPEC lists bash's own set; another tool is summarised by nothing yet,
         // which still reads better than a wall of JSON.
         "bash" => &["name", "background", "time_out"],
+        // SPEC's `new(name #abstraction, wait #abstraction)`: what a channel
+        // is opened on, and nothing else.
+        "new" => &["name", "wait"],
         "check_job" => &["job_id", "wait_ms"],
         _ => &[],
     }

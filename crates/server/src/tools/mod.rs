@@ -1059,9 +1059,8 @@ pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "
 pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
     let mut schema = tool.spec().schema();
     // A tool the tunnel leaves alone takes none of the tunnel's words. See SPEC.
-    if tool.tunneled()
-        && let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
-    {
+    // SPEC: every tool call may carry a `description`, tunnel or no tunnel.
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties
             .entry("description".to_string())
             .or_insert_with(|| {
@@ -1069,6 +1068,11 @@ pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
                     "type": "string"
                 })
             });
+    }
+    // The tunnel's other words are the tunnel's: a tool left alone takes none.
+    if tool.tunneled()
+        && let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
+    {
         properties
             .entry("max_output".to_string())
             .or_insert_with(|| {

@@ -2543,7 +2543,7 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
 
 fn prepare_delete(d: &Dispatch, name: &str) -> (bool, usize) {
     // A delete drops the turn even when it was waiting: nothing of it is kept.
-    let interrupted = interrupt(d, name, false);
+    let interrupted = interrupt(d, name, false, false);
     if let Some(session) = d.sessions.peek(name) {
         session.mark_deleted();
     }
@@ -2632,22 +2632,25 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
 }
 
 /// Stops one session's turn and drops its pending rows.
-fn interrupt(d: &Dispatch, name: &str, keep_waiting: bool) -> (bool, usize) {
+fn interrupt(d: &Dispatch, name: &str, keep_waiting: bool, keep_turn: bool) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);
     };
     // Read before the cancel: afterwards there is nothing left to ask.
     let was_busy = session.busy();
+    let in_wait = session.stop_signal().is_waiting();
     // SPEC: a wait lives across a cancel. Marked before the token fires, because
     // the token is what ends the wait.
-    let waiting = keep_waiting && session.stop_signal().is_waiting();
-    if waiting {
+    let waiting = keep_waiting && in_wait;
+    // SPEC: an interrupted turn is the next start's to continue -- unless the
+    // session was idle, or was only inside `wait`, which ends here.
+    let resume = waiting || (keep_turn && was_busy && !in_wait);
+    if resume {
         session.mark_resumable();
     }
     session.cancel();
-    // Aborting is deliberate, so the work is not owed -- except a wait, whose row
-    // is the next start's to resume.
-    let dropped = if waiting {
+    // Aborting is deliberate, so the work is not owed unless a start will resume it.
+    let dropped = if resume {
         d.store
             .clear_pending_tasks_except(name, "turn")
             .unwrap_or(0)
@@ -2668,7 +2671,8 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
         };
     }
     // `interrupt_session` drops the turn; only a `cancel` keeps a waiting one.
-    let (was_busy, dropped) = interrupt(d, &name, false);
+    // SPEC: an interrupted turn is continued by the next start.
+    let (was_busy, dropped) = interrupt(d, &name, false, true);
     let mut message = if was_busy {
         format!("interrupted {name}")
     } else {
@@ -2709,11 +2713,17 @@ pub(crate) async fn stop(d: &Dispatch) {
 async fn cancel(d: &Dispatch, origin: &Origin) -> Outcome {
     // The listen loop keeps dispatching through the notice window.
     d.shutting_down.store(true, Ordering::SeqCst);
-    let running = d.sessions.live_sessions();
+    // SPEC: every *running* session; an idle one has nothing to interrupt.
+    let running: Vec<_> = d
+        .sessions
+        .live_sessions()
+        .into_iter()
+        .filter(|session| session.busy())
+        .collect();
     for session in &running {
         // Fire the token: a stuck call has no boundary. A wait is the exception;
         // `interrupt` keeps its turn.
-        interrupt(d, session.name(), true);
+        interrupt(d, session.name(), true, false);
     }
     // Only a protocol `cancel` lets jobs go; every other stop ends them here.
     let (released, killed) = match origin {
