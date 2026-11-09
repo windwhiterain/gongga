@@ -506,7 +506,7 @@ fn adopted(
         )),
         home: cfg.home.clone(),
         output_dir: output_dir.to_path_buf(),
-        shells: Arc::new(std::sync::Mutex::new(crate::session::Shells::empty(
+        workspace: Arc::new(std::sync::Mutex::new(crate::session::Workspace::empty(
             cfg.bash.program.clone().unwrap_or_default(),
         ))),
         reader: None,

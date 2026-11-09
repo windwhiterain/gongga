@@ -9,13 +9,12 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
-use protocol::{ToolAnswerEvent, ToolStream};
+use protocol::ToolAnswerEvent;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::remote::shell_set::Shell;
-use crate::session::{Machine, Shells};
+use crate::session::{Machine, Workspace};
 use crate::store::Store;
 
 pub mod bash;
@@ -58,7 +57,7 @@ pub struct ToolContext {
     pub channels: Arc<crate::tools::channel::Channels>,
     /// The session's named shells, on this machine and -- when it names one --
     /// on its remote. See `crate::session::Shells`.
-    pub shells: Arc<StdMutex<Shells>>,
+    pub workspace: Arc<StdMutex<Workspace>>,
     /// The connection this session's references are read through, when its
     /// directory is on a remote.
     pub reader: Option<Arc<crate::remote::Reader>>,
@@ -115,80 +114,9 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    /// Emits one streamed chunk, or drops it if nobody is listening.
-    pub async fn emit(&self, stream: ToolStream, text: String) {
-        if text.is_empty() {
-            return;
-        }
-        if let Some(tx) = &self.events {
-            let _ = tx
-                .send(ToolAnswerEvent {
-                    session: self.session.clone(),
-                    call_id: self.call_id.clone(),
-                    // The tool name is filled in by the loop, which owns it.
-                    tool: String::new(),
-                    stream,
-                    text,
-                    done: false,
-                    // Only the chunk that ends the call knows how it went.
-                    head: None,
-                })
-                .await;
-        }
-    }
-
-    /// The handle for `name` on `machine`, spawning the shell if this is its first use.
-    fn shell(&self, machine: Machine, name: &str) -> anyhow::Result<Arc<Mutex<Shell>>> {
-        self.shells
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(machine, name)
-    }
-
-    /// The handle without spawning, for tools that must not create one
-    /// (`check_bash`, `list_bash`).
-    fn peek(&self, machine: Machine, name: &str) -> Option<Arc<Mutex<Shell>>> {
-        self.shells
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .peek(machine, name)
-    }
-
-    /// Where `name` lives, whichever machine holds it.
-    fn find(&self, name: &str) -> Option<(Machine, Arc<Mutex<Shell>>)> {
-        self.shells
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .find(name)
-    }
-
-    /// Every shell that exists right now, as `(machine, name)`.
-    fn shell_names(&self) -> Vec<(Machine, String)> {
-        self.shells
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .names()
-    }
-
-    /// Takes every shell filed under `name`, on any machine.
-    fn discard(&self, name: &str) -> Vec<crate::remote::shell_set::Discarded> {
-        self.shells
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .discard(name)
-    }
-
-    /// Retires `handle` and puts a fresh shell under `name`; false means another shell took it.
-    fn replace_shell(&self, machine: Machine, name: &str, handle: &Arc<Mutex<Shell>>) -> bool {
-        self.shells
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .replace(machine, name, handle)
-    }
-
-    /// Whether the session's shells on `machine` are somewhere else.
+    /// Whether the session's work on `machine` is somewhere other than here.
     pub(crate) fn on_endpoint(&self, machine: Machine) -> bool {
-        self.shells
+        self.workspace
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_remote(machine)
@@ -199,12 +127,12 @@ impl ToolContext {
         self.reader.clone()
     }
 
-    /// Where `machine`'s shells stand, read without their locks.
+    /// Where `machine` starts: the session's directory, empty on the other machine.
     pub(crate) fn dir(&self, machine: Machine) -> PathBuf {
-        self.shells
+        self.workspace
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .reported_cwd(machine)
+            .dir(machine)
     }
 
     /// Caps one command's output, spilling the rest to a file named after it.

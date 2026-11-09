@@ -258,7 +258,7 @@ fn file_remote(args: &Value, ctx: &ToolContext, tool: &str) -> Result<bool, Stri
 
 /// The endpoint of the session's remote, for a file call that named it.
 fn remote_endpoint(ctx: &ToolContext) -> Option<crate::remote::Endpoint> {
-    ctx.shells
+    ctx.workspace
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .endpoint(Machine::Remote)

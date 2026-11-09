@@ -2580,7 +2580,7 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
                 }
             }
             if let Some(shells) = shells {
-                shells.close_shells().await;
+                shells.closing();
             }
         });
     }

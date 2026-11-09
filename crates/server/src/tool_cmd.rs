@@ -36,7 +36,7 @@ pub async fn run(
         channels: agent.channels.clone(),
         home: agent.home.clone(),
         output_dir: agent.output_dir.clone(),
-        shells: handle.shells(),
+        workspace: handle.workspace(),
         reader: handle.reader(),
         machine: handle.owner(),
         remote: handle.remote_name(),

@@ -153,7 +153,7 @@ async fn call(request: &Request) -> Answer {
         home: request.home.clone(),
         output_dir: request.home.join("outputs"),
         // No shells, no interpreters, no jobs: one call, and the tools that need none.
-        shells: Arc::new(std::sync::Mutex::new(crate::session::Shells::empty(
+        workspace: Arc::new(std::sync::Mutex::new(crate::session::Workspace::empty(
             program,
         ))),
         reader: None,

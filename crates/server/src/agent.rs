@@ -21,7 +21,6 @@ use crate::llm::{LlmClient, LlmEvent};
 use crate::providers::{self};
 use crate::session::SessionHandle;
 use crate::store::Store;
-use crate::tools::detached::DetachedRegistry;
 use crate::tools::{ToolContext, ToolRegistry};
 
 /// How much of a turn's answer a `turn_end` row carries.
@@ -95,8 +94,6 @@ pub struct Agent {
     pub live_compact_interval_tokens: u64,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
-    /// Detached jobs of every session, reached through `ToolContext`.
-    pub detached: DetachedRegistry,
     /// Jobs running in this process, so a call can stop one by its id.
     pub jobs: crate::tools::tunnel::JobRegistry,
 }
@@ -1459,7 +1456,7 @@ impl Agent {
             channels: self.channels.clone(),
             home: self.home.clone(),
             output_dir: self.output_dir.clone(),
-            shells: session.shells(),
+            workspace: session.workspace(),
             reader: session.reader(),
             machine,
             remote: session.remote_name(),
