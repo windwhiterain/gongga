@@ -63,16 +63,15 @@ the pipe exists. See `client-window-journal.md`.
 
 | gap | today | where it goes |
 | --- | --- | --- |
-| `WindowFacts` | answered locally by `WindowJournal` from `CursorMessage` and the frame's `Layout`; `known_list` is still empty | stamps and floors persisted once `Log::landed` / `rewind` move (A-2) |
-| `room_of` | the pipe front-end never calls `note_room`, so it answers 1 | a viewport report from the UI, or a client-side fold (A-2) |
+| `WindowFacts` | `WindowJournal` answers from `CursorMessage`, the frame's `Layout` and the disk `Cache`; stamps and floors survive a restart | `Log::landed`'s `Record::Seal` rewrite (A-4) is not needed for a refill |
+| `room_of` | the pipe front-end never calls `note_room`, so it answers 1 | a viewport report from the UI, or a client-side fold (A-4) |
+| `known_list` / `repoint` | `Roster` and `WindowJournal` are built from `client_home` + `endpoint`; `Layout` writes the list, `Forget` clears the journal and its files, `repoint` re-points both | a frame telling the UI to clear the old endpoint's windows |
 | completion vocabulary | `refresh_completion` is a no-op | a control frame carrying the catalog, or completion moves client-side |
 | server ownership | kept in `server` only for `server_is_ours` | a frame for the header's own / not own label |
-| `repoint` | no-op | a frame telling the UI to clear the old endpoint's windows |
 | `restore_input` | emits a `Note` with the unsent line | a draft frame that puts the text back in the input |
 
 None of these adds a second protocol: they are variants of `RenderMessage` plus a
-local journal. They are the preconditions for step ⑥, where the TUI stops holding
-state of its own.
+local journal. The journal and roster rows are done (A-2); the rest are ⑥ wiring.
 
 ## Verification (real process, 2026-11-08)
 
@@ -89,3 +88,13 @@ and separate stdout/stderr captures. No server was started.
 
 Every stdout line parsed as JSON in Python; the frame with `\n` in its text stayed
 a single line. Machine-readable record: `.dev/verify/<sha>-pipe.json`.
+
+## Verification after A-2 (2026-11-09)
+
+`client/window_journal.rs` and `client/window_roster.rs` each carry `#[cfg(test)]`
+cases that write under a throwaway root, drop the value, then read the same
+numbers back in a fresh `WindowJournal` / `Roster`. `repoint` is checked to forget
+the old endpoint's stamp. The real-process table above was re-run after A-2 with
+the same results; an empty `Layout` writes no roster file, which is
+`Roster::know`'s intended no-op. Machine-readable record:
+`.dev/verify/<sha>-journal2.json`.

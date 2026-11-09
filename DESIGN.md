@@ -36,7 +36,7 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` 均已上提 | UI 改为 spawn 这个 bin、只做绘制；`log.rs` / `panes.rs` 的窗口 journal 与 ratatui 折行上提；`WindowFacts` 改由 client 本地 journal 回答 |
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实，`Log` / `Panes` 共用一份 | UI 改为 spawn 这个 bin、只做绘制（A-3）；`log.rs` 的 `Entry` 折行态与 `Ledger` 实例仍留 TUI（A-4）；四类控制帧、bundle 布线、多 client L3 |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
 | `[tui]` binary | `crates/tui`，`run.rs` 仍装着 `interactive` 主循环、`TuiSink` 与窗口 journal | 退为经协议连接的纯终端前端，键盘与绘制之外不持状态 |
@@ -297,12 +297,15 @@ server + client + TUI，WebUI 等自行分发；若指的是别的，说一声�
 / `escaped`；`window_refill.rs` 已上提 `declare` / `answer_completion` /
 `answer_transcripts` / `answer_older`，经只读 `WindowFacts` 取窗口事实；
 `window_sync.rs` 已上提 `sync` / `settle`，经 `WindowView` 呈现状态；
-`window_index.rs` 已上提 `RowIndex` 与 `Ledger`（索引数据，仍由 TUI 的 `Log`
-使用）；`client::runtime` 已有 `Frontend` / `FrontendEvent` / `give_back` /
+`window_index.rs` 已上提 `RowIndex` 与 `Ledger`（索引数据，实例仍由 TUI 的 `Log`
+持有）；`window_journal.rs` 已上提 `WindowJournal`（窗口事实 + 磁盘 `Cache`），
+`window_roster.rs` 已上提 `Roster`（会话列表的磁盘记录），`Log` / `Panes` 共用一份
+journal，pipe 前端自己实例化这两者；`client::runtime` 已有 `Frontend` / `FrontendEvent` / `give_back` /
 `Step` / `Dialing` 与整个 `run` 循环，循环只经 `Box<dyn Frontend>` 访问 UI；
 `crates/tui/src/run.rs` 只剩 `TuiSink`、三个接口实现与构造 UI 的 `interactive`
-包装；`log.rs` 的 `Log` 与 ratatui 折行仍待，`Panes` 的窗口事实已上提到
-`window_journal.rs`（A-1，见下）；⑤ client bin target
+包装；`log.rs` 的 `Log` 与 ratatui 折行仍留 TUI，但它已不持有 `Cache`，磁盘读写全
+走 client 的 `WindowJournal`（A-2，见下）；`Panes` 的窗口事实也已上提到同一份
+`WindowJournal`（A-1）；⑤ client bin target
 接管道骨架（已完成，见下一节）；⑥ TUI 改为 spawn client 并只做绘制；⑦ bundle 布线（client 二进制进
 payload）；⑧ 多 client 连同一 server L3（新脚本需用户许可）。
 主循环上提的接口形状（object-safe `Frontend`、`Box<dyn Sink>`、`FrontendEvent`
@@ -315,8 +318,9 @@ journal 归 client：目标形态下 client 自己持有窗口记录，`stamp_of
 client 内消费这一点不变。所以 A 路线不设计查询往返，而是把数据层逐块上提：
 `window_cache.rs`（`Record` / `Cache` / `escaped`）不带终端类型，先搬；`log.rs` 的
 ratatui 折行与 `materialize` 留在 TUI。等窗口索引也上提，`declare` / `answer_*`
-直接读 client 内状态即可。今天 `Cache` 仍由 TUI 的 `log.rs` 实例化，这一步只换了
-类型的所有权，行为不变。
+直接读 client 内状态即可。当时 `Cache` 仍由 TUI 的 `log.rs` 实例化，这一步只换了
+类型的所有权，行为不变；A-2 把 `Cache` 的实例也搬进了 client 的 `WindowJournal`，
+stamp / floor 现在由 client 写盘，pipe 前端的答案因此跨重启有效。
 
 **④ 里随 `--parent` 裁定修掉的一处**：`whose_server` 原先用 `std::process::id()`
 比对 server 的 `--parent`；client 成为 UI 的子进程后，这个值会是 client 自己的 pid，
@@ -347,12 +351,19 @@ ratatui 折行与 `materialize` 留在 TUI。等窗口索引也上提，`declare
   `exit=0`、stderr 空、每行都是合法 JSON；带换行的文本被转义成一个帧。逐条记录在
   `.dev/verify/<sha>-pipe.json`。
 
-**⑤ 之后仍是骨架**：`WindowFacts` 现在由 client 本地的 `WindowJournal` 回答 —— A-1
-已把 `Panes` 的 `drawn` / `room` / `wants` 与 pipe 前端的 stamp / floor / settled
-统一到同一个类型，两个前端不再各存一份。但 stamp / floor 仍由 TUI 的 `Log` 写磁盘、
-pipe 前端只存内存，`known_list` 为空；A-2 要把 `Log::landed` / `rewind` 里缠着
-ratatui 折行态的 `Entry` 拆成「数据块归 client、折行视图归 TUI」，让 journal 真正
-持久化。`WindowView` 里还欠四类过线的控制帧：completion 词表刷新、
+**⑤ 之后仍是骨架，但 journal 已经落地**：`WindowFacts` 由 client 本地的
+`WindowJournal` 回答。A-1 统一了 `drawn` / `room` / `wants` 与 stamp / floor /
+settled；A-2 把 `Cache` 与 `Roster` 都收进 client：`WindowJournal` 现在持有磁盘
+journal，`consume` 把 `Transcript` / `Landed` / `Rewind` 写成 `Record::Stamp` /
+`Floor` / `Rewind`，`stamp_of` 以磁盘为权威，pipe 前端的答案因此跨重启有效；
+`Roster` 让 `known_list` 读的是上次的会话列表，`repoint` 同时重指两者。
+`Log` 不再持有 `Cache`，`Panes` 也不再另存一份事实，两者共用 `Log` 里的
+`WindowJournal`，`Log::stamp` / `rewind` 委托 client 的权威方法。
+
+**剩下的骨架**：`Log::landed` 仍要遍历带 ratatui 折行态的 `Entry` 才能 `rewrite`
+出 `Record::Seal`，`Ledger.pages` 也仍住在 TUI —— 这是 A-4，不是 ⑥ 的前置：
+pipe 前端没有块可重写，追加 `Floor` + `Stamp` 已经能回答补拉。`WindowView`
+里还欠四类过线的控制帧：completion 词表刷新、
 server 归属（header 画 own / not own）、`repoint` 后的窗口清理、以及把未发出的输入
 还给 UI 的 draft（现在退化成一条 `Note`）。这些是 ⑥ 的前置，不是第二套协议。
 
@@ -375,14 +386,25 @@ server 归属（header 画 own / not own）、`repoint` 后的窗口清理、以
 免得残留的 `wants` 去补拉一个已不存在的会话。见
 `docs/notes/client-window-journal.md`。
 
-**A-2（待做）**：把 `Log::stamp` / `landed` / `rewind` / `stamp_of` / `floor_of`
-的磁盘状态机搬进 `WindowJournal`，让它自己持有 `Cache` 与每窗口 `Ledger`；
-`Entry` 拆成 client 的数据块与 TUI 的折行视图。做完这步 pipe 前端的 stamp / floor
-才跨重启有效，`known_list` 也有来源。
+**A-2（已完成，2026-11-09）**：`WindowJournal` 持有 `Cache`，是磁盘 journal 的唯一
+所有者；`Log` 的 `cache: Cache` 字段删掉，磁盘读写全走 `journal.cache()` 或
+`stamp` / `rewind` / `stamp_offset` 这些权威方法。`Roster` 从 TUI 搬进
+`window_roster.rs`，pipe 前端的 `known_list` / `repoint` 不再是空实现：`Layout`
+帧写列表、`Forget` 帧清 journal 与磁盘。`consume` 落盘后 `stamp_of` / `floor_of`
+跨进程有效，两条 `#[cfg(test)]` 守着这件事，真进程管道另验了帧与退出。
+**没有硬拆 `Entry`**：`landed` 的 `rewrite` 需要 `Entry::seal_record` 与
+`materialize` 的折行态，整文件搬会一次动 2377 行且无法小步验证；改为 A-4。
+同理 `Ledger` 的类型早就在 client，但 `pages` / `page_first` 的实例仍在 TUI 的
+`views`，A-4 一并收。
 
 **A-3**：TUI 改为 spawn `gongga-client`，键盘出 `UiIntent`、`RenderMessage` 入绘制；
 此时 ⑥ 只剩布线。四类控制帧（completion 词表、server 归属、`repoint` 清理、
 draft 归还）仍要在 A-3 之前补齐，都是 `RenderMessage` 的语义变体，不是第二套协议。
+
+**A-4**：把 `Entry` 拆成 client 的数据块与 TUI 的折行视图，把 `Ledger.pages` 的
+实例收进 `WindowJournal`，让 `landed` 的 `Record::Seal` 由 client 组织。做完 TUI
+才真的「只做绘制」。A-3 不必等 A-4：pipe 前端没有块可重写，追加 `Floor` + `Stamp`
+已经能回答 `declare` / `ask_older`。
 
 ## 2. 传输层：可靠 UDP
 

@@ -9,7 +9,6 @@
 use crate::log::{Log, Viewport};
 use crate::tree::{self, Row};
 use crate::{Layout, LineKind};
-use client::window_journal::WindowJournal;
 
 /// One view of the events area: what it shows and where it is scrolled.
 pub struct Pane {
@@ -133,8 +132,6 @@ pub struct Panes {
     unseen: std::collections::BTreeSet<String>,
     /// SPEC's `active_quota` row, as the command layer spelled it.
     quota: Option<crate::QuotaRow>,
-    /// The windows drawn, their room and the pages owed: the client's own facts.
-    journal: WindowJournal,
 }
 
 impl Panes {
@@ -147,7 +144,6 @@ impl Panes {
             folded: std::collections::BTreeSet::new(),
             unseen: std::collections::BTreeSet::new(),
             quota: None,
-            journal: WindowJournal::new(),
         }
     }
 
@@ -161,7 +157,6 @@ impl Panes {
             folded: std::collections::BTreeSet::new(),
             unseen: std::collections::BTreeSet::new(),
             quota: None,
-            journal: WindowJournal::new(),
         }
     }
 
@@ -202,7 +197,7 @@ impl Panes {
 
     /// The windows whose operator asked for a page above what they had.
     pub fn take_wants(&mut self) -> Vec<String> {
-        self.journal.take_wants()
+        self.log.journal_mut().take_wants()
     }
 
     /// Throws away a window's unaccounted tail before a refill.
@@ -212,7 +207,7 @@ impl Panes {
 
     /// The windows the last frame drew.
     pub fn drawn(&self) -> &[String] {
-        self.journal.drawn()
+        self.log.journal().drawn()
     }
 
     /// Drops the bodies this pane is not showing.
@@ -222,7 +217,7 @@ impl Panes {
 
     /// Says this window's rows were drawn this frame.
     pub fn mark_drawn(&mut self, window: &str) {
-        self.journal.mark_drawn(window);
+        self.log.journal_mut().mark_drawn(window);
     }
 
     /// How many rows a pane could draw, as the last frame found it.
@@ -232,17 +227,17 @@ impl Panes {
     /// A page is what a pane can show, never a constant -- there is no budget
     /// to set. See `docs/notes/client-window-journal.md`.
     pub fn note_room(&mut self, window: &str, rows: usize) {
-        self.journal.note_room(window, rows);
+        self.log.journal_mut().note_room(window, rows);
     }
 
     /// The rows a window's pane could draw last frame: what a page is sized by.
     pub fn room_of(&self, window: &str) -> usize {
-        self.journal.room_of(window)
+        self.log.journal().room_of(window)
     }
 
     /// Starts a frame: nothing has been drawn yet.
     pub fn begin_frame(&mut self) {
-        self.journal.begin_frame();
+        self.log.journal_mut().begin_frame();
     }
 
     /// Ends a frame: a window nobody drew holds no bodies.
@@ -253,8 +248,9 @@ impl Panes {
     /// session's blocks and the rows above and below every pane.
     /// See `docs/notes/tui-cache.md`.
     pub fn end_frame(&mut self) {
+        let drawn = self.log.journal().drawn().to_vec();
         for window in self.log.windows() {
-            if !self.journal.drawn().iter().any(|name| *name == window) {
+            if !drawn.iter().any(|name| *name == window) {
                 self.log.evict(&window, 0..0);
             }
         }
@@ -416,7 +412,7 @@ impl Panes {
     pub fn forget(&mut self, name: &str) {
         self.log.forget(name);
         self.panes.retain(|pane| pane.name != name);
-        self.journal.forget(name);
+        self.log.journal_mut().forget(name);
     }
 
     /// The panes of one kind, in order.
@@ -583,7 +579,7 @@ impl Panes {
         };
         pane.scroll_by(rows);
         if rows > 0 && pane.kind == Kind::Shown && pane.scroll >= pane.max_scroll {
-            self.journal.want(name);
+            self.log.journal_mut().want(name);
         }
     }
 

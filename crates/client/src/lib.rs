@@ -15,6 +15,7 @@ pub mod window_index;
 pub mod window_input;
 pub mod window_journal;
 pub mod window_refill;
+pub mod window_roster;
 pub mod window_state;
 pub mod window_sync;
 

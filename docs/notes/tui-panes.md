@@ -44,13 +44,16 @@ actually reading.
 Which windows a frame drew, how many rows each could draw and which ones the
 operator scrolled past are not drawing facts. They used to be three fields here,
 duplicated by a private `Facts` struct in the client's pipe front-end. Both now
-delegate to `client::window_journal::WindowJournal`; `Panes` holds one and calls
-`begin_frame` / `mark_drawn` / `note_room` / `want` / `forget`. See
+delegate to `client::window_journal::WindowJournal`. After A-2 `Log` holds the
+only journal and `Panes` borrows it through `log.journal()` / `journal_mut()`;
+the disk `Cache` lives there too. `Panes` calls `begin_frame` / `mark_drawn` /
+`note_room` / `want` / `forget`. See
 `client-window-journal.md`. A window that is deleted takes its facts with it.
 
-`stamp_of` and `floor_of` still come from `Log`'s disk journal, because
-`Log::landed` and `Log::rewind` walk the folded `Entry` bodies. That is the next
-slice of the migration, not a change to this file's contract.
+`stamp_of` and `floor_of` still come from `Log` on the TUI path, because
+`Log::landed` walks the folded `Entry` bodies to rewrite `Record::Seal`. That is
+A-4. On the pipe path the same questions are answered by the client's own disk
+journal, with no `Panes` involved.
 
 ## Panes::begin_frame, end_frame, evict
 

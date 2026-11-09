@@ -19,6 +19,7 @@ use crate::markdown;
 use client::protocol;
 use client::window_cache::{Cache, Record};
 use client::window_index::{Ledger, RowIndex};
+use client::window_journal::WindowJournal;
 
 /// One block: a line that may still be growing, plus its rows.
 ///
@@ -716,8 +717,8 @@ pub struct Log {
     /// Columns of a window a box leaves to the pane on each side. See
     /// [`Log::set_box_edge`].
     edge: usize,
-    /// The journal this log is a view of. See `docs/notes/tui-cache.md`.
-    cache: Cache,
+    /// The client's own journal: disk records and window facts in one place.
+    journal: WindowJournal,
     /// The next block id to hand out: monotonic within this window's journal.
     next_id: u64,
     /// The blocks whose bodies are here. Eviction walks this, not the log.
@@ -792,6 +793,16 @@ fn room(kind: LineKind, cap: usize, block_size: usize) -> usize {
 }
 
 impl Log {
+    /// The client's own facts: one journal, shared by the log and the panes.
+    pub fn journal(&self) -> &WindowJournal {
+        &self.journal
+    }
+
+    /// The same facts, for a frame or a keystroke that changes them.
+    pub fn journal_mut(&mut self) -> &mut WindowJournal {
+        &mut self.journal
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -806,7 +817,7 @@ impl Log {
             edge: protocol::DEFAULT_BOX_EDGE,
             // Nothing is ever written: a log built with no front-end in mind does
             // not invent a directory.
-            cache: Cache::none(),
+            journal: WindowJournal::new(),
             filling: HashMap::new(),
             prepend: None,
             next_id: 0,
@@ -823,7 +834,7 @@ impl Log {
     /// known before any server speaks. See `docs/notes/tui-cache.md`.
     pub fn with_cache(root: &std::path::Path, endpoint: &str) -> Self {
         Self {
-            cache: Cache::new(root, endpoint),
+            journal: WindowJournal::with_cache(root, endpoint),
             ..Self::without_cache()
         }
     }
@@ -838,7 +849,7 @@ impl Log {
     /// lines behind. The old journals are not deleted -- they are that server's
     /// record, and switching back finds them again.
     pub fn repoint(&mut self, root: &std::path::Path, endpoint: &str) {
-        self.cache = Cache::new(root, endpoint);
+        self.journal.repoint(root, endpoint);
         let windows: Vec<String> = self.views.keys().map(|name| name.to_string()).collect();
         for window in windows {
             self.drop_window(&window);
@@ -869,13 +880,13 @@ impl Log {
             return;
         }
         let width = self.width_of(&entry.window);
-        materialize(&mut self.entries, &self.cache, at, width);
+        materialize(&mut self.entries, self.journal.cache(), at, width);
     }
 
     /// Writes one record about block `at`.
     fn write(&mut self, at: usize, record: Record) -> Option<u64> {
         let window = self.entries.get(at)?.window.clone();
-        self.cache.append(&window, &record)
+        self.journal.cache().append(&window, &record)
     }
 
     /// Records a block's whole current form, and where it can be read back from.
@@ -904,7 +915,7 @@ impl Log {
     /// Nothing is added to the log, so what a note costs the frame is nothing, and
     /// replaying the window draws what it drew. See `docs/notes/tui-cache.md`.
     pub fn note(&mut self, window: &str, kind: LineKind, text: &str) {
-        self.cache.note(window, kind, text);
+        self.journal.cache().note(window, kind, text);
     }
 
     /// Caps how tall a block may get: `0` caps nothing, and a block past its cap
@@ -956,7 +967,7 @@ impl Log {
         }
         // A fill that empties a window opens a page too.
         self.begins(window);
-        self.cache.remove(window);
+        self.journal.cache().remove(window);
         self.drop_window(window);
         // The name may be handed out again: its next beginning is the server's.
         self.seeded.remove(window);
@@ -972,7 +983,7 @@ impl Log {
     /// the difference is what a refill fetches. Written to the journal so a
     /// restart answers the same question with the same number.
     pub fn stamp(&mut self, window: &str, created: i64, seq: i64) {
-        self.cache.stamp(window, created, seq);
+        self.journal.stamp(window, created, seq);
     }
 
     /// The oldest transcript row this window holds, among the pages in memory.
@@ -990,8 +1001,9 @@ impl Log {
             return Some(*seq);
         }
         // Nothing drawn yet: the journal names the page the first frame reads back.
-        self.cache
-            .floor(window, self.cache.end(window))
+        self.journal
+            .cache()
+            .floor(window, self.journal.cache().end(window))
             .map(|(_, seq)| seq)
     }
 
@@ -1058,7 +1070,7 @@ impl Log {
         let mut records = Vec::with_capacity(blocks.len() + boundaries.len() + 1);
         let mut written: Vec<Option<usize>> = vec![None; blocks.len()];
         for (place, &at) in blocks.iter().enumerate() {
-            materialize(&mut self.entries, &self.cache, at, width);
+            materialize(&mut self.entries, self.journal.cache(), at, width);
             let entry = &self.entries[at];
             if !entry.hot() {
                 return;
@@ -1073,7 +1085,7 @@ impl Log {
             created,
             seq: drawn,
         });
-        let Some(offsets) = self.cache.rewrite(window, &records) else {
+        let Some(offsets) = self.journal.cache().rewrite(window, &records) else {
             return;
         };
         // Read off the list that was built: a boundary before a block shifts it.
@@ -1088,8 +1100,9 @@ impl Log {
 
     /// What this window's journal says it has drawn, and of which session.
     pub fn stamp_of(&self, window: &str) -> Option<(i64, i64)> {
-        let end = self.cache.end(window);
-        self.cache
+        let end = self.journal.cache().end(window);
+        self.journal
+            .cache()
             .stamp_at(window, end)
             .map(|(_, created, seq)| (created, seq))
     }
@@ -1106,15 +1119,8 @@ impl Log {
     /// loaded would not.
     pub fn rewind(&mut self, window: &str) {
         self.begins(window);
-        self.cache.rewind(window);
-        let cut = self.stamp_offset(window);
+        let cut = self.journal.rewind(window);
         self.cut_tail(window, cut);
-    }
-
-    /// Where the newest stamp of a window sits in its journal, if it has one.
-    fn stamp_offset(&self, window: &str) -> Option<u64> {
-        let end = self.cache.end(window);
-        self.cache.stamp_at(window, end).map(|(at, _, _)| at)
     }
 
     /// Drops a window's unaccounted tail, keeping the blocks below `cut`.
@@ -1224,7 +1230,7 @@ impl Log {
     pub fn push(&mut self, name: &str, kind: LineKind, text: impl Into<String>) {
         let text = text.into();
         let id = self.next_id();
-        let slot = self.cache.append(
+        let slot = self.journal.cache().append(
             name,
             &Record::Line {
                 id,
@@ -1339,7 +1345,7 @@ impl Log {
     /// record says where the view was cut. See `docs/notes/tui-cache.md`.
     pub fn clear(&mut self, window: &str) {
         // The view forgets it; the journal keeps it. See `docs/notes/tui-cache.md`.
-        self.cache.clear(window);
+        self.journal.cache().clear(window);
         // The next beginning is whatever arrives from here, not what was read.
         self.seeded.remove(window);
         self.forget_blocks(window);
@@ -1840,7 +1846,7 @@ impl Log {
         let Log {
             entries,
             views,
-            cache,
+            journal,
             block_size,
             ..
         } = self;
@@ -1902,7 +1908,7 @@ impl Log {
         }
         // Rows on screen are the one thing a frame may pay a disk read for.
         for block in &shown_blocks {
-            materialize(entries, cache, block.block, ledger.width);
+            materialize(entries, journal.cache(), block.block, ledger.width);
         }
         let mut rows: Vec<Row<'_>> = Vec::with_capacity(end - start);
         for spot in &shown_blocks {
@@ -1955,15 +1961,15 @@ impl Log {
         if !self.seeded.insert(window.to_string()) {
             return;
         }
-        let end = self.cache.end(window);
+        let end = self.journal.cache().end(window);
         if end == 0 {
             return;
         }
         // The newest page boundary. A journal with none is read as far back as it can.
-        let Some((boundary, _)) = self.cache.floor(window, end) else {
+        let Some((boundary, _)) = self.journal.cache().floor(window, end) else {
             let mut start = end;
             loop {
-                start = self.cache.back(window, start, WALK);
+                start = self.journal.cache().back(window, start, WALK);
                 self.replay(window, start);
                 self.lay_out(window, width);
                 if start == 0 || self.rows(window, width) >= rows {
@@ -1988,8 +1994,12 @@ impl Log {
         self.drop_window(window);
         let mut ids: HashMap<u64, usize> = HashMap::new();
         // Where a `Rewind` here cuts: the newest stamp at or before the first record.
-        let mut cut = self.cache.stamp_at(window, start).map(|(at, _, _)| at);
-        for (at, record) in self.cache.forward(window, start) {
+        let mut cut = self
+            .journal
+            .cache()
+            .stamp_at(window, start)
+            .map(|(at, _, _)| at);
+        for (at, record) in self.journal.cache().forward(window, start) {
             self.apply(window, at, &record, &mut ids, &mut cut);
         }
         // No stream survives a restart: the process writing it is gone.
@@ -2277,7 +2287,7 @@ impl Log {
             }
             // Read back, counted at this width, and dropped again: the index
             // needs the rows, and only a resize asks for them.
-            materialize(&mut self.entries, &self.cache, at, width);
+            materialize(&mut self.entries, self.journal.cache(), at, width);
             self.entries[at].drop_body();
         }
         if let Some(ledger) = self.views.get_mut(window) {

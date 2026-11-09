@@ -12,6 +12,7 @@ use gongga_client::render_wire::{
 use gongga_client::runtime::{self, Frontend, FrontendEvent, Server};
 use gongga_client::window_journal::WindowJournal;
 use gongga_client::window_refill::WindowFacts;
+use gongga_client::window_roster::Roster;
 use gongga_client::window_state::State;
 use gongga_client::window_sync::WindowView;
 use gongga_client::{Client, Layout, LineKind, Listed, Sink, protocol};
@@ -45,8 +46,11 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let lines = BufReader::new(tokio::io::stdin()).lines();
-    let result = runtime::run(&args, owner_pid, |_, _, _| {
-        Ok(Box::new(PipeFrontend::new(lines, tx)) as Box<dyn Frontend>)
+    let result = runtime::run(&args, owner_pid, |_, root, endpoint| {
+        // A row's home never depends on a greeting; the client keeps both.
+        let journal = WindowJournal::with_cache(root, endpoint);
+        let roster = Roster::new(root, endpoint);
+        Ok(Box::new(PipeFrontend::new(lines, tx, journal, roster)) as Box<dyn Frontend>)
     })
     .await;
     // The front-end drops its sender with the loop, so the writer drains and ends.
@@ -58,17 +62,24 @@ struct PipeFrontend {
     lines: Lines<BufReader<Stdin>>,
     out: mpsc::UnboundedSender<String>,
     journal: WindowJournal,
+    roster: Roster,
     server: Option<Server>,
     sticky: Option<String>,
     draft: bool,
 }
 
 impl PipeFrontend {
-    fn new(lines: Lines<BufReader<Stdin>>, out: mpsc::UnboundedSender<String>) -> Self {
+    fn new(
+        lines: Lines<BufReader<Stdin>>,
+        out: mpsc::UnboundedSender<String>,
+        journal: WindowJournal,
+        roster: Roster,
+    ) -> Self {
         Self {
             lines,
             out,
-            journal: WindowJournal::new(),
+            journal,
+            roster,
             server: None,
             sticky: None,
             draft: false,
@@ -83,6 +94,14 @@ impl PipeFrontend {
             for name in &layout.shown {
                 self.journal.mark_drawn(name);
             }
+            // The list is a record of the past, written before any greeting.
+            if let Err(e) = self.roster.know(&layout.listed) {
+                eprintln!("client could not record the session list: {e}");
+            }
+        }
+        if let RenderMessage::Forget { window } = &message {
+            self.journal.forget(window);
+            self.journal.cache().remove(window);
         }
         match encode_frame(&message) {
             Ok(frame) => {
@@ -172,14 +191,17 @@ impl Frontend for PipeFrontend {
     fn sink(&mut self) -> Box<dyn Sink + '_> {
         Box::new(PipeSink::new(self))
     }
-    // No journal here yet, so no sessions were drawn before this greeting.
+    // The roster is the client's own record of what a greeting replaced.
     fn known_list(&self) -> Vec<Listed> {
-        Vec::new()
+        self.roster.load()
     }
     fn set_server(&mut self, server: Option<Server>) {
         self.server = server;
     }
-    fn repoint(&mut self, _client_home: &Path, _endpoint: &str) {}
+    fn repoint(&mut self, client_home: &Path, endpoint: &str) {
+        self.journal.repoint(client_home, endpoint);
+        self.roster.repoint(client_home, endpoint);
+    }
     fn restore_input(&mut self, text: &str) {
         self.draft = true;
         self.send(RenderMessage::Note {

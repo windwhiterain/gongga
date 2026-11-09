@@ -146,7 +146,8 @@ it a **binary**: the UI spawns it as a child process over a pipe and its lifetim
 is bound to that UI. Only UI <-> client is one-to-one; client <-> server is
 many-to-one and may be remote. `rpc` is the layer that checks and sends
 commands; `crates/link` was renamed to `crates/client` and the `link-*.md` notes
-with it. The binary target is not built yet -- this crate still ships as a library.
+with it. The binary target is `gongga-client`, started by a UI over pipes; the
+library holds the loop it runs.
 
 | note | source |
 | --- | --- |
@@ -192,7 +193,7 @@ argv to `client::main` when invoked under that name or given a command.
 | [`tui-notice.md`](tui-notice.md) | `crates/tui/src/notice.rs` |
 | [`tui-panes.md`](tui-panes.md) | `crates/tui/src/panes.rs` |
 | [`tui-render.md`](tui-render.md) | `crates/tui/src/render.rs` |
-| [`tui-roster.md`](tui-roster.md) | `crates/tui/src/roster.rs` |
+| [`tui-roster.md`](tui-roster.md) | `crates/client/src/window_roster.rs` (moved out of `crates/tui/src/roster.rs`, re-exported there) |
 | [`tui-table.md`](tui-table.md) | `crates/tui/src/table.rs` |
 | [`tui-tree.md`](tui-tree.md) | `crates/tui/src/tree.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |

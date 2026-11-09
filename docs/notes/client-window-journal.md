@@ -21,26 +21,46 @@ here, and `declare` / `answer_*` read the answer through `WindowFacts`.
 | `wants` | `BTreeSet<String>` in `Panes` | `WindowJournal::wants` |
 | `stamps` / `floors` / `settled` | a private `Facts` plus a `Vec` in `crates/client/src/main.rs` | `WindowJournal`, fed by `CursorMessage` |
 
-`Panes` now holds a `WindowJournal` and delegates `begin_frame`, `mark_drawn`,
-`note_room`, `room_of`, `drawn`, `take_wants` and `forget`. `PipeFrontend` delegates
-its `WindowFacts` and `take_settled` to the same type. Neither owns the fields any
-more, so there is one implementation of "a window nobody drew holds no bodies"
-and one of "a pane that has not reported yet still asks for one row".
+`Panes` now reaches the one `WindowJournal` that `Log` holds and delegates
+`begin_frame`, `mark_drawn`, `note_room`, `room_of`, `drawn`, `take_wants` and
+`forget`. `PipeFrontend` delegates its `WindowFacts` and `take_settled` to the
+same type. Neither owns the fields any more, and after A-2 the two front-ends do
+not even own two copies of the journal: `Log` holds it, `Panes` borrows it.
 
 `Panes::forget` now clears the journal's facts for the deleted window too. Without
 it a stale `wants` entry could ask the server for a page of a session that no
 longer exists.
 
+## What moved in step A-2
+
+| thing | before | now |
+| --- | --- | --- |
+| disk `Cache` | `Log.cache: Cache`, instantiated in `log.rs` | `WindowJournal.cache`, built by `with_cache(root, endpoint)` |
+| `Log::stamp` / `rewind` | wrote the `Cache` directly | delegate to `WindowJournal::stamp` / `rewind` |
+| `stamp_of` / `floor_of` (pipe) | in-memory maps from `CursorMessage`, lost on restart | disk `Record::Stamp` / `Floor` / `Rewind`; `stamp_of` reads `stamp_at` |
+| session list | `tui/src/roster.rs` | `client/src/window_roster.rs`; `known_list` and `repoint` work on the pipe |
+| one journal per front-end | `Panes` held one, `Log` held a `Cache` | `Log` holds the only `WindowJournal`, `Panes` forwards to it |
+
+`consume` now writes the cursor half down: `Transcript` becomes `Stamp`, `Landed`
+becomes `Floor` + `Stamp`, `Rewind` becomes `Rewind`. The pipe front-end has no
+`Entry` blocks to rewrite, so it appends the two records a refill reads back
+instead of calling `Cache::rewrite`. A fresh process answers `stamp_of` from
+`Cache::stamp_at` and `floor_of` from the newest `Floor`; two `#[cfg(test)]` cases
+cover that a stamp outlives the journal that wrote it and that `repoint` forgets
+the old endpoint's facts.
+
+`PipeFrontend::send` writes `Roster` on every `Layout` frame and clears the
+journal and its files on `Forget`; `repoint` re-points the journal and the roster
+together, because another endpoint is another set of files.
+
 ## What has not moved yet
 
-`stamp_of` and `floor_of` are still answered by `Log` through the disk `Cache`
-and the per-window `Ledger` when the front-end is the TUI. `Log::landed` and
-`Log::rewind` walk `entries` to build `Record`s, so they are entangled with the
-ratatui folding state in `Entry` (`starts`, `col`, `styled`, `source`). Moving
-that is A-2: split `Entry` into a data block (client) and a fold view (TUI), then
-let `WindowJournal` own the `Cache` and the `Ledger` map directly. Until then the
-pipe front-end's stamps and floors come from `CursorMessage` in memory, which is
-enough for it to answer locally but is not persisted across a restart.
+`Log::landed` still walks `entries` to build `Record::Seal` with
+`Entry::seal_record`, and `materialize` still reads cold bodies back through the
+ratatui folding state in `Entry` (`starts`, `col`, `styled`, `source`). `Ledger`'s
+type is in the client but `pages` / `page_first` live in TUI's `views`. Splitting
+those is A-4, and it is not a precondition for A-3: the pipe front-end already
+answers a refill from appended records. See `DESIGN.md` §1, "裁定 A".
 
 ## Invariants worth keeping
 

@@ -1,6 +1,9 @@
-# tui/roster.rs
+# client/window_roster.rs (was tui/roster.rs)
 
-The session list this window drew last, on disk.
+The session list this window drew last, on disk. A-2 moved the source into the
+client library: the pipe front-end needs the same `known_list` answer as the TUI,
+and neither answer is a terminal fact. `crates/tui/src/roster.rs` is now only a
+re-export, so the TUI's call sites did not change.
 
 ## Why a client keeps a list at all
 
