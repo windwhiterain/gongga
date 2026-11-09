@@ -103,12 +103,8 @@ const MACHINE_RUN: usize = 3;
 /// What Alt+<key> does to the terminal itself, rather than to the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConsoleAction {
-    /// Alt+Y: put the visible rows on the clipboard.
-    Copy,
-    /// Alt+C: put the selected text on the clipboard.
+    /// Ctrl+C: put the selected text on the clipboard.
     CopySelection,
-    /// Alt+M: toggle whether this app or the terminal owns the mouse.
-    Mouse,
 }
 
 /// What a vertical arrow asks for: SPEC's three bindings on ↑/↓, told apart.
@@ -1214,13 +1210,11 @@ impl Tui {
 
     /// The keys that act on the terminal, not on the conversation.
     fn console_key(key: &KeyEvent) -> Option<ConsoleAction> {
-        if !key.modifiers.contains(KeyModifiers::ALT) {
+        if !key.modifiers.contains(KeyModifiers::CONTROL) {
             return None;
         }
         match key.code {
-            KeyCode::Char('y' | 'Y') => Some(ConsoleAction::Copy),
             KeyCode::Char('c' | 'C') => Some(ConsoleAction::CopySelection),
-            KeyCode::Char('m' | 'M') => Some(ConsoleAction::Mouse),
             _ => None,
         }
     }
@@ -1673,9 +1667,7 @@ impl Tui {
     /// mouse back to the terminal.
     fn console(&mut self, action: ConsoleAction) {
         match action {
-            ConsoleAction::Copy => self.copy_visible(),
             ConsoleAction::CopySelection => self.copy_selection(),
-            ConsoleAction::Mouse => self.toggle_mouse(),
         }
         self.dirty = true;
     }
