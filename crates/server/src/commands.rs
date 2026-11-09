@@ -421,10 +421,9 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "interrupt_session".into(),
-            description:
-                "Stop the turn one session is running. The turn is dropped, not resumed on \
-                      the next start. Background jobs keep running."
-                    .into(),
+            description: "Stop the turn one session is running. The turn is kept: the next start \
+                      continues it. Background jobs keep running."
+                .into(),
             args: vec![{
                 let mut spec = pos(
                     "session",
@@ -441,23 +440,35 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "cancel".into(),
-            description: "Interrupt every running turn and shut the server down at once. Nothing \
-                      unfinished is kept for the next start. This is the only stop that lets \
-                      background jobs go: they are processes of their own, outlive this server \
-                      and are adopted on the next start. Any other stop -- a signal, a window \
-                      closing, a killed process -- ends every job it started with it. Channels \
-                      are ended too unless `keep_alive` asks for them: their programs are \
-                      processes of their own, and one left running is adopted by the next start \
-                      instead of the session losing the shell it was using."
+            description: "Interrupt every running turn and shut the server down at once. A \
+                      running turn is kept for the next start only when `keep_turn` asks: a \
+                      handover resumes it, a person stopping work does not want it back. This \
+                      is the only stop that lets background jobs go: they are processes of \
+                      their own, outlive this server and are adopted on the next start. Any \
+                      other stop -- a signal, a window closing, a killed process -- ends every \
+                      job it started with it. Channels are ended too unless `keep_alive` asks \
+                      for them: their programs are processes of their own, and one left running \
+                      is adopted by the next start instead of the session losing the shell it \
+                      was using."
                 .into(),
-            args: vec![arg(
-                "keep_alive",
-                "`true` leaves every channel's program running so the next start adopts it; a \
-                 channel that is not kept ends with this server.",
-                false,
-                Some("true|false"),
-                CompletionSource::None,
-            )],
+            args: vec![
+                arg(
+                    "keep_alive",
+                    "`true` leaves every channel's program running so the next start adopts it; \
+                     a channel that is not kept ends with this server.",
+                    false,
+                    Some("true|false"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "keep_turn",
+                    "`true` keeps the interrupted turns so the next start continues them, which \
+                     is what a handover needs; without it the work is dropped with the server.",
+                    false,
+                    Some("true|false"),
+                    CompletionSource::None,
+                ),
+            ],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -1165,7 +1176,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "list_paths" => list_paths(d, args).await,
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => {
-            // SPEC's flag: `cancel` takes the bool, the signal path passes false.
+            // SPEC's flags: `cancel` takes them, the signal path passes false.
             let keep_alive = match args.get("keep_alive") {
                 None => false,
                 Some(raw) => match parse_bool(raw) {
@@ -1173,7 +1184,14 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
                     Err(e) => return Outcome::err(e),
                 },
             };
-            cancel(d, origin, keep_alive).await
+            let keep_turn = match args.get("keep_turn") {
+                None => false,
+                Some(raw) => match parse_bool(raw) {
+                    Ok(kept) => kept,
+                    Err(e) => return Outcome::err(e),
+                },
+            };
+            cancel(d, origin, keep_alive, keep_turn).await
         }
         "get_messages" => get_messages(d, args).await,
         "new_channel" => new_channel(d, args).await,
@@ -2718,7 +2736,7 @@ pub(crate) async fn stop(d: &Dispatch) {
     let reason = crate::signal::reason()
         .unwrap_or("a signal reached the server")
         .to_string();
-    let said = cancel(d, &Origin::Signal { reason }, false).await;
+    let said = cancel(d, &Origin::Signal { reason }, false, false).await;
     tracing::info!(answer = %said.message, "stopped as a signal asks");
 }
 
@@ -2730,7 +2748,7 @@ pub(crate) async fn stop(d: &Dispatch) {
 /// learns the server is stopping, and its `payload.by` is the only place that
 /// says who asked. The status that follows from it states the fact, not the
 /// name -- see `docs/notes/server-commands.md`.
-async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
+async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool, keep_turn: bool) -> Outcome {
     // The listen loop keeps dispatching through the notice window.
     d.shutting_down.store(true, Ordering::SeqCst);
     // SPEC: every *running* session; an idle one has nothing to interrupt.
@@ -2743,7 +2761,7 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
     for session in &running {
         // Fire the token: a stuck call has no boundary. A wait is the exception;
         // `interrupt` keeps its turn.
-        interrupt(d, session.name(), true, false);
+        interrupt(d, session.name(), true, keep_turn);
     }
     // Only a protocol `cancel` lets jobs go; every other stop ends them here.
     let (released, killed) = match origin {
@@ -2795,8 +2813,12 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         None => "; every channel was kept alive, and the next start adopts them".to_string(),
     };
     let said = format!(
-        "interrupted {} session(s); nothing is left for the next start; {jobs}{channels}",
-        running.len()
+        "interrupted {} session(s); {}; {jobs}{channels}",
+        running.len(),
+        match keep_turn {
+            true => "their turns are kept and the next start continues them",
+            false => "nothing is left for the next start",
+        }
     );
     tracing::warn!(
         running = running.len(),

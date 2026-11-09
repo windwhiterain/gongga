@@ -420,12 +420,13 @@ get rid of.
 
 ## interrupt
 
-Stop one session's turn, and drop what it still owed.
+Stop one session's turn. What it still owed depends on who asked.
 
-The same act as `cancel`, scoped to one session: both fire the turn's token and
-clear its pending rows, so neither leaves work for the next start. The difference
-is the scope -- "stop that one, I did not mean it" and "stop the whole server" are
-not the same request -- and the distinction is worth a command of its own.
+`interrupt_session` keeps the turn: the SPEC makes that command the one that sets
+the interrupted flag, and the next start continues what carries it. `del_session`
+drops it -- deleting a session means not wanting what it is doing either -- and
+`cancel` does whichever its caller said. Clearing the rows is what keeps the next
+start from owing work nobody asked to have back.
 
 It used to be Ctrl+X, which meant only the TUI could do it: a script, and so the
 model, had no way to stop a turn it had started. As a command it is reachable by
@@ -452,12 +453,15 @@ as "the turn did stop".
 ## cancel
 
 The SPEC's `cancle`: interrupt every turn and leave. `cancel` calls `interrupt`
-on every live session, which fires the turn's token and clears its pending rows;
-nothing unfinished is owed to the next start. The one thing kept is a turn inside
-`wait`: it started nothing, so `interrupt` marks it resumable, keeps its `turn` row,
-and the next start resumes the wait. Every other call is interrupted where it stands
--- keeping a turn that was mid-program would run the program twice. The listen loop
-breaks as soon as
+on every live session, which fires the turn's token; whether the turn is owed to
+the next start is the caller's word. `keep_turn` keeps it, and a handover needs
+that much -- the successor was started to continue this turn, and a cancel that
+dropped it would leave the work of a swap in the process of being replaced. A
+plain `cancel` owes nothing, which is what a person stopping work asked for.
+Either way a turn inside `wait` is kept: it started nothing, so `interrupt` marks
+it resumable and the next start resumes the wait. Every other call is interrupted
+where it stands -- keeping a turn that was mid-program would run the program
+twice. The listen loop breaks as soon as
 `shutdown` is pulled, without waiting for `active` to drain -- a call stuck in a
 shell write or a model stream has no step boundary to reach, and a flag it may
 never read is not worth holding the port for.

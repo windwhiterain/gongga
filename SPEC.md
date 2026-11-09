@@ -113,8 +113,9 @@ fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, sessio
     # when pattern matched triggered event, run the cmd.
 fn del_subscription(path: path, session: Session)
 fn ls_subsscription(path: path, sesssion: Session)
-cancel(keep_alive: bool = false):
+cancel(keep_alive: bool = false, keep_turn: bool = false):
   # interrupt every running session then quit, by default kill all channel, optionally make everychannel background, keep them alive so retart will adopt them.
+  # keep_turn sets the interrupted flag on every session it interrupts, so restart continues them: a handover needs that, a person stopping work does not.
 ```
 ## Python Cmd
 provided by a shipped uv python package.

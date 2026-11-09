@@ -749,11 +749,12 @@ a successor started from one with it -- run '$0 launch $stamp' and swap again"
   disk_line "disk before:"
   echo "old server pid $pid; successor $exe (pid $launch_pid) is waiting"
   echo "cancelling: this turn is cancelled and preserved, the successor resumes it"
-  # `keep_alive` because the successor was handed to a channel: without it the
-  # cancel ends that channel's program and the successor with it. A server that
-  # predates the flag has no channels to end, so it is asked plainly.
-  "$CLI" cancel --keep_alive true || {
-    echo "note: this server does not take keep_alive; cancelling plainly" >&2
+  # `keep_alive` because the successor was handed to a channel, and `keep_turn`
+  # because the whole point of a handover is that this turn comes back: without
+  # it the cancel drops the work it was started to continue. A server that
+  # predates the flags has neither, so it is asked plainly.
+  "$CLI" cancel --keep_alive true --keep_turn true || {
+    echo "note: this server does not take keep_alive/keep_turn; cancelling plainly" >&2
     "$CLI" cancel
   }
 }
