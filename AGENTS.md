@@ -49,6 +49,11 @@ clean-disk 曾经在第 11 步虚报成功：`Clear-RecycleBin` 抛 `Win32Except
 - 无人值守用 `-NoElevate`（不弹 UAC、不留提权窗口）；
 - 每段打印上一步耗时，用来分辨「慢」和「挂了」。
 
+**功能删掉时，它在盘上的产物也要删。** `C:\ProgramData\gongga\gongga-disk-reserve`
+就是 `disk::Reserve` 被 `9fb7b9bd` 换掉之后留下的一整个 GiB：代码里已经没有创建/删除它
+的地方，于是它既不占任何逻辑、也不被任何清理扫到，只能靠人偶然发现。删一个 feature 的
+时候顺手 `grep` 一遍它写过的路径。
+
 判据：跑完先看 `recycle_left` 和退出码。`recycle_left > 0` 基本就是「回收站里有
 别的账号建的东西」——`icacls /grant` 会 *Access is denied*，只有提权能删，别反复试。
 
