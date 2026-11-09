@@ -107,15 +107,11 @@ const PASTE_BURST: usize = 20;
 /// The gap two keys of a burst may have and still be one. See `docs/notes/tui-paste.md`.
 const BURST_GAP: Duration = Duration::from_millis(40);
 
-/// What Alt+<key> does to the terminal itself, rather than to the conversation.
+/// What Ctrl+C does to the terminal rather than to the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConsoleAction {
-    /// Alt+Y: put the visible rows on the clipboard.
-    Copy,
-    /// Alt+C: put the selected text on the clipboard.
+    /// Ctrl+C: put the selected text on the clipboard.
     CopySelection,
-    /// Alt+M: toggle whether this app or the terminal owns the mouse.
-    Mouse,
 }
 
 /// What a vertical arrow asks for: SPEC's three bindings on ↑/↓, told apart.
@@ -491,7 +487,6 @@ pub struct Tui {
     history_pos: Option<usize>,
     events: EventStream,
     /// Whether mouse capture is on, so the toggle knows what to flip.
-    mouse_captured: bool,
     restored: bool,
     /// Whether anything changed since the last frame. Every mutation sets it.
     dirty: bool,
@@ -503,6 +498,8 @@ pub struct Tui {
     /// read: dropping it is what puts the mode back.
     #[allow(dead_code)]
     quick_edit: QuickEdit,
+    /// Bracketed paste's markers, while a paste is open or a marker is half read.
+    markers: PasteMarkers,
     /// Text keys that arrived back to back, and when the newest one did.
     fast: usize,
     fast_at: Option<std::time::Instant>,
@@ -665,6 +662,119 @@ fn cell_shaped(size: FontSize) -> bool {
     (1..=32).contains(&size.width) && (1..=64).contains(&size.height) && size.height >= size.width
 }
 
+/// Bracketed paste's markers, recognised in the stream of ordinary keys.
+///
+/// # Invariant
+///
+/// `ESC[200~` is what makes a paste exact -- every break between the markers is text.
+/// Windows never turns it into `Event::Paste` (crossterm's console parser has no such
+/// arm), so the marker arrives as six ordinary keys. Recognising that sequence is not
+/// a guess: a hand does not type it, and while the markers are open nothing is sent.
+/// See `docs/notes/tui-paste.md`.
+const MARKER_START: [char; 6] = ['\x1b', '[', '2', '0', '0', '~'];
+const MARKER_END: [char; 6] = ['\x1b', '[', '2', '0', '1', '~'];
+
+/// What one key did to the marker recogniser.
+enum Marker {
+    /// Not a marker: these keys are the operator's, in order. Empty when the key was
+    /// part of a marker or was taken as paste text.
+    Keys(Vec<KeyEvent>),
+    /// The end marker arrived: this is the whole paste.
+    Pasted(String),
+}
+
+#[derive(Default)]
+struct PasteMarkers {
+    /// The keys that may be the start marker so far.
+    probe: Vec<KeyEvent>,
+    /// The keys that may be the end marker so far.
+    tail: Vec<KeyEvent>,
+    inside: bool,
+    text: String,
+}
+
+impl PasteMarkers {
+    fn feed(&mut self, key: KeyEvent) -> Marker {
+        self.feed_all(vec![key])
+    }
+
+    fn feed_all(&mut self, keys: Vec<KeyEvent>) -> Marker {
+        let mut queue: Vec<KeyEvent> = keys.into_iter().rev().collect();
+        while let Some(key) = queue.pop() {
+            if !self.inside {
+                if token(&key).is_none() {
+                    let mut out = std::mem::take(&mut self.probe);
+                    out.push(key);
+                    out.extend(queue.into_iter().rev());
+                    return Marker::Keys(out);
+                }
+                self.probe.push(key);
+                let seen: Vec<char> = self.probe.iter().filter_map(token).collect();
+                if !MARKER_START.starts_with(&seen[..]) {
+                    return Marker::Keys(std::mem::take(&mut self.probe));
+                }
+                if seen.len() == MARKER_START.len() {
+                    self.probe.clear();
+                    self.inside = true;
+                    self.text.clear();
+                    self.tail.clear();
+                }
+                continue;
+            }
+            self.tail.push(key);
+            let seen: Vec<char> = self.tail.iter().filter_map(token).collect();
+            if MARKER_END.starts_with(&seen[..]) {
+                if seen.len() == MARKER_END.len() {
+                    self.tail.clear();
+                    self.inside = false;
+                    return Marker::Pasted(std::mem::take(&mut self.text));
+                }
+                continue;
+            }
+            // Not the end marker after all: its first key was text.
+            let mut rest = std::mem::take(&mut self.tail);
+            let first = rest.remove(0);
+            self.take(first);
+            for key in rest.into_iter().rev() {
+                queue.push(key);
+            }
+        }
+        Marker::Keys(Vec::new())
+    }
+
+    /// The keys held as a possible marker, for a stream that stopped mid-way.
+    ///
+    /// # Invariant
+    ///
+    /// A lone `Esc` is the operator's: nothing is held past the quiet gap that ends a
+    /// run, so a key that turned out not to be a marker is never lost behind one.
+    fn take_probe(&mut self) -> Vec<KeyEvent> {
+        std::mem::take(&mut self.probe)
+    }
+
+    /// One key as paste text: a break is a break, never a submit.
+    fn take(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char(c) => self.text.push(c),
+            KeyCode::Enter => self.text.push('\n'),
+            KeyCode::Tab => self.text.push('\t'),
+            KeyCode::Backspace => {
+                self.text.pop();
+            }
+            _ => {}
+        }
+    }
+}
+
+/// One key as the character it would be inside a marker.
+fn token(key: &KeyEvent) -> Option<char> {
+    match key.code {
+        KeyCode::Esc => Some('\x1b'),
+        KeyCode::Char(c) if key.modifiers.is_empty() => Some(c),
+        _ => None,
+    }
+}
+
 /// What the clipboard held, and when it was last read.
 ///
 /// # Invariant
@@ -822,12 +932,12 @@ impl Tui {
             roster_failed: false,
             note_window: client::COMMAND_WINDOW.to_string(),
             events: EventStream::new(),
-            mouse_captured: true,
             restored: false,
             // The first frame has to happen even though nothing has changed.
             dirty: true,
             pending: Vec::new(),
             settled: None,
+            markers: PasteMarkers::default(),
             quick_edit,
             fast: 0,
             fast_at: None,
@@ -1199,15 +1309,29 @@ impl Tui {
             // cancelled wait resumes it instead of losing the keys.
             if !self.pending.is_empty() {
                 match tokio::time::timeout(PASTE_GAP, self.events.next()).await {
-                    // Quiet: the run is over.
-                    Err(_) => {}
+                    // Quiet: the run is over, and a key held as a marker was not one.
+                    Err(_) => {
+                        for key in self.markers.take_probe() {
+                            self.pending.push(key);
+                        }
+                    }
                     Ok(None) => return self.flush(),
                     Ok(Some(Err(e))) => self.stashed = Some(Err(e)),
                     Ok(Some(Ok(TermEvent::Key(key))))
                         if Self::actionable(&key) && Self::paste_key(&key) =>
                     {
-                        self.hold(key);
-                        continue;
+                        match self.markers.feed(key) {
+                            Marker::Keys(keys) => {
+                                for key in keys {
+                                    self.hold(key);
+                                }
+                                continue;
+                            }
+                            Marker::Pasted(text) => {
+                                self.paste(&text);
+                                continue;
+                            }
+                        }
                     }
                     // Anything else is not part of a paste, and is kept for later.
                     Ok(Some(Ok(other))) => self.stashed = Some(Ok(other)),
@@ -1237,7 +1361,14 @@ impl Tui {
                         continue;
                     }
                     // Held until the pause that says whether this was a paste.
-                    self.hold(key);
+                    match self.markers.feed(key) {
+                        Marker::Keys(keys) => {
+                            for key in keys {
+                                self.hold(key);
+                            }
+                        }
+                        Marker::Pasted(text) => self.paste(&text),
+                    }
                 }
                 Ok(TermEvent::Mouse(mouse)) => {
                     // A click must not operate the window hidden under the cover.
@@ -1844,13 +1975,11 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Alt+Y copies what is on screen, Alt+C the selection; Alt+M hands the
-    /// mouse back to the terminal.
+    /// Ctrl+C copies the selection: the one clipboard write a console without
+    /// QuickEdit no longer does by itself.
     fn console(&mut self, action: ConsoleAction) {
         match action {
-            ConsoleAction::Copy => self.copy_visible(),
             ConsoleAction::CopySelection => self.copy_selection(),
-            ConsoleAction::Mouse => self.toggle_mouse(),
         }
         self.dirty = true;
     }
@@ -1873,59 +2002,6 @@ impl Tui {
             ),
             clipboard::Copied::Failed(why) => {
                 self.say(LineKind::Error, format!("copy failed: {why}"))
-            }
-        }
-    }
-
-    /// Copies the rows the operator can see, which is what "copy that" means.
-    fn copy_visible(&mut self) {
-        let Ok(size) = self.terminal.size() else {
-            self.say(LineKind::Error, "copy: the terminal has no size to read");
-            return;
-        };
-        let text = self.screen.visible_rows(size.width, size.height).join("\n");
-        match clipboard::copy(&text) {
-            clipboard::Copied::Ok { chars, tool } => self.say(
-                LineKind::System,
-                format!("copied {chars} characters ({tool})"),
-            ),
-            clipboard::Copied::Empty => self.say(LineKind::System, "copy: the window is empty"),
-            clipboard::Copied::NoTool => self.say(
-                LineKind::Error,
-                "copy: no clipboard tool here; Alt+M frees the mouse so the terminal can select",
-            ),
-            clipboard::Copied::Failed(why) => {
-                self.say(LineKind::Error, format!("copy failed: {why}"))
-            }
-        }
-    }
-
-    /// Toggles terminal mouse capture, so selection and the wheel trade places.
-    ///
-    /// # Invariant
-    ///
-    /// Releasing capture is what makes native copy possible: while the app holds
-    /// the mouse, the terminal never sees a drag and cannot select.
-    fn toggle_mouse(&mut self) {
-        self.mouse_captured = !self.mouse_captured;
-        let result = if self.mouse_captured {
-            execute!(self.terminal.backend_mut(), EnableMouseCapture)
-        } else {
-            execute!(self.terminal.backend_mut(), DisableMouseCapture)
-        };
-        match result {
-            Ok(()) if self.mouse_captured => self.say(
-                LineKind::System,
-                "mouse: the app scrolls (Alt+M releases it for selecting)",
-            ),
-            Ok(()) => self.say(
-                LineKind::System,
-                "mouse: the terminal selects; drag to copy, Alt+M gives scrolling back",
-            ),
-            Err(e) => {
-                // The flag must match reality, or the next toggle lies.
-                self.mouse_captured = !self.mouse_captured;
-                self.say(LineKind::Error, format!("mouse: {e}"));
             }
         }
     }
