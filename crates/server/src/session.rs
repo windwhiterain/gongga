@@ -12,7 +12,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::BashConfig;
 use crate::remote::endpoint::Endpoint;
-use crate::remote::shell_set::ShellSet;
 use crate::store::{SessionRow, Store};
 use crate::tools::detached::DetachedRegistry;
 
@@ -137,14 +136,6 @@ impl Workspace {
         Ok(Self { local, remote, cwd })
     }
 }
-
-/// The shell a remote keeps only to answer directory listings for completion.
-///
-/// # Invariant
-///
-/// Named so it can never collide with a shell the model asks for: every tool
-/// argument naming a shell is the model's own, and this one is not a session's.
-const LISTING_SHELL: &str = "..completion";
 
 /// What a `--remote` on the wire asked for.
 ///
@@ -917,7 +908,6 @@ pub struct SessionManager {
     /// Kept apart from every session's workspace and never locked while `live` is:
     /// a directory listing is answered while a turn is running, and a Tab must not
     /// queue behind one. See `docs/notes/server-remote.md`.
-    listing_shells: Arc<Mutex<HashMap<String, ShellSet>>>,
     /// One file-reading connection per remote, and nobody's shell.
     ///
     /// # Invariant
@@ -970,7 +960,6 @@ impl SessionManager {
             script_env,
             remotes,
             live: Arc::new(Mutex::new(HashMap::new())),
-            listing_shells: Arc::new(Mutex::new(HashMap::new())),
             readers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -1005,84 +994,19 @@ impl SessionManager {
             entries.sort();
             return Ok(entries);
         }
-        let name = remote.unwrap_or_default().to_string();
-        let outcome = match self.listing_run(&name, endpoint, directory).await {
-            Ok(outcome) => outcome,
-            // A dead handle never works again, and a shell the peer lost is not a
-            // directory it refused.
-            Err(_) => {
-                self.listing_run(&name, self.endpoint_for(remote)?, directory)
-                    .await?
-            }
-        };
-        // No status means the shell died: waiting has no deadline, so a listing either
-        // reports one or did not answer.
-        let Some(status) = outcome.exit_code else {
-            anyhow::bail!(
-                "remote {name:?} did not answer while listing {directory:?}, and its shell \
-                 never reported a status"
-            );
-        };
-        if status != 0 {
-            anyhow::bail!(
-                "remote {name:?} cannot list {directory:?}: {}",
-                outcome.stderr.trim()
-            );
-        }
-        let mut entries: Vec<(String, bool)> = outcome
-            .stdout
-            .lines()
-            .filter_map(|line| match line.split_at_checked(2) {
-                Some(("d ", rest)) if !rest.is_empty() => Some((rest.to_string(), true)),
-                Some(("f ", rest)) if !rest.is_empty() => Some((rest.to_string(), false)),
-                _ => None,
-            })
+        // A peer's directory is one `read_dir` through the connection kept to it.
+        let reader = self.reader_for(remote).ok_or_else(|| {
+            anyhow::anyhow!("remote {remote:?} keeps no file connection for a listing")
+        })?;
+        let mut entries: Vec<(String, bool)> = reader
+            .list(directory)
+            .await?
+            .iter()
+            .filter(|entry| entry.is_dir || entry.is_file)
+            .map(|entry| (entry.name.clone(), entry.is_dir))
             .collect();
         entries.sort();
         Ok(entries)
-    }
-
-    /// One listing through the shell kept for `name`, dropping it if that fails.
-    ///
-    /// # Invariant
-    ///
-    /// A run that fails forgets the shell: a peer that has lost one of its own
-    /// answers every later run with a refusal, and the kept handle would turn one
-    /// bad minute into a remote whose completion never works again.
-    async fn listing_run(
-        &self,
-        name: &str,
-        endpoint: Endpoint,
-        directory: &str,
-    ) -> anyhow::Result<crate::tools::bash::BashOutcome> {
-        // The handle is taken and the map released before awaiting: a listing must
-        // not hold the map across a peer's answer.
-        let shell = {
-            let mut workspace = self
-                .listing_shells
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            let set = workspace
-                .entry(name.to_string())
-                .or_insert_with(|| ShellSet::new(endpoint, None, self.shell_env.clone()));
-            set.get(LISTING_SHELL)?
-        };
-        let mut shell = shell.lock().await;
-        // A path typed for this machine is not always one its shell reads.
-        let directory = match shell.canonical(directory).await {
-            Ok(canonical) => canonical,
-            // A directory the peer cannot name is one its listing will refuse, with
-            // a message about the path the caller wrote.
-            Err(_) => directory.to_string(),
-        };
-        let command = listing_script(&directory);
-        // Asked and waited for: no deadline, a cold `System32` listing measured 6.6s.
-        let outcome = shell.run_until_settled(&command).await;
-        if outcome.is_err() {
-            drop(shell);
-            self.forget_listing_shell(name);
-        }
-        outcome
     }
 
     /// Refuses a directory the destination does not have.
@@ -1152,20 +1076,6 @@ impl SessionManager {
             .unwrap_or_else(|e| e.into_inner())
             .insert(name.to_string(), reader.clone());
         Some(reader)
-    }
-
-    /// Forgets a remote's listing shell, so the next question opens a fresh one.
-    ///
-    /// # Invariant
-    ///
-    /// Called with nothing in flight: a shell whose command is still running cannot
-    /// be replaced without its lock, which is exactly what a stall holds.
-    fn forget_listing_shell(&self, remote: &str) {
-        let mut workspace = self
-            .listing_shells
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        workspace.remove(remote);
     }
 
     /// The remote names a session may name, in the config's order.
@@ -1361,13 +1271,6 @@ impl SessionManager {
                 }
             ),
         }
-    }
-
-    /// The variables every shell of `name` runs with.
-    fn session_env(&self, name: &str) -> Vec<(String, String)> {
-        let mut env = self.shell_env.clone();
-        env.extend(session_vars(&self.store, name));
-        env
     }
 
     fn local_endpoint(&self) -> anyhow::Result<Endpoint> {
@@ -1591,28 +1494,6 @@ impl SessionManager {
     pub fn live_sessions(&self) -> Vec<SessionHandle> {
         self.live().values().cloned().collect()
     }
-}
-
-/// The shell command that names each entry of `directory`, one per line.
-///
-/// # Invariant
-///
-/// `.[!.]*` is what keeps `.` and `..` out without a name test, and a name is
-/// printed from `printf '%s'`, so a name with a space or a quote survives.
-fn listing_script(directory: &str) -> String {
-    let where_to = if directory.trim().is_empty() {
-        ".".to_string()
-    } else {
-        quote_word(directory)
-    };
-    format!(
-        "cd -- {where_to} 2>/dev/null || exit 3\n\
-         for entry in .[!.]* *; do\n\
-         \x20 [ -e \"$entry\" ] || continue\n\
-         \x20 if [ -d \"$entry\" ]; then printf 'd %s\\n' \"$entry\"; \
-         else printf 'f %s\\n' \"$entry\"; fi\n\
-         done\n"
-    )
 }
 
 /// One word for a POSIX shell: single-quoted, with an embedded quote escaped.

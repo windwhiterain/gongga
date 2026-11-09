@@ -17,7 +17,6 @@ use tokio_util::sync::CancellationToken;
 use crate::session::{Machine, Workspace};
 use crate::store::Store;
 
-pub mod bash;
 pub mod channel;
 pub mod detached;
 pub mod file;
