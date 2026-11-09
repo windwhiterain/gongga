@@ -648,10 +648,8 @@ impl Channels {
             .map_err(quiet)
     }
 
-    /// Ends every channel of every session: what a stop that keeps none asks for.
-    ///
-    /// A channel this server cannot reach is left as the row it is: its machine is
-    /// not this one, and killing what nobody can ask about is not this server's.
+    /// Ends every channel of every session; one this server cannot reach is left
+    /// as the row it is.
     ///
     /// # Invariant
     ///
