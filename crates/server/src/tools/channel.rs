@@ -30,7 +30,7 @@ use crate::tools::spec;
 pub struct Outcome {
     pub id: String,
     pub output: String,
-    /// Total time since the channel started, not since this call.
+    /// Time since the channel' + chr(39) + 's last input, or its start: SPEC' + chr(39) + 's `time`.
     pub time: Duration,
     /// Whether `until` was found. No `until` given is never a match.
     pub matched: bool,
@@ -762,8 +762,10 @@ impl Channels {
                         session: row.session.clone(),
                         id: row.path.clone(),
                         output: looked.window,
+                        // SPEC' + chr(39) + 's `Result.time` is the cost since the last input:
+                        // the same number the call that gave up would have answered.
                         time: Duration::from_millis(
-                            (now_millis() - row.started_at)
+                            (now_millis() - row.wrote_at.unwrap_or(row.started_at))
                                 .max(0)
                                 .try_into()
                                 .unwrap_or(0),
