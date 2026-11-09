@@ -14,13 +14,25 @@ server at all, one dial attempt, whose server answered, the `Server` enum,
 2026-11-07 verdict makes `--parent` name the **UI**, with the client as its
 child, so the library cannot answer "is this our pid" by looking at itself: it
 would call a handover somebody else's server. The caller passes the UI pid.
-`interactive` currently passes `std::process::id()` because the UI is still this
-process; once the client is split into its own binary it passes the pid it got
-in argv instead. The comparison itself did not move.
+`interactive` still passes `std::process::id()` because the UI and the client
+share a process there; the `gongga-client` binary passes the hidden `--parent`
+it got in argv. `run` also hands that pid to `spawn()`, so the server follows the
+UI and survives a client that dies while its window stays. The comparison itself
+did not move.
 
 `Server::is_ours` still decides whether closing the UI stops the server, and
 `Server::label` still spells the header's words. `crates/tui` re-exports the
 enum, so `Screen::server` and `Tui::set_server` are unchanged.
+
+## A server that will not leave
+
+`server::stop` answers `Result<Option<u32>>`, not just the old pid. `Ok(Some)`
+names the server that left, `Ok(None)` means nobody was serving, and `Err` means
+cancel and kill both failed: that server still holds `server.lock`. `run` reports
+the error through the front-end and starts nothing, because a replacement would
+refuse the lock and the window would end up with no server at all. Porting this
+branch from `tui/run.rs` was the only semantic work in merging main into the
+client split; the rest of that file had already moved here.
 
 ## What is still in tui/run.rs
 
