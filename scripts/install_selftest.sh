@@ -88,7 +88,7 @@ trap cleanup EXIT
 start() {
   : > "$log"
   port=$(free_port)
-  env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
+  GONGGA_SHIP_URL="$content" env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
   for _ in $(seq 1 150); do grep -q "shipped content" "$log" && break; sleep 0.2; done
   server_pid=$(child_pid); sup=$(parent_of "$server_pid")
   report=$(grep -o 'shipped content.*' "$log" | head -1)
@@ -130,8 +130,10 @@ if [[ -n "${left// /}" ]]; then
   sleep 2
 fi
 rm -rf "$home"; mkdir -p "$home"
-# This machine's real cache: the check must not reach the network.
-cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
+# The home clones the content this run measures, so the commit the check expects
+# and the commit the home installs come from one history -- which is the whole
+# scenario, and what two different checkouts cannot promise. The URL is a path, so
+# the clone is local and no start reaches the network.
 
 say "== an install of another pin is not an edit"
 seed skills/heir/SKILL.md stale
