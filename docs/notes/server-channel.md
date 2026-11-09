@@ -134,11 +134,26 @@ and `kill` in a channel's `in`. They are the command layer's door to the same th
 and a subscription able to do what a call does. `del_session` ends the channels its
 session started, so a name is never left pointing at a dead directory.
 
-The watcher is what turns a program's end into a notice. It is a task on the server's
-shutdown token, so a `cancel` announces nothing it just ended; each pass reads `status`
-for every channel whose row says it has not ended, records the end, and queues an
-`inject` row marked `notice: "channel"` -- the same door a finished background job
-uses, and marked so it cannot wake an idle session.
+The watcher is what turns a wait into a notice, and it speaks only for a channel
+somebody is waiting on. `new`/`check` set the channel's wait flag -- the marker the call
+has to see, `""` for the end alone -- and the watcher looks at nothing else. Two things
+answer it: the program ending, or the marker appearing in what it printed. The flag is
+the claim: whoever clears it is the one that tells. A call clears it when its own answer
+is what delivered the event, the watcher skips a channel a call is inside, and a call
+that gives up waiting (a `wait` that ran out, `wait: 0`, an `interrupt`) leaves it set,
+so the answer still reaches the session once, after the call is gone.
+
+That is also the end of a double notice: one end told twice, once as a result and once
+as a notice. Measured on this machine before the change -- four calls in a row returned
+`exit: 0` in their own answer and each was announced again a step later. `finish_channel`
+was meant to arbitrate (`WHERE ended_at IS NULL`), but it answered `Ok(())` whether or
+not it had moved the row, so the `is_err()` guarding the notice never fired.
+
+It is a task on the server's shutdown token, so a `cancel` announces nothing it just
+ended; each pass reads `status` and the new bytes of every channel carrying a flag, and
+queues an `inject` row marked `notice: "channel"` -- the same door a finished background
+job uses, and marked so it cannot wake an idle session. The flag lives in the channel's
+row (`wait_marker`), so an offer to notice survives a restart.
 
 The notice does **not** take the window. It carries a preview for the reader and says
 `check` has the rest, because a notice that consumed the output would be the one way

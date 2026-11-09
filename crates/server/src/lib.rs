@@ -329,10 +329,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 if matches!(store.get_session(&end.session), Ok(None)) {
                     return;
                 }
-                let status = match end.exit {
-                    Some(0) => "finished successfully".to_string(),
-                    Some(code) => format!("finished with exit status {code}"),
-                    None => "ended, though its exit status could not be read".to_string(),
+                let status = match (end.matched, end.exit) {
+                    (_, Some(0)) => "finished successfully".to_string(),
+                    (_, Some(code)) => format!("finished with exit status {code}"),
+                    (true, None) => "said the line you were waiting for".to_string(),
+                    (false, None) => "ended, though its exit status could not be read".to_string(),
                 };
                 let ran = crate::agent::spent(end.time.as_millis() as u64);
                 // A preview: `check` still holds the window, because a notice that

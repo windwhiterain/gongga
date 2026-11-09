@@ -348,6 +348,9 @@ CREATE TABLE IF NOT EXISTS channels (
     -- When this channel was last written to: what a call's `time` is measured
     -- from. NULL until the first write, so the program's start stands then.
     wrote_at     INTEGER,
+    -- What a caller is waiting for, and whether one is: the marker a call has to
+    -- see (`''` for the end alone), or NULL for nobody waiting.
+    wait_marker  TEXT,
     UNIQUE (session, path)
 );
 
@@ -491,6 +494,20 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
+    // A channel says when a caller waits on it, and for what.
+    add_column_if_missing(
+        conn,
+        "channels",
+        "wait_marker",
+        "ALTER TABLE channels ADD COLUMN wait_marker TEXT",
+    )?;
+    // A channel says when a caller waits on it, and for what.
+    add_column_if_missing(
+        conn,
+        "channels",
+        "wait_marker",
+        "ALTER TABLE channels ADD COLUMN wait_marker TEXT",
+    )?;
     add_column_if_missing(
         conn,
         "sessions",
@@ -2706,7 +2723,7 @@ impl Store {
     pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker
              FROM channels WHERE session = ?1 ORDER BY path",
         )?;
         let rows = stmt
@@ -2720,7 +2737,7 @@ impl Store {
     pub fn live_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker
              FROM channels WHERE ended_at IS NULL ORDER BY id",
         )?;
         let rows = stmt
@@ -2733,7 +2750,7 @@ impl Store {
     pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker
              FROM channels WHERE session = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query(params![session, path])?;
@@ -2763,13 +2780,34 @@ impl Store {
         Ok(())
     }
 
-    /// Says what became of a channel that ended.
-    pub fn finish_channel(&self, id: i64, exit: i32) -> anyhow::Result<()> {
-        self.lock().execute(
+    /// Says what became of a channel that ended, and whether this was the telling.
+    ///
+    /// # Invariant
+    ///
+    /// `WHERE ended_at IS NULL` is the claim: two writers may see one end, and only
+    /// the one that moved the row may speak of it.
+    pub fn finish_channel(&self, id: i64, exit: i32) -> anyhow::Result<bool> {
+        Ok(self.lock().execute(
             "UPDATE channels SET ended_at = ?2, exit = ?3 WHERE id = ?1 AND ended_at IS NULL",
             params![id, now_millis(), exit],
+        )? > 0)
+    }
+
+    /// Records that a caller waits on this channel, and for what.
+    pub fn set_channel_wait(&self, session: &str, path: &str, marker: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET wait_marker = ?3 WHERE session = ?1 AND path = ?2",
+            params![session, path, marker],
         )?;
         Ok(())
+    }
+
+    /// Clears the flag, and says whether this caller cleared it: one delivery, claimed.
+    pub fn take_channel_wait(&self, id: i64) -> anyhow::Result<bool> {
+        Ok(self.lock().execute(
+            "UPDATE channels SET wait_marker = NULL WHERE id = ?1 AND wait_marker IS NOT NULL",
+            params![id],
+        )? > 0)
     }
 
     /// Gives a channel another name. The directory does not move: the name is a key
@@ -3076,6 +3114,9 @@ pub struct ChannelRow {
     pub upto: u64,
     /// When this channel was last written to; `None` before the first write.
     pub wrote_at: Option<i64>,
+    /// What a caller waits for: the marker, `Some("")` for the end alone. `None` is
+    /// nobody waiting.
+    pub wait_marker: Option<String>,
 }
 
 fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
@@ -3092,6 +3133,7 @@ fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
         exit: row.get(9)?,
         upto: row.get::<_, i64>(10)?.max(0) as u64,
         wrote_at: row.get(11)?,
+        wait_marker: row.get(12)?,
     })
 }
 
