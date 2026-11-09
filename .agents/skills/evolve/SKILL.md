@@ -16,8 +16,8 @@ S="$SKILL_DIR/evolve.sh"
 
 $S stage              # 编译检查 + 构建 + 暂存 + 生成 launcher（会先报磁盘余量）
 $S stage --clean      # 同上，并让继任者在旧服务端退出后、绑定端口前跑 cargo clean
-# 用 bash --detached 启动它打印的 launcher
-$S swap <stamp>       # 确认继任者真在等，再发 cancel
+$S launch <stamp>     # 把 launcher 交给一条活着的 channel 去起（不在本回合的 job 里）
+$S swap <stamp>       # 确认继任者真在等、且不是本回合孵出来的，再发 cancel
 $S status             # 当前 stamp、谁在等、端口与锁、租约在谁手里；`successors:` 为空才算干净
 $S clean              # 收掉没人会 swap 的旧继任者（--artifacts 连旧暂存件）
                       # 输出 "N killed, M left, K kept"：kept 那几行要说清为什么留
@@ -83,8 +83,24 @@ job 现在允许 `BREAKAWAY_OK`（`tools/job.rs`），也就是子进程**显式
 专门的小程序。**那是要改 SPEC 的决定，不是这个脚本能自己解决的**，所以我没有在脚本里留一个
 看起来能跑、实际会静默死掉的分支。
 
-推论：`swap` 的守卫（继任者 pid 活着 + 心跳新鲜）不是形式主义，它是唯一能挡住"取消了却
-没人接班"的东西。手起继任者时别绕过它。
+推论：`swap` 的守卫不是形式主义，它是唯一能挡住"取消了却没人接班"的东西。
+
+## `launch` 走的是另一条路
+
+`launch` 不自己 detach：它把 launcher 交给**一条活着的 channel** 的程序去起。relay 是
+detached 起的（`tools/channel.rs` → `DetachedJob`），它的 bash 不在任何 job 里，所以这样起出来
+的继任者天然活过 `cancel`。两个代价，都写在代码里：
+
+- `swap` 必须用 `cancel --keep_alive true`。否则那条 channel 跟着服务端一起结束，继任者也一起没。
+- 挑 channel 要**问过再挑**：程序丢了 stdin 的 relay 照样 `exit:null`，看起来和正常的一模一样。
+  `launch` 会先让它写一个文件，两秒不答就换下一条（这台机器上 `ch-39e2c727…` 就是聋的）。
+
+`launch` 会写 `evolve-<stamp>-launch.outside`，`swap` 只认这个声明：pid 活着、心跳新鲜这两件事，
+在"能活过 cancel"和"马上要跟着 job 一起被收掉"两种情况下长得完全一样，从外面分不出来。手起的
+继任者没有这个文件，`swap` 会拒绝并让你改走 `launch`。
+
+2026-11-09 实测的失败形态就是这一种：继任者 17 秒心跳正常、`swap` 校验通过、`cancel` 之后
+1 秒内消失，home 空着——它是本回合 shell 的子进程，`TerminateJobObject` 一并收掉了。
 
 真要让 `stage --launch` 成立，得让服务端提供一个"以 detached job 方式跑一个程序"的命令
 （脚本能调的那种），也就是改 SPEC 里 server cmd 的清单——那是另一个决定，不是这个脚本
