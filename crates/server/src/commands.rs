@@ -1369,7 +1369,13 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             return Outcome::err(format!("could not save the session's mode: {e}"));
         }
         session.set_mode(mode);
-        crate::explore::prime(session.explore(), session.cwd());
+        let ear = crate::explore::Ear::of(&d.store, &name);
+        crate::explore::prime(
+            &ear,
+            session.explore(),
+            session.cwd(),
+            session.remote_name(),
+        );
         if let Err(e) = d.store.add_pending_task(
             &name,
             "inject",

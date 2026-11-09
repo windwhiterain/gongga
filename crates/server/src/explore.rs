@@ -69,10 +69,8 @@ impl Mode {
 /// # Invariant
 ///
 /// One session's snapshot, read and written by that session's checks alone, so a second
-/// check waits for the first: two probes reading the same file at once would each report
-/// the other's aftermath. A directory that is not a repository, or this machine's `git`
-/// being unusable, blinds the watch for the rest of the session instead of paying a
-/// failed spawn per job.
+/// check waits for the first. A workspace this watch cannot compare is described to the
+/// session once, never kept as a silence. See `docs/notes/server-explore.md`.
 #[derive(Debug, Default)]
 pub struct Watch {
     state: Mutex<State>,
@@ -80,72 +78,114 @@ pub struct Watch {
 
 #[derive(Debug, Default)]
 struct State {
+    /// The lines of the last look that could compare.
     seen: Option<BTreeMap<String, ()>>,
-    blind: bool,
+    /// The shape this watch has already described, so it is described once.
+    said: Option<Shape>,
 }
 
-/// What one look at the workspace found.
+impl State {
+    /// Whether this shape is news: true the first time it is found, false after.
+    fn say(&mut self, shape: Shape) -> bool {
+        self.said.replace(shape) != Some(shape)
+    }
+}
+
+/// The shapes of a look that is not a comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// No repository covers the directory.
+    Unversioned,
+    /// The probe itself could not answer.
+    Unreadable,
+}
+
+/// What a session has to hear about the workspace it is reading.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Look {
-    /// Nothing to compare against: no repository, no `git`, or a probe that failed.
-    Blind,
-    /// The first look of this session: it is the shape later looks are compared to.
-    First,
-    /// The same workspace the last look saw.
-    Same,
-    /// The lines this session gained or lost, in the order `git` printed them.
+pub enum News {
+    /// This machine cannot read the directory, and this is what it said.
+    Blind(String),
+    /// No repository covers the directory: nothing here can be compared.
+    Unversioned,
+    /// The first look found a repository that was already dirty.
+    AlreadyDirty(Vec<String>),
+    /// The lines the workspace gained or lost since the last look.
     Changed(Vec<String>),
 }
 
 impl Watch {
-    /// Compares `cwd` with what this watch last saw, then keeps this look.
-    pub async fn look(&self, cwd: &Path) -> Look {
-        if self.state.lock().map(|state| state.blind).unwrap_or(true) {
-            return Look::Blind;
-        }
-        let Some(lines) = probe(cwd).await else {
-            if let Ok(mut state) = self.state.lock() {
-                state.blind = true;
-            }
-            return Look::Blind;
-        };
-        let mut now = BTreeMap::new();
-        for line in lines {
-            now.insert(line, ());
-        }
+    /// Compares `cwd` with what this watch last saw, and keeps this look.
+    ///
+    /// # Invariant
+    ///
+    /// News, not a state: a directory with no repository, or one this machine cannot
+    /// read, is described when the watch first meets it and not again, so a watch that
+    /// cannot see says so and a job that changed nothing says nothing.
+    pub async fn look(&self, cwd: &Path) -> Option<News> {
+        let found = probe(cwd).await;
         let Ok(mut state) = self.state.lock() else {
-            return Look::Blind;
+            return None;
         };
-        let look = match state.seen.take() {
-            None => Look::First,
-            Some(before) => {
-                let changed: Vec<String> = now
-                    .keys()
-                    .filter(|line| !before.contains_key(*line))
-                    .chain(before.keys().filter(|line| !now.contains_key(*line)))
-                    .cloned()
-                    .collect();
-                if changed.is_empty() {
-                    Look::Same
-                } else {
-                    Look::Changed(changed)
+        match found {
+            Found::Unreadable(why) => {
+                state.seen = None;
+                state.say(Shape::Unreadable).then_some(News::Blind(why))
+            }
+            Found::Unversioned => {
+                state.seen = None;
+                state.say(Shape::Unversioned).then_some(News::Unversioned)
+            }
+            Found::Lines(lines) => {
+                state.said = None;
+                let now: BTreeMap<String, ()> =
+                    lines.iter().map(|line| (line.clone(), ())).collect();
+                match state.seen.replace(now.clone()) {
+                    None => (!lines.is_empty()).then_some(News::AlreadyDirty(lines)),
+                    Some(before) => {
+                        let changed: Vec<String> = now
+                            .keys()
+                            .filter(|line| !before.contains_key(*line))
+                            .chain(before.keys().filter(|line| !now.contains_key(*line)))
+                            .cloned()
+                            .collect();
+                        (!changed.is_empty()).then_some(News::Changed(changed))
+                    }
                 }
             }
+        }
+    }
+
+    /// Records that this machine cannot read the workspace at all, and says so once.
+    pub fn unreadable(&self, why: String) -> Option<News> {
+        let Ok(mut state) = self.state.lock() else {
+            return None;
         };
-        state.seen = Some(now);
-        look
+        state.seen = None;
+        state.say(Shape::Unreadable).then_some(News::Blind(why))
     }
 }
 
-/// The lines `git status --porcelain` prints for `cwd`; `None` when unanswerable.
+/// What one `git status --porcelain` answered about `cwd`.
+enum Found {
+    /// The lines `git status` printed.
+    Lines(Vec<String>),
+    /// `git` answered that no repository covers the directory.
+    Unversioned,
+    /// The probe could not answer, and this is what it said.
+    Unreadable(String),
+}
+
+/// The lines `git status --porcelain` prints for `cwd`, or why there are none.
 ///
 /// # Invariant
 ///
 /// `GIT_OPTIONAL_LOCKS=0`, because the probe must not write: `git status` refreshes
 /// `.git/index` when it may, and a watcher that writes the workspace it watches finds
 /// its own aftermath on the next look.
-async fn probe(cwd: &Path) -> Option<Vec<String>> {
-    let git = which::which("git").ok()?;
+async fn probe(cwd: &Path) -> Found {
+    let Ok(git) = which::which("git") else {
+        return Found::Unreadable("this machine has no `git` on its PATH".to_string());
+    };
     let output = tokio::process::Command::new(git)
         .arg("-C")
         .arg(cwd)
@@ -154,13 +194,26 @@ async fn probe(cwd: &Path) -> Option<Vec<String>> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(std::process::Stdio::null())
         .output()
-        .await
-        .ok()?;
+        .await;
+    let Ok(output) = output else {
+        return Found::Unreadable(format!(
+            "`git` could not be started for `{}`",
+            cwd.display()
+        ));
+    };
     if !output.status.success() {
-        return None;
+        // `git`'s own word for a directory it found no repository above.
+        let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if said.contains("not a git repository") {
+            return Found::Unversioned;
+        }
+        return Found::Unreadable(match said.is_empty() {
+            true => format!("`git -C {} status` failed", cwd.display()),
+            false => said,
+        });
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    Some(
+    Found::Lines(
         text.lines()
             .filter(|line| !line.trim().is_empty())
             .map(|line| line.to_string())
@@ -168,21 +221,72 @@ async fn probe(cwd: &Path) -> Option<Vec<String>> {
     )
 }
 
-/// Takes the baseline a session's first look is measured against.
+/// Who hears what a look finds: the session's store, and the session's name.
+#[derive(Clone)]
+pub struct Ear {
+    store: Store,
+    session: String,
+}
+
+impl Ear {
+    /// The notice queue a machine's looks about this session are queued in.
+    pub fn of(store: &Store, session: &str) -> Self {
+        Self {
+            store: store.clone(),
+            session: session.to_string(),
+        }
+    }
+
+    /// Queues what a look found as a notice, which owes an idle session no turn.
+    fn report(&self, message: String) {
+        if let Err(e) = tell(&self.store, &self.session, &message) {
+            tracing::warn!(session = %self.session, error = %e,
+                "could not tell a session about the workspace it reads");
+        }
+    }
+}
+
+/// Why a peer's directory cannot be read from here.
+fn cannot_read(remote: &str, cwd: &Path) -> String {
+    format!(
+        "this session's shells run on remote `{remote}`, so `{}` is not on this machine",
+        cwd.display()
+    )
+}
+
+/// Takes the baseline a session's first look is measured against, and says what it found.
 ///
 /// # Invariant
 ///
 /// Without it the first change after the mode went on *is* the baseline and is never
-/// reported: a look has nothing to compare a workspace it has never seen with.
-pub fn prime(watch: Option<Arc<Watch>>, cwd: std::path::PathBuf) {
+/// reported: a look has nothing to compare a workspace it has never seen with. A first
+/// look that is not a clean repository -- none at all, a dirty one, or a directory this
+/// machine cannot read -- is said, because silence would read as `Same`.
+pub fn prime(
+    ear: &Ear,
+    watch: Option<Arc<Watch>>,
+    cwd: std::path::PathBuf,
+    remote: Option<String>,
+) {
     let Some(watch) = watch else {
         return;
     };
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         return;
     };
+    let ear = ear.clone();
     handle.spawn(async move {
-        let _ = watch.look(&cwd).await;
+        let news = match remote {
+            Some(remote) => watch.unreadable(cannot_read(&remote, &cwd)),
+            None => watch.look(&cwd).await,
+        };
+        let Some(news) = news else {
+            return;
+        };
+        // A change is the job's to report; the primer is not that job.
+        if let Some(message) = notice(&cwd, &news) {
+            ear.report(message);
+        }
     });
 }
 
@@ -238,11 +342,44 @@ pub fn refusal(tool: &str) -> String {
     )
 }
 
+/// The words for a workspace this watch cannot compare; `None` for a change, which is a
+/// job's news.
+pub fn notice(cwd: &Path, news: &News) -> Option<String> {
+    let here = cwd.display();
+    let words = match news {
+        News::Unversioned => format!(
+            "This session explores, but `{here}` is in no git repository, so this machine \
+             cannot tell a change from the workspace it found. Run `git init` in that \
+             directory, then `git add -A` and commit it, before you read: an untracked tree \
+             is not a baseline either, and nothing you do there is reported until it is one."
+        ),
+        News::AlreadyDirty(lines) => {
+            let mut listed = String::new();
+            for line in lines {
+                listed.push_str("  ");
+                listed.push_str(line);
+                listed.push('\n');
+            }
+            format!(
+                "This session explores, and `{here}` is a git repository that was already \
+                 dirty at this session's first look:\n\n{listed}\n\
+                 Make a worktree of your own and read there -- `git worktree add <path> HEAD`, \
+                 with a path outside that tree -- so every later change belongs to this \
+                 session and to nobody else. If those lines are your own uncommitted work, \
+                 commit them instead, so the watch has a baseline."
+            )
+        }
+        News::Blind(why) => format!(
+            "This session explores, but this machine cannot read its workspace: {why}. \
+             Nothing a program does there can be reported as a change while that holds. \
+             The directory it could not read is `{here}`."
+        ),
+        News::Changed(_) => return None,
+    };
+    Some(words)
+}
+
 /// Looks at the workspace after a piece of work ended, and tells the session what changed.
-///
-/// # Invariant
-///
-/// Looks at the workspace a program's call left, and queues what changed.
 ///
 /// # Invariant
 ///
@@ -252,25 +389,29 @@ pub fn after_job(ctx: &ToolContext, tool: &str) {
     let Some(watch) = ctx.explore.clone() else {
         return;
     };
-    // A peer's workspace is not here: a look would read a same-named directory.
-    if ctx.remote.is_some() || !is_program(tool) {
+    if !is_program(tool) {
         return;
     }
+    let ear = Ear::of(&ctx.store, &ctx.session);
     let cwd = ctx.cwd.clone();
-    let store = ctx.store.clone();
-    let session = ctx.session.clone();
+    let remote = ctx.remote.clone();
     let tool = tool.to_string();
     tokio::spawn(async move {
-        match watch.look(&cwd).await {
-            Look::Changed(changed) => {
-                let message = changed_notice(&tool, &changed);
-                if let Err(e) = tell(&store, &session, &message) {
-                    tracing::warn!(session = %session, tool = %tool, error = %e,
-                        "could not report a change to a workspace being read");
-                }
-            }
-            Look::Blind | Look::First | Look::Same => {}
-        }
+        let news = match remote {
+            Some(remote) => watch.unreadable(cannot_read(&remote, &cwd)),
+            None => watch.look(&cwd).await,
+        };
+        let Some(news) = news else {
+            return;
+        };
+        let message = match &news {
+            News::Changed(changed) => changed_notice(&tool, changed),
+            other => match notice(&cwd, other) {
+                Some(message) => message,
+                None => return,
+            },
+        };
+        ear.report(message);
     });
 }
 

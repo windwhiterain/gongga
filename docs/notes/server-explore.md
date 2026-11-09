@@ -41,9 +41,12 @@ the next look starts the chain again.
 The probe is `git`, not a walk of the tree. Walking the workspace measured 76 seconds on
 this repository (a `.dev` directory of 3.3 GB and a build `target/`), while
 `git status --porcelain` measured 83-136 ms and `git --version` alone 76-121 ms -- so the
-list of tracked paths is nearly free and the process is the entire cost. A directory
-that is not a repository has no probe: the exit status says so, the look is `Blind`, and
-the chain ends. It never falls back to the walk.
+list of tracked paths is nearly free and the process is the entire cost. The probe
+answers three ways and each one is news: the lines `git status` printed; `not a git
+repository`, which is a workspace with nothing to compare against; and any other failure,
+which is a directory this machine cannot read at all -- one that is gone, a `git` that is
+not installed, a container or a peer whose `/testbed` is not here. It never falls back to
+the walk.
 
 `GIT_OPTIONAL_LOCKS=0` is not tuning. `git status` takes the index lock unless it is
 told not to, which refreshes `.git/index` as a side effect of reading -- the next look
@@ -57,18 +60,49 @@ mode's honesty is worth more than its precision.
 ## Watch::look
 
 The comparison is between two sets of status lines, so it reports a path that entered
-the set and a path that left it. `First` and `Blind` are not `Same`: a look with nothing
-to compare against must not read as "nothing happened".
+the set and a path that left it. A look answers `Option<News>`: `Changed` for the lines
+that moved, `AlreadyDirty` for a first look that found the tree dirty, and `Unversioned`
+or `Blind` for the two workspaces nothing here can be compared against. `None` is the
+only silence, and it means either that the watch compared and saw nothing, or that it has
+already said what it found.
 
 ## explore::prime
 
-The chain has one end that must not be left loose. `First` is silent, so the first change
-after the mode went on would *be* the baseline and would never be reported -- and that
-first change is the common case, not the corner: an operator switches a session to
-explore and the agent's next `bash` writes. So the baseline is taken when the mode goes
-on (`set_session`) and when a session that was reading materialises after a restart.
-Both take it on a task of their own and drop the answer: a primer that reported would
-report the whole tree it had just met.
+The chain has one end that must not be left loose. A first look is a baseline, so the
+first change after the mode went on would *be* that baseline and would never be reported
+-- and that first change is the common case, not the corner: an operator switches a
+session to explore and the agent's next `bash` writes. So the baseline is taken when the
+mode goes on (`set_session`) and when a session that was reading materialises after a
+restart. Both take it on a task of their own. What that look finds is said when it is not
+a clean repository: that is the one report a primer has, and it is why the chain now
+begins with words rather than with silence.
+
+## a workspace with nothing to compare
+
+`Blind` used to be a terminal silence. A probe that failed once set a flag, and the watch
+was dead for the rest of the session; a directory with no repository never spoke at all.
+The deployment that found this ran 138 `bash` calls in explore and edited two files
+through `python - <<EOF` heredocs, and was reported for none of them: the session's `cwd`
+was an empty `/testbed` on the host while every call was `docker exec -w /testbed` into
+the task container, so the first probe failed and nothing was ever looked at again.
+
+None of the three is silent now, and none is terminal:
+
+- **No repository.** The session is told to `git init` the directory it reads, then
+  `git add -A` and commit -- an untracked tree is no baseline either, because a change to
+  an untracked file leaves the status line identical. The baseline is taken again on the
+  first look that succeeds, so an edit after that is reported.
+- **A repository that was already dirty at the first look.** Its lines are printed, and
+  the session is told to make a worktree of its own (`git worktree add <path> HEAD`) and
+  read there, so every later change belongs to it and to nobody else. Neither `narrow`
+  nor `prime` can do that for it: they take a baseline, they do not make one.
+- **A workspace this machine cannot see.** The failure is quoted, the session is told that
+  nothing can be reported while it holds, and the directory is named.
+
+Each is said once. The watch keeps the shape it has already described, so a blind watch
+says so instead of printing the same line after every job, and a look that answers again
+clears it -- which is also what makes `git init` an answer rather than a change of
+subject.
 
 ## is_program
 
@@ -97,10 +131,10 @@ stream's event loop, and `run_before_cache_expiry` exists because that wait can 
 prefix cache expire. A 100 ms process added to every call would be paid from the budget
 that function protects, for a reminder the model reads a moment later either way.
 
-`remote.is_some()` is skipped and this is a real hole: a peer's workspace is not on this
-filesystem, so a remote call's writes are neither refused nor reported. `docs/notes/`
-until the mode is carried across the link, the honest statement is that explore mode is
-about this machine.
+A peer's workspace is not on this filesystem, so a remote call's writes are neither
+refused nor reported. What is not silent is the reason: the watch says it is blind, once,
+and names the peer. A peer is the case the requirement below is written for, not a hole
+left to say nothing.
 
 ## the pending task and its kind
 

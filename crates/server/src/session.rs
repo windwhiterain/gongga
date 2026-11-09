@@ -1789,6 +1789,7 @@ impl SessionManager {
         }
         // The row's own spelling, kept for the placement below: `row.cwd` moves on.
         let row_cwd = row.cwd.clone();
+        let row_remote = row.remote.clone();
         let remote = self.peer(row.remote.as_deref())?;
         let cwd = (!row.cwd.trim().is_empty()).then(|| PathBuf::from(&row.cwd));
         // The endpoint judges its own directory: this filesystem would answer wrongly.
@@ -1841,7 +1842,8 @@ impl SessionManager {
             }),
         };
         // A session that read before the restart reads still: this is its baseline.
-        crate::explore::prime(handle.explore(), handle.cwd());
+        let ear = crate::explore::Ear::of(&self.store, handle.name());
+        crate::explore::prime(&ear, handle.explore(), handle.cwd(), row_remote);
         live.insert(row.name, handle.clone());
         Ok(handle)
     }
