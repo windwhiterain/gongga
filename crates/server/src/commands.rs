@@ -2642,8 +2642,8 @@ fn interrupt(d: &Dispatch, name: &str, keep_waiting: bool, keep_turn: bool) -> (
     // SPEC: a wait lives across a cancel. Marked before the token fires, because
     // the token is what ends the wait.
     let waiting = keep_waiting && in_wait;
-    // SPEC: an interrupted turn is the next start's to continue -- unless the
-    // session was idle, or was only inside `wait`, which ends here.
+    // SPEC: an interrupted turn is the next start's to continue, unless the
+    // session was idle or only inside `wait`.
     let resume = waiting || (keep_turn && was_busy && !in_wait);
     if resume {
         session.mark_resumable();
@@ -2670,8 +2670,8 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => Outcome::err(e.to_string()),
         };
     }
-    // `interrupt_session` drops the turn; only a `cancel` keeps a waiting one.
-    // SPEC: an interrupted turn is continued by the next start.
+    // SPEC: this drops the turn and the next start continues it; only a `cancel`
+    // keeps a waiting one.
     let (was_busy, dropped) = interrupt(d, &name, false, true);
     let mut message = if was_busy {
         format!("interrupted {name}")

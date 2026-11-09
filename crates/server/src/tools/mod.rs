@@ -1058,8 +1058,7 @@ pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "
 /// these are the defaults, not an override.
 pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
     let mut schema = tool.spec().schema();
-    // A tool the tunnel leaves alone takes none of the tunnel's words. See SPEC.
-    // SPEC: every tool call may carry a `description`, tunnel or no tunnel.
+    // SPEC: `description` is every call's; the rest are the tunnel's.
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties
             .entry("description".to_string())
