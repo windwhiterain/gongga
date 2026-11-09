@@ -138,7 +138,11 @@ impl Agent {
         gate: tokio::sync::OwnedMutexGuard<()>,
     ) {
         let started = std::time::Instant::now();
-        let outcome = AssertUnwindSafe(self.turn_inner(session, epoch, gate))
+        // The gate stays held until the ending is written: a wake that claimed it here
+        // would save the next turn before what this one received. See
+        // `docs/notes/server-agent.md`.
+        let _gate = gate;
+        let outcome = AssertUnwindSafe(self.turn_inner(session, epoch))
             .catch_unwind()
             .await;
         let (outcome, steps, origin) = match outcome {
@@ -213,7 +217,6 @@ impl Agent {
         &self,
         session: &SessionHandle,
         epoch: u64,
-        _gate: tokio::sync::OwnedMutexGuard<()>,
     ) -> (TurnOutcome, u32, Option<&'static str>) {
         let name = session.name().to_string();
         let id = session.id();

@@ -620,3 +620,16 @@ place, and the one value every model does take is `none` -- the session stating 
 it sends no tier at all, which neither the server's own nor the roster's shortest
 answers for. Nothing re-decides the tier between requests. The `usage` row records what
 was actually sent, so the observation layer sees the tier that was in force.
+
+## the_wake_waits_for_the_ending
+
+`SPEC` orders an interrupted turn: the tool wait ends and its result is returned, the
+loop stops and everything received is saved, and only then is the interrupted flag
+set. The ending -- `keep_streamed`'s rows, the `turn_interrupted` row, the status and
+the durable turn -- is written after the loop returns.
+
+`run_turn` therefore holds the gate until that ending exists. Released when the loop
+returned, the gate was free for a `nudge_inboxes` wake, and the notice about the call
+the interrupt ended could start the next turn inside the window: the notice read as
+saved before the text the cancel preserved, which is the second line of the order
+kept in intent and broken in sequence.
