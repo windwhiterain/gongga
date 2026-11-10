@@ -10,3 +10,11 @@ description = "One answer to how a program the harness starts keeps its console 
 # The flag and the rule, nothing else. The distribution's head (`gongga-bundle`)
 # carries no dependencies by design, so it spells the flag itself.
 [dependencies]
+
+[target.'cfg(windows)'.dependencies]
+# Sealing this process's standard handles: `SetHandleInformation` and the three
+# handles a program is given. See `docs/notes/console-lib.md`.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }

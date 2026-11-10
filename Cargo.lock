@@ -849,6 +849,9 @@ dependencies = [
 [[package]]
 name = "gongga-console"
 version = "0.2.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "gongga-lock"

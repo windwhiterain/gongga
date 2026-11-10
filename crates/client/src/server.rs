@@ -271,7 +271,10 @@ async fn answers(home: &Path, addr: SocketAddr) -> bool {
 ///
 /// Nothing of this process goes with it: a one-shot command exits in
 /// milliseconds, and a server that died with its caller would take the turn it
-/// just started down with it.
+/// just started down with it. Its own output is redirected, but the handles this
+/// process *was given* have to be sealed too -- a window reads the client's
+/// stdout to learn the client is gone, and a server that inherited the write end
+/// keeps that from ever arriving. See `console::seal_std_handles`.
 fn start(
     home: &Path,
     addr: SocketAddr,
@@ -299,6 +302,8 @@ fn start(
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
     detach(&mut cmd);
+    // The three above are the server's; the ones this process was given are not.
+    console::seal_std_handles();
     let child = cmd
         .spawn()
         .with_context(|| format!("starting {}", server.display()))?;
