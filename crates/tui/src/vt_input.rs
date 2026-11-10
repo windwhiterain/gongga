@@ -14,7 +14,11 @@ use crossterm::event::Event;
 /// Off until a terminal has proved it: the switch exists so a keyboard that stops
 /// working is one restart away from the reader that worked.
 pub fn wanted() -> bool {
-    std::env::var("GONGGA_TUI_VT_INPUT").is_ok_and(|value| value == "1")
+    // On by default: a paste must not need an environment variable to be one. `0`
+    // is the way back, for a terminal this reader mishandles.
+    std::env::var("GONGGA_TUI_VT_INPUT")
+        .map(|value| value != "0")
+        .unwrap_or(true)
 }
 
 #[cfg(windows)]
@@ -49,6 +53,7 @@ mod platform {
             if !enable() {
                 return;
             }
+            let mut log = log_file();
             let mut reader = std::io::stdin();
             let mut buffer: Vec<u8> = Vec::new();
             let mut chunk = [0u8; 4096];
@@ -59,7 +64,7 @@ mod platform {
                     Err(_) => return,
                 };
                 buffer.extend_from_slice(&chunk[..read]);
-                log_raw(&chunk[..read]);
+                log_raw(&mut log, &chunk[..read]);
                 for event in parse(&mut buffer) {
                     if tx.send(event).is_err() {
                         return;
@@ -268,8 +273,22 @@ mod platform {
         }
         None
     }
-    fn log_raw(bytes: &[u8]) {
-        let Some(path) = std::env::var_os("GONGGA_TUI_RAW_KEYS") else {
+    /// The file the raw bytes go to: `GONGGA_TUI_RAW_KEYS`, else one in the temp
+    /// directory, made fresh each run so one run is one file.
+    ///
+    /// # Invariant
+    ///
+    /// Reading what the console delivered is never something a person has to
+    /// configure. See `docs/notes/tui-paste.md`.
+    fn log_file() -> Option<std::fs::File> {
+        let path = std::env::var_os("GONGGA_TUI_RAW_KEYS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("gongga-raw-keys.log"));
+        std::fs::File::create(path).ok()
+    }
+
+    fn log_raw(file: &mut Option<std::fs::File>, bytes: &[u8]) {
+        let Some(file) = file else {
             return;
         };
         let mut line = String::with_capacity(bytes.len() * 3 + 1);
@@ -277,9 +296,7 @@ mod platform {
             line.push_str(&format!("{byte:02x} "));
         }
         line.push('\n');
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = file.write_all(line.as_bytes());
-        }
+        let _ = file.write_all(line.as_bytes());
     }
 
     #[cfg(test)]
