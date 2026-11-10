@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Gongga.Avalonia.ViewModels;
@@ -13,6 +14,7 @@ public partial class MainWindow : Window
     private readonly ClientProcess _client = new();
     private readonly ClientModel _model = new();
     private readonly DispatcherTimer _toastTimer;
+    private bool _applying;
 
     public MainWindow()
     {
@@ -21,6 +23,10 @@ public partial class MainWindow : Window
         DataContext = _model;
         _model.Send = _client.Send;
         _model.ScrollToNewest = ScrollStickyToNewest;
+        _model.ReplaceInput = ApplyInput;
+        // Tunnel, not bubble: an `AcceptsReturn` TextBox puts the newline in before a
+        // bubbling handler is asked, so Enter never reached the submit path.
+        Input.AddHandler(KeyDownEvent, OnInputKeyDown, RoutingStrategies.Tunnel);
 
         _toastTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
         _toastTimer.Tick += (_, _) =>
@@ -64,6 +70,24 @@ public partial class MainWindow : Window
         }
     }
 
+    protected override void OnOpened(EventArgs e)
+    {
+        base.OnOpened(e);
+        if (Screens.Primary is not { } screen)
+        {
+            return;
+        }
+        // Bounds are in physical pixels and the window's size is in DIPs, so the
+        // screen has to be divided back by its scaling before it can cap a window.
+        var area = screen.WorkingArea;
+        var scale = screen.Scaling <= 0 ? 1 : screen.Scaling;
+        Width = Math.Min(Width, area.Width / scale);
+        Height = Math.Min(Height, area.Height / scale);
+        Position = new PixelPoint(
+            area.X + (int)Math.Max(0, (area.Width - Width * scale) / 2),
+            area.Y + (int)Math.Max(0, (area.Height - Height * scale) / 2));
+    }
+
     private void OnClosed(object? sender, EventArgs e)
     {
         _toastTimer.Stop();
@@ -71,8 +95,30 @@ public partial class MainWindow : Window
         _client.Stop();
     }
 
-    private void OnInputTextChanged(object? sender, TextChangedEventArgs e) =>
+    /// Writes text the process chose into the box, caret included, without asking
+    /// the client for candidates a second time: the choice already did.
+    private void ApplyInput(string text, int caret)
+    {
+        _applying = true;
+        try
+        {
+            Input.Text = text;
+            Input.CaretIndex = Math.Clamp(caret, 0, text.Length);
+        }
+        finally
+        {
+            _applying = false;
+        }
+    }
+
+    private void OnInputTextChanged(object? sender, TextChangedEventArgs e)
+    {
+        if (_applying)
+        {
+            return;
+        }
         _model.InputChanged(Input.Text ?? string.Empty, Input.CaretIndex);
+    }
 
     private void OnInputKeyDown(object? sender, KeyEventArgs e)
     {

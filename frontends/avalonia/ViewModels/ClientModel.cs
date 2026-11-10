@@ -42,11 +42,27 @@ public sealed class ClientModel : ViewModelBase
     public ObservableCollection<PaneRow> Panes { get; } = new();
     public ObservableCollection<CandidateView> Candidates { get; } = new();
 
+    public ClientModel() =>
+        // An empty area has to say why it is empty; that is a property of the list.
+        Panes.CollectionChanged += (_, _) => Raise(nameof(NoPanes));
+
     /// Set by the window: writes one JSON line to the child's stdin.
     public Action<string>? Send { get; set; }
 
     /// Set by the window: brings the sticky pane back to its newest row.
     public Action? ScrollToNewest { get; set; }
+
+    /// Set by the window: writes text and caret into the box the person types in.
+    ///
+    /// # Invariant
+    ///
+    /// A text this process chose never lands without its caret: the box keeps its
+    /// own caret, so a replacement that forgets it leaves the next keystroke in the
+    /// middle of the word.
+    public Action<string, int>? ReplaceInput { get; set; }
+
+    /// True while no session has a pane, which is when the area has to explain itself.
+    public bool NoPanes => Panes.Count == 0;
 
     public string StatusText
     {
@@ -491,16 +507,27 @@ public sealed class ClientModel : ViewModelBase
     }
 
     /// A program-side change to the input (draft, history, accepted completion).
-    /// The TextBox's own TextChanged event is what asks the client for candidates.
+    ///
+    /// # Invariant
+    ///
+    /// The box is told the caret with the text, because a program-side change is
+    /// the one case the box cannot work it out: it is not the thing that moved.
     public void SetInput(string text, int caret)
     {
         InputText = text;
         InputCaret = Math.Clamp(caret, 0, text.Length);
+        ReplaceInput?.Invoke(InputText, InputCaret);
+        if (InputText.Length != 0)
+        {
+            Send?.Invoke(Intents.Complete(InputText, InputCaret));
+        }
     }
 
+    /// The box reporting what it now holds; its caret is already where it belongs.
     public void InputChanged(string text, int caret)
     {
-        SetInput(text, caret);
+        InputText = text;
+        InputCaret = Math.Clamp(caret, 0, text.Length);
         Send?.Invoke(Intents.Complete(InputText, InputCaret));
     }
 
@@ -515,8 +542,7 @@ public sealed class ClientModel : ViewModelBase
         _historyPosition = _history.Count;
         Send?.Invoke(Intents.Submit(line));
         CloseCompletion();
-        InputText = string.Empty;
-        InputCaret = 0;
+        SetInput(string.Empty, 0);
         ScrollToNewest?.Invoke();
     }
 
@@ -573,7 +599,7 @@ public sealed class ClientModel : ViewModelBase
             _completionEnd,
             _candidateRows[index]);
         CloseCompletion();
-        InputChanged(text, caret);
+        SetInput(text, caret);
     }
 
     public void CloseCompletion()
@@ -592,6 +618,6 @@ public sealed class ClientModel : ViewModelBase
         }
         _historyPosition = Math.Clamp(_historyPosition + direction, 0, _history.Count);
         var text = _historyPosition == _history.Count ? string.Empty : _history[_historyPosition];
-        InputChanged(text, text.Length);
+        SetInput(text, text.Length);
     }
 }

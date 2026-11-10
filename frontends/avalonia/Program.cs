@@ -6,7 +6,7 @@ namespace Gongga.Avalonia;
 public static class Launch
 {
     public static LaunchOptions Options { get; set; } =
-        new(new ClientOptions(null, null, null, null, null, false, false), false);
+        new(new ClientOptions(null, null, null, null, null, false, false), false, null);
 }
 
 internal static class Program
@@ -27,6 +27,14 @@ internal static class Program
         if (options.NoWindow)
         {
             Environment.ExitCode = HeadlessRun.RunAsync(options.Client).GetAwaiter().GetResult();
+            return;
+        }
+
+        // Off-screen rendering: a real window, pixels written to files, nobody's
+        // desktop involved. See `docs/notes/avalonia-frontend.md`.
+        if (options.Shots is { } shots)
+        {
+            Environment.ExitCode = ShotRun.Run(options.Client, shots);
             return;
         }
 

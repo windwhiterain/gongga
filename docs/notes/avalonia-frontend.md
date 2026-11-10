@@ -141,6 +141,48 @@ Avalonia window, prints one verdict line (`PASS/FAIL · frames · types · ...`)
 and returns an exit code. That is the machine-readable L3 check for a real
 `gongga-client` child on a headless run.
 
+## Looking at it without a screen
+
+`--shots <dir>` builds the real `MainWindow` on Avalonia's headless platform with
+Skia, so the window renders at full fidelity into a bitmap and nothing appears on
+anyone's desktop:
+
+    dotnet run -- --shots C:/tmp/shots --home <home> --client-home <home> \
+        --server 127.0.0.1:<port> --key <key>
+
+It writes `01-before-frames.png` through `06-submitted.png`, plus a `tree*.txt`
+dump of every control with the box it got. The run also clicks a listed session,
+types `/set_re`, presses Tab, types a whole command and presses Enter, so the
+pictures cover the states that matter: empty, connected, pane open, completion,
+and a submitted command.
+
+Why not a virtual desktop: Windows desktops are one session with one input queue
+and one visible desktop at a time. Switching to another takes the screen away
+from the person using the machine, and `SendInput` only reaches the foreground
+window of the current desktop, so it never bought the isolation it looked like.
+Off-screen rendering is the only way to look at a window without taking the
+desktop.
+
+The mode found four bugs on its first run, each fixed here:
+
+- **The caret did not travel with a text this process chose.** A completion, a
+  recalled line and a restored draft were written into the model, and the bound
+  `TextBox` kept its own caret, so the next keystroke landed in the middle of the
+  word (`/set_re --id delta...nder `). `ClientModel.SetInput` now hands text and
+  caret to the window, which writes both.
+- **Enter never submitted.** An `AcceptsReturn` `TextBox` inserts the newline in
+  its own handler, which runs before a bubbling `KeyDown`, so the submit branch
+  was unreachable. The handler is attached as a tunnel handler now.
+- **The window was bigger than the screen.** 1280x820 DIP at 175% scaling is
+  2264x1468 physical; opened at `@264,264` its input row sat at y=1634 on a
+  1440-high screen. `OnOpened` caps the size to the working area and centres it.
+- **Nothing said why the pane area was empty.** It now says
+  `No session open — click one on the left.`
+
+Two more came from the same pictures: an unfocused input box was invisible (the
+border was the same colour as the background) and now has a border and a
+placeholder, and a long session subtitle was cut mid-word without an ellipsis.
+
 ## Deliberate limits
 
 - `LineKind::Assistant` is shown as wrapped plain text, not rendered markdown.

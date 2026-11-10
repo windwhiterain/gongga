@@ -1,6 +1,6 @@
 namespace Gongga.Avalonia.Wire;
 
-public sealed record LaunchOptions(ClientOptions Client, bool NoWindow);
+public sealed record LaunchOptions(ClientOptions Client, bool NoWindow, string? Shots);
 
 public static class LaunchParser
 {
@@ -17,6 +17,7 @@ public static class LaunchParser
         var clientOnly = false;
         var force = false;
         var noWindow = false;
+        string? shots = null;
 
         for (var index = 0; index < args.Length; index++)
         {
@@ -29,6 +30,7 @@ public static class LaunchParser
                 case "--client-home":
                 case "--instance":
                 case "--key":
+                case "--shots":
                     if (index + 1 == args.Length)
                     {
                         options = Empty();
@@ -43,6 +45,7 @@ public static class LaunchParser
                         case "--client-home": clientHome = value; break;
                         case "--instance": instance = value; break;
                         case "--key": key = value; break;
+                        case "--shots": shots = value; break;
                     }
                     break;
                 case "--client_only":
@@ -81,10 +84,11 @@ public static class LaunchParser
 
         options = new LaunchOptions(
             new ClientOptions(executable, server, home, clientHome, key, clientOnly, force),
-            noWindow);
+            noWindow,
+            shots);
         return null;
 
         static LaunchOptions Empty() => new(
-            new ClientOptions(null, null, null, null, null, false, false), false);
+            new ClientOptions(null, null, null, null, null, false, false), false, null);
     }
 }

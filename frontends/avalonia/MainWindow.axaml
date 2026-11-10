@@ -14,6 +14,7 @@
     <Window.Resources>
         <v:KindBrushConverter x:Key="KindBrush" />
         <v:StickyBrushConverter x:Key="StickyBrush" />
+        <v:SelectedBrushConverter x:Key="SelectedBrush" />
 
         <DataTemplate x:Key="BlockTemplate" x:DataType="vm:BlockRow" DataType="vm:BlockRow">
             <Border Background="Transparent" Padding="8,3,8,4"
@@ -93,12 +94,19 @@
                                     <TextBlock Text="{Binding Name}" Foreground="#DCE2E9" />
                                 </StackPanel>
                                 <TextBlock Text="{Binding Title}" Margin="16,1,0,0"
-                                           Foreground="#7E8792" FontSize="10" />
+                                           Foreground="#7E8792" FontSize="10"
+                                           TextTrimming="CharacterEllipsis"
+                                           ToolTip.Tip="{Binding Title}" />
                             </StackPanel>
                         </Border>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
             </ListBox>
+
+            <TextBlock Grid.Column="1" IsVisible="{Binding NoPanes}"
+                       Text="No session open — click one on the left."
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Foreground="#5C6672" FontSize="13" TextWrapping="Wrap" />
 
             <ItemsControl Grid.Column="1" ItemsSource="{Binding Panes}"
                           ItemTemplate="{StaticResource PaneTemplate}">
@@ -131,8 +139,8 @@
                              Background="Transparent" BorderThickness="0">
                         <ListBox.ItemTemplate>
                             <DataTemplate x:DataType="vm:CandidateView" DataType="vm:CandidateView">
-                                <Border Background="Transparent" Padding="6,2"
-                                        PointerPressed="OnCandidatePressed">
+                                <Border Padding="6,2" PointerPressed="OnCandidatePressed"
+                                        Background="{Binding Selected, Converter={StaticResource SelectedBrush}}">
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="{Binding Insert}" Width="180"
                                                    Foreground="#E7EBF0" />
@@ -148,11 +156,13 @@
 
             <TextBox x:Name="Input" Grid.Row="1" AcceptsReturn="True"
                      TextWrapping="Wrap" MinHeight="64" MaxHeight="180"
-                     Padding="10,8" Background="#0D1116" Foreground="#E7EBF0"
-                     CaretBrush="#7FD4E8" BorderThickness="0,1,0,0" BorderBrush="#222831"
+                     Margin="10,6,10,4" Padding="10,8" CornerRadius="4"
+                     Background="#0E1319" Foreground="#E7EBF0"
+                     CaretBrush="#7FD4E8" BorderThickness="1" BorderBrush="#2A323C"
+                     PlaceholderText="Type a message, or / for a command"
                      FontFamily="Consolas, monospace" FontSize="13"
                      Text="{Binding InputText, Mode=TwoWay}"
-                     TextChanged="OnInputTextChanged" KeyDown="OnInputKeyDown" />
+                     TextChanged="OnInputTextChanged" />
         </Grid>
 
         <Border Grid.Row="5" Padding="12,4" Background="#161C24">
