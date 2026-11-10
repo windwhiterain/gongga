@@ -2092,7 +2092,7 @@ async fn input_channel(d: &Dispatch, args: &Args) -> Outcome {
     match d
         .agent
         .channels
-        .talk(&session, &id, Some(&input), wait, until)
+        .talk(&session, &id, Some(&input), wait, until, None)
         .await
     {
         Ok(outcome) => Outcome::ok_with(
@@ -2957,9 +2957,9 @@ enum Stop {
 ///
 /// # Invariant
 ///
-/// SPEC gives the canceled flag to `cancel` alone, and `cancel` writes it itself;
-/// this only fires the token and records which verb fired it, so the answer a cut
-/// call leaves can say whether a restart continues it.
+/// SPEC gives the canceled flag to `cancel` alone, and `cancel` writes it itself; this
+/// fires the token and records which verb fired it, so the turn's own rows and the
+/// session's status can say whether a restart continues it.
 fn interrupt(d: &Dispatch, name: &str, why: Stop) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);

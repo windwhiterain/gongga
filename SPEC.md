@@ -104,7 +104,7 @@ fn send_message(session: Session, message: str)
   # inject message when step end.
   # interrupt if tool waiting.
 fn interrupt_session(id: Session):
-  # end tool waiting, return result as tool call result.
+  # for waiting tool call, make it early return.
   # stop llm streaming and loop, everything received must be saved to context.
 fn trigger_event(event: Event)
 Subscription := path

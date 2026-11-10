@@ -93,11 +93,12 @@ interrupted and owes nothing, so this is false for it. `interrupt_session` and
 
 ## SessionInner::interrupted
 
-Set by `interrupt_session`, and by nothing else. Its job is the sentence: a tool
-call cut by the stop reads it to say which verb ended its wait, and the session row
-reads it to show `idle (interrupted)` instead of `idle (cancelled)`. Cleared by
-`new_turn`, so it describes the turn in flight and never the next one -- a cancel
-that lands after an interrupt would otherwise inherit its name.
+Set by `interrupt_session`, and by nothing else. Its job is the sentence a window
+reads: `idle (interrupted)` instead of `idle (cancelled)`. No tool call reads it, because
+SPEC makes a waiting call return early with the answer it has, and that answer says
+nothing about which verb ended the turn. Cleared by `new_turn`, so it describes the turn
+in flight and never the next one -- a cancel that lands after an interrupt would
+otherwise inherit its name.
 
 It is not a flag in the SPEC sense: nothing durable reads it, and no restart owes
 the turn anything because of it.
@@ -114,8 +115,8 @@ A copy, not a handle on the session -- a tool must not be able to do anything el
 the session that holds it. It carries `resumable` (what a cancel decided), `interrupted`
 (what an `interrupt_session` decided) and `waiting` (whether this call is a wait), and
 nothing else: the token, not a flag, is what ends a call. The two verbs are separate
-fields because a turn can only be ended by one of them, and the answer a cut call
-leaves has to name the right one.
+fields because the session row tells them apart -- `interrupt` reads `resumable` before
+it fires, and the status reads `interrupted` after -- and a call reads neither.
 
 ## SessionHandle::open — the part still being written
 

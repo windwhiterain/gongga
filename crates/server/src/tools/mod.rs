@@ -144,7 +144,7 @@ impl ToolContext {
         max: usize,
     ) -> String {
         let label = spill_label(&self.session, shell, description, &self.call_id);
-        // A cut on an endpoint session is not spilled here: a path on this machine
+        // An answer on an endpoint session is not spilled here: a path on this machine
         // is not a path the reader can open.
         let dir = (!self.on_endpoint(machine)).then_some(self.output_dir.as_path());
         crate::tools::spill::cap_output(crate::prompts::shared(), &text, max, dir, &label)
@@ -261,56 +261,6 @@ pub trait Tool: Send + Sync {
         args: Value,
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>>;
-
-    /// What this call leaves behind when its wait is ended from outside.
-    ///
-    /// # Invariant
-    ///
-    /// The wait itself is `ToolRegistry::run`'s, so a message ends every tool's wait
-    /// the same way; only the aftermath is the tool's own, and it is read from the
-    /// context -- a shell, an interpreter -- because the future that owned it has
-    /// been dropped by the time this is called. The default is the honest answer for
-    /// a tool with nothing to leave behind: it stopped where it was.
-    fn cut<'a>(
-        &'a self,
-        _args: &'a Value,
-        ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            ToolOutcome::err(format!(
-                "`{}` ended its wait: {}. What it had already done is not reported, because \
-                 the call was ended instead of finishing.",
-                ctx.tool,
-                why.because()
-            ))
-        })
-    }
-}
-
-/// Why a call's wait ended before the tool answered it.
-///
-/// See `docs/notes/server-tools-mod.md`.
-#[derive(Debug, Clone, Copy)]
-pub enum Cut {
-    /// Someone is talking to this session, and the turn is owed that message.
-    Message,
-    /// `interrupt_session` stopped streaming and the loop; this call answers first.
-    Interrupted,
-    /// The turn was cancelled, so nothing it started is owed.
-    Cancelled,
-}
-
-impl Cut {
-    /// Why, in the words a model reads.
-    pub fn because(self) -> &'static str {
-        match self {
-            Cut::Message => "a message arrived for this session",
-            Cut::Interrupted => "the session was interrupted",
-            Cut::Cancelled => "the turn was cancelled",
-        }
-    }
 }
 
 /// What a config row's `cmd` names: the one implementation that does the work.
@@ -336,28 +286,6 @@ pub trait Cmd: Send + Sync {
     /// not a fact about the tool -- which no config row could state.
     fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Option<Machine> {
         None
-    }
-
-    /// What this call answers when its wait is ended before the work finishes.
-    ///
-    /// # Invariant
-    ///
-    /// Overridden where ending a wait has to undo something (a shell left running, an
-    /// interpreter ended): this is a hook on the work, not a sentence about it.
-    fn cut<'a>(
-        &'a self,
-        _args: &'a Value,
-        _ctx: &'a ToolContext,
-        why: Cut,
-        _started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            ToolOutcome::err(format!(
-                "this call ended its wait: {}. What it had already done is not reported, \
-                 because the call was ended instead of finishing.",
-                why.because()
-            ))
-        })
     }
 }
 
@@ -392,19 +320,33 @@ impl Cmd for Forward {
                 None => protocol::Args::new(),
             };
             let began = std::time::Instant::now();
-            let outcome = layer.run(&ctx.session, &self.name, words).await;
-            let answer = json!({
-                "id": Value::Null,
-                "output": outcome.message,
-                "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
-                "matched": false,
-                "exit": if outcome.ok { 0 } else { 1 },
-                "data": outcome.data,
-            });
-            if outcome.ok {
-                ToolOutcome::ok(answer.to_string())
-            } else {
-                ToolOutcome::err(answer.to_string())
+            // SPEC: a waiting call returns early; a command that said nothing has nothing.
+            let outcome = tokio::select! {
+                outcome = layer.run(&ctx.session, &self.name, words) => Some(outcome),
+                _ = ctx.cancel.cancelled() => None,
+            };
+            let ended = match &outcome {
+                Some(done) => json!({
+                    "id": Value::Null,
+                    "output": done.message,
+                    "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
+                    "matched": false,
+                    "exit": if done.ok { 0 } else { 1 },
+                    "data": done.data,
+                }),
+                None => json!({
+                    "id": Value::Null,
+                    "output": "",
+                    "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
+                    "matched": false,
+                    "exit": Value::Null,
+                }),
+            };
+            // Ended early is not a failure: the command said nothing, because it was not
+            // given the time to.
+            match outcome {
+                Some(done) if !done.ok => ToolOutcome::err(ended.to_string()),
+                _ => ToolOutcome::ok(ended.to_string()),
             }
         })
     }
@@ -479,16 +421,6 @@ impl Tool for Specd {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         self.work.run(args, ctx)
-    }
-
-    fn cut<'a>(
-        &'a self,
-        args: &'a Value,
-        ctx: &'a ToolContext,
-        why: Cut,
-        started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        self.work.cut(args, ctx, why, started)
     }
 }
 
@@ -920,12 +852,12 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
         tokio::select! {
             answer = rx.recv() => return answer.unwrap_or_else(|| stopped(tool.name())),
             _ = ctx.cancel.cancelled() => break Some(match ctx.stop.interrupted() {
-                true => Cut::Interrupted,
-                false => Cut::Cancelled,
+                true => "interrupt",
+                false => "cancel",
             }),
             _ = punctual.tick() => {
                 if ctx.inbox.arrived() {
-                    break Some(Cut::Message);
+                    break Some("message");
                 }
             }
             _ = wait_until(clock_at) => break None,
@@ -944,17 +876,24 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
         )
         .await;
     };
-    // A cut ends the work too, and it is ended before the tool says what it left.
-    task.abort();
-    let _ = task.await;
     tracing::info!(
         session = %ctx.session,
         tool = %tool.name(),
-        why = why.because(),
+        why,
         elapsed = ?started.elapsed(),
         "the wait ended before the call answered"
     );
-    tool.as_ref().cut(args, ctx, why, started).await
+    // SPEC: a waiting call returns early; its token says the wait is over. A tool
+    // with no wait to end is stopped instead.
+    token.cancel();
+    match tokio::time::timeout(EARLY_RETURN, rx.recv()).await {
+        Ok(Some(answer)) => answer,
+        _ => {
+            task.abort();
+            let _ = task.await;
+            stopped(tool.name())
+        }
+    }
 }
 
 /// Sleeps until `at`, or for ever when this call has no clock of its own.
@@ -1245,6 +1184,14 @@ const INBOX_POLL: Duration = Duration::from_millis(250);
 /// How often a waiting read asks whether the work it waits for is done.
 const WAIT_POLL: Duration = Duration::from_millis(100);
 
+/// How long a call told its wait is over has to answer on its own path.
+///
+/// # Invariant
+///
+/// A grace, not a wait: every tool that waits reads its token between polls, so a call
+/// that does not answer within a poll or two has nothing to return early with.
+const EARLY_RETURN: Duration = Duration::from_secs(1);
+
 /// How a spill file is named: `session-shell-description-callid`, the same for both paths.
 fn spill_label(session: &str, shell: &str, description: Option<&str>, call_id: &str) -> String {
     match description {
@@ -1344,32 +1291,6 @@ pub struct WaitTool {
 }
 
 impl Cmd for WaitTool {
-    /// The one tool whose whole point is the wait: being cut by the news is its answer.
-    fn cut<'a>(
-        &'a self,
-        _args: &Value,
-        ctx: &'a ToolContext,
-        why: Cut,
-        started: std::time::Instant,
-    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
-        Box::pin(async move {
-            match why {
-                Cut::Message => ToolOutcome::ok(
-                    "a message arrived for this session while this call waited; it is \
-                     delivered at the next step boundary",
-                ),
-                // SPEC's interrupt_session: the wait ends, and its result is what it has.
-                Cut::Interrupted => ended(ctx, started),
-                // A `cancel` marks the turn before it fires the token, so the answer
-                // says which stop this was rather than guessing.
-                Cut::Cancelled if ctx.stop.resumable() => ToolOutcome::ok(
-                    "the server is stopping: this wait ends here, but the turn is kept and \
-                     the next start resumes it.",
-                ),
-                Cut::Cancelled => ToolOutcome::err("wait stopped: this turn was cancelled"),
-            }
-        })
-    }
     fn run<'a>(
         &'a self,
         args: Value,
@@ -1388,8 +1309,7 @@ impl Cmd for WaitTool {
             let began = std::time::Instant::now();
             let deadline = began + wait;
             loop {
-                // The person's message ends this wait (see `cut`); rows are what
-                // is left to watch.
+                // A message or an interrupt ends this wait: what it waited for is what it has.
                 match ctx.store.pending_injects_of(&ctx.session) {
                     Ok(rows) if !rows.is_empty() => return ended(ctx, began),
                     Ok(_) => {}
@@ -1408,7 +1328,11 @@ impl Cmd for WaitTool {
                     }
                     return ended(ctx, began);
                 }
-                tokio::time::sleep(remaining.min(WAIT_POLL)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(remaining.min(WAIT_POLL)) => {}
+                    // SPEC: a waiting call returns early -- with the answer it has.
+                    _ = ctx.cancel.cancelled() => return ended(ctx, began),
+                }
             }
         })
     }
@@ -1418,7 +1342,7 @@ impl Cmd for WaitTool {
 ///
 /// # Invariant
 ///
-/// One spelling for both doors -- the loop's own deadline and a cut -- because an ended
+/// One spelling for both doors -- its own deadline and an interrupt -- because an ended
 /// wait is an ended wait. The text says what the call has, never which verb ended it:
 /// SPEC gives a wait `output` and `time`, and the harness's own vocabulary is not the
 /// model's to read.

@@ -427,6 +427,7 @@ impl Channels {
         input: Option<&str>,
         wait: Duration,
         until: Option<&str>,
+        cancel: Option<&CancellationToken>,
     ) -> Result<Outcome, String> {
         let row = self.row_of(session, id)?;
         // Whoever is inside the channel is the one that tells the session: the watcher
@@ -494,6 +495,10 @@ impl Channels {
             }
             if Instant::now() >= deadline {
                 // Nothing arrived: what is there is the answer, and the cursor moves.
+                return self.answer(row, looked.window, false, looked.upto, None, ended, since);
+            }
+            // SPEC: a waiting call returns early; the window now is its answer.
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
                 return self.answer(row, looked.window, false, looked.upto, None, ended, since);
             }
             tokio::time::sleep(LOOK).await;

@@ -145,10 +145,14 @@ wait.
 
 The work runs on a task with a token of its own. That is what makes SPEC's first rule
 possible -- "a foreground job running over timeout becomes background": the turn stops
-waiting and the work does not stop. Everything a call can do to end the wait early is
-still here, because they are the wait's own: a message ends it, a cancel ends it, and
-both abort the task before the tool is asked what it left behind. Only the clock ends it
-*without* aborting, which is the whole difference between a cut and a promotion.
+waiting and the work does not stop.
+
+Two things end the wait before the work does: a message, and a stop (`cancel` or
+`interrupt_session`). Both end it the same way -- the work's own token is cancelled, the
+tool returns on its own path with what it has, and `waited` takes that answer as the
+call's. A tool with no wait to end, a file read, cannot answer early: it is aborted and
+`stopped` says so. The clock is the other path, and it cancels nothing: the work outlives
+the turn as a job, which is the whole difference between an early return and a promotion.
 
 `holds_the_turn` is what tells the two apart. A call that already answers without
 waiting -- a `background` job -- holds no turn, so a clock of its own is
@@ -221,9 +225,9 @@ every call that follows it.
 
 It was its own type rather than a string because the cancel path had work to do
 that no other error did: the command had to be stopped, and the shell it was
-running in thrown away. Now the tool body is not there when that work happens --
-it is dropped, and `Tool::cut` does the work from the context -- so a `Cut` value
-carries the reason, and there is no error type to tell apart.
+running in thrown away. Now the tool body is still there when the wait ends -- SPEC's
+"make it early return" -- so the tool does that work itself, on its own path, and no
+error type is needed to tell a stopped call from a refused one.
 
 ## BashTool::run (the `command` argument)
 
@@ -358,46 +362,36 @@ message sat in `pending_tasks` until the timeout it was written against.
 
 So the wait is `waited`, in `ToolRegistry::run`, and it is the only one: every
 tool is awaited there, the inbox is compared against the copy the context took
-when the call started, and a cut is handed to `Tool::cut`. A tool that is cut
-never sees an error: its future is dropped, which is exactly what makes a program
-die with its call (`kill_on_drop`, or the peer's connection closing) and what
-frees a shell's lock for the task that reads the rest of its output.
+when the call started, and the work's own token is what says the wait is over. A tool
+that watches it answers with what it has and never sees an error; one that does not is
+aborted, which is what makes a program die with its call (`kill_on_drop`, or the peer's
+connection closing) and what frees a shell's lock for the task that reads the rest of
+its output.
 
-## Tool::cut
+## a waiting call returns early
 
-Where a tool says what it leaves behind, now that the wait is not its own. The
-default is for a tool with nothing to leave -- a file read, a skill's entry -- and
-it says the call was ended rather than finished, because that is the whole of what
-is known about it.
+SPEC's `interrupt_session` asks one thing of a call that is waiting: "make it early
+return". So nothing answers in a body's place. The body is still running when the wait
+ends, it is told so through the token it already had, and it returns the answer it would
+have given a moment later.
 
-Three tools override it:
+Three tools wait, and each one's early answer is the answer it already had:
 
-- `bash`/`remote_bash` keeps the old behaviour, which is why the old behaviour was
-  worth keeping: the command is not touched, the shell is replaced with a fresh
-  one, and the old one reports the rest of its output into the inbox. "A message
-  ended the wait" and "the deadline passed" are still one story, told with two
-  reasons.
-- A program with no shell has nowhere to be left, so it was stopped with the call
-  and its exit status was unknown: a fact about the `exec` tool, which no longer
-  exists. A channel is what a session uses when the program must outlive the call.
-- `python`/`remote_python` ends the interpreter. A foreground call reads its own
-  reply line under the interpreter's lock, so a call that returned without reading
-  it would hand that line to the next caller as the answer to another question.
-  Killing the interpreter is the only way to keep "one name, one interpreter"
-  true; the next call starts a fresh namespace.
+- `wait`: the rows that arrived, or how long nothing came -- the sentence its own
+  deadline gives, from `ended`.
+- `new`/`check`: a wait that ends early is a `check` that waited for no time at all, so
+  `talk` answers with the window on disk right now, as SPEC's `Result`.
+- `<tool>(**args)` (`Forward`): the command said nothing, so its `Result` carries an
+  empty `output`, `exit: null`, and the time it spent.
 
-`wait` is the odd one for a good reason: the news that cuts it *is* its answer, so
-its cut is an `ok`, not an error. `check_bash`/`check_python` say their jobs were
-not stopped, since a read stopping never stops anything.
+A tool with no wait to end -- a file read, a skill's entry -- is aborted, and `stopped`
+says the work stopped before it could answer. That is the only sentence left about a
+call's ending, and it is a fact about the call: no tool learns which verb ended the
+turn, because nothing it answers may depend on that.
 
-Two different stops can cut a call, and SPEC gives them different aftermaths, so
-`Cut` names them separately. `Cancel` is a shutdown: a turn inside `wait` is kept and
-the next start resumes it, and every other call ends with nothing owed.
-`Interrupted` is `interrupt_session`: the wait ends, the turn stops with the answer
-this call leaves, and no restart continues it. `waited` reads which one from the
-session's stop signal at the moment the token fires -- the two are one token, so the
-flag is the only thing that can tell them apart, and a cut that guessed would tell a
-model the server was stopping when it was not.
+What the stop does to the turn is `commands`' business: whether a restart continues it,
+and what a window is told, are decided there and read from `StopSignal`, not from
+anything a tool call says.
 
 ## background_notifier
 
@@ -604,7 +598,7 @@ model from asking.
 
 A capped output is spilled to a file this server can name only when the shell that
 printed it runs here; over a remote the path would name a file the reader cannot
-open, so the cut is reported without one.
+open, so the answer is reported without one.
 
 ## spill_label
 
