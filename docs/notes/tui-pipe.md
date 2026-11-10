@@ -42,9 +42,13 @@ changed input line sends `UiIntent::Complete`; the client's `SharedCompleter`
 answers with `Completion`, so command syntax never crosses to the UI.
 The client records the session list itself, in `PipeFrontend::send(Layout)`.
 
-`Panes::keep_bodies()` turns off `end_frame`'s eviction. Without a journal to
-read cold bodies back from, dropping them would lose rows, so a pipe window
-keeps them in memory. That is the one cost of a purely drawing front-end.
+A pipe window keeps every body in memory because there is no journal on this
+side to read one back from. After A-4 the eviction path is gone altogether:
+`keep_bodies`, `begin_frame`, `end_frame`, `mark_drawn`, `note_room`, `seed` and
+`evict` were deleted from `Panes` / `render.rs`, and `Log` no longer owns a
+`WindowJournal`. The only local window fact left is `Panes.wants`, a
+`BTreeSet<String>` that a wheel past the top fills and `take_wants` empties into
+`UiIntent::Older`.
 
 `Screen::server_text` is the header's only source of the own / not own words; the
 client spells them, so the TUI needs no local `Server` value. The same-process
@@ -58,11 +62,11 @@ loop that once computed them here is gone (2026-11-10), together with `Tui`'s
   and the three trait impls it needed were deleted on 2026-11-10; so were the
   `Tui` fields and methods that only that path used, and `crates/tui/src/roster.rs`
   (a one-line re-export after A-2).
-- `Entry`'s fold state and `Ledger.pages` remain in the TUI, but A-4's original
-  plan -- moving `Entry`'s data blocks into the client -- is stale: on the pipe
-  path nothing calls `landed` / `rewind` / `record_seal`, and the client's disk
-  journal only records stamp / floor. See `DESIGN.md` §1, "A-4 复核", for the
-  two directions awaiting a decision.
+- A-4 is done (2026-11-10, verdict 甲). `Entry`'s fold state and a `Ledger`
+  without `pages` remain in the TUI; the disk cache, `Record::Seal`, replay,
+  seeding and eviction chains are gone. The client's journal only records
+  stamp / floor. See `DESIGN.md` §1, "A-4", for the deleted list and the
+  before/after frame comparison.
 - A malformed stdout frame is skipped: the UI has no journal to record it in,
   and writing to the terminal would corrupt the screen.
 
@@ -71,5 +75,7 @@ loop that once computed them here is gone (2026-11-10), together with `Tui`'s
 `tui_live.py` window-state and wheel scenarios pass with the default pipe mode,
 and `<client-home>/client.log` proves the child was started.
 `client_state_selftest.sh` and `multi_client_selftest.sh` still pass.
+After A-4 the same custom draw script was run once on the pre-A-4 build and once
+on the slimmed build: the final 30-row terminal grids were identical.
 Machine-readable records: `.dev/verify/<sha>-a3.json`,
-`.dev/verify/<sha>-multi-client.json`.
+`.dev/verify/<sha>-multi-client.json`, `.dev/verify/<sha>-a4-step2.json`.

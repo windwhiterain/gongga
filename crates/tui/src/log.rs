@@ -6,7 +6,7 @@
 //! rows a reflow of the whole line would. See `docs/notes/tui-log.md`.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -17,9 +17,7 @@ use ratatui::text::{Line, Span};
 use crate::LineKind;
 use crate::markdown;
 use client::protocol;
-use client::window_cache::{Cache, Record};
 use client::window_index::{Ledger, RowIndex};
-use client::window_journal::WindowJournal;
 
 /// One block: a line that may still be growing, plus its rows.
 ///
@@ -29,8 +27,6 @@ use client::window_journal::WindowJournal;
 /// block whose first row is above the window can repeat it. `window` is the name the
 /// line carried, and `at` is where the block sits inside that window's own rows.
 struct Entry {
-    /// The journal's name for this block: a key can be used twice, an id cannot.
-    id: u64,
     kind: LineKind,
     /// The window this block belongs to, as the line said.
     ///
@@ -56,15 +52,6 @@ struct Entry {
     col: usize,
     /// No more text can arrive, so the block is scrollback.
     sealed: bool,
-    /// Text this block holds that its journal does not.
-    ///
-    /// # Invariant
-    ///
-    /// Set by an append and cleared by the seal that writes the block whole, so
-    /// `Some(slot)` plus `pending` is a block whose record is older than what is on
-    /// screen. Such a block may not be dropped: reading it back would lose the
-    /// rows the operator is watching. See `docs/notes/tui-cache.md`.
-    pending: bool,
     /// Structured call fields, once the call's head arrives.
     call: Option<client::protocol::Head>,
     /// The expanded sections, cached at their measured width.
@@ -84,39 +71,16 @@ struct Entry {
     styled: Vec<Line<'static>>,
     /// Where this block sits among the blocks of its own window.
     at: usize,
-    /// Where the journal holds this block's whole current form, once it has one.
-    ///
-    /// # Invariant
-    ///
-    /// `Some` exactly when the block can be dropped and read back: a block that was
-    /// never sealed has no record that stands for it alone.
-    slot: Option<u64>,
-    /// This block's rows at `width`, held instead of its body.
-    ///
-    /// # Invariant
-    ///
-    /// `Some` exactly when the body is not here, so every reader of `text`, `source`
-    /// or `starts` either holds a body or has not been asked. See
-    /// `docs/notes/tui-cache.md`.
-    cold: Option<usize>,
 }
 
 impl Entry {
-    fn new(id: u64, window: &str, kind: LineKind, text: String, width: usize) -> Self {
-        Self::with_tag(id, window, kind, "", text, width)
+    fn new(window: &str, kind: LineKind, text: String, width: usize) -> Self {
+        Self::with_tag(window, kind, "", text, width)
     }
 
     /// A block that streams under `tag`: the label is not text, so no cut can take it.
-    fn with_tag(
-        id: u64,
-        window: &str,
-        kind: LineKind,
-        tag: &str,
-        text: String,
-        width: usize,
-    ) -> Self {
+    fn with_tag(window: &str, kind: LineKind, tag: &str, text: String, width: usize) -> Self {
         let mut entry = Self {
-            id,
             kind,
             window: Arc::from(window),
             key: String::new(),
@@ -135,13 +99,10 @@ impl Entry {
             starts: vec![0],
             col: 0,
             sealed: false,
-            pending: false,
             call: None,
             sections: String::new(),
             styled: Vec::new(),
             at: 0,
-            slot: None,
-            cold: None,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
         if width > 0 {
@@ -151,9 +112,6 @@ impl Entry {
     }
 
     fn rows(&self) -> usize {
-        if let Some(rows) = self.cold {
-            return rows;
-        }
         if self.folded() {
             return self.folded_rows();
         }
@@ -321,10 +279,6 @@ impl Entry {
     /// are the window's and a run keeps its ink across a break. Every other block is
     /// wrapped from the text it already holds. See `docs/notes/tui-log.md`.
     fn reflow(&mut self, width: usize) {
-        if self.cold.is_some() {
-            // Nothing to lay out: the rows are the ones the drop left behind.
-            return;
-        }
         if width == 0 {
             // Not measured yet: the first draw reflows at its own width.
             self.starts = vec![0];
@@ -490,54 +444,6 @@ impl Entry {
                 row
             )),
         }
-    }
-}
-
-impl Entry {
-    /// The record that stands for this block on its own.
-    fn seal_record(&self) -> Record {
-        Record::Seal {
-            id: self.id,
-            kind: self.kind,
-            tag: self.tag.clone(),
-            key: self.key.clone(),
-            text: self.whole_text(),
-            expanded: self.expanded,
-            call: self.call.clone(),
-        }
-    }
-
-    /// The text this block was written as: an answer's document, else its body.
-    fn whole_text(&self) -> String {
-        match &self.source {
-            Some(source) => source.clone(),
-            None => self.text.clone(),
-        }
-    }
-
-    /// Whether the body is here rather than in the journal.
-    fn hot(&self) -> bool {
-        self.cold.is_none()
-    }
-
-    /// Drops the body and keeps the rows it had, so the index does not move.
-    ///
-    /// # Invariant
-    ///
-    /// Only a block the journal can stand for alone: a block still growing has no
-    /// seal, and one holding text the journal has not been told yet would come back
-    /// missing its newest rows. Dropping either would lose what is on screen.
-    fn drop_body(&mut self) {
-        if self.cold.is_some() || self.slot.is_none() || self.pending {
-            return;
-        }
-        self.cold = Some(self.rows());
-        self.text = String::new();
-        self.source = None;
-        self.styled = Vec::new();
-        self.sections = String::new();
-        self.starts = Vec::new();
-        self.col = 0;
     }
 }
 
@@ -717,54 +623,19 @@ pub struct Log {
     /// Columns of a window a box leaves to the pane on each side. See
     /// [`Log::set_box_edge`].
     edge: usize,
-    /// The client's own journal: disk records and window facts in one place.
-    journal: WindowJournal,
-    /// The next block id to hand out: monotonic within this window's journal.
-    next_id: u64,
-    /// The blocks whose bodies are here. Eviction walks this, not the log.
-    hot: Vec<usize>,
-    /// The windows a fill is landing in, and the floor of the page it opens when the
-    /// journal named it.
-    ///
-    /// # Invariant
-    ///
-    /// One entry per fill, set when it starts and taken by the first block it lands:
-    /// that block is where the page begins, which is the only place a `Floor` record
-    /// may stand.
-    filling: HashMap<String, Option<i64>>,
-    /// The window whose next blocks are older than the ones it holds, and where in
-    /// its ledger the next of them goes.
-    ///
-    /// # Invariant
-    ///
-    /// A page of the past is drawn above what the window already has, so its blocks
-    /// take their places from the front rather than the end. Set by
-    /// [`Log::older`], cleared by the seal the page's answer brings.
-    prepend: Option<(String, usize)>,
-    /// Windows this process has already decided the beginning of.
-    ///
-    /// # Invariant
-    ///
-    /// A window is here once, and only a name that arrives after this process
-    /// started is not. A window that received one line before its first frame is
-    /// still unseeded: the line is realtime, and the history behind it is the
-    /// journal's. See `docs/notes/tui-cache.md`.
-    seeded: HashSet<String>,
 }
 
 impl Default for Log {
     fn default() -> Self {
-        Self::without_cache()
+        Self {
+            entries: Vec::new(),
+            views: HashMap::new(),
+            open: HashMap::new(),
+            block_size: 0,
+            edge: protocol::DEFAULT_BOX_EDGE,
+        }
     }
 }
-
-/// How many records one walk of the journal reads at a time.
-///
-/// # Invariant
-///
-/// A read granularity, not a limit: a seed keeps walking until the window it is
-/// filling has the rows a pane is about to draw.
-const WALK: usize = 64;
 
 /// The rows of a block that fills every row it has.
 const NO_CAP: usize = usize::MAX;
@@ -793,129 +664,8 @@ fn room(kind: LineKind, cap: usize, block_size: usize) -> usize {
 }
 
 impl Log {
-    /// The client's own facts: one journal, shared by the log and the panes.
-    pub fn journal(&self) -> &WindowJournal {
-        &self.journal
-    }
-
-    /// The same facts, for a frame or a keystroke that changes them.
-    pub fn journal_mut(&mut self) -> &mut WindowJournal {
-        &mut self.journal
-    }
-
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// A scrollback that keeps nothing on disk.
-    fn without_cache() -> Self {
-        Self {
-            entries: Vec::new(),
-            views: HashMap::new(),
-            open: HashMap::new(),
-            block_size: 0,
-            edge: protocol::DEFAULT_BOX_EDGE,
-            // Nothing is ever written: a log built with no front-end in mind does
-            // not invent a directory.
-            journal: WindowJournal::new(),
-            filling: HashMap::new(),
-            prepend: None,
-            next_id: 0,
-            hot: Vec::new(),
-            seeded: HashSet::new(),
-        }
-    }
-
-    /// A scrollback whose blocks are written down for one endpoint.
-    ///
-    /// # Invariant
-    ///
-    /// `root` is this client's own directory and `endpoint` is where it dials, both
-    /// known before any server speaks. See `docs/notes/tui-cache.md`.
-    pub fn with_cache(root: &std::path::Path, endpoint: &str) -> Self {
-        Self {
-            journal: WindowJournal::with_cache(root, endpoint),
-            ..Self::without_cache()
-        }
-    }
-
-    /// Points this scrollback at another client root or endpoint, keeping nothing.
-    ///
-    /// # Invariant
-    ///
-    /// The windows lose their blocks, so the next frame seeds each from the new
-    /// place: what is on screen is the rows of the endpoint being dialled now, and
-    /// a `connect_server` that moved the window must not leave the last server's
-    /// lines behind. The old journals are not deleted -- they are that server's
-    /// record, and switching back finds them again.
-    pub fn repoint(&mut self, root: &std::path::Path, endpoint: &str) {
-        self.journal.repoint(root, endpoint);
-        let windows: Vec<String> = self.views.keys().map(|name| name.to_string()).collect();
-        for window in windows {
-            self.drop_window(&window);
-        }
-        // Another endpoint is another journal: every window starts over.
-        self.seeded.clear();
-    }
-
-    /// Hands out the journal's next block id.
-    fn next_id(&mut self) -> u64 {
-        let id = self.next_id;
-        self.next_id = self.next_id.saturating_add(1);
-        id
-    }
-
-    /// Reads a dropped body back, so a mutation has something to change.
-    ///
-    /// # Invariant
-    ///
-    /// Every mutation of a block calls this first: a record is dumped from the
-    /// entry, and an entry holding only rows would write an empty block over a
-    /// block the operator can see. See `docs/notes/tui-cache.md`.
-    fn touch(&mut self, at: usize) {
-        let Some(entry) = self.entries.get(at) else {
-            return;
-        };
-        if entry.hot() {
-            return;
-        }
-        let width = self.width_of(&entry.window);
-        materialize(&mut self.entries, self.journal.cache(), at, width);
-    }
-
-    /// Writes one record about block `at`.
-    fn write(&mut self, at: usize, record: Record) -> Option<u64> {
-        let window = self.entries.get(at)?.window.clone();
-        self.journal.cache().append(&window, &record)
-    }
-
-    /// Records a block's whole current form, and where it can be read back from.
-    ///
-    /// # Invariant
-    ///
-    /// This is the only writer a *growing* block has: a stream keeps its text in
-    /// memory and lands here once, when it ends, so a journal never grows one chunk
-    /// at a time. See `docs/notes/tui-cache.md`.
-    fn record_seal(&mut self, at: usize) {
-        if at >= self.entries.len() {
-            return;
-        }
-        let record = self.entries[at].seal_record();
-        if let Some(slot) = self.write(at, record) {
-            self.entries[at].slot = Some(slot);
-            // The file now holds what is on screen, so the body may be dropped.
-            self.entries[at].pending = false;
-        }
-    }
-
-    /// Writes down what a window said about itself: a record, never a row.
-    ///
-    /// # Invariant
-    ///
-    /// Nothing is added to the log, so what a note costs the frame is nothing, and
-    /// replaying the window draws what it drew. See `docs/notes/tui-cache.md`.
-    pub fn note(&mut self, window: &str, kind: LineKind, text: &str) {
-        self.journal.cache().note(window, kind, text);
     }
 
     /// Caps how tall a block may get: `0` caps nothing, and a block past its cap
@@ -958,208 +708,10 @@ impl Log {
     /// it -- so a block arriving under a reused name is that session's first and
     /// starts at row zero. See `docs/notes/tui-log.md`.
     pub fn forget(&mut self, window: &str) {
-        if self
-            .prepend
-            .as_ref()
-            .is_some_and(|(name, _)| name == window)
-        {
-            self.prepend = None;
-        }
-        // A fill that empties a window opens a page too.
-        self.begins(window);
-        self.journal.cache().remove(window);
         self.drop_window(window);
-        // The name may be handed out again: its next beginning is the server's.
-        self.seeded.remove(window);
     }
 
-    /// Records that every row up to `seq` of the session is on screen, and which
-    /// session that is.
-    ///
-    /// # Invariant
-    ///
-    /// The client's side of the sync stamp: the greeting says how far the server's
-    /// transcript reaches, this says how far this window's drawing of it does, and
-    /// the difference is what a refill fetches. Written to the journal so a
-    /// restart answers the same question with the same number.
-    pub fn stamp(&mut self, window: &str, created: i64, seq: i64) {
-        self.journal.stamp(window, created, seq);
-    }
-
-    /// The oldest transcript row this window holds, among the pages in memory.
-    ///
-    /// # Invariant
-    ///
-    /// From memory, never from the journal: a page the journal holds and a seed did
-    /// not read back is not a row this window can show, and answering with the
-    /// journal's floor would have the next page land on rows already here. See
-    /// `docs/notes/tui-cache.md`.
-    pub fn floor_of(&self, window: &str) -> Option<i64> {
-        if let Some(ledger) = self.ledger(window)
-            && let Some((_, seq)) = ledger.pages.first()
-        {
-            return Some(*seq);
-        }
-        // Nothing drawn yet: the journal names the page the first frame reads back.
-        self.journal
-            .cache()
-            .floor(window, self.journal.cache().end(window))
-            .map(|(_, seq)| seq)
-    }
-
-    /// Says a fill is landing in this window, so its first block opens a page.
-    ///
-    /// # Invariant
-    ///
-    /// Set by the two things a fill starts with -- [`Log::rewind`] for the tail and
-    /// [`Log::older`] for the page above -- and taken by the first block that lands:
-    /// the journal's page boundary may only stand where a page truly begins.
-    fn begins(&mut self, window: &str) {
-        self.filling.insert(window.to_string(), None);
-    }
-
-    /// The rows arriving from here on are older than the ones this window holds.
-    ///
-    /// # Invariant
-    ///
-    /// Nothing is dropped: a page of the past is added above the held rows, and the
-    /// row the window ends at does not move -- which is why the answer to it is a
-    /// [`Log::landed`] and not a stamp.
-    pub fn older(&mut self, window: &str) {
-        self.begins(window);
-        self.prepend = Some((window.to_string(), 0));
-    }
-
-    /// A page has landed, so this window holds every row from `floor` up to `drawn`.
-    ///
-    /// # Invariant
-    ///
-    /// The journal is written in the order the pane draws, with the page boundary in
-    /// front of the block the page began with: a page of older rows therefore lands
-    /// above the held ones, and a restart replays from that boundary. Left alone when
-    /// a block cannot stand for itself -- a journal missing a body is worse than an
-    /// order a restart would get wrong. See `docs/notes/tui-cache.md`.
-    pub fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
-        let prepending = self
-            .prepend
-            .as_ref()
-            .is_some_and(|(name, _)| name == window);
-        if prepending {
-            self.prepend = None;
-        }
-        self.filling.remove(window);
-        let width = self.width_of(window);
-        let Some(ledger) = self.views.get_mut(window) else {
-            return;
-        };
-        let blocks = ledger.blocks.clone();
-        let Some(first) = ledger.page_first.take() else {
-            // No block opened a page: an answer with no rows in it names nothing.
-            return;
-        };
-        // The list is the order the pane draws: a page of the past opens first.
-        match prepending {
-            true => ledger.pages.insert(0, (first, floor)),
-            false => ledger.pages.push((first, floor)),
-        }
-        // A page whose blocks are gone names nothing: the boundary would stand in
-        // front of a block this window no longer draws.
-        let drawn_ids: Vec<u64> = blocks.iter().map(|&at| self.entries[at].id).collect();
-        ledger.pages.retain(|(id, _)| drawn_ids.contains(id));
-        let boundaries: Vec<(u64, i64)> = ledger.pages.clone();
-        let mut records = Vec::with_capacity(blocks.len() + boundaries.len() + 1);
-        let mut written: Vec<Option<usize>> = vec![None; blocks.len()];
-        for (place, &at) in blocks.iter().enumerate() {
-            materialize(&mut self.entries, self.journal.cache(), at, width);
-            let entry = &self.entries[at];
-            if !entry.hot() {
-                return;
-            }
-            if let Some((_, seq)) = boundaries.iter().find(|(id, _)| *id == entry.id) {
-                records.push(Record::Floor { seq: *seq });
-            }
-            written[place] = Some(records.len());
-            records.push(entry.seal_record());
-        }
-        records.push(Record::Stamp {
-            created,
-            seq: drawn,
-        });
-        let Some(offsets) = self.journal.cache().rewrite(window, &records) else {
-            return;
-        };
-        // Read off the list that was built: a boundary before a block shifts it.
-        for (&at, place) in blocks.iter().zip(written) {
-            let Some(place) = place else {
-                continue;
-            };
-            self.entries[at].slot = Some(offsets[place]);
-            self.entries[at].pending = false;
-        }
-    }
-
-    /// What this window's journal says it has drawn, and of which session.
-    pub fn stamp_of(&self, window: &str) -> Option<(i64, i64)> {
-        let end = self.journal.cache().end(window);
-        self.journal
-            .cache()
-            .stamp_at(window, end)
-            .map(|(_, created, seq)| (created, seq))
-    }
-
-    /// Throws away what no stored row accounts for: the server is about to send
-    /// this window's tail again.
-    ///
-    /// # Invariant
-    ///
-    /// "Unaccounted" is a position in the journal, not a count of blocks: every
-    /// block whose record was written above the newest `Stamp`, and every block
-    /// this process drew and has not written down at all. A window read back only
-    /// in part therefore cuts in the right place, which a count of blocks it had
-    /// loaded would not.
-    pub fn rewind(&mut self, window: &str) {
-        self.begins(window);
-        let cut = self.journal.rewind(window);
-        self.cut_tail(window, cut);
-    }
-
-    /// Drops a window's unaccounted tail, keeping the blocks below `cut`.
-    fn cut_tail(&mut self, window: &str, cut: Option<u64>) {
-        let doomed = |entry: &Entry, cut: Option<u64>| {
-            if entry.window.as_ref() != window {
-                return false;
-            }
-            match (entry.slot, cut) {
-                // Never written down: drawn after the last row, by definition.
-                (None, _) => true,
-                // Written above the newest stamp: also after it.
-                (Some(slot), Some(cut)) => slot > cut,
-                // A journal with no stamp at all: nothing here is in question.
-                (Some(_), None) => false,
-            }
-        };
-        if !self.entries.iter().any(|entry| doomed(entry, cut)) {
-            return;
-        }
-        let mut moved = Vec::with_capacity(self.entries.len());
-        let mut kept = Vec::with_capacity(self.entries.len());
-        for entry in std::mem::take(&mut self.entries) {
-            let mine = doomed(&entry, cut);
-            moved.push((!mine).then_some(kept.len()));
-            if !mine {
-                kept.push(entry);
-            }
-        }
-        self.entries = kept;
-        self.open = self
-            .open
-            .drain()
-            .filter_map(|(key, at)| moved.get(at).copied().flatten().map(|at| (key, at)))
-            .collect();
-        self.reindex();
-    }
-
-    /// Takes a window's blocks out of memory, keeping its journal.
+    /// Takes a window's blocks and its ledger out of memory.
     fn drop_window(&mut self, window: &str) {
         if self.views.remove(window).is_none() {
             return;
@@ -1228,22 +780,11 @@ impl Log {
 
     /// Adds a finished line to the window `name` names. Costs what the line is worth.
     pub fn push(&mut self, name: &str, kind: LineKind, text: impl Into<String>) {
-        let text = text.into();
-        let id = self.next_id();
-        let slot = self.journal.cache().append(
-            name,
-            &Record::Line {
-                id,
-                kind,
-                text: text.clone(),
-            },
-        );
         let width = self.width_of(name);
-        let mut entry = Entry::new(id, name, kind, text, width);
+        let mut entry = Entry::new(name, kind, text.into(), width);
         // A whole row arrives at once: nothing will stream into it, so a folding
         // kind is an `abstract` from its first frame.
         entry.sealed = true;
-        entry.slot = slot;
         self.entries.push(entry);
         self.attach(self.entries.len() - 1);
     }
@@ -1252,9 +793,8 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// The ledger's order is the order the pane draws, so a block of a page of older
-    /// rows lands where that page's own order puts it: in front of the rows the
-    /// window already held. Every block it moved keeps the position it is summed at.
+    /// The ledger's order is the order the pane draws: a live block joins at the
+    /// end, and every block keeps the position it is summed at.
     fn attach(&mut self, at: usize) {
         let rows = self.contributions(at);
         // The name is the ledger's key: the block takes that copy, not its own.
@@ -1266,60 +806,11 @@ impl Log {
             self.entries[at].window = shared;
         }
         let window = self.entries[at].window.clone();
-        // A fill's first block is where its page begins: taken here, once.
-        let opens = self.filling.remove(window.as_ref());
-        let above = match &self.prepend {
-            Some((name, pos)) if window.as_ref() == name.as_str() => Some(*pos),
-            _ => None,
-        };
-        let block_size = self.block_size;
-        let Log {
-            entries,
-            views,
-            hot,
-            ..
-        } = self;
-        let ledger = views.entry(window.clone()).or_default();
-        let pos = match above {
-            None => {
-                let pos = ledger.blocks.len();
-                ledger.blocks.push(at);
-                ledger.index.push(rows);
-                pos
-            }
-            Some(pos) => {
-                let pos = pos.min(ledger.blocks.len());
-                ledger.blocks.insert(pos, at);
-                // A sum inserted above the others moves every one of them.
-                let cap = ledger.cap;
-                let mut index = RowIndex::default();
-                for &block in &ledger.blocks {
-                    let entry = &entries[block];
-                    index.push(entry.visible(room(entry.kind, cap, block_size)));
-                }
-                ledger.index = index;
-                for (place, &block) in ledger.blocks.iter().enumerate().skip(pos + 1) {
-                    entries[block].at = place;
-                }
-                pos
-            }
-        };
-        entries[at].at = pos;
-        hot.push(at);
-        let id = entries[at].id;
-        if let Some(floor) = opens {
-            ledger.page_first = Some(id);
-            // A journal that named the page's oldest row says so: a live fill learns
-            // it from its answer instead.
-            if let Some(seq) = floor {
-                ledger.pages.push((id, seq));
-            }
-        }
-        if let Some((name, next)) = self.prepend.as_mut()
-            && window.as_ref() == name.as_str()
-        {
-            *next = pos + 1;
-        }
+        let ledger = self.views.entry(window).or_default();
+        let pos = ledger.blocks.len();
+        ledger.blocks.push(at);
+        ledger.index.push(rows);
+        self.entries[at].at = pos;
     }
 
     /// Where the block `key` currently names is: the open one, else the newest.
@@ -1336,18 +827,13 @@ impl Log {
         self.entries.iter().rposition(|entry| entry.key == key)
     }
 
-    /// Drops every block of one window, keeping the window and its journal.
+    /// Drops every block of one window, keeping the window itself.
     ///
     /// # Invariant
     ///
     /// The view alone: SPEC's command row shows the last `cmd` or `cmd_result`, so
-    /// the previous one leaves the screen, and it stays in the file -- a `Clear`
-    /// record says where the view was cut. See `docs/notes/tui-cache.md`.
+    /// the previous one leaves the screen.
     pub fn clear(&mut self, window: &str) {
-        // The view forgets it; the journal keeps it. See `docs/notes/tui-cache.md`.
-        self.journal.cache().clear(window);
-        // The next beginning is whatever arrives from here, not what was read.
-        self.seeded.remove(window);
         self.forget_blocks(window);
     }
 
@@ -1355,8 +841,8 @@ impl Log {
     ///
     /// # Invariant
     ///
-    /// The journal is not touched: what the window drew is a record, and dropping a
-    /// block from the view is not a reason to make it unreadable.
+    /// The indexes the removal invalidates are repaired here: an `open` entry whose
+    /// block left with the window leaves too.
     fn forget_blocks(&mut self, window: &str) {
         if !self
             .entries
@@ -1397,7 +883,6 @@ impl Log {
         let Some(at) = self.entry_by_key(key) else {
             return;
         };
-        self.touch(at);
         let before = self.contributions(at);
         let width = self.width_of(&self.entries[at].window);
         let entry = &mut self.entries[at];
@@ -1421,7 +906,6 @@ impl Log {
         self.entries[at].reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
-        self.record_seal(at);
     }
 
     /// Whether a block under this key exists already.
@@ -1493,7 +977,6 @@ impl Log {
         if at >= self.entries.len() || !self.entries[at].kind.folds() {
             return false;
         }
-        self.touch(at);
         let before = self.contributions(at);
         self.entries[at].expanded = !self.entries[at].expanded;
         // Read after the flip: whether it is a box is what its own width depends on.
@@ -1504,7 +987,6 @@ impl Log {
         entry.inner = 0;
         let after = self.contributions(at);
         self.shift(at, before, after);
-        self.record_seal(at);
         true
     }
 
@@ -1625,7 +1107,6 @@ impl Log {
                 at
             }
         };
-        self.touch(at);
         let before = self.contributions(at);
         let width = {
             let entry = &mut self.entries[at];
@@ -1640,7 +1121,6 @@ impl Log {
         let after = self.contributions(at);
         self.shift(at, before, after);
         self.open.remove(key);
-        self.record_seal(at);
     }
 
     /// Replaces the label of the block `key` names, once its outcome is known.
@@ -1657,7 +1137,6 @@ impl Log {
         let Some(at) = self.entry_by_key(key) else {
             return;
         };
-        self.touch(at);
         if self.entries[at].tag == tag && self.entries[at].kind == kind {
             return;
         }
@@ -1668,7 +1147,6 @@ impl Log {
         self.entries[at].reflow(width);
         let after = self.contributions(at);
         self.shift(at, before, after);
-        self.record_seal(at);
     }
 
     /// Adds to the block `key` names, opening it with `tag` in window `name` on
@@ -1712,15 +1190,11 @@ impl Log {
                 return;
             }
             Some(at) => {
-                self.touch(at);
                 let before = self.contributions(at);
                 let width = self.width_of(&self.entries[at].window);
                 self.entries[at].append(text, width);
                 let after = self.contributions(at);
                 self.shift(at, before, after);
-                // Held in memory until the seal writes it: one record per block,
-                // not one per chunk. See `docs/notes/tui-cache.md`.
-                self.entries[at].pending = true;
                 at
             }
             // A blank chunk opens no block: one precedes every exit sentinel.
@@ -1733,8 +1207,7 @@ impl Log {
             }
             None => {
                 let width = self.width_of(name);
-                let id = self.next_id();
-                let mut entry = Entry::with_tag(id, name, kind, tag, text.to_string(), width);
+                let mut entry = Entry::with_tag(name, kind, tag, text.to_string(), width);
                 // A body-less item's body is its label: a call reads as its
                 // arguments, and opening it must show them.
                 entry.key = key.to_string();
@@ -1742,7 +1215,6 @@ impl Log {
                 let at = self.entries.len() - 1;
                 self.attach(at);
                 self.open.insert(key.to_string(), at);
-                self.entries[at].pending = true;
                 at
             }
         };
@@ -1755,10 +1227,9 @@ impl Log {
     fn seal(&mut self, key: &str, at: usize) {
         self.open.remove(key);
         self.seal_quiet(at);
-        self.record_seal(at);
     }
 
-    /// Sealing without the journal: what a replay does, having read the record.
+    /// Seals a block's rows without touching a journal.
     fn seal_quiet(&mut self, at: usize) {
         self.trim_tail(at);
         // Sealing can fold the block, and a fold is a row count: the indexes
@@ -1806,14 +1277,11 @@ impl Log {
         if at >= self.entries.len() {
             return;
         }
-        self.touch(at);
         let width = self.width_of(&self.entries[at].window);
         let before = self.contributions(at);
         self.entries[at].append(text, width);
         let after = self.contributions(at);
         self.shift(at, before, after);
-        // The journal hears about this block when it ends, not once per chunk.
-        self.entries[at].pending = true;
     }
 
     /// The ledger a window reads, or `None` for a name nobody has written to yet.
@@ -1846,7 +1314,6 @@ impl Log {
         let Log {
             entries,
             views,
-            journal,
             block_size,
             ..
         } = self;
@@ -1862,8 +1329,7 @@ impl Log {
         let end = total - scroll;
         let start = end.saturating_sub(height);
 
-        // Found first, drawn second: reading a body back borrows mutably, and
-        // the rows are borrowed from the same place.
+        // Found first, drawn second: the rows borrow the same entries.
         let mut shown_blocks: Vec<ShownBlock> = Vec::new();
         if start < end && !ledger.blocks.is_empty() {
             // Jump to the block holding the first visible row: O(log blocks).
@@ -1906,10 +1372,6 @@ impl Log {
                 pos += 1;
             }
         }
-        // Rows on screen are the one thing a frame may pay a disk read for.
-        for block in &shown_blocks {
-            materialize(entries, journal.cache(), block.block, ledger.width);
-        }
         let mut rows: Vec<Row<'_>> = Vec::with_capacity(end - start);
         for spot in &shown_blocks {
             let Some(entry) = entries.get(spot.block) else {
@@ -1942,282 +1404,6 @@ impl Log {
         Viewport { rows, max_scroll }
     }
 
-    /// Fills a window from its journal, from the newest page boundary.
-    ///
-    /// # Invariant
-    ///
-    /// The question is whether *this process* has decided where the window starts,
-    /// not whether the window has blocks: a restart receives a realtime line before
-    /// its first frame, and that line must not hide the journal behind it. A name
-    /// decided once is never seeded again. See `docs/notes/tui-cache.md`.
-    ///
-    /// # Invariant
-    ///
-    /// One page, from the boundary that page begins at: the rows are the rows that
-    /// boundary names, which is why [`Log::floor_of`] answers before the first frame.
-    /// A page is as many rows as the pane that asked for it, so one is always enough.
-    /// A journal written before boundaries has none, and claims no floor at all.
-    pub fn seed(&mut self, window: &str, width: usize, rows: usize) {
-        if !self.seeded.insert(window.to_string()) {
-            return;
-        }
-        let end = self.journal.cache().end(window);
-        if end == 0 {
-            return;
-        }
-        // The newest page boundary. A journal with none is read as far back as it can.
-        let Some((boundary, _)) = self.journal.cache().floor(window, end) else {
-            let mut start = end;
-            loop {
-                start = self.journal.cache().back(window, start, WALK);
-                self.replay(window, start);
-                self.lay_out(window, width);
-                if start == 0 || self.rows(window, width) >= rows {
-                    break;
-                }
-            }
-            return;
-        };
-        self.replay(window, boundary);
-        self.lay_out(window, width);
-    }
-
-    /// Rebuilds one window from its journal, from `start` to the end.
-    ///
-    /// # Invariant
-    ///
-    /// What this process already watched arrive is kept, and placed after what the
-    /// journal holds: a window that showed a line before it was seeded still has
-    /// that line, and it is newer than anything in the file.
-    fn replay(&mut self, window: &str, start: u64) {
-        let live = self.take_window(window);
-        self.drop_window(window);
-        let mut ids: HashMap<u64, usize> = HashMap::new();
-        // Where a `Rewind` here cuts: the newest stamp at or before the first record.
-        let mut cut = self
-            .journal
-            .cache()
-            .stamp_at(window, start)
-            .map(|(at, _, _)| at);
-        for (at, record) in self.journal.cache().forward(window, start) {
-            self.apply(window, at, &record, &mut ids, &mut cut);
-        }
-        // No stream survives a restart: the process writing it is gone.
-        let open: Vec<usize> = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.window.as_ref() == window && !entry.sealed)
-            .map(|(at, _)| at)
-            .collect();
-        for at in open {
-            self.seal_quiet(at);
-        }
-        for entry in live {
-            self.restore(entry, &mut ids);
-        }
-    }
-
-    /// Takes a window's blocks out of memory and answers them, in arrival order.
-    ///
-    /// # Invariant
-    ///
-    /// The indexes the removal invalidates are repaired here: an `open` entry whose
-    /// block left with the window leaves too, and the rest name their new places.
-    /// `drop_window` may then run over a window that holds no blocks.
-    fn take_window(&mut self, window: &str) -> Vec<Entry> {
-        let mut moved = Vec::with_capacity(self.entries.len());
-        let mut kept = Vec::with_capacity(self.entries.len());
-        let mut taken = Vec::new();
-        for entry in std::mem::take(&mut self.entries) {
-            let mine = entry.window.as_ref() == window;
-            moved.push((!mine).then_some(kept.len()));
-            if mine {
-                taken.push(entry);
-            } else {
-                kept.push(entry);
-            }
-        }
-        self.entries = kept;
-        self.open = self
-            .open
-            .drain()
-            .filter_map(|(key, at)| moved.get(at).copied().flatten().map(|at| (key, at)))
-            .collect();
-        self.reindex();
-        taken
-    }
-
-    /// Puts a block this process watched arrive back, after a replay.
-    ///
-    /// # Invariant
-    ///
-    /// A block the journal also holds -- the same id -- is replaced by the live one:
-    /// what arrived here is newer than what was written there. A stream still open
-    /// takes its key back, or the next chunk would open a second block.
-    fn restore(&mut self, entry: Entry, ids: &mut HashMap<u64, usize>) {
-        let key = entry.key.clone();
-        let streaming = !entry.sealed && !key.is_empty();
-        let place = match ids.get(&entry.id).copied() {
-            Some(place) => {
-                let before = self.contributions(place);
-                let at = self.entries[place].at;
-                let mut entry = entry;
-                entry.at = at;
-                self.entries[place] = entry;
-                let after = self.contributions(place);
-                self.shift(place, before, after);
-                place
-            }
-            None => {
-                let id = entry.id;
-                let place = self.adopt(entry);
-                ids.insert(id, place);
-                place
-            }
-        };
-        if streaming {
-            self.open.insert(key, place);
-        }
-    }
-
-    /// Applies one journal record, as if the call that wrote it had just happened.
-    fn apply(
-        &mut self,
-        window: &str,
-        at: u64,
-        record: &Record,
-        ids: &mut HashMap<u64, usize>,
-        cut: &mut Option<u64>,
-    ) {
-        let width = self.width_of(window);
-        match record {
-            Record::Line { id, kind, text } => {
-                let mut entry = Entry::new(*id, window, *kind, text.clone(), width);
-                entry.sealed = true;
-                entry.slot = Some(at);
-                let place = self.adopt(entry);
-                ids.insert(*id, place);
-            }
-            Record::Delta {
-                id,
-                kind,
-                tag,
-                text,
-                ..
-            } => match ids.get(id).copied() {
-                Some(place) => self.append_quiet(place, text),
-                None => {
-                    let entry = Entry::with_tag(*id, window, *kind, tag, text.clone(), width);
-                    let place = self.adopt(entry);
-                    ids.insert(*id, place);
-                }
-            },
-            // Not a block: it says where a later `Rewind` cuts.
-            Record::Stamp { .. } => *cut = Some(at),
-            // Not a block either: what the window said about itself, which no frame
-            // drew as a row, so reading it back draws nothing.
-            Record::Note { .. } => {}
-            // Where the view was cut: whatever this pass adopted is above the cut.
-            Record::Clear => {
-                self.forget_blocks(window);
-                ids.clear();
-            }
-            // Not a block either: it opens a page, and the block after it is the one
-            // the page begins with.
-            Record::Floor { seq } => {
-                self.filling.insert(window.to_string(), Some(*seq));
-            }
-            // Thrown away again on the way forward: what is above it is the refill.
-            Record::Rewind => {
-                let window = window.to_string();
-                self.cut_tail(&window, *cut);
-            }
-            Record::Seal {
-                id,
-                kind,
-                tag,
-                key,
-                text,
-                expanded,
-                call,
-            } => {
-                let mut entry = Entry::with_tag(*id, window, *kind, tag, text.clone(), width);
-                entry.key = key.clone();
-                entry.expanded = *expanded;
-                entry.call = call.clone();
-                entry.sealed = true;
-                entry.slot = Some(at);
-                entry.reflow(width);
-                match ids.get(id).copied() {
-                    Some(place) => {
-                        let before = self.contributions(place);
-                        entry.at = self.entries[place].at;
-                        self.entries[place] = entry;
-                        let after = self.contributions(place);
-                        self.shift(place, before, after);
-                    }
-                    None => {
-                        let place = self.adopt(entry);
-                        ids.insert(*id, place);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Adds a block read back from the journal, and says where it landed.
-    fn adopt(&mut self, mut entry: Entry) -> usize {
-        entry.at = 0;
-        self.next_id = self.next_id.max(entry.id.saturating_add(1));
-        self.entries.push(entry);
-        let at = self.entries.len() - 1;
-        self.attach(at);
-        at
-    }
-
-    /// Appends to a block during a replay: no journal, because it came from one.
-    fn append_quiet(&mut self, at: usize, text: &str) {
-        let width = self.width_of(&self.entries[at].window);
-        let before = self.contributions(at);
-        self.entries[at].append(text, width);
-        let after = self.contributions(at);
-        self.shift(at, before, after);
-    }
-
-    /// Drops every body a pane is not showing, keeping their rows.
-    ///
-    /// # Invariant
-    ///
-    /// Only bodies the journal can stand for alone, and only outside the rows the
-    /// pane draws: what is on screen is what memory is for. Nothing is lost -- the
-    /// file holds it -- so this is why a session can run for days.
-    pub fn evict(&mut self, window: &str, keep: std::ops::Range<usize>) {
-        let block_size = self.block_size;
-        let mut drops: Vec<usize> = Vec::new();
-        if let Some(ledger) = self.views.get(window) {
-            let cap = ledger.cap;
-            for &at in &self.hot {
-                let Some(entry) = self.entries.get(at) else {
-                    continue;
-                };
-                if !entry.hot() || entry.window.as_ref() != window {
-                    continue;
-                }
-                let first = ledger.index.prefix(entry.at);
-                let last = first + entry.visible(room(entry.kind, cap, block_size));
-                if last <= keep.start || first >= keep.end {
-                    drops.push(at);
-                }
-            }
-        }
-        for at in drops {
-            self.entries[at].drop_body();
-        }
-        let Log { hot, entries, .. } = self;
-        hot.retain(|at| entries.get(*at).is_some_and(Entry::hot));
-    }
-
     /// Every window this log holds blocks for.
     pub fn windows(&self) -> Vec<String> {
         self.views.keys().map(|name| name.to_string()).collect()
@@ -2236,7 +1422,6 @@ impl Log {
             ledger.blocks.clear();
             ledger.index = RowIndex::default();
         }
-        self.hot.clear();
         for at in 0..self.entries.len() {
             self.attach(at);
         }
@@ -2281,14 +1466,7 @@ impl Log {
             std::mem::take(&mut ledger.blocks)
         };
         for at in blocks.iter().copied() {
-            if self.entries[at].hot() {
-                self.entries[at].reflow(width);
-                continue;
-            }
-            // Read back, counted at this width, and dropped again: the index
-            // needs the rows, and only a resize asks for them.
-            materialize(&mut self.entries, self.journal.cache(), at, width);
-            self.entries[at].drop_body();
+            self.entries[at].reflow(width);
         }
         if let Some(ledger) = self.views.get_mut(window) {
             ledger.blocks = blocks;
@@ -2309,79 +1487,4 @@ struct ShownBlock {
     shown: usize,
     boxed: bool,
     labelled: bool,
-}
-
-/// Reads one block's body back from the journal, where it was left.
-///
-/// # Invariant
-///
-/// It answers with the block as the journal last saw it, at the width the pane is
-/// drawing: a body is a function of the text and that width, so what comes back has
-/// the rows the index was already counting. A record that cannot be read leaves the
-/// block as it is rather than inventing an empty one. See `docs/notes/tui-cache.md`.
-fn materialize(entries: &mut [Entry], cache: &Cache, at: usize, width: usize) {
-    let Some(entry) = entries.get(at) else {
-        return;
-    };
-    if entry.hot() {
-        return;
-    }
-    let Some(slot) = entry.slot else {
-        return;
-    };
-    let window = entry.window.clone();
-    let place = entry.at;
-    let Some(mut fresh) = cache
-        .read(&window, slot)
-        .and_then(|record| whole(record, &window, width))
-    else {
-        return;
-    };
-    fresh.slot = Some(slot);
-    fresh.at = place;
-    entries[at] = fresh;
-}
-
-/// The block a record stands for on its own, at the width it is drawn at.
-///
-/// # Invariant
-///
-/// A `Line` and a `Seal` both stand for a block alone -- a line was pushed whole,
-/// and a seal is a block's whole current form -- so either one restores a body an
-/// eviction dropped. A `Delta` is the tail of a block and stands for nothing: it
-/// answers `None` rather than a block missing its head. See
-/// `docs/notes/tui-cache.md`.
-fn whole(record: Record, window: &str, width: usize) -> Option<Entry> {
-    let (id, kind, tag, key, text, expanded, call) = match record {
-        Record::Seal {
-            id,
-            kind,
-            tag,
-            key,
-            text,
-            expanded,
-            call,
-        } => (id, kind, tag, key, text, expanded, call),
-        Record::Line { id, kind, text } => {
-            (id, kind, String::new(), String::new(), text, false, None)
-        }
-        // Neither is a block: one says where the transcript stands, the other
-        // says what to throw away.
-        Record::Delta { .. }
-        | Record::Stamp { .. }
-        | Record::Floor { .. }
-        | Record::Rewind
-        | Record::Note { .. }
-        | Record::Clear => {
-            return None;
-        }
-    };
-    let mut entry = Entry::with_tag(id, window, kind, &tag, text, width);
-    entry.key = key;
-    entry.expanded = expanded;
-    entry.call = call;
-    // A line arrives whole and a seal ends a stream: both are scrollback.
-    entry.sealed = true;
-    entry.reflow(width);
-    Some(entry)
 }

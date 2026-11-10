@@ -1,3 +1,7 @@
+**A-4 note (2026-11-10)**: the A-1 / A-2 tables below describe the step where
+`Panes` and `Log` still held a `WindowJournal`. That copy has since been removed;
+see the last section for the current shape.
+
 # client/window_journal.rs
 
 ## Why this file exists
@@ -53,14 +57,15 @@ the old endpoint's facts.
 journal and its files on `Forget`; `repoint` re-points the journal and the roster
 together, because another endpoint is another set of files.
 
-## What has not moved yet
+## A-4: the second copy is gone
 
-`Log::landed` still walks `entries` to build `Record::Seal` with
-`Entry::seal_record`, and `materialize` still reads cold bodies back through the
-ratatui folding state in `Entry` (`starts`, `col`, `styled`, `source`). `Ledger`'s
-type is in the client but `pages` / `page_first` live in TUI's `views`. Splitting
-those is A-4, and it is not a precondition for A-3: the pipe front-end already
-answers a refill from appended records. See `DESIGN.md` §1, "裁定 A".
+A-4 (2026-11-10, verdict 甲) deleted the TUI's `Log::landed`,
+`Entry::seal_record`, `materialize`, `Record::Seal` writes, `Ledger.pages` and
+`page_first`, and every `Panes` method that forwarded to the second
+`WindowJournal`. The client's `WindowJournal` is now the only one. The TUI
+keeps a `wants` set purely to turn a wheel gesture into `UiIntent::Older`;
+stamps, floors, drawn, room and settled are answered here and only here. See
+`DESIGN.md` §1, "A-4".
 
 ## Invariants worth keeping
 

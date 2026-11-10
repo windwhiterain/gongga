@@ -210,9 +210,8 @@ impl Screen {
     ///
     /// # Invariant
     ///
-    /// The status line shows the newest and replaces the one before it; the journal
-    /// keeps them all, which is what `Tui::say` writes. Neither is a session's
-    /// lines: "nothing is listening" is not something a session said.
+    /// The status line shows the newest and replaces the one before it. Neither is
+    /// a session's lines: "nothing is listening" is not something a session said.
     /// See `docs/notes/tui-lib.md`.
     pub fn note(&mut self, kind: LineKind, text: impl Into<String>) {
         self.status_kind = kind;
@@ -861,9 +860,7 @@ impl QuickEdit {
 impl Tui {
     /// A window that only draws: the client keeps the records and the words.
     pub fn for_pipe() -> anyhow::Result<Self> {
-        let mut window = Self::assemble()?;
-        window.screen.panes.keep_bodies();
-        Ok(window)
+        Self::assemble()
     }
 
     fn assemble() -> anyhow::Result<Self> {
@@ -952,15 +949,12 @@ impl Tui {
     ///
     /// # Invariant
     ///
-    /// A change is a record as well as a line: what the window said it is doing is
-    /// what a reader compares a later silence with. Unchanged text writes nothing,
-    /// so a refresh that says the same thing costs no record.
+    /// What the window said it is doing is what a reader compares a later silence
+    /// with. Unchanged text draws nothing, so a refresh that says the same thing
+    /// costs no frame.
     pub fn set_status(&mut self, status: impl Into<String>) {
         let status = status.into();
         if status != self.screen.status {
-            self.screen
-                .panes
-                .note(&self.note_window, LineKind::System, &status);
             self.screen.status = status;
             self.dirty = true;
         }
@@ -1061,8 +1055,6 @@ impl Tui {
     /// where an input line is expected. See `docs/notes/tui-lib.md`.
     pub fn say(&mut self, kind: LineKind, text: impl Into<String>) {
         let text = text.into();
-        // A record whether or not a row draws it: the line keeps the newest.
-        self.screen.panes.note(&self.note_window, kind, &text);
         self.screen.note(kind, text);
         self.dirty = true;
     }

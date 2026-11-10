@@ -63,7 +63,6 @@ const MAX_INPUT_ROWS: u16 = 8;
 pub const LIST_MIN: u16 = 6;
 
 pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
-    s.panes.begin_frame();
     let area = f.area();
     let input = input_rows(s.input.text(), area.width, area.height);
     let chunks = areas(area, input, s.panes.chrome(command_width(area)));
@@ -81,8 +80,6 @@ pub fn draw(f: &mut Frame, s: &mut Screen) -> Rect {
         draw_completion(f, s, chunks[4]);
     }
     draw_help(f, chunks[5]);
-    // A window nobody drew holds no bodies. See `docs/notes/tui-cache.md`.
-    s.panes.end_frame();
     // The input area this frame laid out: the caret asks here, not a second
     // computation of the box.
     chunks[4]
@@ -912,16 +909,11 @@ fn draw_command(f: &mut Frame, s: &mut Screen, area: Rect) {
 
 /// One pane's rows, and the scroll bound it writes back.
 fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
-    s.panes.mark_drawn(name);
-    s.panes.note_room(name, area.height as usize);
     if area.height == 0 {
         return;
     }
     // One column short: a full-width row would otherwise be wrapped again.
     let width = area.width.saturating_sub(1).max(1) as usize;
-    // A window this process has never drawn starts from its journal, and only as
-    // far back as this pane reaches.
-    s.panes.seed(name, width, area.height as usize);
     // The pane's row count: an offset cannot say a line arrived under it.
     let rows = s.panes.rows(name, width);
     let Some(pane) = s.panes.get_mut(name) else {
@@ -941,10 +933,6 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
         .collect();
     drop(window);
     let scroll = scroll.min(max_scroll);
-    let end = rows.saturating_sub(scroll);
-    let start = end.saturating_sub(area.height as usize);
-    // What this pane draws is what memory keeps; the rest goes back to the file.
-    s.panes.evict(&name, start..end);
     if let Some(pane) = s.panes.get_mut(&name) {
         // Clamped here too, for a pane that just grew or a log that just shrank.
         pane.bound(max_scroll);

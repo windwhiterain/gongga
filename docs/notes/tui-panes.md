@@ -42,28 +42,20 @@ actually reading.
 ## The client owns the window facts
 
 Which windows a frame drew, how many rows each could draw and which ones the
-operator scrolled past are not drawing facts. They used to be three fields here,
-duplicated by a private `Facts` struct in the client's pipe front-end. Both now
-delegate to `client::window_journal::WindowJournal`. After A-2 `Log` holds the
-only journal and `Panes` borrows it through `log.journal()` / `journal_mut()`;
-the disk `Cache` lives there too. `Panes` calls `begin_frame` / `mark_drawn` /
-`note_room` / `want` / `forget`. See
-`client-window-journal.md`. A window that is deleted takes its facts with it.
+operator scrolled past are not drawing facts. They belong to
+`client::window_journal::WindowJournal`, which the client process owns alone.
+Until A-4 the TUI's `Log` held a second `WindowJournal` and `Panes` forwarded
+`begin_frame` / `mark_drawn` / `note_room` / `want` / `forget` to it. After A-4
+that copy is gone: the only fact `Panes` keeps is `wants: BTreeSet<String>`.
+`scroll_by` records a window that a wheel took past its oldest row;
+`take_wants` empties the set into `UiIntent::Older`; `forget` drops a stale
+entry for a deleted session. See `client-window-journal.md` and `DESIGN.md` §1.
 
-`stamp_of` and `floor_of` still come from `Log` on the TUI path, because
-`Log::landed` walks the folded `Entry` bodies to rewrite `Record::Seal`. That is
-A-4. On the pipe path the same questions are answered by the client's own disk
-journal, with no `Panes` involved.
-
-## Panes::begin_frame, end_frame, evict
-
-A frame says which windows it drew, and a window nobody drew holds no bodies: its
-blocks stay in the index with their rows and go back to the journal. `draw_rows` also
-hands its own visible row range to `Log::evict`, so the answer is per pane -- the rows
-above and below what is on screen are what memory stops paying for.
-
-Nothing is lost and nothing is a budget: the bound is the render itself, and a window
-that comes back into view reads its page again.
+A frame no longer reports `drawn` / `room`, no longer seeds from a journal and
+no longer evicts bodies: `Panes::begin_frame`, `end_frame`, `mark_drawn`,
+`note_room`, `room_of`, `seed`, `evict`, `keep_bodies` and the corresponding
+`render.rs::draw_rows` calls were deleted. Every body stays in memory, and a
+pane only reads the blocks its own rows need.
 
 ## Pane::anchor
 

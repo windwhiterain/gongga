@@ -4,6 +4,12 @@
 
 The scrollback, and the arithmetic that turns a scroll offset into rows.
 
+**A-4 note (2026-11-10)**: `log.rs` is now draw-only. The journal / `Seal` /
+replay / evict chain, `Entry`'s `id` / `slot` / `cold` / `pending`, and the
+`Cache` instance are gone; the paragraphs below that describe them are kept as
+the history of the design, not as a description of the current file. The
+client's `WindowJournal` owns the disk records (see `client-window-journal.md`).
+
 Why this is a structure rather than a `Vec<Line>`: a conversation grows without
 bound, and everything the renderer does happens once per frame -- which, while a
 response streams, is many times a second. Wrapping the whole log on every frame

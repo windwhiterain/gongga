@@ -36,7 +36,7 @@ crates/bundle    gongga-bundle     别名 bundle
 
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
-| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实，`Log` / `Panes` 共用一份 | A-3 / ⑦ / ⑧ 均已完成、同进程回退已删（见下）；`log.rs` 的 `Entry` 折行态与 `Ledger` 实例仍留 TUI，A-4 的原定义已过时、待重新裁定（见下） |
+| `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实（client 侧） | A-3 / ⑦ / ⑧ 均已完成、同进程回退已删；A-4 已按裁定甲执行：TUI 的 `Log` 只剩折行视图，`Panes` 只留一份 `wants` 队列（见下） |
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
 | `[tui]` binary | `crates/tui`：`pipe.rs` 是宿主，`run.rs` 的 `TuiSink` / `apply_frame` 把帧画成终端行，`log.rs` 仍管折行视图；同进程主循环已删 | 退为纯终端前端，键盘与绘制之外不持状态 |
@@ -359,8 +359,8 @@ journal，`consume` 把 `Transcript` / `Landed` / `Rewind` 写成 `Record::Stamp
 `Log` 不再持有 `Cache`，`Panes` 也不再另存一份事实，两者共用 `Log` 里的
 `WindowJournal`，`Log::stamp` / `rewind` 委托 client 的权威方法。
 
-**剩下的骨架**：`Log::landed` 仍要遍历带 ratatui 折行态的 `Entry` 才能 `rewrite`
-出 `Record::Seal`，`Ledger.pages` 也仍住在 TUI —— 这是 A-4，不是 ⑥ 的前置：
+**当时的骨架（已由 A-4 清理）**：`Log::landed` 曾要遍历带 ratatui 折行态的 `Entry`
+才能 `rewrite` 出 `Record::Seal`，`Ledger.pages` 也曾住在 TUI —— 这是 A-4，不是 ⑥ 的前置：
 pipe 前端没有块可重写，追加 `Floor` + `Stamp` 已经能回答补拉。四类过线的控制帧已补齐（2026-11-09）：`Draft` / `Server` /
 `Repoint` / `Vocabulary` / `Completion` 都是 `RenderMessage` 变体，配上
 `UiIntent::Complete` 让 completion 词表留在 client 侧（`Frontend::show_completion`），
@@ -424,8 +424,9 @@ stdin 一行一个 `UiIntent`、stdout 一行一个 `RenderMessage`，stderr 进
   `client.log` 证明子进程真的起来了；L3 客户端状态仍 PASS。见
   `.dev/verify/<sha>-a3.json`。
 
-`Entry` 的 ratatui 折行态与 `Ledger.pages` 仍在 TUI（A-4），但已不是 ⑥ 的前置：
-client 侧 `WindowJournal` 用追加记录回答补拉，TUI 只负责把重发的行画出来。
+`Entry` 的 ratatui 折行态与 `Ledger`（已无 `pages`）仍在 TUI；A-4 删掉了
+`pages` / `page_first` 与整条 `Cache` 写盘链。client 侧 `WindowJournal` 用追加
+记录回答补拉，TUI 只负责把重发的行画出来。
 
 ### 裁定 A：先搬 journal，再让 TUI 退成前端（2026-11-09）
 
@@ -460,21 +461,30 @@ client 侧 `WindowJournal` 用追加记录回答补拉，TUI 只负责把重发�
 `UiIntent::Complete` + `Frontend::show_completion` 把候选计算放在 client，
 `WindowFacts::refresh_completion(version)` 带的是 client 的真实 `paths_version`。
 
-**A-4（2026-11-10 复核：原定义已过时，待裁定）**：原文说「把 `Entry` 拆成 client
-的数据块与 TUI 的折行视图，让 `landed` 的 `Record::Seal` 由 client 组织」。那是
-A-3 之前写下的判断。回退删掉之后，默认路径里 `Tui::for_pipe` 用的是
-`Panes::new()` → `Log::without_cache()` → `WindowJournal::new()`（`Cache::none()`），
-`CursorMessage` 从不过线，`apply_frame` 只把 12 个 `RenderMessage` 绘制帧转回
-`Sink` 调用。于是 `Log::landed` / `rewind` / `record_seal` / `Record::Seal` 整条
-写盘链在默认路径里没有调用者；历史行由 server 重发，client 的磁盘 journal 只记
-stamp / floor，不需要行文本。把 `Entry` 的数据块搬进 client 反而会让两个进程
-各持一份窗口行状态。
+**A-4（2026-11-10 裁定甲，已执行）**：原文说「把 `Entry` 拆成 client 的数据块
+与 TUI 的折行视图，让 `landed` 的 `Record::Seal` 由 client 组织」。那是 A-3 之前
+写下的判断。回退删掉之后，A-4 前的默认路径是 `Tui::for_pipe` → `Panes::new()`
+→ `Log::new()` → `WindowJournal::new()`（`Cache::none()`）；`CursorMessage` 从不过线，
+`apply_frame` 只把 12 个 `RenderMessage` 绘制帧转回 `Sink` 调用。于是 `Log::landed` / `rewind` /
+`record_seal` / `Record::Seal` 整条写盘链在默认路径里没有调用者；历史行由 server
+重发，client 的磁盘 journal 只记 stamp / floor，不需要行文本。把 `Entry` 的数据块
+搬进 client 只会让两个进程各持一份窗口行状态。
 
-因此两条路待你拍板：**甲** 是把 A-4 重定义为「删形态 1 遗产」——删掉 `Log`
-里只为同进程窗口存在的字段与路径（journal / Seal / replay / evict /
-`Ledger.pages` / `page_first` / filling / prepend / seeded / slot / cold / pending），
-TUI 只剩折行视图；**乙** 是维持原文照搬。甲的代码更薄且只有一条路径，代价是
-一次删几百行、需要逐块验证绘制不变。回退删除这一步不依赖这个选择，已完成。
+**裁定甲**：A-4 重定义为「删形态 1 遗产」，不照原文搬。已从 TUI 删掉：`Log` 的
+`journal` / `next_id` / `hot` / `filling` / `prepend` / `seeded` 字段，`touch` /
+`write` / `record_seal` / `note` / `stamp` / `floor_of` / `older` / `landed` /
+`rewind` / `cut_tail` / `seed` / `replay` / `take_window` / `restore` / `apply` /
+`adopt` / `evict` / `materialize` / `whole` 整条链，`Entry` 的 `id` / `pending` /
+`slot` / `cold`，以及 `Panes` 里所有转发到第二个 `WindowJournal` 的方法与
+`keep_bodies` / `end_frame` / `evict` 帧钩子。`Ledger.pages` / `page_first` 从
+`client::window_index` 一并删掉。`Panes` 现在只保留一份 `wants: BTreeSet<String>`：
+滚轮越过顶端时记下窗口，`take_wants` 交出 `UiIntent::Older`；其余窗口事实全在
+client 的 `WindowJournal`。`log.rs` 从 2387 行降到 1490 行，编译零警告。
+
+**绘制不变的证据**：用同一份 `.dev/live` 脚本分别在 A-4 前（`a440a0d`）与 A-4 后的
+真进程 pipe 模式各跑一次，最终 30 行终端网格逐行相同（仅归一化 `own #<pid>`）；
+真进程 `tui_live` 退出码 0、254 帧。`client_state_selftest` 与
+`multi_client_selftest` 均 PASS。记录在 `.dev/verify/<sha>-a4-step2.json`。
 
 ## 2. 传输层：可靠 UDP
 

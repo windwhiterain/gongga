@@ -18,10 +18,11 @@ and `Cache` is still instantiated there.
 ## window_index.rs: Ledger
 
 `Ledger` followed in the same module: one window's blocks in arrival order,
-its `RowIndex`, the per-block row cap, the pages it holds, the block a landing
-page starts with, and the width its blocks were last laid out at. All six
-fields are pure data; the 50 uses are all `Log` methods in `log.rs`, so the
-move changes type ownership only.
+its `RowIndex`, the per-block row cap and the width its blocks were last laid
+out at. It originally carried two more fields -- `pages` and `page_first`,
+which joined a landed page to a block id. A-4 (2026-11-10) deleted them: on the
+pipe path nothing lands a page into the TUI's log, and the client's journal
+records `Floor` / `Stamp` instead. All four remaining fields are pure data.
 
 The fields are `pub` for now. That is a transitional state: while `Log` is
 still in the terminal crate it has to reach them directly. Once `Log` moves

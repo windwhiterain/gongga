@@ -88,15 +88,6 @@ pub struct Ledger {
     pub index: RowIndex,
     /// Rows one block may fill in this window; 0 defers to the log's `block_size`.
     pub cap: usize,
-    /// The pages this window holds, in the order it draws them.
-    ///
-    /// # Invariant
-    ///
-    /// Each is a block id and the oldest row that page stands for: a page is what one
-    /// fill landed, and this is the only place a row and a block are joined.
-    pub pages: Vec<(u64, i64)>,
-    /// The block a page now landing begins with, until its answer names the rows.
-    pub page_first: Option<u64>,
     /// The width `blocks` were last laid out at; 0 until a frame asks.
     pub width: usize,
 }

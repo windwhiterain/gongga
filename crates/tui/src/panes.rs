@@ -8,6 +8,8 @@
 
 use crate::log::{Log, Viewport};
 use crate::tree::{self, Row};
+use std::collections::BTreeSet;
+
 use crate::{Layout, LineKind};
 
 /// One view of the events area: what it shows and where it is scrolled.
@@ -132,8 +134,8 @@ pub struct Panes {
     unseen: std::collections::BTreeSet<String>,
     /// SPEC's `active_quota` row, as the command layer spelled it.
     quota: Option<crate::QuotaRow>,
-    /// Whether a frame may drop the bodies it did not draw.
-    evicts: bool,
+    /// Windows the operator asked to read above what they hold.
+    wants: BTreeSet<String>,
 }
 
 impl Panes {
@@ -146,131 +148,18 @@ impl Panes {
             folded: std::collections::BTreeSet::new(),
             unseen: std::collections::BTreeSet::new(),
             quota: None,
-            evicts: true,
+            wants: BTreeSet::new(),
         }
-    }
-
-    /// The views over a log whose blocks are written down for one endpoint.
-    pub fn with_cache(root: &std::path::Path, endpoint: &str) -> Self {
-        Self {
-            log: Log::with_cache(root, endpoint),
-            panes: Vec::new(),
-            listed: Vec::new(),
-            list_rows: Vec::new(),
-            folded: std::collections::BTreeSet::new(),
-            unseen: std::collections::BTreeSet::new(),
-            quota: None,
-            evicts: true,
-        }
-    }
-
-    /// Points the scrollback at another client root or endpoint, keeping nothing.
-    pub fn repoint(&mut self, root: &std::path::Path, endpoint: &str) {
-        self.log.repoint(root, endpoint);
-    }
-
-    /// Fills an empty window from its journal, until it covers `rows`.
-    pub fn seed(&mut self, window: &str, width: usize, rows: usize) {
-        self.log.seed(window, width, rows);
-    }
-
-    /// Writes down that a window has drawn up to `seq` of one session.
-    pub fn stamp(&mut self, window: &str, created: i64, seq: i64) {
-        self.log.stamp(window, created, seq);
-    }
-
-    /// What a window's journal says it has drawn.
-    pub fn stamp_of(&self, window: &str) -> Option<(i64, i64)> {
-        self.log.stamp_of(window)
-    }
-
-    /// The oldest transcript row a window's journal says it holds.
-    pub fn floor_of(&self, window: &str) -> Option<i64> {
-        self.log.floor_of(window)
-    }
-
-    /// The rows about to arrive are older than the ones this window holds.
-    pub fn older(&mut self, window: &str) {
-        self.log.older(window);
-    }
-
-    /// A page of older rows landed, holding every row from `floor` up.
-    pub fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
-        self.log.landed(window, created, drawn, floor);
     }
 
     /// The windows whose operator asked for a page above what they had.
     pub fn take_wants(&mut self) -> Vec<String> {
-        self.log.journal_mut().take_wants()
-    }
-
-    /// Throws away a window's unaccounted tail before a refill.
-    pub fn rewind(&mut self, window: &str) {
-        self.log.rewind(window);
-    }
-
-    /// The windows the last frame drew.
-    pub fn drawn(&self) -> &[String] {
-        self.log.journal().drawn()
-    }
-
-    /// Drops the bodies this pane is not showing.
-    pub fn evict(&mut self, window: &str, keep: std::ops::Range<usize>) {
-        self.log.evict(window, keep);
-    }
-
-    /// Says this window's rows were drawn this frame.
-    pub fn mark_drawn(&mut self, window: &str) {
-        self.log.journal_mut().mark_drawn(window);
+        std::mem::take(&mut self.wants).into_iter().collect()
     }
 
     /// Every window this view holds blocks for.
     pub fn windows(&self) -> Vec<String> {
         self.log.windows()
-    }
-
-    /// Keeps every body in memory: a pipe window has no journal to read back.
-    pub fn keep_bodies(&mut self) {
-        self.evicts = false;
-    }
-
-    /// How many rows a pane could draw, as the last frame found it.
-    ///
-    /// # Invariant
-    ///
-    /// A page is what a pane can show, never a constant -- there is no budget
-    /// to set. See `docs/notes/client-window-journal.md`.
-    pub fn note_room(&mut self, window: &str, rows: usize) {
-        self.log.journal_mut().note_room(window, rows);
-    }
-
-    /// The rows a window's pane could draw last frame: what a page is sized by.
-    pub fn room_of(&self, window: &str) -> usize {
-        self.log.journal().room_of(window)
-    }
-
-    /// Starts a frame: nothing has been drawn yet.
-    pub fn begin_frame(&mut self) {
-        self.log.journal_mut().begin_frame();
-    }
-
-    /// Ends a frame: a window nobody drew holds no bodies.
-    ///
-    /// # Invariant
-    ///
-    /// What a frame does not draw is what memory stops paying for -- a hidden
-    /// session's blocks and the rows above and below every pane.
-    /// See `docs/notes/tui-cache.md`.
-    pub fn end_frame(&mut self) {
-        if !self.evicts {
-            return;
-        }
-        let drawn = self.log.journal().drawn().to_vec();
-        for window in self.log.windows() {
-            if !drawn.iter().any(|name| *name == window) {
-                self.log.evict(&window, 0..0);
-            }
-        }
     }
 
     /// The session list, as the command layer announced it.
@@ -289,10 +178,7 @@ impl Panes {
         let command = self.command().map(|pane| pane.name.clone());
         let command_rows = match &command {
             // Read back before it is measured: this is the area's height.
-            Some(name) => {
-                self.log.seed(name, width, 1);
-                self.log.rows(name, width).max(1) as u16
-            }
+            Some(name) => self.log.rows(name, width).max(1) as u16,
             None => 0,
         };
         crate::render::Chrome {
@@ -429,7 +315,7 @@ impl Panes {
     pub fn forget(&mut self, name: &str) {
         self.log.forget(name);
         self.panes.retain(|pane| pane.name != name);
-        self.log.journal_mut().forget(name);
+        self.wants.remove(name);
     }
 
     /// The panes of one kind, in order.
@@ -543,11 +429,6 @@ impl Panes {
         self.log.push(name, kind, text);
     }
 
-    /// Writes down what a window said about itself, which no frame draws as a row.
-    pub fn note(&mut self, name: &str, kind: LineKind, text: &str) {
-        self.log.note(name, kind, text);
-    }
-
     pub fn stream(
         &mut self,
         name: &str,
@@ -591,12 +472,13 @@ impl Panes {
     /// the past is asking for the page above it: that request is recorded here and
     /// sent by the loop, because only a frame knows how much a page is.
     pub fn scroll_by(&mut self, name: &str, rows: i64) {
-        let Some(pane) = self.get_mut(name) else {
-            return;
-        };
-        pane.scroll_by(rows);
-        if rows > 0 && pane.kind == Kind::Shown && pane.scroll >= pane.max_scroll {
-            self.log.journal_mut().want(name);
+        let mut owed = false;
+        if let Some(pane) = self.get_mut(name) {
+            pane.scroll_by(rows);
+            owed = rows > 0 && pane.kind == Kind::Shown && pane.scroll >= pane.max_scroll;
+        }
+        if owed {
+            self.wants.insert(name.to_string());
         }
     }
 

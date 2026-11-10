@@ -4,8 +4,9 @@
 
 As of 2026-11-08 the source lives in `crates/client/src/window_cache.rs`. The
 note keeps its `tui-cache.md` name because it describes the window's journal,
-not a crate. The journal's data types moved; the ratatui folding in `log.rs`
-stayed in the terminal crate.
+not a crate. After A-4 (2026-11-10) the terminal crate no longer uses this
+journal at all: `Log` holds no `Cache`, records no `Seal`, replays nothing and
+evicts nothing. Everything below describes the client's `WindowJournal` only.
 
 The window's own record of the rows it was given, on disk.
 
