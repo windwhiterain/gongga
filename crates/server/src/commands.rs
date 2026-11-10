@@ -2821,7 +2821,7 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
 
 fn prepare_delete(d: &Dispatch, name: &str) -> (bool, usize) {
     // A delete drops the turn even when it was waiting: nothing of it is kept.
-    let interrupted = interrupt(d, name, false);
+    let interrupted = interrupt(d, name, Stop::Delete);
     if let Some(session) = d.sessions.peek(name) {
         session.mark_deleted();
     }
@@ -2935,27 +2935,49 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
     ))
 }
 
+/// Which verb stopped a turn, and what it leaves behind.
+///
+/// See `docs/notes/server-commands.md`.
+///
+/// # Invariant
+///
+/// SPEC splits the three: `cancel` is the only one that writes a flag a restart reads,
+/// `interrupt_session` ends the turn where it stands, and a delete owes nothing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// `cancel`: queue the notices, and let a restart continue this turn.
+    Cancel,
+    /// `interrupt_session`: end the wait and the loop, and keep nothing for a restart.
+    Interrupt,
+    /// `del_session`: the rows are going away.
+    Delete,
+}
+
 /// Stops one session's turn.
 ///
 /// # Invariant
 ///
 /// SPEC gives the canceled flag to `cancel` alone, and `cancel` writes it itself;
-/// this only fires the token. `keep` is the caller's word for whether the turn's
-/// queued rows outlive it -- a cancel owes the turn, an `interrupt_session` ends
-/// it with what it received already in context, a delete owes nothing at all.
-fn interrupt(d: &Dispatch, name: &str, keep: bool) -> (bool, usize) {
+/// this only fires the token and records which verb fired it, so the answer a cut
+/// call leaves can say whether a restart continues it.
+fn interrupt(d: &Dispatch, name: &str, why: Stop) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);
     };
     // Read before the cancel: afterwards there is nothing left to ask.
     let was_busy = session.busy();
-    if keep && was_busy {
-        // The turn the token ends keeps its rows: it is kept, not abandoned.
-        session.mark_resumable();
+    // Only a `cancel` keeps its rows for the next start: that flag is cancel's alone.
+    let keeps = why != Stop::Delete;
+    if keeps && was_busy {
+        match why {
+            Stop::Cancel => session.mark_resumable(),
+            Stop::Interrupt => session.mark_interrupted(),
+            Stop::Delete => {}
+        }
     }
     session.cancel();
     // Aborting is deliberate, so the work is not left behind unless it is kept.
-    let dropped = if keep && was_busy {
+    let dropped = if keeps && was_busy {
         d.store
             .clear_pending_tasks_except(name, "turn")
             .unwrap_or(0)
@@ -2975,7 +2997,7 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => Outcome::err(e.to_string()),
         };
     }
-    let (was_busy, dropped) = interrupt(d, &name, true);
+    let (was_busy, dropped) = interrupt(d, &name, Stop::Interrupt);
     let mut message = if was_busy {
         format!("interrupted {name}; what it received is in its context")
     } else {
@@ -3037,7 +3059,7 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
     }
     for session in &running {
         // Fire the token: a stuck call has no boundary. A waiting one gets a deadline.
-        interrupt(d, session.name(), true);
+        interrupt(d, session.name(), Stop::Cancel);
     }
     // Only a protocol `cancel` lets jobs go; every other stop ends them here.
     let (released, killed) = match origin {

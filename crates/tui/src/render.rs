@@ -22,13 +22,12 @@ use crate::{LineKind, Screen};
 pub const HELP: &[&str] = &[
     "Shift+Enter newline",
     "PageUp/PageDown scroll",
-    "Shift+\u{2193} bottom",
+    "Shift+\u{2191}/\u{2193} cmd line",
     "Shift+Delete delete session",
-    "Alt+V paste",
-    "Alt+C copy selection",
-    "Shift+\u{2191} last cmd",
+    "Ctrl+V paste",
+    "Ctrl+C copy selection",
+    "Ctrl+Q exit",
 ];
-
 /// What separates two entries on one row of the reminder.
 const HELP_SEP: &str = " \u{00b7} ";
 

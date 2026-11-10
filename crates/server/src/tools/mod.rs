@@ -296,6 +296,8 @@ pub trait Tool: Send + Sync {
 pub enum Cut {
     /// Someone is talking to this session, and the turn is owed that message.
     Message,
+    /// `interrupt_session` stopped streaming and the loop; this call answers first.
+    Interrupted,
     /// The turn was cancelled, so nothing it started is owed.
     Cancelled,
 }
@@ -305,6 +307,7 @@ impl Cut {
     pub fn because(self) -> &'static str {
         match self {
             Cut::Message => "a message arrived for this session",
+            Cut::Interrupted => "the session was interrupted",
             Cut::Cancelled => "the turn was cancelled",
         }
     }
@@ -916,7 +919,10 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
     let why = loop {
         tokio::select! {
             answer = rx.recv() => return answer.unwrap_or_else(|| stopped(tool.name())),
-            _ = ctx.cancel.cancelled() => break Some(Cut::Cancelled),
+            _ = ctx.cancel.cancelled() => break Some(match ctx.stop.interrupted() {
+                true => Cut::Interrupted,
+                false => Cut::Cancelled,
+            }),
             _ = punctual.tick() => {
                 if ctx.inbox.arrived() {
                     break Some(Cut::Message);
@@ -1344,7 +1350,7 @@ impl Cmd for WaitTool {
         _args: &Value,
         ctx: &'a ToolContext,
         why: Cut,
-        _started: std::time::Instant,
+        started: std::time::Instant,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             match why {
@@ -1352,6 +1358,8 @@ impl Cmd for WaitTool {
                     "a message arrived for this session while this call waited; it is \
                      delivered at the next step boundary",
                 ),
+                // SPEC's interrupt_session: the wait ends, and its result is what it has.
+                Cut::Interrupted => ended(ctx, started),
                 // A `cancel` marks the turn before it fires the token, so the answer
                 // says which stop this was rather than guessing.
                 Cut::Cancelled if ctx.stop.resumable() => ToolOutcome::ok(
@@ -1383,16 +1391,7 @@ impl Cmd for WaitTool {
                 // The person's message ends this wait (see `cut`); rows are what
                 // is left to watch.
                 match ctx.store.pending_injects_of(&ctx.session) {
-                    Ok(rows) if !rows.is_empty() => {
-                        let mut what: Vec<String> = rows.iter().map(arrival).collect();
-                        what.dedup();
-                        return ToolOutcome::ok(format!(
-                            "{} row(s) arrived while this call waited ({}); they are \
-                             delivered at the next step boundary",
-                            rows.len(),
-                            what.join(", ")
-                        ));
-                    }
+                    Ok(rows) if !rows.is_empty() => return ended(ctx, began),
                     Ok(_) => {}
                     // An unreadable inbox is said, not waited out: the retry would
                     // see the same failure for the whole ceiling.
@@ -1400,20 +1399,47 @@ impl Cmd for WaitTool {
                 }
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() {
-                    let asked = match wait.is_zero() {
-                        true => "nothing was waiting, and this call asked for no wait".to_string(),
-                        false => format!(
-                            "nothing arrived within {}",
-                            crate::agent::spent(wait.as_millis() as u64)
-                        ),
-                    };
-                    return ToolOutcome::ok(format!(
-                        "{asked}; `wait` again, or get on with the work and this session will                          be told when it is"
-                    ));
+                    if wait.is_zero() {
+                        return ToolOutcome::ok(
+                            "nothing was waiting, and this call asked for no wait; `wait` \
+                             again, or get on with the work and this session will be told \
+                             when it is",
+                        );
+                    }
+                    return ended(ctx, began);
                 }
                 tokio::time::sleep(remaining.min(WAIT_POLL)).await;
             }
         })
+    }
+}
+
+/// What a wait answers when it is over: the rows it waited for, or how long nothing came.
+///
+/// # Invariant
+///
+/// One spelling for both doors -- the loop's own deadline and a cut -- because an ended
+/// wait is an ended wait. The text says what the call has, never which verb ended it:
+/// SPEC gives a wait `output` and `time`, and the harness's own vocabulary is not the
+/// model's to read.
+fn ended(ctx: &ToolContext, started: std::time::Instant) -> ToolOutcome {
+    match ctx.store.pending_injects_of(&ctx.session) {
+        Ok(rows) if !rows.is_empty() => {
+            let mut what: Vec<String> = rows.iter().map(arrival).collect();
+            what.dedup();
+            ToolOutcome::ok(format!(
+                "{} row(s) arrived while this call waited ({}); they are \
+                 delivered at the next step boundary",
+                rows.len(),
+                what.join(", ")
+            ))
+        }
+        Ok(_) => ToolOutcome::ok(format!(
+            "nothing arrived within {}; `wait` again, or get on with the work and this \
+             session will be told when it is",
+            crate::agent::spent(started.elapsed().as_millis() as u64)
+        )),
+        Err(e) => ToolOutcome::err(format!("could not read the inbox: {e}")),
     }
 }
 

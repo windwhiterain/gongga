@@ -422,9 +422,18 @@ get rid of.
 
 Stop one session's turn. The token is all this does: SPEC gives the canceled flag
 to `cancel` alone, and `cancel` writes it itself, for every running session, before
-the first token fires. What the caller still decides is whether the turn's queued
-rows outlive it -- `cancel` and `interrupt_session` keep them, `del_session` drops
-them, because a deleted session's queue is nobody's.
+the first token fires.
+
+Three verbs stop a turn and SPEC gives each its own aftermath, so the caller says
+which one it is (`Stop`): `Cancel` keeps this turn's rows and lets a restart
+continue it; `Interrupt` ends the turn where it stands and keeps nothing for a
+restart; `Delete` owes nothing at all. The verb is recorded on the session before
+the token fires, because a tool call reads it at the moment it is cut -- the wait's
+answer says which stop ended it, and the session row says the same to a window.
+That word is the whole difference between "idle (cancelled)" and "idle
+(interrupted)": before it existed, an `interrupt_session` was reported as a cancel,
+with a sentence about a server that was not stopping and a turn a restart would
+have continued.
 
 It used to be Ctrl+X, which meant only the TUI could do it: a script, and so the
 model, had no way to stop a turn it had started. As a command it is reachable by
@@ -453,6 +462,13 @@ so the turn is over rather than owed. A marker here would have a later restart
 finish a turn that had already ended. `cancel` is the only writer of the flag, and
 `sessions.canceled` is where it lives rather than the process: a stop ends the
 process, and a marker that cannot outlive it is a marker the next start never reads.
+
+"Over rather than owed" is three separate things in the code, and this verb has to
+do all three or it is a cancel wearing another name: no `mark_resumable` (so
+`finish_turn` drops the turn's pending row instead of leaving it), `mark_interrupted`
+(so the cut call and the session's status say `interrupted`), and the cut itself
+(`Cut::Interrupted`), which is what makes the wait answer "interrupt_session ended
+this wait" rather than "the server is stopping".
 
 ## cancel
 
