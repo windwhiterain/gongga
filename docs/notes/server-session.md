@@ -324,9 +324,15 @@ SPEC's `cancel` splits the sessions it interrupts in two. One that is not waitin
 continued at once -- the wait itself is, for the time that was left. So the fact that
 a session was waiting is not enough to resume it, and a duration is not either: the
 process that reads it has not started yet. What survives is the instant the wait was
-due to end, in epoch milliseconds (`sessions.waiting_until`), written by `interrupt`
-before the token -- after the token there is no turn left to ask -- and read by the
-start that inherits it.
+due to end, in epoch milliseconds (`sessions.waiting_until`).
+
+`cancel` is the one verb SPEC gives that flag to, so `cancel` is the only writer: it
+reads each running session's deadline first and writes it, then interrupts -- after
+the token there is no turn left to ask what it was doing. `interrupt_session` must
+not write it: SPEC has that verb *end* the tool waiting and hand the result back as
+the call's answer, so the turn goes on and there is nothing to resume. A write there
+would leave a row that a later restart resumes for a turn that ended long ago.
+`del_session` is the same: the row goes with the session.
 
 Three other places have to honour that row, or the wait is skipped:
 

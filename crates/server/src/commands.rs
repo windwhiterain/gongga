@@ -2719,14 +2719,6 @@ fn interrupt(d: &Dispatch, name: &str, owes: bool) -> (bool, usize) {
             );
         }
     }
-    // A waiting session keeps its wait, not its turn: the deadline is what survives.
-    let waiting = match (owes, in_wait) {
-        (true, true) => session.stop_signal().wait_until(),
-        _ => None,
-    };
-    if let Err(e) = d.store.set_waiting_until(session.id(), waiting) {
-        tracing::warn!(session = %name, error = %e, "could not record what is left of a wait");
-    }
     session.cancel();
     // Aborting is deliberate, so the work is not left behind unless it is owed.
     let dropped = if flagged || (owes && in_wait) {
@@ -2797,11 +2789,19 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         .into_iter()
         .filter(|session| session.busy())
         .collect();
-    // Read before the interrupts: each one clears its session's mark.
-    let waiting = running
-        .iter()
-        .filter(|session| session.stop_signal().is_waiting())
-        .count();
+    // SPEC's waiting flag: set per session, and read before the interrupts, which
+    // clear each session's mark.
+    let mut waiting = 0;
+    for session in &running {
+        let until = session.stop_signal().wait_until();
+        waiting += usize::from(until.is_some());
+        if let Err(e) = d.store.set_waiting_until(session.id(), until) {
+            tracing::warn!(
+                session = %session.name(), error = %e,
+                "could not record what is left of a wait"
+            );
+        }
+    }
     for session in &running {
         // Fire the token: a stuck call has no boundary. A waiting one gets a deadline.
         interrupt(d, session.name(), true);

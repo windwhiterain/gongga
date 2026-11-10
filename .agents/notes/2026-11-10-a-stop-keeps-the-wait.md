@@ -16,9 +16,15 @@ records what SPEC's `cancel` paragraph now means in code, the gates that were ru
 
 The wait is stored as *when it ends*, in epoch milliseconds. A duration would be
 wrong: the process that reads it is not the one that wrote it, so "six seconds from
-now" is a different instant by then. `interrupt` writes it before the cancel token,
-for the same reason the interrupted flag goes there — after the token there is no turn
-left to ask what it was doing.
+now" is a different instant by then.
+
+`cancel` is its only writer. My first version put the write in `interrupt`, the helper
+`cancel` calls per session, and that is wrong against SPEC: `interrupt_session` is its
+own verb ("end tool waiting, return result as tool call result") and the turn goes on
+after it, so a deadline written there would be resumed by a later restart for a turn
+that had already ended. `cancel` now reads each running session's deadline, writes it,
+and only then interrupts — the order the flag needs, since after the token no turn is
+left to ask. `del_session` writes nothing; the row goes with the session.
 
 Three readers have to honour that row or the wait is silently skipped: `deliver`
 (as above), `nudge_inboxes`, and the pending-row loop in `resume_pending`. Each skips
