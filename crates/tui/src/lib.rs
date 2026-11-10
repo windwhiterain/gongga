@@ -783,33 +783,6 @@ fn token(key: &KeyEvent) -> Option<char> {
     }
 }
 
-/// What the clipboard held, and when it was last read.
-///
-/// # Invariant
-///
-/// The one fact a keystroke cannot lie about: a terminal replaying a paste sends the
-/// same events a hand does, but the text matches the clipboard. Read at most once a
-/// second, because reading it spawns a program. See `docs/notes/tui-paste.md`.
-static CLIPBOARD: std::sync::OnceLock<std::sync::Mutex<(Option<std::time::Instant>, String)>> =
-    std::sync::OnceLock::new();
-
-/// The clipboard's text, or nothing when this machine cannot read it.
-fn clipboard_text() -> Option<String> {
-    let cell = CLIPBOARD.get_or_init(|| std::sync::Mutex::new((None, String::new())));
-    let mut guard = cell.lock().ok()?;
-    let fresh = guard
-        .0
-        .is_some_and(|at| at.elapsed() <= std::time::Duration::from_secs(1));
-    if !fresh {
-        match clipboard::paste() {
-            clipboard::FromClipboard::Ok(text) => *guard = (Some(std::time::Instant::now()), text),
-            _ => guard.0 = Some(std::time::Instant::now()),
-        }
-    }
-    let held = guard.1.clone();
-    Some(held).filter(|text| !text.is_empty())
-}
-
 /// The console's own QuickEdit, off for as long as this window is up.
 ///
 /// # Invariant
@@ -1429,29 +1402,6 @@ impl Tui {
         self.pending.push(key);
     }
 
-    /// Whether the clipboard accounts for what the prompt holds.
-    ///
-    /// # Invariant
-    ///
-    /// A break is the paste's when the prompt is what the clipboard begins with: a
-    /// terminal replaying a clipboard sends exactly those characters, and the prompt
-    /// keeps every chunk, so the second break matches as well as the first.
-    ///
-    /// # Invariant
-    ///
-    /// Only a long text or a clipboard holding a break counts, so retyping a short
-    /// copied command still sends. See `docs/notes/tui-paste.md`.
-    fn clipboard_explains(&self, typed: &str) -> bool {
-        let typed = typed.trim_end();
-        if typed.chars().count() < 8 {
-            return false;
-        }
-        let Some(clip) = clipboard_text() else {
-            return false;
-        };
-        let block = typed.chars().count() >= 40 || clip.trim_end().contains('\n');
-        block && clip.starts_with(typed)
-    }
 
     /// Whether this lone break ends a burst no hand typed.
     ///
@@ -1739,12 +1689,6 @@ impl Tui {
             KeyCode::Enter => {
                 let raw = self.screen.input.text().trim().to_string();
                 if raw.is_empty() {
-                    return None;
-                }
-                // A break the clipboard explains is the paste's, however slowly the
-                // terminal is replaying it.
-                if self.clipboard_explains(&raw) {
-                    self.newline();
                     return None;
                 }
                 self.screen.input.clear();
