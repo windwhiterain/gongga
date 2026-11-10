@@ -445,11 +445,13 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                       handover resumes it, a person stopping work does not want it back. This \
                       is the only stop that lets background jobs go: they are processes of \
                       their own, outlive this server and are adopted on the next start. Any \
-                      other stop -- a signal, a window closing, a killed process -- ends every \
-                      job it started with it. Channels are ended too unless `keep_alive` asks \
-                      for them: their programs are processes of their own, and one left running \
-                      is adopted by the next start instead of the session losing the shell it \
-                      was using."
+                      other stop -- a signal, a killed process -- ends every job it started \
+                      with it. Channels are ended too unless `keep_alive` asks for them: their \
+                      programs are processes of their own, and one left running is adopted by \
+                      the                       next start instead of the session losing the shell it was using. A \
+                      window on its way out asks for `keep_turn` and not `keep_alive`: it \
+                      hands the home over, so the next start continues the turn, while the \
+                      channels end because their relays go with this server."
                 .into(),
             args: vec![
                 arg(

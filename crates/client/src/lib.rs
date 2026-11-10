@@ -2362,20 +2362,30 @@ impl Link {
         let _ = self.send(ClientMessage::Bye).await;
     }
 
-    /// Stops the server as `cancel` does, and answers whether it heard.
+    /// Stops the server as `cancel` does, keeping the turn that was running.
     ///
     /// # Invariant
     ///
     /// SPEC's stop, not a kill: a kill loses the work `cancel` stores for the next
-    /// start. The answer is what makes it a stop and not a wish -- `send` only
-    /// queues, and a window asking on its way out is one statement away from
-    /// dropping the runtime that would write it. See `docs/notes/client-lib.md`.
+    /// start. Every caller of this is a *handover* -- a window on its way out, a
+    /// window taking the home over -- so it asks for `keep_turn`, and the next
+    /// start continues the turn instead of finding nothing to replay. Without it
+    /// the interrupt is a person stopping work, and the work goes with the server.
+    /// A person stopping work has `gongga-cli cancel`, which asks for neither
+    /// flag. `keep_alive` stays off: the channels are this home's programs, and
+    /// the server ending is what ends them.
+    ///
+    /// The answer is what makes it a stop and not a wish -- `send` only queues,
+    /// and a window asking on its way out is one statement away from dropping the
+    /// runtime that would write it. See `docs/notes/client-lib.md`.
     pub async fn cancel(&mut self) -> bool {
+        let mut args = protocol::Args::new();
+        args.insert("keep_turn".to_string(), "true".to_string());
         let asked = self
             .send(ClientMessage::Command {
                 id: CANCEL_ID,
                 name: "cancel".to_string(),
-                args: Default::default(),
+                args,
             })
             .await;
         if asked.is_err() {

@@ -260,7 +260,10 @@ hundred milliseconds would bury the log without adding information.
 
 A server this window started -- or a handover of it -- is stopped on the way out,
 through `cancel` rather than a kill: `cancel` is SPEC's stop -- it finishes what
-cannot be serialised and stores the rest, which a killed process cannot do.
+cannot be serialised and stores the rest, which a killed process cannot do. That
+`cancel` carries `keep_turn`: a window leaving is a handover, not a person
+stopping work, so the next start continues the turn. Without it the store would
+be a store of nothing -- a plain `cancel` drops the work with itself.
 
 # Invariant
 
