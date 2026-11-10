@@ -323,7 +323,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(problem = %problem, "a script could not be read");
     }
 
-    // The channels `new` and `check` speak to: a table of names, not processes.
+    // The channels `exec` speaks to: a table of programs, not processes.
     let channels = Arc::new(crate::tools::channel::Channels::for_home(
         &cfg,
         store.clone(),
@@ -337,7 +337,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     return;
                 }
                 // The notice is the call's own answer, late: the same `Result` a
-                // `check` returns, built by the same one builder.
+                // `exec` returns, built by the same one builder.
                 let outcome = crate::tools::channel::Outcome {
                     id: end.id.clone(),
                     output: end.output.clone(),

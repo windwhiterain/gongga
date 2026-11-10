@@ -30,8 +30,7 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 standard OpenAI Response API/Anthropic API.
 - images: File API, gated by - auto recover invalid transcript (only append, no drop).
 
-### Invarian
-- everything must store and send.
+**Invariant: everything must store and send**
 
 ## Session name
 path, rendered in hierarchy.
@@ -42,31 +41,35 @@ all tool call have extra parameter `discription: optional[str] = none`
 ```python
 Channel := path
 Result := {id: Channel, output: str, time: time, mactehd: bool, exit: int|none}
-fn new(
-  name: str, #summary
+fn exec(
+  bin: path = channel[id].bin, #summary
   args: list[str] | dict[str],
   input: optional[str] = none,
-  path: optional[path] = none,
-  wait: optional[time] = none #summary,
-  until: optional[str] = none,
+  id: Channel = "/{bin}/default",
+  wait: optional[time] = none, #summary
+  until: optional[str] = channel_default(),
   remote: optional[str] = <session's remote>,
   cwd: optional[path] = <session's cwd>) -> Result
-)
-fn check(id: Channel, input: optional[str] = none, wait: optional[time] = none, until: optional[str] = none) -> Result
-fn wait(time: time)
+):
+  # create a channel running the binary at `bin` if `id` does not exists.
+  # if `id` exists and `bin` arg doesn't match the channel's `bin`, report error.
+  # set the wait flag to a channel
+fn wait(
+  time: time, #summary
+) -> time
 fn <tool>(**args):
   # route to server cmd with caller session as extra argument
   # extra tool's schema is not registered in tools but dynamic found via skill.
 ```
 
-- new/check set the wait flag to a channel, a channel notice the session with Result when:
+- a channel notice the session with Result when:
   - it has wait flag.
   - finished or output matched the util.
-  the clear the wait flag
+  then clear the wait flag
 
 - wait: if none, wait default time, if 0, return immediately.
-- util: use corresponding sticky value according to name, e.g. "python"/"bash".
-- id: in each session's namespace, auto generate if not provided.
+- util: wait util macthed certain string, config default value for channel based on its name.
+- id: in each session's namespace.
 - output: new output since last read.
 - time: time cost since last input.
 
@@ -136,8 +139,7 @@ everything in database (sqlite) under a home directory, structured for agentic r
 ## Prompt
 after the system prompt, before the first user message, inject one message with useful information about session name, harness version (commit id), cwd, time. it is stamped once with the session's first prompt row and never re-rendered.
 
-### Invariant
-context is append only, context that has been sent must not be change.
+**Invariant: context is append only, context that has been sent must not be change**
 
 ## Meta
 preprocess before saving to transcripts.
@@ -244,6 +246,8 @@ Auto detect, validate and install remote runner with latest compatible version.
 
 ## Git Managed Config
 auto choose the latest commit within same protocol, personal(local) change rebase on official(remote).
+
+**Invariant: ALL Config File Must Be Live Tracked**
 
 ## Skill
 provider uv python package, API can be called by harness cmd or python import.

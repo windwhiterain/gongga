@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# SPEC's `new` and `check`, on real processes: a channel is a program a relay keeps,
+# SPEC's `exec`, on real processes: a channel is a program a relay keeps,
 # its output is a window nobody has read yet, and `[channel.*]` is what frames a reply.
 #
 # One line of verdict at the end; `-v` prints every answer.
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-bin="$root/target/debug"
+bin="${GONGGA_BIN:-$root/target/debug}"
 work="$root/.dev/selftest"
 home="$work/channel-home"
 log="$work/channel.log"
@@ -142,51 +142,51 @@ sys.stdout.write(str(value))' "$1" "$2"
 "${cli[@]}" set_session --id main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
 
 # 1. A program started as a channel, and the name it answers by.
-started=$("${cli[@]}" new --session main --name bash 2>&1)
+started=$("${cli[@]}" exec --session main --bin bash 2>&1)
 say "$started"
 shell_id=$(field "$started" id)
-ok "new main bash opens a channel" "$([[ -n "$shell_id" ]] && echo 0 || echo 1)"
+ok "exec bash opens a channel" "$([[ -n "$shell_id" ]] && echo 0 || echo 1)"
 say "id=$shell_id"
 
 # 2. One command, framed by `[channel.bash]`: output and status, marker gone.
-one=$("${cli[@]}" check --session main --id "$shell_id" --input 'echo one' --wait 5000 2>&1)
+one=$("${cli[@]}" exec --session main --id "$shell_id" --input 'echo one' --wait 5000 2>&1)
 say "$one"
 say "parsed: matched=[$(field "$one" matched)] exit=[$(field "$one" exit)] output=[$(field "$one" output)]"
-ok "check --input frames the reply" "$([[ "$(field "$one" matched)" == True && "$(field "$one" output | tr -d '\n')" == one ]] && echo 0 || echo 1)"
+ok "exec --input frames the reply" "$([[ "$(field "$one" matched)" == True && "$(field "$one" output | tr -d '\n')" == one ]] && echo 0 || echo 1)"
 ok "the sentinel's tail is the status" "$([[ "$(field "$one" exit)" == 0 ]] && echo 0 || echo 1)"
 ok "the marker is not in the window" "$(has "$one" '__gongga' && echo 1 || echo 0)"
 
 # 3. A failing command says so, and the channel is not ended by it.
-bad=$("${cli[@]}" check --session main --id "$shell_id" --input 'nosuchcommand-here' --wait 5000 2>&1)
+bad=$("${cli[@]}" exec --session main --id "$shell_id" --input 'nosuchcommand-here' --wait 5000 2>&1)
 say "$bad"
 ok "a failing command answers 127" "$([[ "$(field "$bad" exit)" == 127 ]] && echo 0 || echo 1)"
-third=$("${cli[@]}" check --session main --id "$shell_id" --input 'echo three' --wait 5000 2>&1)
+third=$("${cli[@]}" exec --session main --id "$shell_id" --input 'echo three' --wait 5000 2>&1)
 ok "the channel still answers after a failure" "$([[ "$(field "$third" output | tr -d '\n')" == three ]] && echo 0 || echo 1)"
 
 # 3b. A command that takes longer than the client's own patience. The server retires
 #     a frame only when the peer acknowledges it, and gives up on a connection that
 #     never does -- so this is the one scenario where a silent client loses its answer.
-slow=$("${cli[@]}" check --session main --id "$shell_id" --input 'sleep 2; echo slow-said' --wait 15000 2>&1)
+slow=$("${cli[@]}" exec --session main --id "$shell_id" --input 'sleep 2; echo slow-said' --wait 15000 2>&1)
 say "$slow"
 ok "a command slower than a second still answers" \
   "$([[ "$(field "$slow" output | tr -d '\n')" == slow-said ]] && echo 0 || echo 1)"
 
 # 3c. `time` is what this call cost: from its own write, not from when the channel
 #     was opened. The channel has been alive for a while by now.
-aged=$("${cli[@]}" check --session main --id "$shell_id" --input 'echo aged' --wait 5000 2>&1)
+aged=$("${cli[@]}" exec --session main --id "$shell_id" --input 'echo aged' --wait 5000 2>&1)
 say "aged: time=$(field "$aged" time)"
 ok "time is measured from this call's input"   "$(python -c 'import sys
 raw = sys.argv[1].rstrip("s")
 print(0 if 0 < float(raw) < 3 else 1)' "$(field "$aged" time)" 2>/dev/null || echo 1)"
 
 # 4. The window moves: what one call took, the next does not see.
-empty=$("${cli[@]}" check --session main --id "$shell_id" --wait 0 2>&1)
+empty=$("${cli[@]}" exec --session main --id "$shell_id" --wait 0 2>&1)
 say "$empty"
 say "parsed: output=[$(field "$empty" output)]"
-ok "check --wait 0 reads an empty window" "$([[ -z "$(field "$empty" output | tr -d '\n')" ]] && echo 0 || echo 1)"
+ok "exec --wait 0 reads an empty window" "$([[ -z "$(field "$empty" output | tr -d '\n')" ]] && echo 0 || echo 1)"
 
 # 5. A one-shot program: it ends, and `exit` is its own.
-once=$("${cli[@]}" new --session main --name bash --args '["-lc", "echo done; exit 3"]' --wait 8000 2>&1)
+once=$("${cli[@]}" exec --session main --bin bash --id "$shell_id-oneshot" --args '["-lc", "echo done; exit 3"]' --wait 8000 2>&1)
 say "$once"
 say "parsed: exit=[$(field "$once" exit)] output=[$(field "$once" output)]"
 oneshot_exit=$(field "$once" exit)
@@ -197,11 +197,11 @@ ok "a one-shot channel reports its own exit" "$([[ "$oneshot_exit" == 3 && "$one
 # 6. The machine and the directory are the call's, not the session's.
 elsewhere=$(mktemp -d 2>/dev/null || echo "$work/elsewhere")
 mkdir -p "$elsewhere"
-in_dir=$("${cli[@]}" new --session main --name bash --cwd "$elsewhere" --args '["-lc", "pwd"]' --wait 8000 2>&1)
+in_dir=$("${cli[@]}" exec --session main --bin bash --id "$shell_id-dir" --cwd "$elsewhere" --args '["-lc", "pwd"]' --wait 8000 2>&1)
 say "$in_dir"
-ok "new --cwd starts the program there" "$([[ "$(field "$in_dir" output)" == *"$(basename "$elsewhere")"* ]] && echo 0 || echo 1)"
+ok "exec --cwd starts the program there" "$([[ "$(field "$in_dir" output)" == *"$(basename "$elsewhere")"* ]] && echo 0 || echo 1)"
 rmdir "$elsewhere" 2>/dev/null
-refused=$("${cli[@]}" new --session main --name bash --remote nowhere-named 2>&1)
+refused=$("${cli[@]}" exec --session main --bin bash --id "$shell_id-nowhere" --remote nowhere-named 2>&1)
 say "$refused"
 ok "a machine that cannot be reached is refused, not run here" "$([[ "$(field "$refused" id)" == "" ]] && has "$refused" 'no remote named' && echo 0 || echo 1)"
 

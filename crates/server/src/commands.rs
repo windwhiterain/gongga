@@ -103,7 +103,7 @@ pub enum Origin {
     },
     /// No client asked: a signal reached this process, or the process it follows ended.
     Signal { reason: String },
-    /// A tool ran it: `new` with a name the config calls a cmd (`GONGGA_CLI`).
+    /// A tool ran it: `exec` on a name the config calls a cmd (`GONGGA_CLI`).
     ///
     /// # Invariant
     ///
@@ -651,7 +651,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "new_channel".into(),
             description: "Start a program under this session and give it a name: the \
-                      command layer's own door to what the `new` tool does."
+                      command layer's own door to what the `exec` tool does."
                 .into(),
             args: vec![
                 pos(
@@ -1209,7 +1209,7 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
 /// while the origin is who asked. `subscribe` needs the session the command was
 /// run *from*, and `cancel` needs to be able to say who asked, which is the
 /// difference between a window's own goodbye and somebody else's.
-/// What a tool can ask the command layer to do: `new` with a name that is a cmd.
+/// What a tool can ask the command layer to do: `exec` with a name that is a cmd.
 ///
 /// # Invariant
 ///
@@ -2062,7 +2062,7 @@ async fn new_channel(d: &Dispatch, args: &Args) -> Outcome {
             handle.remote_name().as_deref(),
             &handle.cwd(),
             &handle.env(),
-            Some(id.clone()),
+            &id,
         )
         .await
     {
@@ -2520,7 +2520,7 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
 /// # Invariant
 ///
 /// An object is the whole call (`{"name":…,"args":{…}}`), and a bare word is a name
-/// with no arguments: the same two shapes `new` takes for a cmd's `args`.
+/// with no arguments: the same two shapes `exec` takes for a cmd's `args`.
 fn parse_cmd(raw: &str) -> Result<crate::subscriptions::Action, String> {
     let text = raw.trim();
     if text.is_empty() {

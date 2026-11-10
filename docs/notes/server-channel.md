@@ -2,8 +2,8 @@
 
 ## A channel is a program, and a directory
 
-`SPEC.md`'s `new` starts a program and `check` speaks to it. Both are the same
-thing: a **channel** — a child process, the two streams it writes, and the bytes of
+`SPEC.md`'s `exec` starts a program with `bin`, and speaks to it again by `id`. Both
+are the same thing: a **channel** — a child process, the two streams it writes, and the bytes of
 them nobody has read yet.
 
 Its path is a name in this server's namespace, not a place on disk (`SPEC`'s
@@ -50,12 +50,12 @@ writing to a file opened by another parent worked, so the handle was sound and t
 program was not. Pumping through a pipe is also what interleaving wants: two streams
 of one program in one file, in the order they arrived.
 
-## What a `check` reads
+## What an `exec` reads
 
 `out` is a file, so "what did this print" and "what have I not read" are two different
 questions: a reader may `tail -f` it, and that is not this server's cursor. The cursor
 is the server's own, per session, and taking the window is what advances it — so a
-finished channel's notice and a `check` never hand the same bytes over twice.
+finished channel's notice and an `exec` never hand the same bytes over twice.
 
 `until` is the marker a reply ends at: the window is cut there and the marker is not
 returned, because `matched` is the answer to "was it there". A call that names none takes
@@ -63,13 +63,13 @@ the name's own (`[channel.<name>]`), and the one `bash` has is `{{sentinel}}` --
 this server writes into the command line, `echo __gongga-...__$?`.
 
 That value is sticky per channel (`channels.until_sentinel`): the write that makes one
-remembers it, so a `check` that writes nothing still knows where the last reply ends and
+remembers it, so an `exec` that writes nothing still knows where the last reply ends and
 `matched` can answer for it. Generated per write and thrown away, as it was before the
-column, a read-only `check` had no marker at all -- so it could only ever answer at its
+column, a read-only `exec` had no marker at all -- so it could only ever answer at its
 `wait`, which is the shape a model then learns to live with: every read costs the whole
 ceiling.
 
-`time` is what *this call* cost, and its start is the call's own input: a `check` that
+`time` is what *this call* cost, and its start is the call's own input: an `exec` that
 writes measures from that write, and one that only reads measures from the channel's
 last write (the program's start, before any). A channel that has been alive for an
 hour answers a fresh command with the milliseconds it took, which is the number a
@@ -77,7 +77,8 @@ reader is asking for -- so the row records `wrote_at` beside the cursor.
 
 ## `[channel.<name>]`: what a name is
 
-One section per name `new` knows, and nothing there is about a tool:
+One section per program `exec` knows, keyed by the program's name (a path is read by its
+stem), and nothing there is about a tool:
 
 ```toml
 [channel.bash]
@@ -133,19 +134,19 @@ the same channel again.
 
 ## Who reads what
 
-`new` and `check` are rows of `[tool.*]`, like every other tool, and both are
-`tunneled = false`: a channel already is what `background` used to mean, and `wait` is
-the call's own clock (`0` is no wait, absent is this server's default).
+`exec` is a row of `[tool.*]`, like every other tool, and it is `tunneled = false`: a
+channel already is what `background` used to mean, and `wait` is the call's own clock
+(`0` is no wait, absent is this server's default).
 
 `new_channel`, `input_channel`, `rename_channel`, `ls_channel` and `del_channel` are
 commands, not tools: a program started, one line written, one column renamed, a list,
 and `kill` in a channel's `in`. They are the command layer's door to the same thing the
-`new`/`check` tools are a model's door to, which is what makes a `GONGGA_CLI` channel
+`exec` tool is a model's door to, which is what makes a `GONGGA_CLI` channel
 and a subscription able to do what a call does. `del_session` ends the channels its
 session started, so a name is never left pointing at a dead directory.
 
 The watcher is what turns a wait into a notice, and it speaks only for a channel
-somebody is waiting on. `new`/`check` set the channel's wait flag -- the marker the call
+somebody is waiting on. `exec` sets the channel's wait flag -- the marker the call
 has to see, `""` for the end alone -- and the watcher looks at nothing else. Two things
 answer it: the program ending, or the marker appearing in what it printed. The flag is
 the claim: whoever clears it is the one that tells. A call clears it when its own answer
@@ -165,7 +166,7 @@ queues an `inject` row marked `notice: "channel"` -- the same door a finished ba
 job uses, and marked so it cannot wake an idle session. The flag lives in the channel's
 row (`wait_marker`), so an offer to notice survives a restart.
 
-The notice **is** the answer: the same `Result` a `check` returns, built by
+The notice **is** the answer: the same `Result` an `exec` returns, built by
 `Outcome::result` with the same cap, and it takes the window with it -- a notice that
 carried the bytes and left the cursor where it was would be the way to hand the same
 window over twice. The row is stored as `inject`, so the reader draws it as the harness
@@ -173,7 +174,7 @@ talking while the model still reads a user turn.
 
 ## Still owed: the eighteen go
 
-SPEC's tool surface is `new`, `check`, `wait` and the skill table. Everything the
+SPEC's tool surface is `exec`, `wait` and the skill table. Everything the
 channel replaced is still here as a row marked `offered = false` **and** as a helper the
 command layer or a subscription still reaches: about 5200 lines across
 `tools/bash.rs`, `tools/python.rs`, `tools/interpreter.rs`, `tools/detached.rs`,

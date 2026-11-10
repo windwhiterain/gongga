@@ -21,7 +21,7 @@ use crate::remote::transport::Runner;
 use crate::store::{ChannelRow, Store};
 use crate::tools::spec;
 
-/// What one call of `new` or `check` answers: [`SPEC`](SPEC.md), "Tool".
+/// What one call of `exec` answers: [`SPEC`](SPEC.md), "Tool".
 ///
 /// # Invariant
 ///
@@ -178,7 +178,7 @@ impl Channels {
     ///
     /// # Invariant
     ///
-    /// The same peers as the server's own: a subscription's action calls `new` like
+    /// The same peers as the server's own: a subscription's action calls `exec` like
     /// any other caller, and a name it cannot resolve would be a name nobody can.
     pub fn without_words(cfg: &crate::config::Config, store: Store, root: PathBuf) -> Self {
         Self::new(
@@ -191,9 +191,18 @@ impl Channels {
         )
     }
 
-    /// What the config says a name is; a name it does not mention is raw.
-    fn grammar_of(&self, name: &str) -> spec::ChannelSpec {
-        self.grammar.get(name).cloned().unwrap_or_default()
+    /// What the config says a program is; a program it does not mention is raw.
+    ///
+    /// # Invariant
+    ///
+    /// `[channel.<name>]` is keyed by a program's name, so a path to one is read by
+    /// its stem: `C:\Program Files\Git\bin\bash.exe` is `[channel.bash]`.
+    fn grammar_of(&self, bin: &str) -> spec::ChannelSpec {
+        self.grammar
+            .get(bin)
+            .or_else(|| self.grammar.get(stem(bin)))
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Starts a program as a channel, or says why it could not.
@@ -206,33 +215,28 @@ impl Channels {
     pub async fn start(
         &self,
         session: &str,
-        name: &str,
+        bin: &str,
         args: &[String],
         remote: Option<&str>,
         cwd: &Path,
         env: &[(String, String)],
-        id: Option<String>,
+        id: &str,
     ) -> Result<ChannelRow, String> {
-        let grammar = self.grammar_of(name);
-        let path = match id {
-            Some(path) => {
-                if self
-                    .store
-                    .channel_of(session, &path)
-                    .map_err(quiet)?
-                    .is_some()
-                {
-                    return Err(format!(
-                        "channel {path:?} is in use; `check {path}` speaks to it, and \
-                         `del_channel {path}` ends it"
-                    ));
-                }
-                path
-            }
-            None => self.auto_name(session, name)?,
-        };
+        let grammar = self.grammar_of(bin);
+        let path = id.to_string();
+        if self
+            .store
+            .channel_of(session, &path)
+            .map_err(quiet)?
+            .is_some()
+        {
+            return Err(format!(
+                "channel {path:?} is in use; `exec` speaks to it, and `del_channel \
+                 {path}` ends it"
+            ));
+        }
         let words = crate::relay::Words {
-            program: name.to_string(),
+            program: bin.to_string(),
             args: if args.is_empty() {
                 grammar.spawn.clone()
             } else {
@@ -254,7 +258,7 @@ impl Channels {
         }?;
         let (place, pid) = started;
         self.store
-            .add_channel(session, &path, name, remote, &place.dir(), pid)
+            .add_channel(session, &path, bin, remote, &place.dir(), pid)
             .map_err(quiet)?;
         let row = self
             .store
@@ -383,18 +387,9 @@ impl Channels {
         }
     }
 
-    /// The name a call that states none gets: this session's, this program's, and the
-    /// first number under them that is free.
-    fn auto_name(&self, session: &str, name: &str) -> Result<String, String> {
-        let taken = self.store.channels_of(session).map_err(quiet)?;
-        for number in 1..=u32::MAX {
-            // No leading `/`: Git Bash rewrites such a word into this machine's path.
-            let candidate = format!("{session}/{name}/{number}");
-            if !taken.iter().any(|row| row.path == candidate) {
-                return Ok(candidate);
-            }
-        }
-        Err(format!("no free name for {name:?} in this session"))
+    /// One channel of one session, when this session has one by that name.
+    pub fn find(&self, session: &str, id: &str) -> Result<Option<ChannelRow>, String> {
+        self.store.channel_of(session, id).map_err(quiet)
     }
 
     /// Waits for the relay's first `status`, which says who it started.
@@ -823,11 +818,11 @@ impl Channels {
     ///
     /// # Invariant
     ///
-    /// A notice is one more `check`: it reads the same window, so a session is never
+    /// A notice is one more `exec`: it reads the same window, so a session is never
     /// told bytes it already read and never loses the tail. The stop token keeps a
     /// `cancel` from announcing what it just ended.
     ///
-    /// Only a flagged channel speaks, and once: `new`/`check` set it, the call clears
+    /// Only a flagged channel speaks, and once: `exec` sets it, the call clears
     /// it when it answers, and the claim lets the watcher speak for one no call is in.
     pub fn watch(self: &Arc<Self>, stop: CancellationToken) -> tokio::task::JoinHandle<()> {
         let channels = Arc::clone(self);
@@ -1112,6 +1107,20 @@ fn append_here(path: &str, line: &str) -> Result<(), String> {
         .map_err(|e| format!("could not write {path:?}: {e}"))?;
     file.flush()
         .map_err(|e| format!("could not flush {path:?}: {e}"))
+}
+
+/// The name a program is known by: its file name, without the `.exe` it is run by.
+///
+/// # Invariant
+///
+/// A name with no directory and no suffix is itself, so `[channel.bash]` answers both
+/// `bash` and the path Git installs it at.
+pub fn stem(bin: &str) -> &str {
+    let name = bin.rsplit(['/', '\\']).next().unwrap_or(bin);
+    match name.rsplit_once('.') {
+        Some((stem, suffix)) if !stem.is_empty() && suffix.eq_ignore_ascii_case("exe") => stem,
+        _ => name,
+    }
 }
 
 /// A store failure, in the words a tool answer carries.

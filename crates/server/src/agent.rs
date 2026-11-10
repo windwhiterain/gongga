@@ -69,7 +69,7 @@ pub struct Agent {
     /// [`Self::llm`]'s context window, for a percentage set without naming a model.
     pub default_context: Option<u64>,
     pub tools: Arc<ToolRegistry>,
-    /// The channels `new` and `check` speak to, and what a context is built with.
+    /// The channels `exec` speaks to, and what a context is built with.
     pub channels: Arc<crate::tools::channel::Channels>,
     pub bus: EventBus,
     /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
@@ -2233,9 +2233,9 @@ fn summary_keys(tool: &str) -> &'static [&'static str] {
         // SPEC lists bash's own set; another tool is summarised by nothing yet,
         // which still reads better than a wall of JSON.
         "bash" => &["name", "background", "time_out"],
-        // SPEC's `new(name #abstraction, wait #abstraction)`: what a channel
-        // is opened on, and nothing else.
-        "new" => &["name", "wait"],
+        // SPEC's `exec(bin #abstraction, wait #abstraction)`: the program it
+        // names, and how long it stays to hear it.
+        "exec" => &["bin", "wait"],
         "check_job" => &["job_id", "wait_ms"],
         _ => &[],
     }

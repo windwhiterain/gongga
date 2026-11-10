@@ -250,7 +250,7 @@ pub struct ToolsConfig {
     /// this build carries are all read from here. See
     /// `docs/notes/server-tools-spec.md`.
     pub rows: std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>,
-    /// Every name `new` knows: what it starts, and how a reply of it is framed.
+    /// Every program `exec` knows: what it starts with, and how a reply is framed.
     ///
     /// # Invariant
     ///
@@ -353,7 +353,7 @@ struct FileConfig {
     tools: Option<FileTools>,
     /// `[tool.<name>]`: one row per tool this home declares. See `server-tools-spec`.
     tool: Option<std::collections::BTreeMap<String, crate::tools::spec::ToolSpec>>,
-    /// `[channel.<name>]`: what a name is, as `new` reads it. See `server-channel`.
+    /// `[channel.<name>]`: what a program is, as `exec` reads it. See `server-channel`.
     channel: Option<std::collections::BTreeMap<String, crate::tools::spec::ChannelSpec>>,
     /// Where the rows used to live. Read for nothing, so an old home is not refused.
     tool_text: Option<toml::Table>,

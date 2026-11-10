@@ -20,7 +20,7 @@ so there is no `wait_bash`.
 
 ## A row that names a command this build has no type for
 
-SPEC's tool surface is `new`, `check` and `wait`; everything else is a command,
+SPEC's tool surface is `exec` and `wait`; everything else is a command,
 `fn <tool>(**args)`. So a `[tool.<name>] cmd = "<what>"` row whose `<what>` this build
 carries no implementation of is offered as the command it names: the call's arguments
 become that command's named words (a string is itself, anything else is its JSON) and the
@@ -379,7 +379,7 @@ Three tools wait, and each one's early answer is the answer it already had:
 
 - `wait`: SPEC gives it `-> time`, so it answers with how long it waited -- its own
   deadline and an interrupt are the same answer, because an ended wait is an ended wait.
-- `new`/`check`: a wait that ends early is a `check` that waited for no time at all, so
+- `exec`: a wait that ends early is an `exec` that waited for no time at all, so
   `talk` answers with the window on disk right now, as SPEC's `Result`.
 - `<tool>(**args)` (`Forward`): the command said nothing, so its `Result` carries an
   empty `output`, `exit: null`, and the time it spent.

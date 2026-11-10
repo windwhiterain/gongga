@@ -185,23 +185,24 @@ print(" ".join(sorted(names)))
 INNER
 )
 say "offered: $offered"
-ok "a turn is offered new and check" "$([[ " $offered " == *" new "* && " $offered " == *" check "* ]] && echo 0 || echo 1)"
+ok "a turn is offered exec" "$([[ " $offered " == *" exec "* ]] && echo 0 || echo 1)"
 ok "a turn is offered wait, so a session can stay for its subscription" \
   "$([[ " $offered " == *" wait "* ]] && echo 0 || echo 1)"
 ok "the old shell tools are not offered to the model" \
   "$([[ " $offered " != *" bash "* && " $offered " != *" read_file "* ]] && echo 0 || echo 1)"
 
-# 2. `new`: the model opens a program and is answered with the channel it opened.
+# 2. `exec`: the model runs a program and is answered with the channel it opened.
 #    Persistent on purpose -- the next scenario has to talk to it -- and `wait 0`,
 #    because a shell that has just been opened has said nothing yet.
-fake_up new '{"name":"bash","wait":0}' || exit 1
+fake_up exec '{"bin":"bash","wait":0}' || exit 1
 "${cli[@]}" send_message --message "start a channel" --session main >/dev/null 2>&1
 wait_turn main
 started=$(last_tool main)
-say "new answered: $(printf '%s' "$started" | head -c 200)"
-ok "new answered the model with the channel it opened" "$(has "$started" '"id":"' && echo 0 || echo 1)"
+say "exec answered: $(printf '%s' "$started" | head -c 200)"
+ok "exec answered the model with the channel it opened" "$(has "$started" '"id":"' && echo 0 || echo 1)"
 
-# 3. `check`: a second command in the channel `new` opened, named by its id.
+# 3. `exec` again, by `id` alone: SPEC's `bin` defaults to `channel[id].bin`, so the
+#    second call speaks to the channel the first one opened.
 channel=$(python - "$home" <<'INNER'
 import json, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
@@ -223,13 +224,13 @@ for (display,) in c.execute(
 INNER
 )
 say "channel: $channel"
-fake_up check "$(python -c 'import json,sys
+fake_up exec "$(python -c 'import json,sys
 print(json.dumps({"id": sys.argv[1], "input": "echo second", "wait": 15000}))' "$channel")" || exit 1
 "${cli[@]}" send_message --message "say second in it" --session main >/dev/null 2>&1
 wait_turn main
 second=$(last_tool main)
-say "check answered: $(printf '%s' "$second" | head -c 200)"
-ok "check spoke to the channel new opened" "$(has "$second" 'second' && echo 0 || echo 1)"
+say "exec answered: $(printf '%s' "$second" | head -c 200)"
+ok "the second exec spoke to the channel the first opened" "$(has "$second" 'second' && echo 0 || echo 1)"
 
 # 4. The round trip the whole row exists for: arm a subscription, then `wait` -- the
 #    news it sends cuts the wait, and arrives as the next turn's message.

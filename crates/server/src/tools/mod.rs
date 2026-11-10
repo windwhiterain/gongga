@@ -19,11 +19,11 @@ use crate::store::Store;
 
 pub mod channel;
 pub mod detached;
+pub mod exec;
 pub mod file;
 #[cfg(windows)]
 pub mod job;
 pub mod live_compact;
-pub mod new_check;
 pub mod python_remote;
 pub mod skill;
 pub mod spec;
@@ -316,7 +316,7 @@ impl Cmd for Forward {
                 ));
             };
             let words = match args.as_object() {
-                Some(table) => new_check::named_words(table),
+                Some(table) => named_words(table),
                 None => protocol::Args::new(),
             };
             let began = std::time::Instant::now();
@@ -350,6 +350,28 @@ impl Cmd for Forward {
             }
         })
     }
+}
+
+/// A tool call's arguments as the words a command reads.
+///
+/// # Invariant
+///
+/// A string is itself and anything else is its JSON, because a command's arguments are
+/// words: `cmd` is the one key this drops, since it names the command rather than one of
+/// its arguments. See `docs/notes/server-tools-mod.md`.
+fn named_words(table: &serde_json::Map<String, Value>) -> protocol::Args {
+    let mut words = protocol::Args::new();
+    for (key, value) in table {
+        if key == "cmd" {
+            continue;
+        }
+        let text = match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        words.insert(key.clone(), text);
+    }
+    words
 }
 
 /// One row of the config, offered as the tool the model and the operator call.
@@ -646,20 +668,17 @@ impl ToolRegistry {
                     max_output_chars: max_output_chars.min(skill.max_output_chars),
                 })
             }
-            "new" | "check" => {
+            "exec" => {
                 // The channels are the call's own, and the default wait is the row's.
-                let wait = new_check::Wait {
-                    default: row
-                        .timeout_ms
-                        .map(Duration::from_millis)
-                        .unwrap_or(bash_timeout),
-                    max_output_chars,
-                };
-                if row.cmd == "new" {
-                    Box::new(new_check::NewTool { wait })
-                } else {
-                    Box::new(new_check::CheckTool { wait })
-                }
+                Box::new(exec::ExecTool {
+                    wait: exec::Wait {
+                        default: row
+                            .timeout_ms
+                            .map(Duration::from_millis)
+                            .unwrap_or(bash_timeout),
+                        max_output_chars,
+                    },
+                })
             }
             "live_compact" => Box::new(live_compact::LiveCompactTool),
             // SPEC's `fn <tool>(**args)`: a name this build has no implementation of its
