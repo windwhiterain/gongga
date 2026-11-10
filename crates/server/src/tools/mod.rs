@@ -681,8 +681,14 @@ impl ToolRegistry {
                 })
             }
             "live_compact" => Box::new(live_compact::LiveCompactTool),
-            // SPEC's `fn <tool>(**args)`: a name this build has no implementation of its
-            // own for is the command it names.
+            // SPEC's `fn <tool>(**args)`: a row an operator reaches by name may be a
+            // command this build has no type for. One the model is offered may not --
+            // a tool nobody implements is not a tool SPEC has. See `server-tools-mod`.
+            other if row.offered => {
+                return Err(format!(
+                    "`{other}` is offered to the model, and this build implements no such tool"
+                ));
+            }
             other => Box::new(Forward {
                 name: other.to_string(),
             }),
