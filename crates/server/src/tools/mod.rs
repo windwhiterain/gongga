@@ -1368,14 +1368,15 @@ impl Cmd for WaitTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            // A cancel that finds this mark keeps the turn: a wait lives across it.
-            let _waiting = ctx.stop.begin_wait();
+            // SPEC: "if none, wait default time, if 0, return immediately" -- a zero
+            // is one look at the inbox, not a wait.
             let wait = args
                 .get("time")
                 .and_then(Value::as_u64)
                 .map(Duration::from_millis)
-                .unwrap_or(self.timeout)
-                .max(Duration::from_millis(100));
+                .unwrap_or(self.timeout);
+            // A cancel that finds this mark keeps the turn, and resumes this wait.
+            let _waiting = ctx.stop.begin_wait(wait);
             let began = std::time::Instant::now();
             let deadline = began + wait;
             loop {
@@ -1399,9 +1400,15 @@ impl Cmd for WaitTool {
                 }
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() {
+                    let asked = match wait.is_zero() {
+                        true => "nothing was waiting, and this call asked for no wait".to_string(),
+                        false => format!(
+                            "nothing arrived within {}",
+                            crate::agent::spent(wait.as_millis() as u64)
+                        ),
+                    };
                     return ToolOutcome::ok(format!(
-                        "nothing arrived within {}; `wait` again, or get on with the work                          and this session will be told when it is",
-                        crate::agent::spent(wait.as_millis() as u64)
+                        "{asked}; `wait` again, or get on with the work and this session will                          be told when it is"
                     ));
                 }
                 tokio::time::sleep(remaining.min(WAIT_POLL)).await;

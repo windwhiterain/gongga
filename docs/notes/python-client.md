@@ -75,6 +75,24 @@ Arguments travel as the command's own: a string is a string, a list is JSON for 
 the schema types as a list, and the server decides what it takes. Nothing is coerced here;
 the values are the caller's.
 
+One conversion is `_wire`'s, and it is the wire's, not a convenience: a command's arguments
+are a map of strings on the link (`protocol::Args`), so a value that is not a string goes as
+JSON -- `cmd={"name": "add", "args": {"left": 2}}` arrives as the object `subscribe` and
+`run_skill` parse, and a number arrives as `2`. A string is itself and never quoted twice,
+which is what keeps a path, a regex and a range readable.
+
+## The four names SPEC's `## Python Cmd` gives
+
+They are commands, so `__getattr__` puts them on the connection with no code of their own:
+`ls_skill(path, session)`, `run_skill(id, cmd, session)`, `get_messages(session, range)`
+and `clone_session(id, new_id)`. A skill's Python reaches them the way any other caller
+does, which is the whole point of the section being "provided by a shipped uv python
+package": one API, two readers, and no third spelling of it.
+
+    server.ls_skill(path="harness", session="main")
+    server.run_skill(id="harness/prefix-cache",
+                     cmd={"name": "look", "args": {"path": "/tmp"}}, session="main")
+
 ## pump
 
 `call` returns on its own `cmd_result`, which is not the only thing on the link: a session

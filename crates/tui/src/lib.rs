@@ -495,6 +495,14 @@ pub struct Tui {
     /// read: dropping it is what puts the mode back.
     #[allow(dead_code)]
     quick_edit: QuickEdit,
+    /// Every event the terminal sent, when `GONGGA_TUI_DEBUG_KEYS` names a file.
+    ///
+    /// # Invariant
+    ///
+    /// A diagnostic, not a feature: off unless the variable is set, and it writes what
+    /// arrived rather than what this window made of it -- the only way to tell a
+    /// terminal that sends bracketed paste from one replaying keystrokes.
+    key_log: Option<std::fs::File>,
     /// Bracketed paste's markers, while a paste is open or a marker is half read.
     markers: PasteMarkers,
     /// Text keys that arrived back to back, and when the newest one did.
@@ -923,6 +931,15 @@ impl Tui {
             pending: Vec::new(),
             settled: None,
             markers: PasteMarkers::default(),
+            key_log: std::env::var("GONGGA_TUI_DEBUG_KEYS")
+                .ok()
+                .and_then(|path| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .ok()
+                }),
             quick_edit,
             fast: 0,
             fast_at: None,
@@ -1247,6 +1264,11 @@ impl Tui {
                 Some(held) => held,
                 None => self.events.next().await?,
             };
+            if let (Some(log), Ok(event)) = (self.key_log.as_mut(), &next) {
+                use std::io::Write as _;
+                let _ = writeln!(log, "{:?}", event);
+                let _ = log.flush();
+            }
             // Every event kind is handled; a resize only needs the redraw it asks for.
             match next {
                 Ok(TermEvent::Key(key)) => {

@@ -204,3 +204,20 @@ What stays: `read_file`, `write_file`, `replace` (a model has no other door to a
 `list_paths`, `skill`, and every command in `commands.rs` that the channel world added.
 `Shells::names`, `ToolContext::peek` and the job view are used by live paths today; the
 slice that removes their last caller removes them.
+
+## Adopting what a stop kept (`Channels::adopt`, `Channels::kill_all`)
+
+`cancel --keep_alive` leaves every channel detached and says the next start adopts
+them. A channel is not a process the server owns -- it is a program a relay keeps,
+read and written through its files -- so "adopted" is not a step taken at start: it is
+the relay's watcher speaking for a row that is still live. What a start can say is the
+other half: which of those rows are not. `adopt` reads each live row's status, and one
+that has already ended is finished and told to its session as a channel end notice,
+with what it printed and the exit it ended with. The notice goes before the turns that
+would read it, which is why `run` adopts before it resumes anything.
+
+`kill_all` is the same debt on the way out. A default `cancel` ends every channel, and
+with its row gone the relay's watcher can never see it end -- so the kill is the only
+voice left, and it has to say so: the end notice carries what the channel had printed
+until then. SPEC names this pair as one rule ("killing channel / failed to adopt
+channel will produce channel end notice"); the two functions are where it lands.

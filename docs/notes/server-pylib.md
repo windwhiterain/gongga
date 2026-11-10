@@ -16,6 +16,11 @@ Python can import it. That is one file with two readers, not two files that agre
 build fails if the path is wrong, which is exactly what happened when the module moved and
 one `include_str!` still pointed at the old directory.
 
+`python/pyproject.toml` is the third reader, and it adds no bytes: it names the same two
+modules a uv project, so `uv run --project python` is this home's `lib/` without a home.
+SPEC's `## Python Cmd` says the commands are "provided by a shipped uv python package", and
+a package that were a copy would be a second answer to what these files say.
+
 ## Written only when it differs
 
 A restart rewrites nothing that is already right: a caller may be reading the file, and a

@@ -254,12 +254,11 @@ fn claim_recovery(
     if session.is_deleted() {
         return None;
     }
-    // SPEC: "restart will consume and continue sessions with interrupted flag" --
-    // this claim is that restart, so the flag has done its work.
-    if let Err(e) = d.store.set_interrupted(session.id(), false) {
+    // SPEC: restart consumes the flag and continues -- this claim is that restart.
+    if let Err(e) = d.store.record_stop(session.id(), false, None) {
         tracing::warn!(
             session = %session.name(), error = %e,
-            "could not clear the interrupted flag this start continued"
+            "could not clear the flags this start continued"
         );
     }
     if tasks.is_empty() {
@@ -352,10 +351,9 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("text"),
                     CompletionSource::None,
                 ),
-                // SPEC writes `--message <message> --name <session>(sticky)`:
-                // the payload leads; declaration order is bare-word order.
+                // SPEC: `--message <message> --session <session>`; the payload leads.
                 kind_arg(
-                    "name",
+                    "session",
                     "Target session. Required: there is no implicit default.",
                     true,
                     "session",
@@ -413,10 +411,13 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "del_session".into(),
-            description: "Delete a session, its shells and its transcript.".into(),
+            description: "Delete a session and everything under that path: its shells, its \
+                      channels and its transcript. A path that names a directory deletes \
+                      every session below it."
+                .into(),
             args: vec![kind_arg(
-                "name",
-                "Session to delete.",
+                "path",
+                "Session to delete, or the directory whose sessions all go.",
                 true,
                 "session",
                 Some("name"),
@@ -440,14 +441,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "interrupt_session".into(),
-            description: "Stop the turn one session is running. Everything received is kept, and \
-                      the session is flagged: the next start continues the turn. SPEC leaves an \
-                      idle session, and one inside `wait`, unflagged -- neither has work owed to \
-                      a restart. Background jobs keep running."
+            description: "Stop the turn one session is running: a tool that is waiting is \
+                      ended and its result handed back, the stream stops, and everything \
+                      received is kept. Nothing is owed to a restart -- `cancel` is the verb \
+                      that continues a turn, not this one. Background jobs keep running."
                 .into(),
             args: vec![{
                 let mut spec = pos(
-                    "session",
+                    "id",
                     "Session whose turn should stop.",
                     true,
                     Some("name"),
@@ -558,7 +559,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     CompletionSource::Sessions,
                 ),
                 arg(
-                    "subscription",
+                    "id",
                     "The name it is armed and dropped by. Arming a name again replaces \
                      what it held. Omit it to be given one, which `ls_subscription` \
                      reports.",
@@ -614,8 +615,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 .into(),
             args: vec![
                 pos(
-                    "subscription",
-                    "The name it was armed by.",
+                    "path",
+                    "The name it was armed by, or the path whose subscriptions all go.",
                     true,
                     Some("name"),
                     CompletionSource::None,
@@ -753,13 +754,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "del_channel".into(),
-            description: "End a channel's program and forget the name. A channel that \
-                      had already ended is only forgotten."
+            description: "End a channel's program and forget the name, and do the same for \
+                      every channel under that path. A channel that had already ended is \
+                      only forgotten."
                 .into(),
             args: vec![
                 pos(
-                    "path",
-                    "Channel to end.",
+                    "id",
+                    "Channel to end, or the path whose channels all go.",
                     true,
                     Some("path"),
                     CompletionSource::None,
@@ -858,7 +860,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 .into(),
             args: vec![
                 kind_arg(
-                    "session",
+                    "id",
                     "The session to copy. It keeps its own rows: a clone reads the source, \
                      it does not take anything away.",
                     true,
@@ -867,12 +869,77 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     CompletionSource::Sessions,
                 ),
                 pos(
-                    "name",
+                    "new_id",
                     "The name the copy takes. It must be free: a copy that joined an \
                      existing transcript would be two conversations under one name.",
                     true,
                     Some("name"),
                     CompletionSource::None,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "ls_skill".into(),
+            description: "List the skills a session can open, one row per skill, under \
+                      `path`. A skill's path is `<bucket>/<name>`: `project` for the \
+                      checkout's own, `harness` for the home's, `general` for the \
+                      machine's. A path names a subtree, so `ls_skill harness` is every \
+                      skill the home installed and no path is every skill there is."
+                .into(),
+            args: vec![
+                pos(
+                    "path",
+                    "Where to look, as the beginning of a skill's path: `harness`, \
+                     `harness/self-control`, or nothing for all of them. Matched by \
+                     component, so `har` matches no bucket.",
+                    false,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "session",
+                    "Whose skills: its directory is the `project` layer, and the machine \
+                     it stands on decides whether that layer is read at all.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "run_skill".into(),
+            description: "Call one function of a skill that is a Python package: `cmd` \
+                      names the function and its arguments, the way `subscribe` names the \
+                      command a match runs. The package is imported in the session's \
+                      directory on this machine, and what the function answers is this \
+                      call's result, exactly as `skill` reports it."
+                .into(),
+            args: vec![
+                pos(
+                    "id",
+                    "The skill to run, as `ls_skill` spells it: `<bucket>/<name>`.",
+                    true,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "cmd",
+                    "The call: a function name, or the whole call as an object, \
+                     `{\"name\": \"fetch\", \"args\": {\"url\": \"https://example.com\"}}`. \
+                     Each `args` entry reaches the function as `--key value`.",
+                    true,
+                    Some("cmd"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "session",
+                    "The session it runs as: its directory is where the package is \
+                     imported, and the call is that session's work.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Sessions,
                 ),
             ],
         },
@@ -980,11 +1047,11 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
 /// a name already taken is refused or joined.
 fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
     vec![
-        // SPEC: `--name <session>(sticky)`. A sticky entry keys on the
+        // SPEC: `--id <session>(sticky)`. A sticky entry keys on the
         // kind `session`, wherever the argument appears.
         sticky_arg(
             kind_arg(
-                "name",
+                "id",
                 "Session to create or reconfigure.",
                 true,
                 "session",
@@ -1058,7 +1125,7 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
         .accepting_when(crate::providers::tier_accepts)
         .following("model"),
         kind_arg(
-            "cache_keepalive",
+            "keep_alive",
             "Whether a periodic `(time notice: ...)` message keeps this \
                  session's prefix warm after every turn. `false` by default; \
                  `true` keeps sending one per tier window with no last one.",
@@ -1204,6 +1271,8 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "del_channel" => del_channel(d, args).await,
         "ls_session" => ls_session(d, args).await,
         "clone_session" => clone_session(d, args).await,
+        "ls_skill" => ls_skill(d, args).await,
+        "run_skill" => run_skill(d, args).await,
         "events" => events(d, args).await,
         "subscribe" => subscribe(d, args, origin.session()).await,
         "del_subscription" => del_subscription(d, args, origin.session()).await,
@@ -1290,7 +1359,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     let Some(message) = args.get("message").cloned() else {
         return Outcome::err("send_message requires a message");
     };
-    let Some(name) = args.get("name").cloned() else {
+    let Some(name) = args.get("session").cloned() else {
         return Outcome::err(
             "send_message requires a session; set the sticky `session` entry to avoid \
              typing it",
@@ -1343,6 +1412,24 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
         Ok(message) => message,
         Err(e) => return Outcome::err(e),
     };
+    // SPEC's `cancel` queues notices: a turn started in the stop window is cut by it.
+    if d.shutting_down.load(Ordering::SeqCst) || d.shutdown.is_cancelled() {
+        let mut payload = message.to_json();
+        payload["session"] = json!(name);
+        return match d.store.add_pending_task(&name, "inject", &payload) {
+            Ok(_) => {
+                tracing::info!(
+                    session = %name,
+                    "message queued for the next start: the server is stopping"
+                );
+                Outcome::ok(format!(
+                    "message queued for {name}; the server is stopping, so the next start \
+                     reads it"
+                ))
+            }
+            Err(e) => Outcome::err(format!("could not record the pending message: {e}")),
+        };
+    }
     let epoch = session.cancel_epoch();
     if let Some(gate) = session.try_claim() {
         // The gate is claimed before the durable write, so a second sender can only
@@ -1389,7 +1476,7 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
 }
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["name"].clone();
+    let name = args["id"].clone();
     // A leading `@` is the harness's own namespace: a name a person could take
     // is a name the harness cannot trust.
     if let Some(refusal) = crate::monitor::reserved(&name) {
@@ -1471,11 +1558,11 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             Some(Some(tier.to_string()))
         }
     };
-    let cache_keepalive = match args.get("cache_keepalive").map(String::as_str) {
+    let cache_keepalive = match args.get("keep_alive").map(String::as_str) {
         None => None,
         Some(raw) => match parse_bool(raw) {
             Ok(value) => Some(value),
-            Err(e) => return Outcome::err(format!("--cache_keepalive: {e}")),
+            Err(e) => return Outcome::err(format!("--keep_alive: {e}")),
         },
     };
     // What this session may do to the workspace. Absent keeps what it had.
@@ -1881,6 +1968,21 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     Ok(SeqWindow { first, last })
 }
 
+/// Whether `name` is `path` itself or below it.
+///
+/// # Invariant
+///
+/// A path is a component, not a string prefix: `a/b` is under `a`, and `ab` is not.
+/// Empty is every path, which is what "list them all" and "delete them all" mean.
+fn under(name: &str, path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    path.is_empty()
+        || name == path
+        || name
+            .strip_prefix(path)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 async fn ls_channel(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
     let prefix = args.get("path").cloned().unwrap_or_default();
@@ -1888,7 +1990,7 @@ async fn ls_channel(d: &Dispatch, args: &Args) -> Outcome {
         Ok(rows) => {
             let listed: Vec<serde_json::Value> = rows
                 .into_iter()
-                .filter(|row| row["id"].as_str().is_some_and(|id| id.starts_with(&prefix)))
+                .filter(|row| row["id"].as_str().is_some_and(|id| under(id, &prefix)))
                 .collect();
             if listed.is_empty() {
                 return Outcome::ok(format!("{session}: no channel matches {prefix:?}"));
@@ -1901,10 +2003,33 @@ async fn ls_channel(d: &Dispatch, args: &Args) -> Outcome {
 
 async fn del_channel(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
-    let path = args["path"].clone();
-    match d.agent.channels.stop(&session, &path).await {
-        Ok(true) => Outcome::ok(format!("ended channel {path:?}")),
-        Ok(false) => Outcome::ok(format!("channel {path:?} had already ended; forgotten")),
+    let id = args["id"].clone();
+    // SPEC: a path takes what is under it, so a name in the middle of one ends
+    // every channel below it as well.
+    let doomed: Vec<String> = match d.agent.channels.list(&session).await {
+        Ok(rows) => rows
+            .iter()
+            .filter_map(|row| row["id"].as_str())
+            .filter(|path| under(path, &id))
+            .map(str::to_string)
+            .collect(),
+        Err(why) => return Outcome::err(why),
+    };
+    if doomed.len() > 1 {
+        let mut ended = 0;
+        for path in &doomed {
+            if let Ok(true) = d.agent.channels.stop(&session, path).await {
+                ended += 1;
+            }
+        }
+        return Outcome::ok(format!(
+            "ended {ended} channel(s) under {id:?}: {}",
+            doomed.join(", ")
+        ));
+    }
+    match d.agent.channels.stop(&session, &id).await {
+        Ok(true) => Outcome::ok(format!("ended channel {id:?}")),
+        Ok(false) => Outcome::ok(format!("channel {id:?} had already ended; forgotten")),
         Err(why) => Outcome::err(why),
     }
 }
@@ -1992,7 +2117,7 @@ async fn ls_session(d: &Dispatch, args: &Args) -> Outcome {
     };
     let listed: Vec<serde_json::Value> = rows
         .into_iter()
-        .filter(|row| row.name.starts_with(&prefix))
+        .filter(|row| under(&row.name, &prefix))
         .map(|row| {
             json!({
                 "name": row.name,
@@ -2021,7 +2146,7 @@ async fn ls_subscription(d: &Dispatch, args: &Args) -> Outcome {
     };
     let listed: Vec<serde_json::Value> = rows
         .into_iter()
-        .filter(|row| row.session == session && row.name.starts_with(&prefix))
+        .filter(|row| row.session == session && under(&row.name, &prefix))
         .map(|row| {
             json!({
                 "subscription": row.name,
@@ -2160,8 +2285,8 @@ fn replay_transcript(
 /// first, then the same rows as the events they streamed as.
 /// See `docs/notes/server-commands.md`.
 async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
-    let source = args["session"].clone();
-    let name = args["name"].clone();
+    let source = args["id"].clone();
+    let name = args["new_id"].clone();
     let report = match d.store.clone_session(&source, &name) {
         Ok(report) => report,
         Err(e) => return Outcome::err(e.to_string()),
@@ -2196,6 +2321,104 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
             "last_seq": report.last_seq,
         }),
     )
+}
+
+/// Every skill this session's roots hold, under `path`.
+///
+/// See `docs/notes/server-commands.md`.
+///
+/// # Invariant
+///
+/// One walk: the same `installed_for` that `skill` and `@skill(...)` read, so a path
+/// this lists is a path `run_skill` takes. `path` is matched by component (`under`),
+/// which is what makes `harness` a subtree and `har` nothing.
+async fn ls_skill(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let path = args
+        .get("path")
+        .map(String::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let handle = match d.sessions.get(&session) {
+        Ok(handle) => handle,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    let listed: Vec<serde_json::Value> =
+        crate::tools::skill::installed_for(&handle.cwd(), handle.owner())
+            .iter()
+            .filter(|skill| under(&skill.id(), &path))
+            .map(crate::tools::skill::row)
+            .collect();
+    if listed.is_empty() {
+        return Outcome::ok(format!("{session}: no skill matches {path:?}"));
+    }
+    Outcome::ok(serde_json::Value::Array(listed).to_string())
+}
+
+/// Calls one function of a skill that is a Python package, as `session`.
+///
+/// # Invariant
+///
+/// The call is the `skill` tool's: the id is resolved here, because a path names one
+/// root where a name may name two, and then the same entry is started with the same
+/// argv. Nothing about how a skill runs is decided twice.
+async fn run_skill(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let id = args["id"].trim().to_string();
+    let action = match args.get("cmd").map(String::as_str) {
+        Some(raw) => match parse_cmd(raw) {
+            Ok(action) => action,
+            Err(why) => return Outcome::err(why),
+        },
+        None => {
+            return Outcome::err(
+                "run_skill calls a function: `run_skill <id> {\"name\": \"<function>\", \
+                 \"args\": {}}`"
+                    .to_string(),
+            );
+        }
+    };
+    let handle = match d.sessions.get(&session) {
+        Ok(handle) => handle,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    let installed = crate::tools::skill::installed_for(&handle.cwd(), handle.owner());
+    let Some(skill) = installed.iter().find(|skill| skill.id() == id) else {
+        let known: Vec<String> = installed.iter().map(|skill| skill.id()).collect();
+        return Outcome::err(format!(
+            "no skill is {id:?} here; `ls_skill` lists {}",
+            if known.is_empty() {
+                "none".to_string()
+            } else {
+                known.join(", ")
+            }
+        ));
+    };
+    // A package publishes functions; a body or a script has one entry, so `skill` runs it.
+    if skill.entry.is_some() || !skill.dir().join("__init__.py").is_file() {
+        return Outcome::err(format!(
+            "{id} is not a Python package with functions: `skill --name {}` starts what \
+             it declares",
+            skill.name
+        ));
+    }
+    // One argv: the function first, then its arguments as the words `gongga_skill`
+    // binds to parameters by name.
+    let mut words: Vec<String> = vec![action.name.clone()];
+    for (key, value) in action.args.iter() {
+        words.push(format!("--{key}"));
+        words.push(value.clone());
+    }
+    let mut call = Args::new();
+    call.insert("session".to_string(), session);
+    call.insert("id".to_string(), id.clone());
+    call.insert(
+        "args".to_string(),
+        serde_json::to_string(&words).unwrap_or_else(|_| "[]".to_string()),
+    );
+    call.insert("description".to_string(), format!("run_skill {id}"));
+    crate::tool_cmd::dispatch_tool(d, "skill", &call).await
 }
 
 /// Arms a pattern, and answers with what it armed.
@@ -2251,7 +2474,7 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         },
     };
     let named = args
-        .get("subscription")
+        .get("id")
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty());
     let name = match named {
@@ -2352,13 +2575,9 @@ fn free_subscription_name(d: &Dispatch, session: &str) -> Result<String, String>
         .ok_or_else(|| "no free subscription name".to_string())
 }
 
-/// Drops one named subscription; the caller drops its own, never another session's.
+/// Drops a subscription, or every one under a path; the caller drops its own.
 async fn del_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let name = args
-        .get("subscription")
-        .map(String::as_str)
-        .unwrap_or("")
-        .trim();
+    let path = args.get("path").map(String::as_str).unwrap_or("").trim();
     let given = args.get("session").map(String::as_str).or(caller);
     let Some(caller) = given.filter(|name| !name.trim().is_empty()) else {
         return Outcome::err(
@@ -2367,11 +2586,29 @@ async fn del_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Ou
         );
     };
     let caller = caller.trim();
-    match d.subscriptions.disarm_name(caller, name).await {
-        Ok(0) => Outcome::err(format!("no subscription named {name:?} for {caller}")),
-        Ok(n) => Outcome::ok(format!("subscription `{name}` dropped ({n})")),
-        Err(e) => Outcome::err(e),
+    // SPEC: a path takes what is under it -- `hook/` drops `hook/a` and `hook/a/b`.
+    let doomed: Vec<String> = match d.store.subscriptions() {
+        Ok(rows) => rows
+            .into_iter()
+            .filter(|row| row.session == caller && under(&row.name, path))
+            .map(|row| row.name)
+            .collect(),
+        Err(e) => return Outcome::err(format!("could not read the subscriptions: {e}")),
+    };
+    if doomed.is_empty() {
+        return Outcome::err(format!("no subscription named {path:?} for {caller}"));
     }
+    let mut dropped = 0;
+    for name in &doomed {
+        match d.subscriptions.disarm_name(caller, name).await {
+            Ok(n) => dropped += n,
+            Err(e) => return Outcome::err(e),
+        }
+    }
+    Outcome::ok(format!(
+        "dropped {dropped} subscription(s) under {path:?}: {}",
+        doomed.join(", ")
+    ))
 }
 
 /// Publishes one event under a chosen name, as a log row every matcher sees.
@@ -2667,43 +2904,58 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
 }
 
 async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["name"].clone();
-    let (was_busy, dropped) = prepare_delete(d, &name);
-    finish_delete(d, &name, was_busy, dropped).await
+    let path = args["path"].clone();
+    let rows = match d.store.list_sessions() {
+        Ok(rows) => rows,
+        Err(e) => return Outcome::err(format!("could not read the sessions: {e}")),
+    };
+    let doomed: Vec<String> = rows
+        .into_iter()
+        .map(|row| row.name)
+        .filter(|name| under(name, &path))
+        .collect();
+    let Some((one, below)) = doomed.split_first() else {
+        return Outcome::err(format!("no session named {path:?}"));
+    };
+    if below.is_empty() {
+        let (was_busy, dropped) = prepare_delete(d, one);
+        return finish_delete(d, one, was_busy, dropped).await;
+    }
+    // A path takes what is under it; each delete keeps its own cleanup, so one by one.
+    let mut deleted = 0;
+    for name in &doomed {
+        let (was_busy, dropped) = prepare_delete(d, name);
+        if finish_delete(d, name, was_busy, dropped).await.ok {
+            deleted += 1;
+        }
+    }
+    Outcome::ok(format!(
+        "deleted {deleted} session(s) under {path:?}: {}",
+        doomed.join(", ")
+    ))
 }
 
-/// Stops one session's turn, and records that the next start owes it.
+/// Stops one session's turn.
 ///
 /// # Invariant
 ///
-/// SPEC's flag, and SPEC's exceptions: "set interrupted flag to that session,
-/// restart will consume and continue sessions with interrupted flag" and "for
-/// sessions idle or calling `wait`, do not set interrupted flag". An idle session
-/// started nothing; one inside `wait` is not mid-program, and its news arrives on
-/// its own. `owes` is the caller's word -- a delete owes nothing at all -- and the
-/// row is written before the token fires, because the token is what ends the turn
-/// and a turn cannot leave a note after it is cut.
-fn interrupt(d: &Dispatch, name: &str, owes: bool) -> (bool, usize) {
+/// SPEC gives the canceled flag to `cancel` alone, and `cancel` writes it itself;
+/// this only fires the token. `keep` is the caller's word for whether the turn's
+/// queued rows outlive it -- a cancel owes the turn, an `interrupt_session` ends
+/// it with what it received already in context, a delete owes nothing at all.
+fn interrupt(d: &Dispatch, name: &str, keep: bool) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);
     };
     // Read before the cancel: afterwards there is nothing left to ask.
     let was_busy = session.busy();
-    let in_wait = session.stop_signal().is_waiting();
-    let flagged = owes && was_busy && !in_wait;
-    if flagged {
-        // The turn the token ends keeps its rows: it is owed, not abandoned.
+    if keep && was_busy {
+        // The turn the token ends keeps its rows: it is kept, not abandoned.
         session.mark_resumable();
-        if let Err(e) = d.store.set_interrupted(session.id(), true) {
-            tracing::warn!(
-                session = %name, error = %e,
-                "could not record that the next start owes this turn"
-            );
-        }
     }
     session.cancel();
-    // Aborting is deliberate, so the work is not left behind unless it is owed.
-    let dropped = if flagged || (owes && in_wait) {
+    // Aborting is deliberate, so the work is not left behind unless it is kept.
+    let dropped = if keep && was_busy {
         d.store
             .clear_pending_tasks_except(name, "turn")
             .unwrap_or(0)
@@ -2714,7 +2966,7 @@ fn interrupt(d: &Dispatch, name: &str, owes: bool) -> (bool, usize) {
 }
 
 async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["session"].clone();
+    let name = args["id"].clone();
     // `peek`, not `get`: materialising would start shells just to stop nothing.
     if d.sessions.peek(&name).is_none() {
         return match d.store.get_session(&name) {
@@ -2725,7 +2977,7 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
     }
     let (was_busy, dropped) = interrupt(d, &name, true);
     let mut message = if was_busy {
-        format!("interrupted {name}; the next start continues this turn")
+        format!("interrupted {name}; what it received is in its context")
     } else {
         format!("{name} is idle")
     };
@@ -2771,9 +3023,20 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         .into_iter()
         .filter(|session| session.busy())
         .collect();
+    // SPEC's two flags, written per session before anything is interrupted.
+    let mut waiting = 0;
     for session in &running {
-        // Fire the token: a stuck call has no boundary. SPEC: a session that is
-        // running and not waiting is flagged, so the next start continues it.
+        let until = session.stop_signal().wait_until();
+        waiting += usize::from(until.is_some());
+        if let Err(e) = d.store.record_stop(session.id(), until.is_none(), until) {
+            tracing::warn!(
+                session = %session.name(), error = %e,
+                "could not record what this stop leaves the next start"
+            );
+        }
+    }
+    for session in &running {
+        // Fire the token: a stuck call has no boundary. A waiting one gets a deadline.
         interrupt(d, session.name(), true);
     }
     // Only a protocol `cancel` lets jobs go; every other stop ends them here.
@@ -2825,9 +3088,20 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         Some(ended) => format!("; {ended} channel(s) ended with this server"),
         None => "; every channel was kept alive, and the next start adopts them".to_string(),
     };
+    let continuation = match waiting {
+        0 => "their turns are kept and the next start continues them".to_string(),
+        waiting if waiting == running.len() => {
+            "every one was inside `wait`: the next start continues those waits for the time \
+             that was left"
+                .to_string()
+        }
+        waiting => format!(
+            "{waiting} of them were inside `wait` and the next start continues those waits \
+             for the time that was left; the rest continue at once"
+        ),
+    };
     let said = format!(
-        "interrupted {} session(s); their turns are kept and the next start continues them; \
-         {jobs}{channels}",
+        "interrupted {} session(s); {continuation}; {jobs}{channels}",
         running.len()
     );
     tracing::warn!(
@@ -2887,8 +3161,20 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
     let Ok(tasks) = d.store.pending_tasks() else {
         return 0;
     };
+    // A stop left this session inside `wait`; its clock decides when it starts.
+    let waiting: std::collections::HashMap<String, i64> = d
+        .store
+        .waiting_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, name, until)| (name, until))
+        .collect();
+    let now = crate::store::now_millis();
     let mut started = 0;
     for (name, tasks) in recovery_groups(tasks) {
+        if waiting.get(&name).is_some_and(|until| *until > now) {
+            continue;
+        }
         let Ok(session) = d.sessions.get(&name) else {
             continue;
         };
@@ -2984,6 +3270,15 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
     let mut resumed = 0;
     // The sessions this pass already gave a turn, so the flag below adds nothing.
     let mut woken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // A wait still running is a reason not to start this session's rows now.
+    let waiting: std::collections::HashMap<String, i64> = d
+        .store
+        .waiting_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, name, until)| (name, until))
+        .collect();
+    let now = crate::store::now_millis();
     for (name, tasks) in recovery_groups(tasks) {
         let Ok(session) = d.sessions.get(&name) else {
             // Only a confirmed missing session may discard owed work.
@@ -3049,6 +3344,11 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
         }
         let owed = owes_a_turn(&kept);
+        // What the wait was waiting for: kept, and started by its clock rather than
+        // by this pass. See the loop below.
+        if waiting.get(&name).is_some_and(|until| *until > now) {
+            continue;
+        }
         let owned = kept
             .iter()
             .filter(|task| task.kind == "turn")
@@ -3061,11 +3361,52 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             resumed += 1;
         }
     }
-    // SPEC: "restart will consume and continue sessions with interrupted flag".
-    // A row is the words owed; the flag is the turn, and a session can owe a turn
-    // with no row left to say so -- the turn that was running had already read its
-    // own, and the stop took the rest. This is that turn continuing.
-    for (id, name) in d.store.interrupted_sessions().unwrap_or_default() {
+    // SPEC: a restart continues the wait for what was left -- a clock, not a replay.
+    for (id, name, until) in d.store.waiting_sessions().unwrap_or_default() {
+        let Ok(session) = d.sessions.get(&name) else {
+            continue;
+        };
+        if session.busy() {
+            continue;
+        }
+        let left = until - now;
+        let later = Arc::new(d.clone());
+        let owed = name.clone();
+        tokio::spawn(async move {
+            if left > 0 {
+                tokio::time::sleep(Duration::from_millis(u64::try_from(left).unwrap_or(0))).await;
+            }
+            // Cleared here, not when read: until it fires the row holds a nudge back.
+            if let Err(e) = later.store.record_stop(id, false, None) {
+                tracing::warn!(session = %owed, error = %e, "could not clear a resumed wait");
+            }
+            // A stop that arrives during the wait is the newer word: nothing starts.
+            if later.shutting_down.load(Ordering::SeqCst) || later.shutdown.is_cancelled() {
+                return;
+            }
+            // A turn started while this one waited is what the wait was for.
+            if session.busy() {
+                return;
+            }
+            let rows = later.store.pending_tasks().unwrap_or_default();
+            let owned: Vec<i64> = rows
+                .iter()
+                .filter(|task| task.session == owed && task.kind == "turn")
+                .map(|task| task.id)
+                .collect();
+            if let Some(work) = claim_recovery(&later, session, owned, true) {
+                tracing::info!(
+                    session = %owed,
+                    waited_ms = left.max(0),
+                    "continuing the wait a stop cut short"
+                );
+                spawn_turn(&later, work);
+            }
+        });
+        resumed += 1;
+    }
+    // SPEC: "restart will consume and continue session with cancel flag".
+    for (id, name) in d.store.canceled_sessions().unwrap_or_default() {
         if woken.contains(&name) {
             continue;
         }

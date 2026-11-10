@@ -316,3 +316,40 @@ the native `PATH` a Windows program reads, mirroring `script_env`.
 
 Tools hand this to the children they start and nothing of their own: `ToolContext::env` is
 `SessionHandle::env`, and `bash` keeps using the shells it already has.
+
+## What a stop leaves a wait (`StopSignal::wait_until`, `interrupt`, `resume_pending`)
+
+SPEC's `cancel` splits the sessions it interrupts in two. One that is not waiting is
+*flagged*: the next start continues the turn. One that is inside `wait` is not
+continued at once -- the wait itself is, for the time that was left. So the fact that
+a session was waiting is not enough to resume it, and a duration is not either: the
+process that reads it has not started yet. What survives is the instant the wait was
+due to end, in epoch milliseconds (`sessions.waiting_until`).
+
+`cancel` is the one verb SPEC gives that flag to, so `cancel` is the only writer: it
+reads each running session's deadline first and writes it, then interrupts -- after
+the token there is no turn left to ask what it was doing. `interrupt_session` must
+not write it: SPEC has that verb *end* the tool waiting and hand the result back as
+the call's answer, so the turn goes on and there is nothing to resume. A write there
+would leave a row that a later restart resumes for a turn that ended long ago.
+`del_session` is the same: the row goes with the session.
+
+Three other places have to honour that row, or the wait is skipped:
+
+- `deliver` queues a message when the server is stopping instead of starting a turn
+  on it: the same stop cuts that turn a moment later, and the row is what the next
+  start owes.
+- `nudge_inboxes` and `resume_pending`'s pending-row loop both skip a session whose
+  deadline is still in the future: starting its turn is the wait, skipped.
+- `resume_pending` itself arms a timer per waiting session, sleeps what is left, takes
+  the row out (`set_waiting_until(id, None)`) and starts the turn the wait was holding.
+  Cleared at the moment it fires rather than when it is read, so the row the wait
+  leaves behind is what keeps a nudge away until then.
+
+`cancel` counts the waiting sessions before it interrupts them -- each `interrupt`
+clears its own session's mark -- so the sentence it returns says which continuation
+the next start will do: all waits, none, or a mix.
+
+`WaitTool` is what writes the mark, and it writes the deadline it was given rather
+than its own default: the argument `time` is how long this call waits, and the call is
+what has to be continued.

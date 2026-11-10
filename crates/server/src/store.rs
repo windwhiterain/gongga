@@ -165,12 +165,18 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- the list is ordered by this, so writing it anywhere else would move a row
     -- for a reason the operator did not give.
     ended_at INTEGER,
-    -- SPEC's interrupted flag: a stop cut this session's turn, and the next start
-    -- continues it. Set by `interrupt` on a session that was busy and not inside
-    -- `wait`, cleared by the start that claims the turn. Its own column because a
-    -- flag in the process is a flag a stop cannot leave behind, and a pending row
-    -- is not the same fact: a turn can owe work with no row left to say so.
-    interrupted INTEGER NOT NULL DEFAULT 0
+    -- SPEC's canceled flag: `cancel` cut this session's turn, and the next start
+    -- continues it. Raised by `cancel` on a session that was running and not
+    -- inside `wait`, cleared by the start that claims the turn. Its own column
+    -- because a flag in the process is a flag a stop cannot leave behind, and a
+    -- pending row is not the same fact: a turn can owe work with no row to say so.
+    canceled INTEGER NOT NULL DEFAULT 0,
+    -- SPEC's waiting flag, with the time it was waiting for: a stop that finds a
+    -- session inside `wait` does not continue it at once, it continues that wait
+    -- for the time that was left. Epoch milliseconds, NULL for a session that is
+    -- not waiting. The same reason `canceled` is a column: a stop ends the
+    -- process, and a deadline only it knew would be a wait nobody resumes.
+    waiting_until INTEGER
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -445,6 +451,13 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    // `cancel`'s flag, under the name of the verb that owns it.
+    if has_column(conn, "sessions", "interrupted") && !has_column(conn, "sessions", "canceled") {
+        conn.execute(
+            "ALTER TABLE sessions RENAME COLUMN interrupted TO canceled",
+            [],
+        )?;
+    }
     if has_column(conn, "sessions", "model") && !has_column(conn, "sessions", "model_name") {
         conn.execute("ALTER TABLE sessions RENAME COLUMN model TO model_name", [])?;
     }
@@ -523,8 +536,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     add_column_if_missing(
         conn,
         "sessions",
-        "interrupted",
-        "ALTER TABLE sessions ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0",
+        "canceled",
+        "ALTER TABLE sessions ADD COLUMN canceled INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        conn,
+        "sessions",
+        "waiting_until",
+        "ALTER TABLE sessions ADD COLUMN waiting_until INTEGER",
     )?;
     backfill_ended_at(conn)?;
     settle_handover(conn)?;
@@ -1163,19 +1182,23 @@ impl Store {
         Ok(())
     }
 
-    /// Raises or clears SPEC's interrupted flag for one session.
+    /// Records what one stop leaves a session: canceled, or a wait with its clock.
     ///
     /// # Invariant
     ///
-    /// A stop raises it on every session whose turn it cut, and the start that
-    /// continues that turn clears it: "restart will consume and continue sessions
-    /// with interrupted flag". The column is the whole record, because the flag
-    /// cannot live in the process that the stop is ending -- a turn row can be
-    /// gone by the time the next start looks, and a flag cannot.
-    pub fn set_interrupted(&self, id: i64, interrupted: bool) -> anyhow::Result<()> {
+    /// The two are exclusive. SPEC's `cancel` continues a session that was running
+    /// and not waiting at the next start, and a session inside `wait` by its own
+    /// clock instead; neither flag is a session that was idle. One write, so a row
+    /// can never say both, and a start that picks either up clears both.
+    pub fn record_stop(
+        &self,
+        id: i64,
+        canceled: bool,
+        waiting_until: Option<i64>,
+    ) -> anyhow::Result<()> {
         self.lock().execute(
-            "UPDATE sessions SET interrupted = ?1 WHERE id = ?2",
-            params![i64::from(interrupted), id],
+            "UPDATE sessions SET canceled = ?1, waiting_until = ?2 WHERE id = ?3",
+            params![i64::from(canceled), waiting_until, id],
         )?;
         Ok(())
     }
@@ -1184,15 +1207,33 @@ impl Store {
     ///
     /// # Invariant
     ///
-    /// Read once, by the start that inherits them: a flagged session continues
-    /// even when no pending row survived, which is what makes the flag the
-    /// memory rather than a decoration on the rows.
-    pub fn interrupted_sessions(&self) -> anyhow::Result<Vec<(i64, String)>> {
+    /// Read once, by the start that inherits them: a canceled session continues
+    /// even when no pending row survived, which is what makes the flag the memory
+    /// rather than a decoration on the rows.
+    pub fn canceled_sessions(&self) -> anyhow::Result<Vec<(i64, String)>> {
         let conn = self.lock();
         let mut stmt =
-            conn.prepare("SELECT id, name FROM sessions WHERE interrupted <> 0 ORDER BY id")?;
+            conn.prepare("SELECT id, name FROM sessions WHERE canceled <> 0 ORDER BY id")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Every session a stop left inside `wait`, with the instant that wait ends.
+    ///
+    /// # Invariant
+    ///
+    /// Read once, by the start that inherits them, and consumed there: a wait is a
+    /// fact about one turn, so a row that keeps it would resume a turn that ended.
+    pub fn waiting_sessions(&self) -> anyhow::Result<Vec<(i64, String, i64)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, waiting_until FROM sessions \
+             WHERE waiting_until IS NOT NULL ORDER BY waiting_until, id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }

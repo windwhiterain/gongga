@@ -260,7 +260,7 @@ def run():
         ok("A's server label names our server's pid",
            frame_pid(fa) == int(server_pid), json.dumps(fa))
 
-        a.submit("/set_session --name from-a --model fake/flash-fake")
+        a.submit("/set_session --id from-a --model fake/flash-fake")
         ok("A's session is on the shared server", probe("from-a"))
 
         fb = b.wait(is_server)
@@ -272,7 +272,7 @@ def run():
         ok("A and B read the very same server", frame_pid(fa) == frame_pid(fb),
            "%s vs %s" % (json.dumps(fa), json.dumps(fb)))
 
-        b.submit("/set_session --name from-b --model fake/flash-fake")
+        b.submit("/set_session --id from-b --model fake/flash-fake")
         ok("B's session is on the same shared server", probe("from-b"))
         ok("A's session is still there after B's command", probe("from-a"))
 
@@ -302,7 +302,7 @@ def run():
         ok("the server still answers a third dial", probe("from-a", tries=3))
 
         mark = len(b.frames)
-        b.submit("/set_session --name after-a --model fake/flash-fake")
+        b.submit("/set_session --id after-a --model fake/flash-fake")
         ok("B can still write to the shared server", probe("after-a"))
         b.wait(lambda f: "after-a" in json.dumps(f, ensure_ascii=False),
                timeout=5, since=mark)

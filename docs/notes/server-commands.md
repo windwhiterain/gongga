@@ -420,13 +420,11 @@ get rid of.
 
 ## interrupt
 
-Stop one session's turn. What it still owed depends on who asked.
-
-`interrupt_session` keeps the turn: the SPEC makes that command the one that sets
-the interrupted flag, and the next start continues what carries it. `del_session`
-drops it -- deleting a session means not wanting what it is doing either -- and
-`cancel` does whichever its caller said. Clearing the rows is what keeps the next
-start from owing work nobody asked to have back.
+Stop one session's turn. The token is all this does: SPEC gives the canceled flag
+to `cancel` alone, and `cancel` writes it itself, for every running session, before
+the first token fires. What the caller still decides is whether the turn's queued
+rows outlive it -- `cancel` and `interrupt_session` keep them, `del_session` drops
+them, because a deleted session's queue is nobody's.
 
 It used to be Ctrl+X, which meant only the TUI could do it: a script, and so the
 model, had no way to stop a turn it had started. As a command it is reachable by
@@ -439,10 +437,8 @@ how long the turn takes. So delete interrupts first and only then waits, which i
 a wait measured in milliseconds.
 
 The token, not a boundary flag: a call stuck in a shell write has no boundary to
-reach. A delete raises no interrupted flag -- the session is going -- and clearing
-the rows is what keeps the next start from owing this work; it does the same for
-the turns queued behind the running one, since they give up once they reach the
-front.
+reach, and clearing the rows is what keeps the next start from owing work nobody
+asked to have back.
 
 ## interrupt_session
 
@@ -451,20 +447,22 @@ and materialising it would start its shells just to stop nothing. Both "idle" an
 "no such session" are still worth saying out loud -- a silent success would read
 as "the turn did stop".
 
-The flag is SPEC's, and it is the `sessions.interrupted` column rather than the
-process: a stop ends the process, and a marker that cannot outlive it is a marker
-the next start never reads. The start that claims the turn clears it. An idle
-session and one inside `wait` are never flagged: SPEC says neither has work owed to
-a restart.
+SPEC asks this verb for no flag: it ends the tool waiting, hands the result back as
+the call's answer and stops the loop with everything received already in context,
+so the turn is over rather than owed. A marker here would have a later restart
+finish a turn that had already ended. `cancel` is the only writer of the flag, and
+`sessions.canceled` is where it lives rather than the process: a stop ends the
+process, and a marker that cannot outlive it is a marker the next start never reads.
 
 ## cancel
 
-The SPEC's `cancle`: interrupt every turn and leave. `cancel` calls `interrupt`
-on every live session, which fires the turn's token. SPEC splits them: a session
-that was running and not waiting is flagged, so the next start continues it; one
-inside `wait` is not flagged but keeps its rows, so nothing queued behind the wait
-is lost and the wait itself can be picked up again. An idle session is flagged for
-neither reason -- it has nothing to continue. The listen loop breaks as soon as
+SPEC's `cancel`: interrupt every turn and leave. `cancel` writes one row per
+running session before the first token fires, and SPEC splits them: one that was
+running and not waiting is canceled (`sessions.canceled`), so the next start
+continues it; one inside `wait` gets the clock that wait was due to end at
+(`sessions.waiting_until`) and keeps its rows, so nothing queued behind the wait
+is lost and the wait itself is finished later rather than skipped. An idle session
+gets neither -- it has nothing to continue. The listen loop breaks as soon as
 `shutdown` is pulled, without waiting for `active` to drain -- a call stuck in a
 shell write or a model stream has no step boundary to reach, and a flag it may
 never read is not worth holding the port for.
@@ -622,3 +620,57 @@ set to `cache_keepalive false` stops the chain at its next turn end.
 
 The timer is a task, not a process. A server that shuts down takes it with it;
 nothing survives the turn to be discovered later.
+
+## How an argument is spelled, and what a `path` means
+
+SPEC names three roles and gives each one word, so the catalog does too: `session`
+is the session a command acts *within* (`send_message`, `get_messages`,
+`ls_channel`, `ls_skill`, `run_skill`), `id` is the one entity being addressed
+(`set_session`, `interrupt_session`, `clone_session`, `del_channel`,
+`rename_channel`, `new_channel`, `input_channel`, `run_skill`), and `path` is a place
+in a namespace, which is a subtree rather than a name (`ls_session`, `del_session`,
+`ls_channel`, `ls_subscription`, `del_subscription`, `ls_skill`). `subscribe`'s
+optional name is `id`: SPEC writes `id: option[Subscription] = none`, and it stays
+named-only because an optional first positional cannot be told apart from the first
+required one.
+
+A path is a component match, not a string prefix: `a/b` is under `a`, `ab` is not,
+and empty is every path. That one rule (`commands::under`) is what makes deleting a
+path delete what is under it -- `del_session main` takes `main` and `main/a`, a
+`del_channel c/x` ends `c/x/1` and `c/x/2`, `del_subscription hook` drops `hook/one`
+and `hook/two` and leaves `other`. The deletes themselves stay per entity: each
+session's delete ends its own shells, jobs and channels, so the subtree is walked
+one at a time rather than batched.
+
+## ls_skill
+
+SPEC's `## Python Cmd` gives skills a namespace, so a skill has a path and the path
+is `<bucket>/<name>`: `project/evolve` for the checkout's own, `harness/heir` for the
+home's, `general/polity` for the machine's. `skill::Skill::id` is that spelling and
+nothing else, which is what lets a row this lists be pasted into `run_skill`.
+
+The walk is the one `skill` and `@skill(...)` already make (`tools::skill::installed_for`):
+the project layer needs the session *on this machine*, so a session whose directory is
+on a peer is handed the home's and the machine's rows instead. `path` is filtered with
+`commands::under`, so `harness` is every skill the home installed, `harness/heir` is
+one, and `har` is nothing -- a component, never a string prefix. The rows are the tool
+table's own (`tools::skill::row`), so the two faces never disagree about an `id`.
+
+## run_skill
+
+`run_skill(id, cmd, session)` is SPEC's call: `cmd` is `{name, args}`, the same shape
+`subscribe` runs on a match, and `parse_cmd` reads it the same way. The id resolves
+against the same walk and picks one root by name, which is the reason the id exists:
+`skill` refuses a name two roots spell, and a path never does.
+
+It then starts nothing itself. The words `[name, --key value, ...]` go to the `skill`
+tool through `tool_cmd::dispatch_tool`, so how a package is imported, where its
+`gongga_skill` comes from, what the entry's exit code means and how much output it may
+print are decided in one place. A skill that is a body or a script entry has no
+functions to choose between, so it is refused here and named for `skill` instead of
+being guessed at; a function the package does not publish is refused by
+`gongga_skill` with the signature and the list of what it does publish.
+
+`run_skill` fills the tool's `id` argument, which is why the tool accepts one at all:
+the catalog never offers it to a model, so the tool's own sentence still begins at
+`name`.

@@ -216,7 +216,7 @@ server runs under one; the greeting answers the server's own pid and the watchdo
 too (`ServerInfo::supervisor`). A caller comparing pids has to accept either --
 `tui::run` does, and so does `stop` below.
 
-`stop` asks first (`cancel`, which raises SPEC's interrupted flag on every turn it
+`stop` asks first (`cancel`, which raises SPEC's canceled flag on every turn it
 cuts, so the server that binds in its place continues them), and kills only when the
 server has not gone within five seconds. It kills the *watchdog* first: a server killed under a live watchdog
 is started again, which would make "stop what serves this home" false. See

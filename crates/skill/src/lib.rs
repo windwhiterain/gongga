@@ -129,6 +129,17 @@ impl Skill {
     pub fn dir(&self) -> &Path {
         self.path.parent().unwrap_or(Path::new("."))
     }
+
+    /// Where this skill stands in the namespace: `<bucket>/<name>`.
+    ///
+    /// # Invariant
+    ///
+    /// A path, and the same one every time: a name installed in two roots is two
+    /// skills, and the root is what tells them apart. SPEC's `Skill := path` is this
+    /// spelling, so a caller that has an `id` never has to guess a root.
+    pub fn id(&self) -> String {
+        format!("{}/{}", self.bucket.as_str(), self.name)
+    }
 }
 
 /// Reads one skill directory's frontmatter, falling back to its directory name.

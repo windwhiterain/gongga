@@ -28,28 +28,49 @@ impl Cmd for SkillTool {
         ctx: &'a ToolContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            // No name is the table: what is installed, with the line that says what
-            // each one is for. A name is that entry, run.
-            let Some(name) = args
+            // No name and no id is the table; a name, or a row's path, is that entry, run.
+            let id = args
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|id| !id.is_empty());
+            let name = args
                 .get("name")
                 .and_then(Value::as_str)
                 .map(str::trim)
-                .filter(|name| !name.is_empty())
-            else {
+                .filter(|name| !name.is_empty());
+            if id.is_none() && name.is_none() {
                 return table(ctx);
-            };
+            }
             let argv = match words_of(&args) {
                 Ok(argv) => argv,
                 Err(why) => return ToolOutcome::err(why),
             };
             // One reading of the roots, the same walk the table makes.
-            let found: Vec<::skill::Skill> = installed_for(&ctx.cwd, ctx.machine)
-                .into_iter()
-                .filter(|skill| skill.name == name)
-                .collect();
+            let installed = installed_for(&ctx.cwd, ctx.machine);
+            // An `id` names one row, root and all: a name two roots spell is not a choice.
+            let (found, asked): (Vec<::skill::Skill>, String) = match id {
+                Some(id) => (
+                    installed
+                        .into_iter()
+                        .filter(|skill| skill.id() == id)
+                        .collect(),
+                    format!("id {id:?}"),
+                ),
+                None => {
+                    let name = name.unwrap_or_default();
+                    (
+                        installed
+                            .into_iter()
+                            .filter(|skill| skill.name == name)
+                            .collect(),
+                        format!("name {name:?}"),
+                    )
+                }
+            };
             let Some(taken) = found.first() else {
                 return ToolOutcome::err(format!(
-                    "no skill named {name:?} is installed here; call `skill` with no `name` \
+                    "no skill with {asked} is installed here; call `skill` with no `name` \
                      for the ones that are"
                 ));
             };
@@ -59,10 +80,12 @@ impl Cmd for SkillTool {
                     .map(|skill| format!("{} ({})", skill.dir().display(), skill.bucket.as_str()))
                     .collect();
                 return ToolOutcome::err(format!(
-                    "{name} is installed more than once and is never resolved silently: {}",
+                    "{} is installed more than once and is never resolved silently: {}",
+                    taken.name,
                     rows.join(", ")
                 ));
             }
+            let name = taken.name.clone();
             // A package skill needs no declared entry: its callable is discovered.
             if taken.entry.is_none() && !taken.dir().join("__init__.py").is_file() {
                 return ToolOutcome::err(format!(
@@ -219,9 +242,17 @@ pub fn installed_for(cwd: &Path, machine: Machine) -> Vec<Skill> {
     .all()
 }
 
-/// One row: what to call it, where it comes from, what it is for, and what to open.
-fn row(skill: &Skill) -> Value {
+/// One row: what to call it, the path that names it, where it comes from, what it is
+/// for, and what to open.
+///
+/// # Invariant
+///
+/// `id` is `skill::Skill::id` and nothing else: `ls_skill` filters a `path` against it
+/// and `run_skill` hands it back unchanged, so the row a reader copies is the word the
+/// call takes.
+pub(crate) fn row(skill: &Skill) -> Value {
     json!({
+        "id": skill.id(),
         "name": skill.name,
         "description": skill.description,
         "path": skill.path.display().to_string(),

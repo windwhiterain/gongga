@@ -803,9 +803,8 @@ impl Operation {
         match self {
             Operation::DeleteSession { session } => {
                 let mut args = Args::new();
-                // The spec's binding name (its flag is --name); what a sticky
-                // entry keys on is the kind, which is `session`.
-                args.insert("name".to_string(), session.clone());
+                // `del_session` takes a path; a sticky entry keys on the kind.
+                args.insert("path".to_string(), session.clone());
                 Some(("del_session", args))
             }
             Operation::StickySession { .. } | Operation::RenderSession { .. } => None,

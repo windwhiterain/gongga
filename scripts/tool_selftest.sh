@@ -170,8 +170,8 @@ for (display,) in c.execute(
 INNER
 }
 
-"${cli[@]}" set_session --name main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
-"${cli[@]}" send_message --message "hello" --name main >/dev/null 2>&1
+"${cli[@]}" set_session --id main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" send_message --message "hello" --session main >/dev/null 2>&1
 wait_turn main
 fake_up "" "{}"
 
@@ -195,7 +195,7 @@ ok "the old shell tools are not offered to the model" \
 #    Persistent on purpose -- the next scenario has to talk to it -- and `wait 0`,
 #    because a shell that has just been opened has said nothing yet.
 fake_up new '{"name":"bash","wait":0}' || exit 1
-"${cli[@]}" send_message --message "start a channel" --name main >/dev/null 2>&1
+"${cli[@]}" send_message --message "start a channel" --session main >/dev/null 2>&1
 wait_turn main
 started=$(last_tool main)
 say "new answered: $(printf '%s' "$started" | head -c 200)"
@@ -225,7 +225,7 @@ INNER
 say "channel: $channel"
 fake_up check "$(python -c 'import json,sys
 print(json.dumps({"id": sys.argv[1], "input": "echo second", "wait": 15000}))' "$channel")" || exit 1
-"${cli[@]}" send_message --message "say second in it" --name main >/dev/null 2>&1
+"${cli[@]}" send_message --message "say second in it" --session main >/dev/null 2>&1
 wait_turn main
 second=$(last_tool main)
 say "check answered: $(printf '%s' "$second" | head -c 200)"
@@ -234,11 +234,11 @@ ok "check spoke to the channel new opened" "$(has "$second" 'second' && echo 0 |
 # 4. The round trip the whole row exists for: arm a subscription, then `wait` -- the
 #    news it sends cuts the wait, and arrives as the next turn's message.
 armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe --pattern "^$marker\$" \
-  --cmd '{"name": "send_message", "args": {"message": "news-from-sub", "name": "main"}}' \
-  --subscription "$marker" --persistant true 2>&1)
+  --cmd '{"name": "send_message", "args": {"message": "news-from-sub", "session": "main"}}' \
+  --id "$marker" --persistant true 2>&1)
 say "$armed"
 fake_up wait '{"time":30000}' || exit 1
-"${cli[@]}" send_message --message "wait for the news" --name main >/dev/null 2>&1
+"${cli[@]}" send_message --message "wait for the news" --session main >/dev/null 2>&1
 sleep 2
 "${cli[@]}" trigger_event --event "$marker" >/dev/null 2>&1
 wait_turn main
@@ -255,7 +255,7 @@ ok "the news reached the session as a message" "$?"
 #    `time` a call names is the ceiling it gets -- the row's default is what a
 #    call that names none gets. Measured before this test: 5 s asked, 120 s waited.
 fake_up wait '{"time":2500}' || exit 1
-"${cli[@]}" send_message --message "wait a moment" --name main >/dev/null 2>&1
+"${cli[@]}" send_message --message "wait a moment" --session main >/dev/null 2>&1
 wait_turn main
 short=$(last_tool main)
 say "short wait answered: $(printf '%s' "$short" | head -c 120)"

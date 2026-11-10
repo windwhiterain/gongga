@@ -204,12 +204,12 @@ cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
 # Captured, not piped into `grep -q`: grep exits on the match, the command layer
 # takes SIGPIPE writing the rest, and `pipefail` reports that instead.
-refusal=$("${cli[@]}" set_session --name '@mine' --model dead/flash-dead --cwd "$root" 2>&1)
+refusal=$("${cli[@]}" set_session --id '@mine' --model dead/flash-dead --cwd "$root" 2>&1)
 [[ "$refusal" == *"names beginning with"* ]]
 ok "a person cannot take a name in the harness's namespace" $?
 
-"${cli[@]}" set_session --name broken --model dead/flash-dead --cwd "$root" >/dev/null 2>&1
-"${cli[@]}" send_message --name broken --message "say hello" >/dev/null 2>&1
+"${cli[@]}" set_session --id broken --model dead/flash-dead --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" send_message --session broken --message "say hello" >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q 'turn end session=broken' "$log" && break; sleep 0.5; done
 grep -q 'turn end session=broken outcome=Failed' "$log"
 ok "a session whose model is refused ends in error" $?

@@ -91,7 +91,7 @@ cli() { "$cli_bin" --home "$home" --server "127.0.0.1:$port" "$@"; }
 # which is the same fact the server states to a shell it starts.
 as() { local session="$1"; shift; GONGGA_SESSION="$session" "$cli_bin" --home "$home" --server "127.0.0.1:$port" "$@"; }
 
-made=$(cli set_session --name parent --model deepseek-official/deepseek-flash 2>&1)
+made=$(cli set_session --id parent --model deepseek-official/deepseek-flash 2>&1)
 say "set_session: $made"
 case "$made" in *"session is now"*) created=0 ;; *) created=1 ;; esac
 ok "a session to hear the news" $created

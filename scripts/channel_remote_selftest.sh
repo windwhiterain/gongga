@@ -212,7 +212,7 @@ for line in text.splitlines():
 sys.stdout.write(str(value))' "$1" "$2"
 }
 
-"${cli[@]}" set_session --name main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" set_session --id main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
 
 # 1. A one-shot program on the peer, printing the directory it ran in: the peer's
 #    scratch, not a directory this machine has of the same name.
@@ -281,7 +281,7 @@ ok "a channel survives the server it was started from" \
   "$([[ "$(field "$after" output | tr -d '\r\n')" == after-restart ]] && echo 0 || echo 1)"
 
 # 5. `del_channel` ends it: the program is gone, and the row with it.
-ended=$("${cli[@]}" del_channel --session main --path "$shell_id" 2>&1)
+ended=$("${cli[@]}" del_channel --session main --id "$shell_id" 2>&1)
 say "$ended"
 ok "del_channel ends a channel on $peer_name" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
 gone=$("${cli[@]}" check --session main --id "$shell_id" --wait 0 2>&1)
