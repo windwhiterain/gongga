@@ -131,11 +131,12 @@ fn wanted_program() -> (String, usize) {
 
 /// The words this file answers to: `serve` is the layer's own, `runner` is what
 /// a peer's `ssh` runs.
-const WORDS: [(&str, &str); 4] = [
+const WORDS: [(&str, &str); 5] = [
     ("tui", "gongga-tui"),
     ("window", "gongga-tui"),
     ("server", "gongga-server"),
     ("runner", "gongga-runner"),
+    ("relay", "gongga-relay"),
 ];
 
 /// The program this file is named after, when it is named after one of them.

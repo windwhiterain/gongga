@@ -873,6 +873,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gongga-relay"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tracing",
+ "which",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "gongga-server"
 version = "0.2.0"
 dependencies = [
@@ -884,6 +896,7 @@ dependencies = [
  "gongga-console",
  "gongga-lock",
  "gongga-protocol",
+ "gongga-relay",
  "gongga-skill",
  "libc",
  "regex",

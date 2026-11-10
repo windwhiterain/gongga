@@ -5,7 +5,7 @@
 mod agent;
 mod agents;
 mod anthropic;
-mod base64;
+pub(crate) use ::relay::base64;
 mod blobs;
 mod body;
 mod bus;
@@ -31,7 +31,7 @@ mod prompts;
 mod providers;
 mod pylib;
 mod quota;
-pub mod relay;
+pub use ::relay::relay;
 pub mod remote;
 pub mod remotes;
 mod script;

@@ -133,6 +133,40 @@ pub struct Channels {
     attached: std::sync::Mutex<HashSet<i64>>,
 }
 
+/// The program a channel's relay is started as: `gongga-relay`, beside this build or in
+/// the home that installed it.
+///
+/// # Invariant
+///
+/// Never this executable. A server that started itself under a flag put a build tree's
+/// path into every `exec`: a `clean` removed `target/`, and every local channel answered
+/// `os error 3` -- a missing program reported as if the caller's arguments were wrong.
+/// The relay is its own program now, so the only path it needs is its own.
+fn relay_program(home: &Path) -> PathBuf {
+    let name = if cfg!(windows) {
+        "gongga-relay.exe"
+    } else {
+        "gongga-relay"
+    };
+    if let Some(named) = std::env::var_os("GONGGA_RELAY_BIN") {
+        let named = PathBuf::from(named);
+        if named.is_file() {
+            return named;
+        }
+    }
+    if let Ok(me) = std::env::current_exe()
+        && let Some(dir) = me.parent()
+    {
+        let beside = dir.join(name);
+        if beside.is_file() {
+            return beside;
+        }
+    }
+    // A home keeps the program beside its cli. Answering with the path even when it is
+    // missing is deliberate: the spawn's message then names what was looked for.
+    home.join("bin").join(name)
+}
+
 impl Channels {
     pub fn new(
         store: Store,
@@ -162,7 +196,7 @@ impl Channels {
     /// The one way a `Channels` is built, so every process that may speak to a
     /// channel agrees on where they live and which names it knows.
     pub fn for_home(cfg: &crate::config::Config, store: Store, notify: Notifier) -> Self {
-        let server = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gongga-server"));
+        let server = relay_program(&cfg.home);
         Self::new(
             store,
             cfg.home.join("channels"),
@@ -290,8 +324,15 @@ impl Channels {
             &log,
             &words.env,
         )
-        .map_err(|e| format!("could not start a relay for {:?}: {e}", words.program))?;
-        // The relay is no part of this tree: it keeps the program alive after us.
+        .map_err(|e| {
+            format!(
+                "could not start a relay for {:?} with {}: {e}",
+                words.program,
+                self.server.display()
+            )
+        })?;
+        // In this server's tree, so a server that is killed takes the channel with it:
+        // a `cancel` is what lets them go, and it is the only thing that does.
         crate::tools::job::release(relay.pid);
         let place = Where::Here(dir);
         let pid = self
