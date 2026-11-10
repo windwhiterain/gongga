@@ -571,6 +571,17 @@ before the list comes back.
 It costs nothing when the candidate ended the line: an empty answer simply leaves
 the popup shut.
 
+## Tui::set_completion
+
+Candidates come from another process, so a Tab pressed before the answer lands
+cannot apply anything yet. That Tab is remembered (`tab_asked`) and spent by the
+first `Completion` that arrives, which is what keeps a fast hand from needing to
+press it twice.
+
+The flag is dropped by a line that changed since: an answer for the words that
+were there is not an answer for the words that are. An answer whose range runs
+past the line is stale for the same reason and is never applied.
+
 ## Tui::history_prev
 
 `Shift+Up`, one line back per press, stopping at the oldest line: the prompt's

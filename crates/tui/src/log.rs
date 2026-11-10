@@ -1032,10 +1032,14 @@ impl Log {
             return None;
         }
         let rule = hit.index == 0 || hit.index + 1 == hit.shown;
-        match rule {
-            true => None,
-            false => Some(hit.block),
+        if rule {
+            return None;
         }
+        // A body that already fits is no scroll target: the wheel goes to the
+        // window under it, every time.
+        let entry = self.entries.get(hit.block)?;
+        let cap = self.room(entry.kind, 0);
+        (entry.travel(cap) > 0).then_some(hit.block)
     }
 
     /// The block under one row, with where that row sits inside it.

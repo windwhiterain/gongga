@@ -1,3 +1,8 @@
+**2026-11-10, the page size**: `room_of` had no writer after A-4 deleted the
+frame hooks that fed it, so every page of the past was one row. The drawing now
+reports each pane's height as `UiIntent::Room`, and `WindowFacts::note_room` is
+the only writer. A pane that has not reported yet still asks for one row.
+
 **A-4 note (2026-11-10)**: the A-1 / A-2 tables below describe the step where
 `Panes` and `Log` still held a `WindowJournal`. That copy has since been removed;
 see the last section for the current shape.

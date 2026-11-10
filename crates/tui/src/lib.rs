@@ -398,11 +398,11 @@ impl Screen {
     ///
     /// # Invariant
     ///
-    /// What is under the pointer decides, never how far it can move: a box takes the
-    /// wheel and keeps it, so opening an item cannot leave the reader scrolled
-    /// somewhere they did not ask for; a box's margin and its rules are the pane's,
-    /// so a pane is still reachable under a box that covers it. See
-    /// `docs/notes/tui-log.md`.
+    /// What is under the pointer decides, once: a box takes the wheel for the
+    /// whole gesture and never hands it over mid-scroll. Only a box with rows of
+    /// its own is a box for the wheel at all -- one whose body already fits lets
+    /// the gesture through instead of eating it. A box's margin and rules are the
+    /// pane's. See `docs/notes/tui-log.md`.
     pub fn scroll_at(&mut self, width: u16, height: u16, column: u16, row: u16, rows: i64) -> bool {
         let Some(hit) = self.session_at_row(width, height, column, row) else {
             return false;
@@ -410,10 +410,11 @@ impl Screen {
         if hit.part == Part::Pane
             && let Some(at) = self.box_at(width, height, column, row)
         {
-            // The box and only the box: no handover. Margin and rules are the pane's.
+            // The box and only the box: no handover, so one gesture has one result.
             self.panes.scroll_block(at, rows);
             return true;
         }
+
         // The list is its own scroll -- SPEC gives it one -- and the empty name
         // it is filed under is the pane, not a session.
         match hit.part {
@@ -533,6 +534,30 @@ pub struct Tui {
     /// `cmd`), so the link's answer is the only one that can be right.
     /// See `docs/notes/tui-cache.md`.
     note_window: String,
+    /// Whether the words this window completes with live in another process.
+    ///
+    /// # Invariant
+    ///
+    /// Set by [`Tui::for_pipe`]: a pipe window has no vocabulary of its own, so it
+    /// asks its client for candidates and never answers itself. A window that
+    /// answers itself — a test — leaves it false and keeps the local completer.
+    asks_client: bool,
+    /// The line the client was last asked about, so one question is one intent.
+    asked: (String, usize),
+    /// A Tab pressed before the candidates arrived, waiting for the answer.
+    ///
+    /// # Invariant
+    ///
+    /// One Tab, one answer: the flag is spent by the completion that lands or by a
+    /// line that changed since, so a late answer is not applied to other words.
+    tab_asked: bool,
+    /// The rows each pane could draw when they were last reported to the client.
+    ///
+    /// # Invariant
+    ///
+    /// A report is a change, not a frame: the client sizes one page of the past by
+    /// these rows, and a height that has not moved is a page already sized.
+    rooms: Vec<(String, usize)>,
 }
 
 /// A vocabulary with no words: a pipe window asks its client for candidates.
@@ -845,7 +870,9 @@ impl QuickEdit {
 impl Tui {
     /// A window that only draws: the client keeps the records and the words.
     pub fn for_pipe() -> anyhow::Result<Self> {
-        Self::assemble()
+        let mut window = Self::assemble()?;
+        window.asks_client = true;
+        Ok(window)
     }
 
     fn assemble() -> anyhow::Result<Self> {
@@ -901,6 +928,10 @@ impl Tui {
             input_area: Rect::default(),
             dragging: None,
             note_window: client::COMMAND_WINDOW.to_string(),
+            asks_client: false,
+            asked: (String::new(), 0),
+            tab_asked: false,
+            rooms: Vec::new(),
             events: (!vt_input::wanted()).then(EventStream::new),
             vt: vt_input::wanted().then(vt_input::spawn),
             restored: false,
@@ -964,8 +995,22 @@ impl Tui {
     }
 
     /// Candidates the client computed from its own catalog.
+    ///
+    /// # Invariant
+    ///
+    /// A Tab pressed before the answer arrived is spent here, on the first
+    /// candidate, because a key cannot wait for a frame. An answer whose range
+    /// runs past the line is one for words that have since been edited: it is
+    /// dropped, never applied.
     pub fn set_completion(&mut self, completion: Option<Completion>) {
-        self.screen.completion = completion;
+        let stale = completion
+            .as_ref()
+            .is_some_and(|popup| popup.end > self.screen.input.text().len());
+        self.screen.completion = if stale { None } else { completion };
+        if self.tab_asked {
+            self.tab_asked = false;
+            self.apply_completion();
+        }
         self.dirty = true;
     }
 
@@ -1198,6 +1243,25 @@ impl Tui {
             let owed = self.screen.take_wants();
             if !owed.is_empty() {
                 return Some(UiEvent::Intent(UiIntent::Older { windows: owed }));
+            }
+            // The line, and each pane's height: asked here, where every key and
+            // every frame comes back through.
+            if self.asks_client {
+                let line = self.input_line();
+                if line != self.asked {
+                    self.asked = line.clone();
+                    // An answer for the old line is not an answer for this one.
+                    self.tab_asked = false;
+                    return Some(UiEvent::Intent(UiIntent::Complete {
+                        line: line.0,
+                        cursor: line.1,
+                    }));
+                }
+                let rooms = self.screen.panes.rooms();
+                if rooms != self.rooms {
+                    self.rooms = rooms.clone();
+                    return Some(UiEvent::Intent(UiIntent::Room { windows: rooms }));
+                }
             }
             if self.draw().is_err() {
                 return None;
@@ -1598,6 +1662,13 @@ impl Tui {
         match key.code {
             KeyCode::Esc => self.close_completion(),
             KeyCode::Tab => {
+                if self.screen.completion.is_none() && self.asks_client {
+                    // Candidates are a frame away: ask now, and the answer spends
+                    // this Tab. See `set_completion`.
+                    self.tab_asked = true;
+                    let (line, cursor) = self.input_line();
+                    return Some(UiEvent::Intent(UiIntent::Complete { line, cursor }));
+                }
                 if self.screen.completion.is_none() {
                     self.refresh_completion();
                 }
@@ -1903,6 +1974,13 @@ impl Tui {
     /// the only thing that changes the popup then, and nothing else would ask for
     /// the frame that shows it.
     pub fn refresh_completion(&mut self) {
+        // No words here: the client's answer is the only one, and a local
+        // rebuild would close the popup it just sent.
+        if self.asks_client {
+            self.screen.completion = None;
+            self.dirty = true;
+            return;
+        }
         let fresh = next_completion(&self.screen.input, &self.completer);
         // The row the operator moved to survives: an event is not a keystroke.
         self.screen.completion = match (self.screen.completion.take(), fresh) {

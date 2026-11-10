@@ -258,9 +258,16 @@ lines；UI 起的 client 是协议模式，两者都占 stdout 但互不冲突�
 按显式 argv 标志区分，不靠「stdin 是不是 TTY」猜。
 
 已落地：`crates/client/src/render_wire.rs` 把 `Sink` 全部 17 个方法写成可序列化的
-`RenderMessage`（12 个绘制）/ `CursorMessage`（5 个 journal），反向 `UiIntent` 四种手势；
+`RenderMessage`（12 个绘制）/ `CursorMessage`（5 个 journal），反向 `UiIntent` 六种手势
+（`Submit` / `Operate` / `Older` / `Room` / `Complete` / `Quit`）；
 `Listed` / `Layout` / `QuotaRow` 补上 serde 派生；`WireSink` 覆盖 `tool_call`，让结构化
 `Head` 原样过线而不被 trait 默认实现压成文本。见 `docs/notes/client-render-wire.md`。
+
+**发起的时机是一条硬约束（2026-11-10）**：`UiIntent` 只能在 `Tui::next_event` 自己的
+循环头部产生，不能放在 `pipe::run` 的 `select!` 之后 —— 那个 future 只在「有事要说」时
+返回，打字从不让它返回，所以循环尾部的检查形同不存在（补全因此整条死掉）。窗口知道的
+两件事（输入行、各窗格高度）因此都在那里问：行变了发 `Complete`，高度变了发 `Room`。
+`Room` 是唯一反向的窗口事实 —— 只有绘制知道窗格几行，而补页的一页正是按它定大小的。
 
 **六条裁定（2026-11-07，用户逐条给）**：
 

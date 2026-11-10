@@ -110,7 +110,6 @@ pub async fn run(args: &client::Args) -> anyhow::Result<()> {
     });
 
     let mut tui = Tui::for_pipe()?;
-    let mut seen = tui.input_line();
     let result = loop {
         tokio::select! {
             _ = closing::asked() => break Ok(()),
@@ -132,18 +131,6 @@ pub async fn run(args: &client::Args) -> anyhow::Result<()> {
                 if let Err(e) = tui.draw() {
                     break Err(e);
                 }
-            }
-        }
-        // The client owns the vocabulary: a changed line asks for its words.
-        let now = tui.input_line();
-        if now != seen {
-            seen = now.clone();
-            let intent = UiIntent::Complete {
-                line: now.0,
-                cursor: now.1,
-            };
-            if send(&mut input, &intent).await.is_err() {
-                break Ok(());
             }
         }
     };

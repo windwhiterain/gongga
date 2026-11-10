@@ -15,6 +15,13 @@ pub trait WindowFacts {
     fn floor_of(&self, window: &str) -> Option<i64>;
     /// How many rows a pane could draw, as the last frame found it.
     fn room_of(&self, window: &str) -> usize;
+    /// Records the rows a pane could draw: the only writer `room_of` has.
+    ///
+    /// # Invariant
+    ///
+    /// Only the drawing knows its own height, so this is the one fact a UI has to
+    /// tell the client rather than the other way round. See `UiIntent::Room`.
+    fn note_room(&mut self, window: &str, rows: usize);
     /// The windows a frame drew last.
     fn drawn(&self) -> &[String];
     /// The vocabulary changed; `version` names the new one so a UI can dedupe.

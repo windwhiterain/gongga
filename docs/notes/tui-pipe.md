@@ -17,6 +17,12 @@ keyboard), the frame channel, and `closing::asked()` (the console going away).
 Closing stdin is the window leaving; an ended stdout is the client leaving.
 Neither polls the other's pid.
 
+Nothing is asked *after* the `select!`: `next_event` is a long-running future
+that only returns when it has something to say, so a check at the loop's end runs
+only when a key or a frame has already made it return. Asking for words belongs
+inside it, at the head of its own loop, which every key and every frame passes
+through. That is where `Complete` and `Room` are produced (2026-11-10).
+
 ## Drawing is still `TuiSink`
 
 `run.rs::apply_frame` turns the 12 drawing frames back into `Sink` calls on
@@ -37,18 +43,22 @@ handled here rather than by `apply_frame`'s drawing half.
 
 ## What the window no longer keeps
 
-`Tui::for_pipe` uses an empty `Completer` and `Panes::new()` (no `Cache`). A
-changed input line sends `UiIntent::Complete`; the client's `SharedCompleter`
-answers with `Completion`, so command syntax never crosses to the UI.
+`Tui::for_pipe` uses an empty `Completer`, sets `asks_client`, and takes
+`Panes::new()` (no `Cache`). A changed input line asks `UiIntent::Complete`; the
+client's `SharedCompleter` answers with `Completion`, so command syntax never
+crosses to the UI. A pane whose height changed reports it once as `UiIntent::Room`,
+which is the only writer behind the client's page size. `Tui::refresh_completion`
+closes the popup instead of rebuilding it locally: with no words of its own, a
+local rebuild would throw away the answer the client just sent.
 The client records the session list itself, in `PipeFrontend::send(Layout)`.
 
 A pipe window keeps every body in memory because there is no journal on this
 side to read one back from. After A-4 the eviction path is gone altogether:
 `keep_bodies`, `begin_frame`, `end_frame`, `mark_drawn`, `note_room`, `seed` and
 `evict` were deleted from `Panes` / `render.rs`, and `Log` no longer owns a
-`WindowJournal`. The only local window fact left is `Panes.wants`, a
+`WindowJournal`. The local window facts left are `Panes.wants`, a
 `BTreeSet<String>` that a wheel past the top fills and `take_wants` empties into
-`UiIntent::Older`.
+`UiIntent::Older`, and each pane's drawn height, read by `Panes::rooms`.
 
 `Screen::server_text` is the header's only source of the own / not own words; the
 client spells them, so the TUI needs no local `Server` value. The same-process

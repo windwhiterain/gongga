@@ -565,6 +565,12 @@ are the pane's, so a pane is scrollable under a box without the wheel changing h
 mid-gesture. With a margin of `0` the rules are what is left, which is why a narrow
 margin is the useful setting rather than a decorative one.
 
+One exception, added 2026-11-10, and it is not a handover mid-gesture: a box whose
+body already fits under its cap has no rows to move, ever. `Log::box_at` does not
+offer the wheel such a box at all, so the gesture reaches the pane under it. Before
+that, opening a short event block covered rows that could not move and would not let
+the pane move either -- which reads as the wheel dying the moment a block is opened.
+
 `block_size` still decides whether there is anything inside to move: `0` caps
 nothing, so the box shows every row it has and a notch over it moves nothing at all.
 A number caps the body, so the box holds rows it is not showing, and those are what

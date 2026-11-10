@@ -335,6 +335,12 @@ pub async fn run(
             }
             // A scroll past the oldest row a window holds: a page above it.
             Step::Input(FrontendEvent::Intent(UiIntent::Older { windows })) => owed.extend(windows),
+            // How tall each pane is drawn: what one page of the past is sized by.
+            Step::Input(FrontendEvent::Intent(UiIntent::Room { windows })) => {
+                for (name, rows) in windows {
+                    WindowFacts::note_room(&mut *ui, &name, rows);
+                }
+            }
             Step::Input(FrontendEvent::Intent(UiIntent::Quit)) => break Ok(()),
             // The console is going away: it asked, and the way out is the same
             // one Alt-Q takes. See `docs/notes/tui-closing.md`.

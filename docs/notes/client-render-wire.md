@@ -53,10 +53,16 @@ so they are `RenderMessage` variants rather than a second protocol:
 `UiIntent::Complete { line, cursor }` is the request behind the last two. The
 loop clamps a byte cursor to a character boundary, asks the client's own
 `SharedCompleter`, and hands a `Completion` to `Frontend::show_completion`: the
-catalog never crosses to the UI, so command syntax stays in the client. The TUI
-computes its own popup locally and ignores that callback; the pipe front-end
-encodes it. `Vocabulary` carries the client's real `paths_version`, so a UI can
-dedupe refreshes. `Candidate` gained serde derives for this.
+catalog never crosses to the UI, so command syntax stays in the client. The pipe
+front-end encodes that answer as the `Completion` frame; the window keeps no
+vocabulary of its own, so Tab applies what the client last sent.
+`Vocabulary` carries the client's real `paths_version`, so a UI can dedupe
+refreshes. `Candidate` gained serde derives for this.
+
+`UiIntent::Room { windows }` is the one fact that travels the other way. Only the
+drawing knows how many rows a pane has, and one page of the past is sized by that
+number, so the UI reports each pane's height when it changes. It is not per frame:
+an unchanged height is a page already sized.
 
 ## Why `WireSink` overrides `tool_call`
 

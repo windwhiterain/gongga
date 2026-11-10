@@ -134,6 +134,9 @@ impl WindowFacts for PipeFrontend {
     fn room_of(&self, window: &str) -> usize {
         self.journal.room_of(window)
     }
+    fn note_room(&mut self, window: &str, rows: usize) {
+        self.journal.note_room(window, rows);
+    }
     fn drawn(&self) -> &[String] {
         self.journal.drawn()
     }

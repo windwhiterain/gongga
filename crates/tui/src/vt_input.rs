@@ -46,6 +46,15 @@ mod platform {
     const VT_INPUT: u32 = 0x0200;
     /// What closes a pasted block. Eight bytes, so the search is a slice compare.
     const PASTE_END: &[u8] = b"\x1b[201~";
+    /// How long an escape waits for the rest of its sequence before it is a key.
+    ///
+    /// # Invariant
+    ///
+    /// A console writes one gesture in more than one batch, so the byte that ends
+    /// a read may be the first of a sequence: `ESC` then `[<64;50;24M` is one
+    /// wheel turn, not a key and then text. Longer than a write takes, shorter
+    /// than a hand waits. See `docs/notes/tui-paste.md`.
+    const ESCAPE_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 
     pub fn spawn() -> tokio::sync::mpsc::UnboundedReceiver<Event> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -53,18 +62,45 @@ mod platform {
             if !enable() {
                 return;
             }
+            // Reading blocks, so it has its own thread: the parser must be free
+            // to decide the rest is not coming.
+            let (arrived, bytes) = std::sync::mpsc::channel::<Vec<u8>>();
+            std::thread::spawn(move || {
+                let mut reader = std::io::stdin();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let read = match reader.read(&mut chunk) {
+                        Ok(0) | Err(_) => return,
+                        Ok(read) => read,
+                    };
+                    if arrived.send(chunk[..read].to_vec()).is_err() {
+                        return;
+                    }
+                }
+            });
             let mut log = log_file();
-            let mut reader = std::io::stdin();
             let mut buffer: Vec<u8> = Vec::new();
-            let mut chunk = [0u8; 4096];
             loop {
-                let read = match reader.read(&mut chunk) {
-                    Ok(0) => return,
-                    Ok(read) => read,
-                    Err(_) => return,
+                // Only a batch that left bytes behind has a reason to time out.
+                let batch = if buffer.is_empty() {
+                    bytes.recv().ok()
+                } else {
+                    bytes.recv_timeout(ESCAPE_WAIT).ok()
                 };
-                buffer.extend_from_slice(&chunk[..read]);
-                log_raw(&mut log, &chunk[..read]);
+                let Some(batch) = batch else {
+                    if buffer.is_empty() {
+                        return;
+                    }
+                    for event in flush(&mut buffer) {
+                        log_event(&mut log, &event);
+                        if tx.send(event).is_err() {
+                            return;
+                        }
+                    }
+                    continue;
+                };
+                log_raw(&mut log, &batch);
+                buffer.extend_from_slice(&batch);
                 for event in parse(&mut buffer) {
                     log_event(&mut log, &event);
                     if tx.send(event).is_err() {
@@ -74,6 +110,22 @@ mod platform {
             }
         });
         rx
+    }
+
+    /// Ends a sequence the console never finished: a lone escape is the key.
+    ///
+    /// # Invariant
+    ///
+    /// The rest of an unfinished sequence is dropped, never typed: the bytes of
+    /// `ESC[<64;50;24M` are a wheel turn, and a prompt holding them is not a
+    /// message anyone wrote.
+    fn flush(buffer: &mut Vec<u8>) -> Vec<Event> {
+        let alone = buffer.first() == Some(&0x1b);
+        buffer.clear();
+        alone
+            .then(|| key(KeyCode::Esc, KeyModifiers::NONE))
+            .into_iter()
+            .collect()
     }
 
     fn enable() -> bool {
@@ -95,11 +147,9 @@ mod platform {
             let byte = buffer[at];
             if byte == 0x1b {
                 let Some(next) = buffer.get(at + 1).copied() else {
-                    // A lone escape is the key, not the start of a sequence: a
-                    // terminal writes a sequence in one go. See the note.
-                    events.push(key(KeyCode::Esc, KeyModifiers::NONE));
-                    at += 1;
-                    continue;
+                    // Held, not taken: the rest may be the next batch, and only
+                    // silence says the escape was the key. See `flush`.
+                    break;
                 };
                 if next == b'[' {
                     let Some(end) = csi_end(buffer, at + 2) else {
@@ -355,12 +405,12 @@ mod platform {
                     && key.modifiers.contains(KeyModifiers::CONTROL)),
                 "{control:?}"
             );
-            assert!(
-                matches!(events(b"\x03")[0], Event::Key(key)
+            assert!(matches!(events(b"\x03")[0], Event::Key(key)
                     if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL))
+                        && key.modifiers.contains(KeyModifiers::CONTROL)));
+            assert!(
+                matches!(events(b"\x1b[3~")[0], Event::Key(key) if key.code == KeyCode::Delete)
             );
-            assert!(matches!(events(b"\x1b[3~")[0], Event::Key(key) if key.code == KeyCode::Delete));
         }
 
         #[test]
@@ -393,7 +443,38 @@ mod platform {
 
         #[test]
         fn a_lone_escape_is_the_key() {
-            let got = events(b"\x1b");
+            let mut buffer = b"\x1b".to_vec();
+            assert!(
+                parse(&mut buffer).is_empty(),
+                "an escape waits for its rest"
+            );
+            let got = flush(&mut buffer);
+            assert!(
+                matches!(got[0], Event::Key(key) if key.code == KeyCode::Esc),
+                "{got:?}"
+            );
+            assert!(buffer.is_empty(), "{buffer:?}");
+        }
+
+        #[test]
+        fn a_wheel_turn_split_across_batches_is_still_a_wheel() {
+            let mut buffer = b"\x1b".to_vec();
+            assert!(parse(&mut buffer).is_empty(), "{buffer:?}");
+            buffer.extend_from_slice(b"[<64;50;24M");
+            let got = parse(&mut buffer);
+            assert!(
+                matches!(&got[0], Event::Mouse(mouse) if mouse.kind == MouseEventKind::ScrollUp),
+                "{got:?}"
+            );
+            assert!(buffer.is_empty(), "{buffer:?}");
+        }
+
+        #[test]
+        fn an_unfinished_sequence_never_becomes_text() {
+            let mut buffer = b"\x1b[<64".to_vec();
+            assert!(parse(&mut buffer).is_empty(), "{buffer:?}");
+            let got = flush(&mut buffer);
+            assert_eq!(got.len(), 1, "{got:?}");
             assert!(
                 matches!(got[0], Event::Key(key) if key.code == KeyCode::Esc),
                 "{got:?}"

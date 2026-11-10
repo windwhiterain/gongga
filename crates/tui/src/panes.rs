@@ -379,9 +379,10 @@ impl Panes {
     ///
     /// # Invariant
     ///
-    /// Answers whether the box moved. A box that has nothing left in that direction
-    /// moves nothing and still holds the wheel: what is under the pointer decides,
-    /// never how far the box happens to be scrolled. See [`Log::scroll_block`].
+    /// Answers whether the box moved. A box with nothing left in that direction
+    /// moves nothing and still holds the wheel: the cell decides, once. A box that
+    /// could never move is not one the wheel is offered at all -- see
+    /// [`Log::box_at`].
     pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
         self.log.scroll_block(at, rows)
     }
@@ -509,6 +510,20 @@ impl Panes {
                 pane.scroll = 0;
             }
         }
+    }
+
+    /// The rows each shown pane could draw: what one page of the past is sized by.
+    ///
+    /// # Invariant
+    ///
+    /// Read after a frame, never during one: only the frame knows how tall a pane
+    /// is, and a pane nothing has drawn yet is not a page anyone can ask for.
+    pub fn rooms(&self) -> Vec<(String, usize)> {
+        self.panes
+            .iter()
+            .filter(|pane| pane.kind == Kind::Shown && pane.last_height > 0)
+            .map(|pane| (pane.name.clone(), pane.last_height))
+            .collect()
     }
 
     /// Rows this window holds at `width`.

@@ -276,6 +276,16 @@ purpose. `only_text_joins_a_run` holds that line.
 
 ## The markers, read out of the key stream
 
+## A sequence may arrive in pieces
+
+The console writes one gesture in more than one `read`: `ESC` alone, then
+`[<64;50;24M`. Reading the first batch as a key turned a wheel turn into an Esc and
+then the twelve bytes of the sequence typed into the prompt. The parser now holds a
+trailing escape and waits 50 ms for the rest; only that silence makes it the Esc
+key, and what is left of an unfinished sequence is dropped rather than typed. The
+same buffer already waited for a half-arrived paste, so this is that rule applied to
+the other sequences too.
+
 `ESC[200~` is the exact answer: inside it every break is text, and no rule has to
 guess. crossterm 0.29 enables it (`EnableBracketedPaste`) but never turns it back into
 `Event::Paste` on Windows -- its console parser has no arm for the sequence -- so the

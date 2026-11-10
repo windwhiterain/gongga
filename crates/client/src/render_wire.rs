@@ -140,6 +140,14 @@ pub enum UiIntent {
     Operate { operation: protocol::Operation },
     /// The operator asked to read above what these windows hold.
     Older { windows: Vec<String> },
+    /// How many rows each pane could draw: what one page of the past is sized by.
+    ///
+    /// # Invariant
+    ///
+    /// Sent when a pane's height changes, never per frame: only the drawing knows
+    /// how tall a window is, and the page a wheel above the first row asks for is
+    /// that height, not a constant. See `docs/notes/client-window-journal.md`.
+    Room { windows: Vec<(String, usize)> },
     /// The client answers with candidates, so syntax stays out of the UI.
     Complete { line: String, cursor: usize },
     /// Alt+Q: leave.
@@ -370,6 +378,15 @@ mod tests {
                 cursor: 6,
             }
         );
+    }
+
+    #[test]
+    fn a_room_intent_names_a_pane_and_its_rows() {
+        let intent = UiIntent::Room {
+            windows: vec![("one".to_string(), 24)],
+        };
+        let encoded = encode_intent(&intent).unwrap();
+        assert_eq!(decode_intent(&encoded).unwrap(), intent);
     }
 
     #[test]
