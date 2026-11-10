@@ -620,3 +620,43 @@ set to `cache_keepalive false` stops the chain at its next turn end.
 
 The timer is a task, not a process. A server that shuts down takes it with it;
 nothing survives the turn to be discovered later.
+
+## How an argument is spelled, and what a `path` means
+
+SPEC names three roles and gives each one word, so the catalog does too: `session`
+is the session a command acts *within* (`send_message`, `get_messages`,
+`ls_channel`), `id` is the one entity being addressed (`set_session`,
+`interrupt_session`, `clone_session`, `del_channel`, `rename_channel`,
+`new_channel`, `input_channel`), and `path` is a place in a namespace, which is a
+subtree rather than a name (`ls_session`, `del_session`, `ls_channel`,
+`ls_subscription`, `del_subscription`). `subscribe`'s optional name is `id`: SPEC
+writes `id: option[Subscription] = none`, and it stays named-only because an
+optional first positional cannot be told apart from the first required one.
+
+A path is a component match, not a string prefix: `a/b` is under `a`, `ab` is not,
+and empty is every path. That one rule (`commands::under`) is what makes deleting a
+path delete what is under it -- `del_session main` takes `main` and `main/a`, a
+`del_channel c/x` ends `c/x/1` and `c/x/2`, `del_subscription hook` drops `hook/one`
+and `hook/two` and leaves `other`. The deletes themselves stay per entity: each
+session's delete ends its own shells, jobs and channels, so the subtree is walked
+one at a time rather than batched.
+
+## How an argument is spelled, and what a `path` means
+
+SPEC names three roles and gives each one word, so the catalog does too: `session`
+is the session a command acts *within* (`send_message`, `get_messages`,
+`ls_channel`), `id` is the one entity being addressed (`set_session`,
+`interrupt_session`, `clone_session`, `del_channel`, `rename_channel`,
+`new_channel`, `input_channel`), and `path` is a place in a namespace, which is a
+subtree rather than a name (`ls_session`, `del_session`, `ls_channel`,
+`ls_subscription`, `del_subscription`). `subscribe`'s optional name is `id`: SPEC
+writes `id: option[Subscription] = none`, and it stays named-only because an
+optional first positional cannot be told apart from the first required one.
+
+A path is a component match, not a string prefix: `a/b` is under `a`, `ab` is not,
+and empty is every path. That one rule (`commands::under`) is what makes deleting a
+path delete what is under it -- `del_session main` takes `main` and `main/a`, a
+`del_channel c/x` ends `c/x/1` and `c/x/2`, `del_subscription hook` drops `hook/one`
+and `hook/two` and leaves `other`. The deletes themselves stay per entity: each
+session's delete ends its own shells, jobs and channels, so the subtree is walked
+one at a time rather than batched.

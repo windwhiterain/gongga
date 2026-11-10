@@ -131,7 +131,7 @@ one cursor, a flag past its parameter and a bare word to whatever
 `/set_session <TAB>` offers sessions, with a session on the line models, and a
 flag on the line moves the offer past it: `/set_session main --model flash <TAB>`
 offers thinking. A parameter whose source is `None` offers nothing, which is how
-`send_message --name <name> --message <text>` stops completing after the session.
+`send_message --session <name> --message <text>` stops completing after the session.
 
 ## models, default_model, and the model a line runs on
 

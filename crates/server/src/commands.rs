@@ -352,10 +352,9 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("text"),
                     CompletionSource::None,
                 ),
-                // SPEC writes `--message <message> --name <session>(sticky)`:
-                // the payload leads; declaration order is bare-word order.
+                // SPEC: `--message <message> --session <session>`; the payload leads.
                 kind_arg(
-                    "name",
+                    "session",
                     "Target session. Required: there is no implicit default.",
                     true,
                     "session",
@@ -413,10 +412,13 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "del_session".into(),
-            description: "Delete a session, its shells and its transcript.".into(),
+            description: "Delete a session and everything under that path: its shells, its \
+                      channels and its transcript. A path that names a directory deletes \
+                      every session below it."
+                .into(),
             args: vec![kind_arg(
-                "name",
-                "Session to delete.",
+                "path",
+                "Session to delete, or the directory whose sessions all go.",
                 true,
                 "session",
                 Some("name"),
@@ -440,14 +442,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "interrupt_session".into(),
-            description: "Stop the turn one session is running. Everything received is kept, and \
-                      the session is flagged: the next start continues the turn. SPEC leaves an \
-                      idle session, and one inside `wait`, unflagged -- neither has work owed to \
-                      a restart. Background jobs keep running."
+            description: "Stop the turn one session is running: a tool that is waiting is \
+                      ended and its result handed back, the stream stops, and everything \
+                      received is kept. Nothing is owed to a restart -- `cancel` is the verb \
+                      that continues a turn, not this one. Background jobs keep running."
                 .into(),
             args: vec![{
                 let mut spec = pos(
-                    "session",
+                    "id",
                     "Session whose turn should stop.",
                     true,
                     Some("name"),
@@ -558,7 +560,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     CompletionSource::Sessions,
                 ),
                 arg(
-                    "subscription",
+                    "id",
                     "The name it is armed and dropped by. Arming a name again replaces \
                      what it held. Omit it to be given one, which `ls_subscription` \
                      reports.",
@@ -614,8 +616,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 .into(),
             args: vec![
                 pos(
-                    "subscription",
-                    "The name it was armed by.",
+                    "path",
+                    "The name it was armed by, or the path whose subscriptions all go.",
                     true,
                     Some("name"),
                     CompletionSource::None,
@@ -753,13 +755,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "del_channel".into(),
-            description: "End a channel's program and forget the name. A channel that \
-                      had already ended is only forgotten."
+            description: "End a channel's program and forget the name, and do the same for \
+                      every channel under that path. A channel that had already ended is \
+                      only forgotten."
                 .into(),
             args: vec![
                 pos(
-                    "path",
-                    "Channel to end.",
+                    "id",
+                    "Channel to end, or the path whose channels all go.",
                     true,
                     Some("path"),
                     CompletionSource::None,
@@ -858,7 +861,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 .into(),
             args: vec![
                 kind_arg(
-                    "session",
+                    "id",
                     "The session to copy. It keeps its own rows: a clone reads the source, \
                      it does not take anything away.",
                     true,
@@ -867,7 +870,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     CompletionSource::Sessions,
                 ),
                 pos(
-                    "name",
+                    "new_id",
                     "The name the copy takes. It must be free: a copy that joined an \
                      existing transcript would be two conversations under one name.",
                     true,
@@ -980,11 +983,11 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
 /// a name already taken is refused or joined.
 fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
     vec![
-        // SPEC: `--name <session>(sticky)`. A sticky entry keys on the
+        // SPEC: `--id <session>(sticky)`. A sticky entry keys on the
         // kind `session`, wherever the argument appears.
         sticky_arg(
             kind_arg(
-                "name",
+                "id",
                 "Session to create or reconfigure.",
                 true,
                 "session",
@@ -1058,7 +1061,7 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
         .accepting_when(crate::providers::tier_accepts)
         .following("model"),
         kind_arg(
-            "cache_keepalive",
+            "keep_alive",
             "Whether a periodic `(time notice: ...)` message keeps this \
                  session's prefix warm after every turn. `false` by default; \
                  `true` keeps sending one per tier window with no last one.",
@@ -1290,7 +1293,7 @@ async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
     let Some(message) = args.get("message").cloned() else {
         return Outcome::err("send_message requires a message");
     };
-    let Some(name) = args.get("name").cloned() else {
+    let Some(name) = args.get("session").cloned() else {
         return Outcome::err(
             "send_message requires a session; set the sticky `session` entry to avoid \
              typing it",
@@ -1407,7 +1410,7 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
 }
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["name"].clone();
+    let name = args["id"].clone();
     // A leading `@` is the harness's own namespace: a name a person could take
     // is a name the harness cannot trust.
     if let Some(refusal) = crate::monitor::reserved(&name) {
@@ -1489,11 +1492,11 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             Some(Some(tier.to_string()))
         }
     };
-    let cache_keepalive = match args.get("cache_keepalive").map(String::as_str) {
+    let cache_keepalive = match args.get("keep_alive").map(String::as_str) {
         None => None,
         Some(raw) => match parse_bool(raw) {
             Ok(value) => Some(value),
-            Err(e) => return Outcome::err(format!("--cache_keepalive: {e}")),
+            Err(e) => return Outcome::err(format!("--keep_alive: {e}")),
         },
     };
     // What this session may do to the workspace. Absent keeps what it had.
@@ -1899,6 +1902,21 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     Ok(SeqWindow { first, last })
 }
 
+/// Whether `name` is `path` itself or below it.
+///
+/// # Invariant
+///
+/// A path is a component, not a string prefix: `a/b` is under `a`, and `ab` is not.
+/// Empty is every path, which is what "list them all" and "delete them all" mean.
+fn under(name: &str, path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    path.is_empty()
+        || name == path
+        || name
+            .strip_prefix(path)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 async fn ls_channel(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
     let prefix = args.get("path").cloned().unwrap_or_default();
@@ -1906,7 +1924,7 @@ async fn ls_channel(d: &Dispatch, args: &Args) -> Outcome {
         Ok(rows) => {
             let listed: Vec<serde_json::Value> = rows
                 .into_iter()
-                .filter(|row| row["id"].as_str().is_some_and(|id| id.starts_with(&prefix)))
+                .filter(|row| row["id"].as_str().is_some_and(|id| under(id, &prefix)))
                 .collect();
             if listed.is_empty() {
                 return Outcome::ok(format!("{session}: no channel matches {prefix:?}"));
@@ -1919,10 +1937,33 @@ async fn ls_channel(d: &Dispatch, args: &Args) -> Outcome {
 
 async fn del_channel(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
-    let path = args["path"].clone();
-    match d.agent.channels.stop(&session, &path).await {
-        Ok(true) => Outcome::ok(format!("ended channel {path:?}")),
-        Ok(false) => Outcome::ok(format!("channel {path:?} had already ended; forgotten")),
+    let id = args["id"].clone();
+    // SPEC: a path takes what is under it, so a name in the middle of one ends
+    // every channel below it as well.
+    let doomed: Vec<String> = match d.agent.channels.list(&session).await {
+        Ok(rows) => rows
+            .iter()
+            .filter_map(|row| row["id"].as_str())
+            .filter(|path| under(path, &id))
+            .map(str::to_string)
+            .collect(),
+        Err(why) => return Outcome::err(why),
+    };
+    if doomed.len() > 1 {
+        let mut ended = 0;
+        for path in &doomed {
+            if let Ok(true) = d.agent.channels.stop(&session, path).await {
+                ended += 1;
+            }
+        }
+        return Outcome::ok(format!(
+            "ended {ended} channel(s) under {id:?}: {}",
+            doomed.join(", ")
+        ));
+    }
+    match d.agent.channels.stop(&session, &id).await {
+        Ok(true) => Outcome::ok(format!("ended channel {id:?}")),
+        Ok(false) => Outcome::ok(format!("channel {id:?} had already ended; forgotten")),
         Err(why) => Outcome::err(why),
     }
 }
@@ -2010,7 +2051,7 @@ async fn ls_session(d: &Dispatch, args: &Args) -> Outcome {
     };
     let listed: Vec<serde_json::Value> = rows
         .into_iter()
-        .filter(|row| row.name.starts_with(&prefix))
+        .filter(|row| under(&row.name, &prefix))
         .map(|row| {
             json!({
                 "name": row.name,
@@ -2039,7 +2080,7 @@ async fn ls_subscription(d: &Dispatch, args: &Args) -> Outcome {
     };
     let listed: Vec<serde_json::Value> = rows
         .into_iter()
-        .filter(|row| row.session == session && row.name.starts_with(&prefix))
+        .filter(|row| row.session == session && under(&row.name, &prefix))
         .map(|row| {
             json!({
                 "subscription": row.name,
@@ -2178,8 +2219,8 @@ fn replay_transcript(
 /// first, then the same rows as the events they streamed as.
 /// See `docs/notes/server-commands.md`.
 async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
-    let source = args["session"].clone();
-    let name = args["name"].clone();
+    let source = args["id"].clone();
+    let name = args["new_id"].clone();
     let report = match d.store.clone_session(&source, &name) {
         Ok(report) => report,
         Err(e) => return Outcome::err(e.to_string()),
@@ -2269,7 +2310,7 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         },
     };
     let named = args
-        .get("subscription")
+        .get("id")
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty());
     let name = match named {
@@ -2370,13 +2411,9 @@ fn free_subscription_name(d: &Dispatch, session: &str) -> Result<String, String>
         .ok_or_else(|| "no free subscription name".to_string())
 }
 
-/// Drops one named subscription; the caller drops its own, never another session's.
+/// Drops a subscription, or every one under a path; the caller drops its own.
 async fn del_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let name = args
-        .get("subscription")
-        .map(String::as_str)
-        .unwrap_or("")
-        .trim();
+    let path = args.get("path").map(String::as_str).unwrap_or("").trim();
     let given = args.get("session").map(String::as_str).or(caller);
     let Some(caller) = given.filter(|name| !name.trim().is_empty()) else {
         return Outcome::err(
@@ -2385,11 +2422,29 @@ async fn del_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Ou
         );
     };
     let caller = caller.trim();
-    match d.subscriptions.disarm_name(caller, name).await {
-        Ok(0) => Outcome::err(format!("no subscription named {name:?} for {caller}")),
-        Ok(n) => Outcome::ok(format!("subscription `{name}` dropped ({n})")),
-        Err(e) => Outcome::err(e),
+    // SPEC: a path takes what is under it -- `hook/` drops `hook/a` and `hook/a/b`.
+    let doomed: Vec<String> = match d.store.subscriptions() {
+        Ok(rows) => rows
+            .into_iter()
+            .filter(|row| row.session == caller && under(&row.name, path))
+            .map(|row| row.name)
+            .collect(),
+        Err(e) => return Outcome::err(format!("could not read the subscriptions: {e}")),
+    };
+    if doomed.is_empty() {
+        return Outcome::err(format!("no subscription named {path:?} for {caller}"));
     }
+    let mut dropped = 0;
+    for name in &doomed {
+        match d.subscriptions.disarm_name(caller, name).await {
+            Ok(n) => dropped += n,
+            Err(e) => return Outcome::err(e),
+        }
+    }
+    Outcome::ok(format!(
+        "dropped {dropped} subscription(s) under {path:?}: {}",
+        doomed.join(", ")
+    ))
 }
 
 /// Publishes one event under a chosen name, as a log row every matcher sees.
@@ -2685,9 +2740,35 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
 }
 
 async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["name"].clone();
-    let (was_busy, dropped) = prepare_delete(d, &name);
-    finish_delete(d, &name, was_busy, dropped).await
+    let path = args["path"].clone();
+    let rows = match d.store.list_sessions() {
+        Ok(rows) => rows,
+        Err(e) => return Outcome::err(format!("could not read the sessions: {e}")),
+    };
+    let doomed: Vec<String> = rows
+        .into_iter()
+        .map(|row| row.name)
+        .filter(|name| under(name, &path))
+        .collect();
+    let Some((one, below)) = doomed.split_first() else {
+        return Outcome::err(format!("no session named {path:?}"));
+    };
+    if below.is_empty() {
+        let (was_busy, dropped) = prepare_delete(d, one);
+        return finish_delete(d, one, was_busy, dropped).await;
+    }
+    // A path takes what is under it; each delete keeps its own cleanup, so one by one.
+    let mut deleted = 0;
+    for name in &doomed {
+        let (was_busy, dropped) = prepare_delete(d, name);
+        if finish_delete(d, name, was_busy, dropped).await.ok {
+            deleted += 1;
+        }
+    }
+    Outcome::ok(format!(
+        "deleted {deleted} session(s) under {path:?}: {}",
+        doomed.join(", ")
+    ))
 }
 
 /// Stops one session's turn.
@@ -2721,7 +2802,7 @@ fn interrupt(d: &Dispatch, name: &str, keep: bool) -> (bool, usize) {
 }
 
 async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["session"].clone();
+    let name = args["id"].clone();
     // `peek`, not `get`: materialising would start shells just to stop nothing.
     if d.sessions.peek(&name).is_none() {
         return match d.store.get_session(&name) {

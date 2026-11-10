@@ -176,10 +176,11 @@ read returned, and its result line belong next to the transcript they came from.
 command line keeps the commands that named nobody, which is what it is for -- a ticker
 of what the operator asked the *client*.
 
-Which argument names that session is the catalog's answer, never the argument's
-spelling: `send_message --name` and `get_messages --session` bind different names to one
-kind, and `Client::session_named` is the one place that reads it. Reading the literal key
-`session` put every `--name` command -- a message the operator sent, a session being
+Which argument names that session is the catalog's answer, never a hardcoded key:
+SPEC spells the session argument differently per verb -- `send_message --session`,
+`set_session --id`, `del_session --path` -- and they are one kind, so
+`Client::session_named` is the one place that reads it. Reading a literal key put every
+command that spelled it another way -- a message the operator sent, a session being
 created -- in the command row, where its answer said what it did to a session whose own
 view never showed that it was asked.
 
@@ -505,14 +506,14 @@ them rather than three commands with one name. Two rules make that legible:
 ## Client::session_named
 
 Which argument of a command names a session, read off the kind: `set_session` binds
-`--name` and `get_messages` binds `--session` to one idea, and only the kind says which
+`--id` and `get_messages` binds `--session` to one idea, and only the kind says which
 is the session. What is *done* with the answer is the window's
 (`docs/notes/tui-run.md`): a session the server announces is one nobody asked for, so
 it is not drawn; a session a command names is drawn and becomes the sticky one.
 
 `session_named` reads the *kind* the catalog gives an argument, not the argument's
-name: `set_session` binds `--name` and `get_messages` binds `--session` to one idea,
-and only the kind says which is the session. It answers `None` for a client command,
+name: `set_session` binds `--id` and `get_messages` binds `--session` to one idea, and
+only the kind says which is the session. It answers `None` for a client command,
 because `set_render_session` has a session argument too and it says whether that
 session is drawn -- following it would undo what it says.
 

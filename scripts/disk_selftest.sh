@@ -171,7 +171,7 @@ echo "--- the threshold is read from the home, and the first call is below it"
 grep -q "threshold=104857600000000" "$log"
 ok "the server read the threshold this home declared" $?
 
-"${cli[@]}" set_session --name spill --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" set_session --id spill --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
 # A tool call that WORKS. A disk on its way out serves ordinary commands happily,
 # so waiting for one of them to fail waits for the first big write -- which on a
 # server that mostly reads may be never. That is the whole reason the reading

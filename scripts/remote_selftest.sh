@@ -219,24 +219,24 @@ server_pid=$(child_pid)
 cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
 
 # `local` is not a remote name: naming it is refused, and the refusal says `none`.
-refused=$("${cli[@]}" set_session --name probe --model fake/flash-fake --remote local 2>&1)
+refused=$("${cli[@]}" set_session --id probe --model fake/flash-fake --remote local 2>&1)
 [[ "$refused" == *"no remote called \`local\`"* && "$refused" == *"none"* ]]
 ok "naming \`local\` is refused, and the answer names \`none\`" $?
 
-created=$("${cli[@]}" set_session --name probe --model fake/flash-fake --remote "$peer_name" 2>&1)
+created=$("${cli[@]}" set_session --id probe --model fake/flash-fake --remote "$peer_name" 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created on $peer_name" $?
 
 # The boundary: a remote left in the home's `config.toml` is refused, not honoured --
 # it is the merged file, and a host name in it would be published by a pin move.
-probe=$("${cli[@]}" set_session --name probe --model fake/flash-fake --remote ghost 2>&1)
+probe=$("${cli[@]}" set_session --id probe --model fake/flash-fake --remote ghost 2>&1)
 # The answer is compact JSON, so the name's own quotes arrive escaped.
 [[ "$probe" == *'no remote named \"ghost\"'* ]]
 ok "a remote named only in config.toml does not exist" $?
 grep -q 'these remotes are in config.toml' "$log"
 ok "and startup says so, with the migrator that moves them" $?
 
-"${cli[@]}" send_message --message "@skill(self-control) make the scratch" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "@skill(self-control) make the scratch" --session probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 # The peer's own path, in the spelling its own shell gave, and the file it wrote.
@@ -257,7 +257,7 @@ peer_home=$(sed -n 2p <<<"$printed_paths")
 ok "remote_bash made the peer's scratch and named it in Windows spelling ($peer_scratch)" $?
 
 # The session moves to that directory: what its references are read against.
-moved=$("${cli[@]}" set_session --name probe --cwd "$peer_scratch" 2>&1)
+moved=$("${cli[@]}" set_session --id probe --cwd "$peer_scratch" 2>&1)
 [[ "$moved" == *'"ok":true'* ]]
 ok "the session moves to $peer_scratch" $?
 
@@ -270,7 +270,7 @@ print(json.dumps({"path": sys.argv[1] + "/from-tool.txt",
                   "remote": sys.argv[2]}))
 PY
 )"
-"${cli[@]}" send_message --message "write the file" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "write the file" --session probe >/dev/null 2>&1
 wait_turn probe
 [[ "$(last_tool)" == *"wrote"* ]]
 ok "write_file reached the peer" $?
@@ -280,7 +280,7 @@ import json, sys
 print(json.dumps({"path": sys.argv[1] + "/from-tool.txt", "remote": sys.argv[2]}))
 PY
 )"
-"${cli[@]}" send_message --message "read the file" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "read the file" --session probe >/dev/null 2>&1
 wait_turn probe
 [[ "$(last_tool)" == *"hello from the tool"* ]]
 ok "read_file reached the peer" $?
@@ -291,7 +291,7 @@ print(json.dumps({"path": sys.argv[1] + "/from-tool.txt",
                   "old": "hello", "new": "goodbye", "remote": sys.argv[2]}))
 PY
 )"
-"${cli[@]}" send_message --message "replace in the file" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "replace in the file" --session probe >/dev/null 2>&1
 wait_turn probe
 [[ "$(last_tool)" == *"replaced 1 occurrence"* ]]
 ok "replace reached the peer" $?
@@ -301,13 +301,13 @@ import json, sys
 print(json.dumps({"path": sys.argv[1] + "/from-tool.txt", "remote": sys.argv[2]}))
 PY
 )"
-"${cli[@]}" send_message --message "read the file again" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "read the file again" --session probe >/dev/null 2>&1
 wait_turn probe
 [[ "$(last_tool)" == *"goodbye from the tool"* ]]
 ok "the replacement is what the peer holds" $?
 
 fake_up read_file '{"path":"/x","remote":"ghost"}'
-"${cli[@]}" send_message --message "try another machine" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "try another machine" --session probe >/dev/null 2>&1
 wait_turn probe
 [[ "$(last_tool)" == *"ran nothing"* ]]
 ok "a second machine is refused" $?
@@ -318,7 +318,7 @@ print(json.dumps({"path": sys.argv[1] + "/from-tool-local.txt",
                   "content": "local content"}))
 PY
 )"
-"${cli[@]}" send_message --message "write a local file" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "write a local file" --session probe >/dev/null 2>&1
 wait_turn probe
 [[ "$(last_tool)" == *"wrote"* ]]
 ok "write_file still writes this machine" $?
@@ -328,20 +328,20 @@ import json, sys
 print(json.dumps({"path": sys.argv[1] + "/from-tool-local.txt"}))
 PY
 )"
-"${cli[@]}" send_message --message "read the local file" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "read the local file" --session probe >/dev/null 2>&1
 wait_turn probe
 [[ "$(last_tool)" == *"local content"* ]]
 ok "read_file still reads this machine" $?
 
 fake_up "" "{}"
-"${cli[@]}" send_message --message "now say which machine you are on" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "now say which machine you are on" --session probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 # A session placed where the rules file already is: its first prompt carries it.
-created2=$("${cli[@]}" set_session --name probe2 --model fake/flash-fake --remote "$peer_name" --cwd "$peer_scratch" 2>&1)
+created2=$("${cli[@]}" set_session --id probe2 --model fake/flash-fake --remote "$peer_name" --cwd "$peer_scratch" 2>&1)
 [[ "$created2" == *'"ok":true'* ]]
 ok "a second session is placed on the peer" $?
-"${cli[@]}" send_message --message "hello" --name probe2 >/dev/null 2>&1
+"${cli[@]}" send_message --message "hello" --session probe2 >/dev/null 2>&1
 wait_turn probe2
 python - "$home" "$marker" <<'INNER'
 import json, sqlite3, sys
@@ -356,11 +356,11 @@ INNER
 ok "a placed session's first prompt carries the peer's own AGENTS.md" $?
 
 fake_up bash "{\"command\":\"pwd\",\"name\":\"here\",\"task\":\"prove this machine\"}"
-"${cli[@]}" send_message --message "and a shell here" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "and a shell here" --session probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 fake_up list_bash "{}"
-"${cli[@]}" send_message --message "which shells do you have" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "which shells do you have" --session probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 python - "$home" "$peer_scratch" <<'INNER'
@@ -407,12 +407,12 @@ ok "a session with a remote is offered both tools" $?
 
 # Out of the scratch before it goes: a move ends every shell, so nothing on the peer
 # is standing in the directory the next command removes.
-back=$("${cli[@]}" set_session --name probe --cwd "$peer_home" 2>&1)
+back=$("${cli[@]}" set_session --id probe --cwd "$peer_home" 2>&1)
 [[ "$back" == *'"ok":true'* ]]
 ok "the session moves out of its scratch" $?
 
 fake_up remote_bash "{\"command\":\"rm -rf \\\"\$HOME/$tag\\\" && echo peer-clean\",\"name\":\"cleanup\",\"task\":\"remove the peer scratch\"}"
-"${cli[@]}" send_message --message "clean up the peer" --name probe >/dev/null 2>&1
+"${cli[@]}" send_message --message "clean up the peer" --session probe >/dev/null 2>&1
 wait_turn probe; say_turn probe
 python - "$home" <<'INNER'
 import json, sqlite3, sys
@@ -428,7 +428,7 @@ ok "the peer's scratch is removed" $?
 # The sticky `cwd` is this machine's argument, not the peer's, so a come-home move
 # must not inherit it.
 "${cli[@]}" del_sticky cwd >/dev/null 2>&1
-back=$("${cli[@]}" set_session --name probe --remote none 2>&1)
+back=$("${cli[@]}" set_session --id probe --remote none 2>&1)
 [[ "$back" == *'"ok":true'* ]]
 ok "a session comes home by naming \`none\`" $?
 python - "$home" <<'INNER'

@@ -122,7 +122,7 @@ server_pid=$(child_pid)
 # The client is the home's shim, written by the server it talks to (`docs/notes/cli-bin-gongga.md`).
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
-created=$("${cli[@]}" set_session --name reader --model fake/flash-fake --cwd "$root" 2>&1)
+created=$("${cli[@]}" set_session --id reader --model fake/flash-fake --cwd "$root" 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created in the repository" $?
 
@@ -138,7 +138,7 @@ spaced=$(cygpath -w "$spacey")
 nested=$(cygpath -w "$nested")
 message="看下@file(docs/notes/tui-main.md)这个文件，还有@skill(self-control)是做什么的，以及@file($spaced)这个、@file($nested)那个"
 say "message: $message"
-sent=$("${cli[@]}" send_message --name reader --message "$message" 2>&1)
+sent=$("${cli[@]}" send_message --session reader --message "$message" 2>&1)
 say "sent: $sent"
 [[ "$sent" == *'"ok":true'* ]]
 ok "its turn is accepted" $?

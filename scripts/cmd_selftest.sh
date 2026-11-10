@@ -95,25 +95,25 @@ cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
 # The model never runs: no turn is started, so no provider is needed.
 
 # 1. Positional set_session.
-created=$("${cli[@]}" set_session --name main --model fake/flash-fake --cwd "$root" 2>&1)
+created=$("${cli[@]}" set_session --id main --model fake/flash-fake --cwd "$root" 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "set_session main --model <model> --cwd <path>" $?
 say "$created"
 
 # 2. Sticky session fills the omitted first positional of del_session's sibling.
-sent=$("${cli[@]}" send_message --name main --message "hello there" 2>&1)
+sent=$("${cli[@]}" send_message --session main --message "hello there" 2>&1)
 [[ "$sent" == *'"ok":true'* ]]
-ok "send_message --name main <message>" $?
+ok "send_message --session main <message>" $?
 
 # 3. Diagnosis: an unknown flag names the command's syntax.
-bad=$("${cli[@]}" send_message --name main --message hi --mesage x 2>&1)
-[[ "$bad" == *"has no argument --mesage"* && "$bad" == *"--message <text> --name <name>"* ]]
+bad=$("${cli[@]}" send_message --session main --message hi --mesage x 2>&1)
+[[ "$bad" == *"has no argument --mesage"* && "$bad" == *"--message <text> --session <name>"* ]]
 ok "unknown flag diagnosed with the signature" $?
 say "$bad"
 
 # 4. Diagnosis: an extra word is refused with the signature.
-extra=$("${cli[@]}" del_session --name main stray 2>&1)
-[[ "$extra" == *'takes its arguments by name, and "stray" names none'* && "$extra" == *"--name <name>"* ]]
+extra=$("${cli[@]}" del_session --path main stray 2>&1)
+[[ "$extra" == *'takes its arguments by name, and "stray" names none'* && "$extra" == *"--path <name>"* ]]
 ok "extra word diagnosed" $?
 say "$extra"
 
@@ -143,7 +143,7 @@ ok "new_channel starts a python channel" $?
 "${cli[@]}" input_channel --session main --id main/python --input 'pass' --wait 8000 >/dev/null 2>&1
 grep -rq 42 "$home/channels" 2>/dev/null; py_rc=$?
 ok "and it answers 42, in its own log" $py_rc
-"${cli[@]}" del_channel --session main --path main/python >/dev/null 2>&1
+"${cli[@]}" del_channel --session main --id main/python >/dev/null 2>&1
 
 # 9. read_file tool command reads what bash wrote, through the session's dir.
 read_back=$("${cli[@]}" read_file --session main --path cmd-selftest.txt 2>&1)
@@ -153,7 +153,7 @@ ok "read_file main <path> (tool command)" $?
 # 10. A subscription armed with a command; trigger_event fires it; the command runs
 #     in the session that armed it, and its log row is the record.
 sub=$(GONGGA_SESSION=main "${cli[@]}" subscribe --pattern '^cmd_ping$' \
-  --cmd '{"name": "trigger_event", "args": {"event": "sub_ping"}}' --subscription watcher \
+  --cmd '{"name": "trigger_event", "args": {"event": "sub_ping"}}' --id watcher \
   --persistant true 2>&1)
 [[ "$sub" == *'"ok":true'* ]]
 ok "subscribe watcher '^cmd_ping$' <cmd>" $?
@@ -175,24 +175,24 @@ ok "the outcome is a subscription log row" $rc
 say "$row"
 
 # 12. del_subscription drops by name.
-dropped=$(GONGGA_SESSION=main "${cli[@]}" del_subscription --subscription watcher 2>&1)
+dropped=$(GONGGA_SESSION=main "${cli[@]}" del_subscription --path watcher 2>&1)
 [[ "$dropped" == *'"ok":true'* ]]
 ok "del_subscription watcher" $?
 
 # 13. A missed subscription name is a refusal.
-missed=$(GONGGA_SESSION=main "${cli[@]}" del_subscription --subscription watcher 2>&1)
+missed=$(GONGGA_SESSION=main "${cli[@]}" del_subscription --path watcher 2>&1)
 [[ "$missed" == *"no subscription named"* ]]
 ok "del_subscription refuses an unknown name" $?
 
 # 14. interrupt_session and the rest of the positional family answer.
-inter=$("${cli[@]}" interrupt_session --session main 2>&1)
+inter=$("${cli[@]}" interrupt_session --id main 2>&1)
 [[ "$inter" == *'"ok":true'* || "$inter" == *"not running"* || "$inter" == *"no turn"* ]]
 ok "interrupt_session main" $?
 say "$inter"
 
 # 15. The operation the window's gestures use crosses the wire: the protocol
 #     carries it beside the commands, and the server answers it like one.
-"${cli[@]}" set_session --name doomed --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" set_session --id doomed --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
 probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$home/server.key")" delete_session --session doomed 2>&1)
 [[ "$probe" == *'"ok":true'* ]]
 ok "the delete_session operation is answered" $?
@@ -271,7 +271,7 @@ client=$(GONGGA_SERVER="127.0.0.1:$port" GONGGA_HOME="$home" python -c "
 import sys; sys.path.insert(0, r'$(cygpath -m "$home")/lib')
 import gongga
 s = gongga.connect()
-s.set_session(name='from-python', model='fake/flash-fake')
+s.set_session(id='from-python', model='fake/flash-fake')
 s.pump()
 print('pid', s.pid > 0, '| sessions', 'from-python' in [x['name'] for x in s.sessions])
 try:
@@ -279,7 +279,7 @@ try:
 except AttributeError:
     print('typo', True)
 try:
-    s.del_session(name='ghost')
+    s.del_session(path='ghost')
 except gongga.GonggaError as refused:
     print('refusal', str(refused))
 " 2>&1)

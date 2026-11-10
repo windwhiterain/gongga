@@ -139,7 +139,7 @@ for line in text.splitlines():
 sys.stdout.write(str(value))' "$1" "$2"
 }
 
-"${cli[@]}" set_session --name main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" set_session --id main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
 
 # 1. A program started as a channel, and the name it answers by.
 started=$("${cli[@]}" new --session main --name bash 2>&1)
@@ -206,7 +206,7 @@ say "$refused"
 ok "a machine that cannot be reached is refused, not run here" "$([[ "$(field "$refused" id)" == "" ]] && has "$refused" 'no remote named' && echo 0 || echo 1)"
 
 # 7. A command is reached by a tool call, not by a channel: SPEC's `fn <tool>(**args)`.
-cloned=$("${cli[@]}" clone_session --session main --name copy 2>&1)
+cloned=$("${cli[@]}" clone_session --id main --new_id copy 2>&1)
 say "$cloned"
 ok "a command runs as itself" "$(has "$cloned" '"ok":true' && echo 0 || echo 1)"
 copied=$("${cli[@]}" get_messages --session copy 2>&1)
@@ -216,12 +216,12 @@ ok "the cmd really ran" "$(has "$copied" 'last_seq' && echo 0 || echo 1)"
 listed=$("${cli[@]}" ls_channel --session main --path "" 2>&1)
 say "$listed"
 ok "ls_channel lists the channels" "$(has "$listed" "$shell_id" && echo 0 || echo 1)"
-ended=$("${cli[@]}" del_channel --session main --path "$shell_id" 2>&1)
+ended=$("${cli[@]}" del_channel --session main --id "$shell_id" 2>&1)
 ok "del_channel ends a channel" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
 
 # 8. A subscription runs one command per match: the log row is what a match leaves.
 armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe --pattern '^channel_selftest$' \
-  --cmd '{"name": "trigger_event", "args": {"event": "sub_ran"}}' --subscription watcher \
+  --cmd '{"name": "trigger_event", "args": {"event": "sub_ran"}}' --id watcher \
   --persistant true 2>&1)
 say "$armed"
 ok "a subscription carries the command it runs" \
