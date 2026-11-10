@@ -383,6 +383,9 @@ public sealed class ClientModel : ViewModelBase
             existing.Status = row.Status;
             existing.Title = row.Title;
             existing.Unseen = _unseen.Contains(row.Name);
+            // What the list lights up is which windows are open, not where a click
+            // last landed: the layout is the only thing that knows.
+            existing.Shown = layout.Shown.Contains(row.Name);
             var current = -1;
             for (var scan = 0; scan < Sessions.Count; scan++)
             {

@@ -109,10 +109,11 @@ public static class ShotRun
     }
 
     /// The listed row whose view model names this session.
-    private static ListBoxItem? Session(Window window, string name) =>
+    private static Border? Session(Window window, string name) =>
         window.GetVisualDescendants()
-            .OfType<ListBoxItem>()
-            .FirstOrDefault(item => item.DataContext is SessionRow row && row.Name == name);
+            .OfType<Border>()
+            .FirstOrDefault(item => item.Tag is string tag && tag == name
+                && item.DataContext is SessionRow row && row.Name == name);
 
     /// Presses the middle of a control, in window coordinates.
     private static bool Click(Window window, Control control)
@@ -166,7 +167,10 @@ public static class ShotRun
             _ => string.Empty,
         };
         var visible = visual.IsVisible ? string.Empty : " (hidden)";
-        lines.Add($"{indent}{visual.GetType().Name} {Box(visual, root)}{text}{visible}");
+        var state = visual is Border { DataContext: SessionRow session }
+            ? (session.Shown ? " [shown]" : " [hidden]")
+            : string.Empty;
+        lines.Add($"{indent}{visual.GetType().Name} {Box(visual, root)}{text}{state}{visible}");
         foreach (var child in visual.GetVisualChildren())
         {
             Walk(child, root, depth + 1, lines);

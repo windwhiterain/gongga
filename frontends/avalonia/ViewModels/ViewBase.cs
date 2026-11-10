@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using Avalonia.Media;
 using Gongga.Avalonia.Wire;
 
 namespace Gongga.Avalonia.ViewModels;
@@ -186,9 +187,16 @@ public sealed class PaneRow : ViewModelBase
 
 public sealed class SessionRow : ViewModelBase
 {
+    /// A window is open for this session, so typing goes here and the list says so.
+    private static readonly IBrush ShownRow = new SolidColorBrush(Color.Parse("#18212B"));
+    private static readonly IBrush HiddenRow = Brushes.Transparent;
+    private static readonly IBrush ShownName = new SolidColorBrush(Color.Parse("#E2E8EF"));
+    private static readonly IBrush HiddenName = new SolidColorBrush(Color.Parse("#5E6874"));
+
     private string _status = string.Empty;
     private string _title = string.Empty;
     private bool _unseen;
+    private bool _shown;
 
     public SessionRow(string name)
     {
@@ -213,6 +221,31 @@ public sealed class SessionRow : ViewModelBase
         get => _title;
         set => Set(ref _title, value, nameof(Title));
     }
+
+    /// Whether this session has a window beside the list.
+    ///
+    /// # Invariant
+    ///
+    /// It is the `Layout.shown` the client sent, never the row the pointer last hit:
+    /// two open windows are two rows saying so, and a click that opened nothing may
+    /// not leave one of them lit.
+    public bool Shown
+    {
+        get => _shown;
+        set
+        {
+            if (!Set(ref _shown, value, nameof(Shown)))
+            {
+                return;
+            }
+            Raise(nameof(RowBrush));
+            Raise(nameof(NameBrush));
+        }
+    }
+
+    public IBrush RowBrush => _shown ? ShownRow : HiddenRow;
+
+    public IBrush NameBrush => _shown ? ShownName : HiddenName;
 
     public bool Unseen
     {

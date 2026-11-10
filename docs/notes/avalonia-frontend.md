@@ -183,6 +183,15 @@ Two more came from the same pictures: an unfocused input box was invisible (the
 border was the same colour as the background) and now has a border and a
 placeholder, and a long session subtitle was cut mid-word without an ellipsis.
 
+The fifth is the one the pictures did not show me and the operator did: with two
+panes open, only one row in the list looked open. The list was a `ListBox`, so
+the row it lit was the row the pointer last hit, which is a fact about the mouse
+and not about the window. It is an `ItemsControl` now and a row is lit exactly
+when `Layout.shown` names it -- the same rule the terminal uses, where a shown
+session's name is the bright one. `tree.txt` carries `[shown]`/`[hidden]` on each
+row, so the count is a check and not an opinion: none before a click, one after,
+two once the second pane opens.
+
 ## Deliberate limits
 
 - `LineKind::Assistant` is shown as wrapped plain text, not rendered markdown.
