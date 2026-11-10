@@ -21,6 +21,7 @@ mod render;
 pub mod run;
 mod table;
 mod tree;
+mod vt_input;
 
 use std::io::{self, Stdout, Write, stdout};
 use std::path::Path;
@@ -482,7 +483,10 @@ pub struct Tui {
     completer: SharedCompleter,
     history: Vec<String>,
     history_pos: Option<usize>,
-    events: EventStream,
+    /// The console-record reader, opened only when the byte reader is off.
+    events: Option<EventStream>,
+    /// The byte reader, when this window reads the console as a stream.
+    vt: Option<tokio::sync::mpsc::UnboundedReceiver<TermEvent>>,
     /// Whether mouse capture is on, so the toggle knows what to flip.
     restored: bool,
     /// Whether anything changed since the last frame. Every mutation sets it.
@@ -771,33 +775,6 @@ fn token(key: &KeyEvent) -> Option<char> {
     }
 }
 
-/// What the clipboard held, and when it was last read.
-///
-/// # Invariant
-///
-/// The one fact a keystroke cannot lie about: a terminal replaying a paste sends the
-/// same events a hand does, but the text matches the clipboard. Read at most once a
-/// second, because reading it spawns a program. See `docs/notes/tui-paste.md`.
-static CLIPBOARD: std::sync::OnceLock<std::sync::Mutex<(Option<std::time::Instant>, String)>> =
-    std::sync::OnceLock::new();
-
-/// The clipboard's text, or nothing when this machine cannot read it.
-fn clipboard_text() -> Option<String> {
-    let cell = CLIPBOARD.get_or_init(|| std::sync::Mutex::new((None, String::new())));
-    let mut guard = cell.lock().ok()?;
-    let fresh = guard
-        .0
-        .is_some_and(|at| at.elapsed() <= std::time::Duration::from_secs(1));
-    if !fresh {
-        match clipboard::paste() {
-            clipboard::FromClipboard::Ok(text) => *guard = (Some(std::time::Instant::now()), text),
-            _ => guard.0 = Some(std::time::Instant::now()),
-        }
-    }
-    let held = guard.1.clone();
-    Some(held).filter(|text| !text.is_empty())
-}
-
 /// The console's own QuickEdit, off for as long as this window is up.
 ///
 /// # Invariant
@@ -924,7 +901,8 @@ impl Tui {
             input_area: Rect::default(),
             dragging: None,
             note_window: client::COMMAND_WINDOW.to_string(),
-            events: EventStream::new(),
+            events: (!vt_input::wanted()).then(EventStream::new),
+            vt: vt_input::wanted().then(vt_input::spawn),
             restored: false,
             // The first frame has to happen even though nothing has changed.
             dirty: true,
@@ -1227,7 +1205,7 @@ impl Tui {
             // A run in progress is finished first: it lives in `self`, so a
             // cancelled wait resumes it instead of losing the keys.
             if !self.pending.is_empty() {
-                match tokio::time::timeout(PASTE_GAP, self.events.next()).await {
+                match tokio::time::timeout(PASTE_GAP, self.next_term()).await {
                     // Quiet: the run is over, and a key held as a marker was not one.
                     Err(_) => {
                         for key in self.markers.take_probe() {
@@ -1262,7 +1240,7 @@ impl Tui {
             }
             let next = match self.stashed.take() {
                 Some(held) => held,
-                None => self.events.next().await?,
+                None => self.next_term().await?,
             };
             if let (Some(log), Ok(event)) = (self.key_log.as_mut(), &next) {
                 use std::io::Write as _;
@@ -1331,30 +1309,6 @@ impl Tui {
         self.pending.push(key);
     }
 
-    /// Whether the clipboard accounts for what the prompt holds.
-    ///
-    /// # Invariant
-    ///
-    /// A break is the paste's when the prompt is what the clipboard begins with: a
-    /// terminal replaying a clipboard sends exactly those characters, and the prompt
-    /// keeps every chunk, so the second break matches as well as the first.
-    ///
-    /// # Invariant
-    ///
-    /// Only a long text or a clipboard holding a break counts, so retyping a short
-    /// copied command still sends. See `docs/notes/tui-paste.md`.
-    fn clipboard_explains(&self, typed: &str) -> bool {
-        let typed = typed.trim_end();
-        if typed.chars().count() < 8 {
-            return false;
-        }
-        let Some(clip) = clipboard_text() else {
-            return false;
-        };
-        let block = typed.chars().count() >= 40 || clip.trim_end().contains('\n');
-        block && clip.starts_with(typed)
-    }
-
     /// Whether this lone break ends a burst no hand typed.
     ///
     /// # Invariant
@@ -1369,6 +1323,17 @@ impl Tui {
             self.fast = 0;
         }
         pasted
+    }
+
+    /// The next terminal event, from whichever reader this window opened.
+    async fn next_term(&mut self) -> Option<std::io::Result<TermEvent>> {
+        match &mut self.vt {
+            Some(vt) => vt.recv().await.map(Ok),
+            None => match &mut self.events {
+                Some(events) => events.next().await,
+                None => None,
+            },
+        }
     }
 
     /// Whether a key event drives the UI: presses and repeats, never releases.
@@ -1641,12 +1606,6 @@ impl Tui {
             KeyCode::Enter => {
                 let raw = self.screen.input.text().trim().to_string();
                 if raw.is_empty() {
-                    return None;
-                }
-                // A break the clipboard explains is the paste's, however slowly the
-                // terminal is replaying it.
-                if self.clipboard_explains(&raw) {
-                    self.newline();
                     return None;
                 }
                 self.screen.input.clear();
