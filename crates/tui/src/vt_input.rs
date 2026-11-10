@@ -140,6 +140,22 @@ mod platform {
                     at += 3;
                     continue;
                 }
+                // A control byte after the escape is a key, not a character: an
+                // escape then a carriage return is Alt+Enter, and typing the raw
+                // byte would put a newline inside the prompt instead of sending.
+                match buffer.get(at + 1).copied() {
+                    Some(b'\r' | b'\n') => {
+                        events.push(key(KeyCode::Enter, KeyModifiers::ALT));
+                        at += 2;
+                        continue;
+                    }
+                    Some(b'\t') => {
+                        events.push(key(KeyCode::Tab, KeyModifiers::ALT));
+                        at += 2;
+                        continue;
+                    }
+                    _ => {}
+                }
                 let Some((ch, used)) = utf8(&buffer[at + 1..]) else {
                     break;
                 };
@@ -234,7 +250,7 @@ mod platform {
         // Bit 5 is motion, so a drag and a click differ by that bit alone: a
         // handler that only knows clicks loses the gesture that selects text.
         let held = button & 0b11;
-        let kind = match (button & 0b1100_0111, last) {
+        let kind = match (button & 0b1110_0011, last) {
             (64, _) => MouseEventKind::ScrollUp,
             (65, _) => MouseEventKind::ScrollDown,
             (value, b'M') if value & 32 != 0 => match held {
