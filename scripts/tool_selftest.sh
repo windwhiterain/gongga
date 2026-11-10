@@ -244,9 +244,10 @@ sleep 2
 wait_turn main
 waited=$(last_tool main)
 say "wait answered: $(printf '%s' "$waited" | head -c 200)"
-# Either wording is the same fact: the wait ended because something came in. What
-# it must not say is that the whole ceiling passed with nothing.
-ok "wait ended on the news a subscription sent"   "$(has "$waited" 'nothing arrived' && echo 1 || echo 0)"
+# SPEC gives `wait` a `time` back, so "the news cut it" is a number well under the
+# 30 s this call asked for: the ceiling itself would be 30.
+waited_s=$(printf '%s' "$waited" | head -1 | sed -n 's/^\([0-9][0-9]*\)\.[0-9]*s$/\1/p')
+ok "wait ended on the news a subscription sent"   "$([[ -n "$waited_s" && $waited_s -lt 30 ]] && echo 1 || echo 0)"
 # The news itself is a message, which is what makes the wait worth anything.
 "${cli[@]}" get_messages --session main 2>/dev/null | grep -q 'news-from-sub'
 ok "the news reached the session as a message" "$?"

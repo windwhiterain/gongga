@@ -350,7 +350,10 @@ spent=$(( $(date +%s%3N) - started ))
 # The last result of that session, as one value: an `output` is multi-line, so a
 # line of the answer is not the answer.
 waits=$(query "select json_extract(display,'\$.output') from messages where session_id=(select id from sessions where name='alone') and kind='tool_result' order by seq desc limit 1")
-[[ "$waits" == *"nothing arrived within"* && $spent -ge 2500 ]]
+# SPEC gives `wait` a `time` back: the answer is how long it waited, and nothing
+# arrived, so that is the ceiling it sat out.
+waits_s=$(printf '%s' "$waits" | head -1 | sed -n 's/^\([0-9][0-9]*\)\.[0-9]*s$/\1/p')
+[[ -n "$waits_s" && $spent -ge 2500 ]]
 ok "L with no subscription, wait sits to its timeout: $spent ms, '$waits'" $?
 
 # --- M: a spawned child's turn end is what interrupts that same wait -------------
@@ -369,9 +372,10 @@ before=$(turns_of alone)
 await "$child_from_alone" 1 || hard "the child's turn never ended"
 await alone $(( before + 1 )) || hard "the parent's waiting turn never ended"
 last=$(query "select json_extract(display,'\$.output') from messages where session_id=(select id from sessions where name='alone') and kind='tool_result' order by seq desc limit 1")
-# A callback's `send_message` is both a pending row and the inbox signal, so the
-# answer names whichever the wait saw first; what M measures is that it came back.
-[[ "$last" != *"nothing arrived"* && "$last" == *"next step boundary"* ]]
+# The answer is the time it waited, so "it came back" is a number smaller than the
+# 2.5 s ceiling: a wait that sat the whole clock would be that ceiling.
+last_s=$(printf '%s' "$last" | head -1 | sed -n 's/^\([0-9][0-9]*\)\.[0-9]*s$/\1/p')
+[[ -n "$last_s" && $last_s -lt 2 ]]
 ok "M the child's turn end interrupts it: '$last'" $?
 
 # --- I: the skill is a package whose API is `spawn(role, ...)` -----------------

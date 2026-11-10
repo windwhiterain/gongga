@@ -1297,8 +1297,7 @@ impl Cmd for WaitTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            // SPEC: "if none, wait default time, if 0, return immediately" -- a zero
-            // is one look at the inbox, not a wait.
+            // SPEC: "if none, wait default time, if 0, return immediately".
             let wait = args
                 .get("time")
                 .and_then(Value::as_u64)
@@ -1309,9 +1308,10 @@ impl Cmd for WaitTool {
             let began = std::time::Instant::now();
             let deadline = began + wait;
             loop {
-                // A message or an interrupt ends this wait: what it waited for is what it has.
+                // What arrived is delivered at the next step boundary, so the answer
+                // is the time this call spent.
                 match ctx.store.pending_injects_of(&ctx.session) {
-                    Ok(rows) if !rows.is_empty() => return ended(ctx, began),
+                    Ok(rows) if !rows.is_empty() => return ToolOutcome::ok(spent(began)),
                     Ok(_) => {}
                     // An unreadable inbox is said, not waited out: the retry would
                     // see the same failure for the whole ceiling.
@@ -1319,52 +1319,21 @@ impl Cmd for WaitTool {
                 }
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() {
-                    if wait.is_zero() {
-                        return ToolOutcome::ok(
-                            "nothing was waiting, and this call asked for no wait; `wait` \
-                             again, or get on with the work and this session will be told \
-                             when it is",
-                        );
-                    }
-                    return ended(ctx, began);
+                    return ToolOutcome::ok(spent(began));
                 }
                 tokio::select! {
                     _ = tokio::time::sleep(remaining.min(WAIT_POLL)) => {}
-                    // SPEC: a waiting call returns early -- with the answer it has.
-                    _ = ctx.cancel.cancelled() => return ended(ctx, began),
+                    // SPEC: a waiting call returns early -- with the time it spent.
+                    _ = ctx.cancel.cancelled() => return ToolOutcome::ok(spent(began)),
                 }
             }
         })
     }
 }
 
-/// What a wait answers when it is over: the rows it waited for, or how long nothing came.
-///
-/// # Invariant
-///
-/// One spelling for both doors -- its own deadline and an interrupt -- because an ended
-/// wait is an ended wait. The text says what the call has, never which verb ended it:
-/// SPEC gives a wait `output` and `time`, and the harness's own vocabulary is not the
-/// model's to read.
-fn ended(ctx: &ToolContext, started: std::time::Instant) -> ToolOutcome {
-    match ctx.store.pending_injects_of(&ctx.session) {
-        Ok(rows) if !rows.is_empty() => {
-            let mut what: Vec<String> = rows.iter().map(arrival).collect();
-            what.dedup();
-            ToolOutcome::ok(format!(
-                "{} row(s) arrived while this call waited ({}); they are \
-                 delivered at the next step boundary",
-                rows.len(),
-                what.join(", ")
-            ))
-        }
-        Ok(_) => ToolOutcome::ok(format!(
-            "nothing arrived within {}; `wait` again, or get on with the work and this \
-             session will be told when it is",
-            crate::agent::spent(started.elapsed().as_millis() as u64)
-        )),
-        Err(e) => ToolOutcome::err(format!("could not read the inbox: {e}")),
-    }
+/// SPEC's `time` for this call: how long it waited, spelled as a `Result`'s is.
+fn spent(began: std::time::Instant) -> String {
+    format!("{:.3}s", began.elapsed().as_secs_f64())
 }
 
 /// What one queued row is, in the few words a summary can carry.

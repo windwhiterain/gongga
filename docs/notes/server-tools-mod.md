@@ -377,8 +377,8 @@ have given a moment later.
 
 Three tools wait, and each one's early answer is the answer it already had:
 
-- `wait`: the rows that arrived, or how long nothing came -- the sentence its own
-  deadline gives, from `ended`.
+- `wait`: SPEC gives it `-> time`, so it answers with how long it waited -- its own
+  deadline and an interrupt are the same answer, because an ended wait is an ended wait.
 - `new`/`check`: a wait that ends early is a `check` that waited for no time at all, so
   `talk` answers with the window on disk right now, as SPEC's `Result`.
 - `<tool>(**args)` (`Forward`): the command said nothing, so its `Result` carries an
