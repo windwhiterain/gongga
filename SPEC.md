@@ -106,7 +106,6 @@ fn send_message(session: Session, message: str)
 fn interrupt_session(id: Session):
   # end tool waiting, return result as tool call result.
   # stop llm streaming and loop, everything received must be saved to context.
-  # for sessions idle or calling `wait`, do not set interrupted flag.
 fn trigger_event(event: Event)
 Subscription := path
 fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, session: Session):
