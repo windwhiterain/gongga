@@ -436,6 +436,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     // What a greeting hands every client: the picture a change is diffed against.
     commands::prime_sessions(&dispatch);
+    // SPEC: this start adopts the channels the last one kept; a dead one is told.
+    let adopted_channels = channels.adopt().await;
+    if adopted_channels > 0 {
+        tracing::info!(
+            adopted_channels,
+            "channels the last run kept, reported gone"
+        );
+    }
     // Whatever was in flight when the server last stopped is owed work.
     let resumed = commands::resume_pending(&dispatch).await;
     if resumed > 0 {

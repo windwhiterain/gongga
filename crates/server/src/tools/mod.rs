@@ -1368,14 +1368,14 @@ impl Cmd for WaitTool {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            // A cancel that finds this mark keeps the turn: a wait lives across it.
-            let _waiting = ctx.stop.begin_wait();
             let wait = args
                 .get("time")
                 .and_then(Value::as_u64)
                 .map(Duration::from_millis)
                 .unwrap_or(self.timeout)
                 .max(Duration::from_millis(100));
+            // A cancel that finds this mark keeps the turn, and resumes this wait.
+            let _waiting = ctx.stop.begin_wait(wait);
             let began = std::time::Instant::now();
             let deadline = began + wait;
             loop {

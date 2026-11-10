@@ -668,15 +668,94 @@ impl Channels {
         for row in rows {
             match self.place_of(&row).await {
                 Ok(place) => {
+                    // What it printed until the kill: the notice is a `Result`, and
+                    // an empty one would say nothing about why it stopped.
+                    let printed = place.read_from("out", row.upto).await.unwrap_or_default();
                     if place.append("in", "kill\n").await.is_ok() {
                         ended += 1;
                     }
                     let _ = self.store.delete_channel(&row.session, &row.path);
+                    // SPEC: killing a channel produces its end notice; the row is gone.
+                    (self.notify)(ChannelEnd {
+                        session: row.session.clone(),
+                        id: row.path.clone(),
+                        output: format!(
+                            "{}\n\n[the server stopped this channel as it was cancelled; \
+                             this is what it had printed until then]",
+                            String::from_utf8_lossy(&printed)
+                        ),
+                        // SPEC's `time`: since the last input.
+                        time: Duration::from_millis(
+                            (now_millis() - row.wrote_at.unwrap_or(row.started_at))
+                                .max(0)
+                                .try_into()
+                                .unwrap_or(0),
+                        ),
+                        exit: None,
+                        matched: false,
+                    });
                 }
                 Err(e) => tracing::warn!(channel = %row.path, "{e}"),
             }
         }
         ended
+    }
+
+    /// Says which channels the last run kept are still there, and which are not.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC: "failed to adopting channel will produce channel end notice". Adoption
+    /// is not a process either -- a kept channel is read and written through its
+    /// files -- so the failure is found the same way the success is: its status says
+    /// it ended, and the server that promised to adopt it is the one that has to say
+    /// so. Finished first, then told: a row that is gone cannot be noticed twice.
+    pub async fn adopt(&self) -> usize {
+        let rows = match self.store.live_channels() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("could not read the channels to adopt: {e}");
+                return 0;
+            }
+        };
+        let mut gone = 0;
+        for row in rows {
+            let Ok(place) = self.place_of(&row).await else {
+                continue;
+            };
+            // Still running: adopted, and the watcher speaks for it from here.
+            let Some(exit) = place.status().await.and_then(|status| status.exit) else {
+                continue;
+            };
+            let printed = place.read_from("out", row.upto).await.unwrap_or_default();
+            // The claim, not the flag: whoever takes it is the one that speaks.
+            let _ = self.store.take_channel_wait(row.id);
+            if !self.store.finish_channel(row.id, exit).unwrap_or(false) {
+                continue;
+            }
+            gone += 1;
+            (self.notify)(ChannelEnd {
+                session: row.session.clone(),
+                id: row.path.clone(),
+                output: format!(
+                    "{}\n\n[it had already ended when this server adopted it, with exit \
+                     {exit}; nothing was left to keep alive]",
+                    String::from_utf8_lossy(&printed)
+                ),
+                time: Duration::from_millis(
+                    (now_millis() - row.wrote_at.unwrap_or(row.started_at))
+                        .max(0)
+                        .try_into()
+                        .unwrap_or(0),
+                ),
+                exit: Some(exit),
+                matched: false,
+            });
+        }
+        if gone > 0 {
+            tracing::info!(gone, "channels the last run kept were gone when adopted");
+        }
+        gone
     }
 
     /// Ends every channel of one session, for `del_session`.

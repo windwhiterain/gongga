@@ -1343,6 +1343,24 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
         Ok(message) => message,
         Err(e) => return Outcome::err(e),
     };
+    // SPEC's `cancel` queues notices: a turn started in the stop window is cut by it.
+    if d.shutting_down.load(Ordering::SeqCst) || d.shutdown.is_cancelled() {
+        let mut payload = message.to_json();
+        payload["session"] = json!(name);
+        return match d.store.add_pending_task(&name, "inject", &payload) {
+            Ok(_) => {
+                tracing::info!(
+                    session = %name,
+                    "message queued for the next start: the server is stopping"
+                );
+                Outcome::ok(format!(
+                    "message queued for {name}; the server is stopping, so the next start \
+                     reads it"
+                ))
+            }
+            Err(e) => Outcome::err(format!("could not record the pending message: {e}")),
+        };
+    }
     let epoch = session.cancel_epoch();
     if let Some(gate) = session.try_claim() {
         // The gate is claimed before the durable write, so a second sender can only
@@ -2701,6 +2719,14 @@ fn interrupt(d: &Dispatch, name: &str, owes: bool) -> (bool, usize) {
             );
         }
     }
+    // A waiting session keeps its wait, not its turn: the deadline is what survives.
+    let waiting = match (owes, in_wait) {
+        (true, true) => session.stop_signal().wait_until(),
+        _ => None,
+    };
+    if let Err(e) = d.store.set_waiting_until(session.id(), waiting) {
+        tracing::warn!(session = %name, error = %e, "could not record what is left of a wait");
+    }
     session.cancel();
     // Aborting is deliberate, so the work is not left behind unless it is owed.
     let dropped = if flagged || (owes && in_wait) {
@@ -2771,9 +2797,13 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         .into_iter()
         .filter(|session| session.busy())
         .collect();
+    // Read before the interrupts: each one clears its session's mark.
+    let waiting = running
+        .iter()
+        .filter(|session| session.stop_signal().is_waiting())
+        .count();
     for session in &running {
-        // Fire the token: a stuck call has no boundary. SPEC: a session that is
-        // running and not waiting is flagged, so the next start continues it.
+        // Fire the token: a stuck call has no boundary. A waiting one gets a deadline.
         interrupt(d, session.name(), true);
     }
     // Only a protocol `cancel` lets jobs go; every other stop ends them here.
@@ -2825,9 +2855,20 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         Some(ended) => format!("; {ended} channel(s) ended with this server"),
         None => "; every channel was kept alive, and the next start adopts them".to_string(),
     };
+    let continuation = match waiting {
+        0 => "their turns are kept and the next start continues them".to_string(),
+        waiting if waiting == running.len() => {
+            "every one was inside `wait`: the next start continues those waits for the time \
+             that was left"
+                .to_string()
+        }
+        waiting => format!(
+            "{waiting} of them were inside `wait` and the next start continues those waits \
+             for the time that was left; the rest continue at once"
+        ),
+    };
     let said = format!(
-        "interrupted {} session(s); their turns are kept and the next start continues them; \
-         {jobs}{channels}",
+        "interrupted {} session(s); {continuation}; {jobs}{channels}",
         running.len()
     );
     tracing::warn!(
@@ -2887,8 +2928,20 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
     let Ok(tasks) = d.store.pending_tasks() else {
         return 0;
     };
+    // A stop left this session inside `wait`; its clock decides when it starts.
+    let waiting: std::collections::HashMap<String, i64> = d
+        .store
+        .waiting_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, name, until)| (name, until))
+        .collect();
+    let now = crate::store::now_millis();
     let mut started = 0;
     for (name, tasks) in recovery_groups(tasks) {
+        if waiting.get(&name).is_some_and(|until| *until > now) {
+            continue;
+        }
         let Ok(session) = d.sessions.get(&name) else {
             continue;
         };
@@ -2984,6 +3037,15 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
     let mut resumed = 0;
     // The sessions this pass already gave a turn, so the flag below adds nothing.
     let mut woken: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // A wait still running is a reason not to start this session's rows now.
+    let waiting: std::collections::HashMap<String, i64> = d
+        .store
+        .waiting_sessions()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(_, name, until)| (name, until))
+        .collect();
+    let now = crate::store::now_millis();
     for (name, tasks) in recovery_groups(tasks) {
         let Ok(session) = d.sessions.get(&name) else {
             // Only a confirmed missing session may discard owed work.
@@ -3049,6 +3111,11 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
         }
         let owed = owes_a_turn(&kept);
+        // What the wait was waiting for: kept, and started by its clock rather than
+        // by this pass. See the loop below.
+        if waiting.get(&name).is_some_and(|until| *until > now) {
+            continue;
+        }
         let owned = kept
             .iter()
             .filter(|task| task.kind == "turn")
@@ -3061,10 +3128,51 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             resumed += 1;
         }
     }
+    // SPEC: a restart continues the wait for what was left -- a clock, not a replay.
+    for (id, name, until) in d.store.waiting_sessions().unwrap_or_default() {
+        let Ok(session) = d.sessions.get(&name) else {
+            continue;
+        };
+        if session.busy() {
+            continue;
+        }
+        let left = until - now;
+        let later = Arc::new(d.clone());
+        let owed = name.clone();
+        tokio::spawn(async move {
+            if left > 0 {
+                tokio::time::sleep(Duration::from_millis(u64::try_from(left).unwrap_or(0))).await;
+            }
+            // Cleared here, not when read: until it fires the row holds a nudge back.
+            if let Err(e) = later.store.set_waiting_until(id, None) {
+                tracing::warn!(session = %owed, error = %e, "could not clear a resumed wait");
+            }
+            // A stop that arrives during the wait is the newer word: nothing starts.
+            if later.shutting_down.load(Ordering::SeqCst) || later.shutdown.is_cancelled() {
+                return;
+            }
+            // A turn started while this one waited is what the wait was for.
+            if session.busy() {
+                return;
+            }
+            let rows = later.store.pending_tasks().unwrap_or_default();
+            let owned: Vec<i64> = rows
+                .iter()
+                .filter(|task| task.session == owed && task.kind == "turn")
+                .map(|task| task.id)
+                .collect();
+            if let Some(work) = claim_recovery(&later, session, owned, true) {
+                tracing::info!(
+                    session = %owed,
+                    waited_ms = left.max(0),
+                    "continuing the wait a stop cut short"
+                );
+                spawn_turn(&later, work);
+            }
+        });
+        resumed += 1;
+    }
     // SPEC: "restart will consume and continue sessions with interrupted flag".
-    // A row is the words owed; the flag is the turn, and a session can owe a turn
-    // with no row left to say so -- the turn that was running had already read its
-    // own, and the stop took the rest. This is that turn continuing.
     for (id, name) in d.store.interrupted_sessions().unwrap_or_default() {
         if woken.contains(&name) {
             continue;

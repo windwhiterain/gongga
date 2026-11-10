@@ -170,7 +170,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- `wait`, cleared by the start that claims the turn. Its own column because a
     -- flag in the process is a flag a stop cannot leave behind, and a pending row
     -- is not the same fact: a turn can owe work with no row left to say so.
-    interrupted INTEGER NOT NULL DEFAULT 0
+    interrupted INTEGER NOT NULL DEFAULT 0,
+    -- SPEC's waiting flag, with the time it was waiting for: a stop that finds a
+    -- session inside `wait` does not continue it at once, it continues that wait
+    -- for the time that was left. Epoch milliseconds, NULL for a session that is
+    -- not waiting. The same reason `interrupted` is a column: a stop ends the
+    -- process, and a deadline only it knew would be a wait nobody resumes.
+    waiting_until INTEGER
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -525,6 +531,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "sessions",
         "interrupted",
         "ALTER TABLE sessions ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        conn,
+        "sessions",
+        "waiting_until",
+        "ALTER TABLE sessions ADD COLUMN waiting_until INTEGER",
     )?;
     backfill_ended_at(conn)?;
     settle_handover(conn)?;
@@ -1189,9 +1201,44 @@ impl Store {
     /// memory rather than a decoration on the rows.
     pub fn interrupted_sessions(&self) -> anyhow::Result<Vec<(i64, String)>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare("SELECT id, name FROM sessions WHERE interrupted <> 0 ORDER BY id")?;
+        let mut stmt =
+            conn.prepare("SELECT id, name FROM sessions WHERE interrupted <> 0 ORDER BY id")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Records the wall clock a session's `wait` was due to end at, or clears it.
+    ///
+    /// # Invariant
+    ///
+    /// Epoch milliseconds, not a duration: the process that reads it is not the one
+    /// that wrote it, and "four seconds from now" is a different instant after a
+    /// restart than before it. `None` is a session that is not waiting -- set by
+    /// every interrupt that finds none, so a wait that ended is not resumed.
+    pub fn set_waiting_until(&self, id: i64, until: Option<i64>) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET waiting_until = ?1 WHERE id = ?2",
+            params![until, id],
+        )?;
+        Ok(())
+    }
+
+    /// Every session a stop left inside `wait`, with the instant that wait ends.
+    ///
+    /// # Invariant
+    ///
+    /// Read once, by the start that inherits them, and consumed there: a wait is a
+    /// fact about one turn, so a row that keeps it would resume a turn that ended.
+    pub fn waiting_sessions(&self) -> anyhow::Result<Vec<(i64, String, i64)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, waiting_until FROM sessions \
+             WHERE waiting_until IS NOT NULL ORDER BY waiting_until, id",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }

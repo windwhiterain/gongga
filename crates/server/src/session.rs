@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::Mutex as AsyncMutex;
@@ -274,6 +274,8 @@ struct SessionInner {
     resumable: Arc<AtomicBool>,
     /// Whether a call is inside `wait` right now: the one work a cancel keeps.
     waiting: Arc<AtomicBool>,
+    /// When the wait ends, epoch ms; 0 is none. A restart continues what was left.
+    until: Arc<AtomicI64>,
     /// Set before the workspace end, so a stop announced now is the command's, not the exit's.
     closing: Arc<AtomicBool>,
     /// The connection this session's references are read through, if any.
@@ -599,6 +601,7 @@ impl SessionHandle {
         StopSignal {
             resumable: self.inner.resumable.clone(),
             waiting: self.inner.waiting.clone(),
+            until: self.inner.until.clone(),
         }
     }
 
@@ -837,6 +840,8 @@ impl InboxSignal {
 pub struct StopSignal {
     resumable: Arc<AtomicBool>,
     waiting: Arc<AtomicBool>,
+    /// When this wait is due to end, epoch ms; 0 is no wait. The wall clock, not a timer.
+    until: Arc<AtomicI64>,
 }
 
 impl StopSignal {
@@ -850,23 +855,45 @@ impl StopSignal {
         Self {
             resumable: Arc::new(AtomicBool::new(false)),
             waiting: Arc::new(AtomicBool::new(false)),
+            until: Arc::new(AtomicI64::new(0)),
         }
     }
 
-    /// Says this call is waiting, so a `cancel` keeps its turn instead of dropping it.
+    /// Says this call is waiting, with the deadline a `cancel` has to hand on.
     ///
     /// # Invariant
     ///
     /// The mark is cleared by the guard's drop, which an aborted call also runs: a
-    /// wait that ended for any reason is not a wait a later cancel can find.
-    pub fn begin_wait(&self) -> WaitGuard {
+    /// wait that ended for any reason is not a wait a later cancel can find, and
+    /// its deadline is not one a restart should resume.
+    pub fn begin_wait(&self, wait: std::time::Duration) -> WaitGuard {
+        let until =
+            crate::store::now_millis() + i64::try_from(wait.as_millis()).unwrap_or(i64::MAX);
+        self.until.store(until, Ordering::SeqCst);
         self.waiting.store(true, Ordering::SeqCst);
-        WaitGuard(self.waiting.clone())
+        WaitGuard {
+            waiting: self.waiting.clone(),
+            until: self.until.clone(),
+        }
     }
 
     /// Whether a call is inside `wait` right now.
     pub fn is_waiting(&self) -> bool {
         self.waiting.load(Ordering::SeqCst)
+    }
+
+    /// The instant this session's wait ends, when it is inside one.
+    ///
+    /// # Invariant
+    ///
+    /// Read by a stop, written into `sessions.waiting_until`: SPEC keeps the wait
+    /// rather than the turn, so what has to survive the process is when it was due
+    /// to end, never how long it had been running.
+    pub fn wait_until(&self) -> Option<i64> {
+        match self.is_waiting() {
+            true => Some(self.until.load(Ordering::SeqCst)),
+            false => None,
+        }
     }
 
     /// Whether a `cancel` decided this turn is the next start's to resume.
@@ -876,11 +903,15 @@ impl StopSignal {
 }
 
 /// Clears the waiting mark however the call leaves, including an abort.
-pub struct WaitGuard(Arc<AtomicBool>);
+pub struct WaitGuard {
+    waiting: Arc<AtomicBool>,
+    until: Arc<AtomicI64>,
+}
 
 impl Drop for WaitGuard {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        self.until.store(0, Ordering::SeqCst);
+        self.waiting.store(false, Ordering::SeqCst);
     }
 }
 
@@ -1458,6 +1489,7 @@ impl SessionManager {
                 deleted: AtomicBool::new(false),
                 resumable: Arc::new(AtomicBool::new(false)),
                 waiting: Arc::new(AtomicBool::new(false)),
+                until: Arc::new(AtomicI64::new(0)),
                 closing: Arc::new(AtomicBool::new(false)),
                 reader: Mutex::new(reader),
                 placed: Mutex::new((!row_cwd.trim().is_empty()).then(|| PathBuf::from(&row_cwd))),
