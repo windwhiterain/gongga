@@ -22,6 +22,7 @@ mod roster;
 pub mod run;
 mod table;
 mod tree;
+mod vt_input;
 
 use std::io::{self, Stdout, Write, stdout};
 use std::path::Path;
@@ -479,6 +480,8 @@ pub struct Tui {
     history: Vec<String>,
     history_pos: Option<usize>,
     events: EventStream,
+    /// The byte reader, when this window reads the console as a stream.
+    vt: Option<tokio::sync::mpsc::UnboundedReceiver<TermEvent>>,
     /// Whether mouse capture is on, so the toggle knows what to flip.
     mouse_captured: bool,
     restored: bool,
@@ -708,6 +711,7 @@ impl Tui {
             roster_failed: false,
             note_window: client::COMMAND_WINDOW.to_string(),
             events: EventStream::new(),
+            vt: vt_input::wanted().then(vt_input::spawn),
             mouse_captured: true,
             restored: false,
             // The first frame has to happen even though nothing has changed.
@@ -1081,7 +1085,7 @@ impl Tui {
             // A run in progress is finished first: it lives in `self`, so a
             // cancelled wait resumes it instead of losing the keys.
             if !self.pending.is_empty() {
-                match tokio::time::timeout(PASTE_GAP, self.events.next()).await {
+                match tokio::time::timeout(PASTE_GAP, self.next_term()).await {
                     // Quiet: the run is over.
                     Err(_) => {}
                     Ok(None) => return self.flush(),
@@ -1102,7 +1106,7 @@ impl Tui {
             }
             let next = match self.stashed.take() {
                 Some(held) => held,
-                None => self.events.next().await?,
+                None => self.next_term().await?,
             };
             // Every event kind is handled; a resize only needs the redraw it asks for.
             match next {
@@ -1138,6 +1142,14 @@ impl Tui {
                 Ok(TermEvent::Resize(..)) => self.dirty = true,
                 _ => {}
             }
+        }
+    }
+
+    /// The next terminal event, from whichever reader this window opened.
+    async fn next_term(&mut self) -> Option<std::io::Result<TermEvent>> {
+        match &mut self.vt {
+            Some(vt) => vt.recv().await.map(Ok),
+            None => self.events.next().await,
         }
     }
 
