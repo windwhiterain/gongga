@@ -16,6 +16,7 @@ mod log;
 mod markdown;
 mod notice;
 mod panes;
+mod vt_input;
 pub mod program;
 mod render;
 mod roster;
@@ -485,7 +486,10 @@ pub struct Tui {
     completer: SharedCompleter,
     history: Vec<String>,
     history_pos: Option<usize>,
-    events: EventStream,
+    /// The console-record reader, opened only when the byte reader is off.
+    events: Option<EventStream>,
+    /// The byte reader, when this window reads the console as a stream.
+    vt: Option<tokio::sync::mpsc::UnboundedReceiver<TermEvent>>,
     /// Whether mouse capture is on, so the toggle knows what to flip.
     restored: bool,
     /// Whether anything changed since the last frame. Every mutation sets it.
@@ -912,7 +916,8 @@ impl Tui {
             roster: roster::Roster::new(client_home, endpoint),
             roster_failed: false,
             note_window: client::COMMAND_WINDOW.to_string(),
-            events: EventStream::new(),
+            events: (!vt_input::wanted()).then(EventStream::new),
+            vt: vt_input::wanted().then(vt_input::spawn),
             restored: false,
             // The first frame has to happen even though nothing has changed.
             dirty: true,
@@ -1298,7 +1303,7 @@ impl Tui {
             // A run in progress is finished first: it lives in `self`, so a
             // cancelled wait resumes it instead of losing the keys.
             if !self.pending.is_empty() {
-                match tokio::time::timeout(PASTE_GAP, self.events.next()).await {
+                match tokio::time::timeout(PASTE_GAP, self.next_term()).await {
                     // Quiet: the run is over, and a key held as a marker was not one.
                     Err(_) => {
                         for key in self.markers.take_probe() {
@@ -1333,7 +1338,7 @@ impl Tui {
             }
             let next = match self.stashed.take() {
                 Some(held) => held,
-                None => self.events.next().await?,
+                None => self.next_term().await?,
             };
             if let (Some(log), Ok(event)) = (self.key_log.as_mut(), &next) {
                 use std::io::Write as _;
@@ -1417,6 +1422,17 @@ impl Tui {
             self.fast = 0;
         }
         pasted
+    }
+
+    /// The next terminal event, from whichever reader this window opened.
+    async fn next_term(&mut self) -> Option<std::io::Result<TermEvent>> {
+        match &mut self.vt {
+            Some(vt) => vt.recv().await.map(Ok),
+            None => match &mut self.events {
+                Some(events) => events.next().await,
+                None => None,
+            },
+        }
     }
 
     /// Whether a key event drives the UI: presses and repeats, never releases.
