@@ -3,8 +3,8 @@
 **CODE THAT WILL PANIC IS NOT ALLOWED**
 
 - @file(SPEC.md) is the only source of truth (agents should not edit without user's permission).
-- @skill(whiting-dev) is developing standard.
-- when designing new feature, search any existing wheels. 
+- @skill(whiting-dev) must be followed.
+- when designing new feature, search any existing wheels.
 - setting any limit/budget is forbidden.
 - session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
 - server home for tests should be local to each worktree: a shared home makes worktrees lock each other, and someone else's home is not yours to write in -- the program you run may stop the server on it.
@@ -95,7 +95,7 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
   `pre-commit`，于是把一个"pin 指向未发布 commit"的提交记了进去；hook 一直是好的，
   是我没让它跑。现在没有 pin 了，但同一类事还在：内容推上去没有，只有 `--check` 说得出。
 
-- tests layout: 
+- tests layout:
   ```
   cargo install --git https://github.com/windwhiterain/test-layout.git test-layout-check --locked
   test-layout-check --config test-layout.toml
