@@ -248,7 +248,7 @@ say "wait answered: $(printf '%s' "$waited" | head -c 200)"
 # SPEC gives `wait` a `time` back, so "the news cut it" is a number well under the
 # 30 s this call asked for: the ceiling itself would be 30.
 waited_s=$(printf '%s' "$waited" | head -1 | sed -n 's/^\([0-9][0-9]*\)\.[0-9]*s$/\1/p')
-ok "wait ended on the news a subscription sent"   "$([[ -n "$waited_s" && $waited_s -lt 30 ]] && echo 1 || echo 0)"
+ok "wait ended on the news a subscription sent"   "$([[ -n "$waited_s" && $waited_s -lt 30 ]] && echo 0 || echo 1)"
 # The news itself is a message, which is what makes the wait worth anything.
 "${cli[@]}" get_messages --session main 2>/dev/null | grep -q 'news-from-sub'
 ok "the news reached the session as a message" "$?"
@@ -261,8 +261,11 @@ fake_up wait '{"time":2500}' || exit 1
 wait_turn main
 short=$(last_tool main)
 say "short wait answered: $(printf '%s' "$short" | head -c 120)"
+# SPEC gives `wait` a `time` back, so the answer is the duration it waited, not a
+# sentence about it: 2.5 s asked is a number between two and five.
+short_s=$(printf '%s' "$short" | head -1 | sed -n 's/^\([0-9][0-9]*\)\.[0-9]*s$/\1/p')
 ok "wait honours the clock its call names" \
-  "$(has "$short" 'within 2.5s' && echo 0 || echo 1)"
+  "$([[ -n "$short_s" && $short_s -ge 2 && $short_s -lt 5 ]] && echo 0 || echo 1)"
 
 took=$(( $(date +%s) - began ))
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
