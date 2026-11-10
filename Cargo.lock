@@ -835,6 +835,7 @@ dependencies = [
  "clap",
  "dirs",
  "gongga-console",
+ "gongga-lock",
  "gongga-protocol",
  "gongga-skill",
  "serde",
@@ -848,6 +849,13 @@ dependencies = [
 [[package]]
 name = "gongga-console"
 version = "0.2.0"
+
+[[package]]
+name = "gongga-lock"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+]
 
 [[package]]
 name = "gongga-protocol"
@@ -871,6 +879,7 @@ dependencies = [
  "dirs",
  "futures-util",
  "gongga-console",
+ "gongga-lock",
  "gongga-protocol",
  "gongga-skill",
  "libc",

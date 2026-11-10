@@ -27,6 +27,7 @@ you are about to touch.
 | change when the server says the disk is low, or what wakes `@monitor/disk` | [`server-disk.md`](server-disk.md), [`server-monitor.md`](server-monitor.md) |
 | change what a client sends or receives | [`client-lib.md`](client-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
+| open a second window, or a second client on one home | [`home-lock.md`](home-lock.md) -- one owner per home; a second one is refused, and `--instance` gives it its own |
 | rename the client library or add a front-end | `SPEC.md` `## Crate Structure`, [`client-lib.md`](client-lib.md), `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` |
 | change what crosses the language boundary | [`client-render-wire.md`](client-render-wire.md), [`client-pipe.md`](client-pipe.md), `DESIGN.md` §1 "形态 2" |
 | change what the window remembers (`client.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
@@ -84,6 +85,12 @@ commands. The crate rename has landed:
 | note | source |
 | --- | --- |
 | [`console-lib.md`](console-lib.md) | `crates/console/src/lib.rs` |
+
+### lock
+
+| note | source |
+| --- | --- |
+| [`home-lock.md`](home-lock.md) | `crates/lock/src/lib.rs` |
 
 ### build
 
