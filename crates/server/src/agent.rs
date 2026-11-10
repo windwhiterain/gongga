@@ -1695,7 +1695,7 @@ impl Agent {
     ///
     /// Called wherever a real row is appended, so a draft never outlives the row it
     /// became: a leftover draft would be a second copy of the same answer, appended at
-    /// the next start under an `interrupted` flag that is no longer true.
+    /// the next start under a `canceled` flag that is no longer true.
     fn settle_item(&self, session: &SessionHandle, item_id: &str) {
         let _ = self.store.drop_draft(session.id(), item_id);
         // The row says it now, so the part stops being one a refill sends.

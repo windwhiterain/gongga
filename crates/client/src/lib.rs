@@ -2373,7 +2373,7 @@ impl Link {
     /// # Invariant
     ///
     /// SPEC's stop, not a kill: a kill loses the work `cancel` stores for the next
-    /// start. What it leaves is the interrupted flag `cancel` raises on every
+    /// start. What it leaves is the canceled flag `cancel` raises on every
     /// session whose turn it cut, and the next start continues those -- so a window
     /// on its way out, or a window taking the home over, does not end the work it
     /// was watching. `keep_alive` is not asked for: the channels are this home's

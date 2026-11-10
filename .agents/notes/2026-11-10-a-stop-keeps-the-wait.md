@@ -83,3 +83,30 @@ anything that must survive a build.
 - Q1/Q2 in the 2026-11-08 note (`session`/`id` argument spellings, `keep_alive`):
   still unanswered, still a cross-cutting CLI rename.
 - Q6, the `## Python Cmd` section, is untouched.
+
+## Afterwards: SPEC dropped the flag's name, and the code followed
+
+The operator removed the line `# for sessions idle or calling \`wait\`, do not set
+interrupted flag.` from `interrupt_session` in SPEC. What is left is one sentence in
+`cancel`: "for running sessions that are not waiting, set canceled flag to them,
+restart will auto continue session with cancel flag". So the flag is `cancel`'s, it is
+called `canceled`, and no other verb writes it.
+
+Code changes, in one pass: `sessions.interrupted` is renamed to `sessions.canceled`
+(`ALTER TABLE ... RENAME COLUMN`, the idiom `migrate` already uses for `llm` ->
+`provider`, so an old home keeps its rows); `set_interrupted` + `set_waiting_until`
+become one `record_stop(id, canceled, until)`, because the two flags are exclusive and
+one write is how a row cannot say both; `interrupt` no longer writes anything -- it
+fires the token, and its `keep` argument is only about whether the turn's queued rows
+outlive it (cancel and `interrupt_session` keep, `del_session` drops).
+
+Measured, two arms, a turn that streams for seven seconds:
+
+- `cancel` mid-answer: `canceled=1`, `waiting_until=NULL`; after the next start both
+  are `0`/`NULL` again and the turn was resumed.
+- `interrupt_session` mid-answer: `canceled=0`, `waiting_until=NULL`, and the turn is
+  not resumed by the next start -- it ended with its words in context.
+
+A start also no longer leaves an `interrupted` column behind: the `add_column` list
+still carried the old name, which is how the first run of the probe showed both
+columns in a fresh database.

@@ -254,12 +254,12 @@ fn claim_recovery(
     if session.is_deleted() {
         return None;
     }
-    // SPEC: "restart will consume and continue sessions with interrupted flag" --
-    // this claim is that restart, so the flag has done its work.
-    if let Err(e) = d.store.set_interrupted(session.id(), false) {
+    // SPEC: "restart will consume and continue session with cancel flag" -- this
+    // claim is that restart, so the flag has done its work.
+    if let Err(e) = d.store.record_stop(session.id(), false, None) {
         tracing::warn!(
             session = %session.name(), error = %e,
-            "could not clear the interrupted flag this start continued"
+            "could not clear the flags this start continued"
         );
     }
     if tasks.is_empty() {
@@ -2690,38 +2690,27 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
     finish_delete(d, &name, was_busy, dropped).await
 }
 
-/// Stops one session's turn, and records that the next start owes it.
+/// Stops one session's turn.
 ///
 /// # Invariant
 ///
-/// SPEC's flag, and SPEC's exceptions: "set interrupted flag to that session,
-/// restart will consume and continue sessions with interrupted flag" and "for
-/// sessions idle or calling `wait`, do not set interrupted flag". An idle session
-/// started nothing; one inside `wait` is not mid-program, and its news arrives on
-/// its own. `owes` is the caller's word -- a delete owes nothing at all -- and the
-/// row is written before the token fires, because the token is what ends the turn
-/// and a turn cannot leave a note after it is cut.
-fn interrupt(d: &Dispatch, name: &str, owes: bool) -> (bool, usize) {
+/// SPEC gives the canceled flag to `cancel` alone, and `cancel` writes it itself;
+/// this only fires the token. `keep` is the caller's word for whether the turn's
+/// queued rows outlive it -- a cancel owes the turn, an `interrupt_session` ends
+/// it with what it received already in context, a delete owes nothing at all.
+fn interrupt(d: &Dispatch, name: &str, keep: bool) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);
     };
     // Read before the cancel: afterwards there is nothing left to ask.
     let was_busy = session.busy();
-    let in_wait = session.stop_signal().is_waiting();
-    let flagged = owes && was_busy && !in_wait;
-    if flagged {
-        // The turn the token ends keeps its rows: it is owed, not abandoned.
+    if keep && was_busy {
+        // The turn the token ends keeps its rows: it is kept, not abandoned.
         session.mark_resumable();
-        if let Err(e) = d.store.set_interrupted(session.id(), true) {
-            tracing::warn!(
-                session = %name, error = %e,
-                "could not record that the next start owes this turn"
-            );
-        }
     }
     session.cancel();
-    // Aborting is deliberate, so the work is not left behind unless it is owed.
-    let dropped = if flagged || (owes && in_wait) {
+    // Aborting is deliberate, so the work is not left behind unless it is kept.
+    let dropped = if keep && was_busy {
         d.store
             .clear_pending_tasks_except(name, "turn")
             .unwrap_or(0)
@@ -2743,7 +2732,7 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
     }
     let (was_busy, dropped) = interrupt(d, &name, true);
     let mut message = if was_busy {
-        format!("interrupted {name}; the next start continues this turn")
+        format!("interrupted {name}; what it received is in its context")
     } else {
         format!("{name} is idle")
     };
@@ -2789,16 +2778,15 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         .into_iter()
         .filter(|session| session.busy())
         .collect();
-    // SPEC's waiting flag: set per session, and read before the interrupts, which
-    // clear each session's mark.
+    // SPEC's two flags, written per session before anything is interrupted.
     let mut waiting = 0;
     for session in &running {
         let until = session.stop_signal().wait_until();
         waiting += usize::from(until.is_some());
-        if let Err(e) = d.store.set_waiting_until(session.id(), until) {
+        if let Err(e) = d.store.record_stop(session.id(), until.is_none(), until) {
             tracing::warn!(
                 session = %session.name(), error = %e,
-                "could not record what is left of a wait"
+                "could not record what this stop leaves the next start"
             );
         }
     }
@@ -3144,7 +3132,7 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
                 tokio::time::sleep(Duration::from_millis(u64::try_from(left).unwrap_or(0))).await;
             }
             // Cleared here, not when read: until it fires the row holds a nudge back.
-            if let Err(e) = later.store.set_waiting_until(id, None) {
+            if let Err(e) = later.store.record_stop(id, false, None) {
                 tracing::warn!(session = %owed, error = %e, "could not clear a resumed wait");
             }
             // A stop that arrives during the wait is the newer word: nothing starts.
@@ -3172,8 +3160,8 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         });
         resumed += 1;
     }
-    // SPEC: "restart will consume and continue sessions with interrupted flag".
-    for (id, name) in d.store.interrupted_sessions().unwrap_or_default() {
+    // SPEC: "restart will consume and continue session with cancel flag".
+    for (id, name) in d.store.canceled_sessions().unwrap_or_default() {
         if woken.contains(&name) {
             continue;
         }
