@@ -524,6 +524,14 @@ trip. Avalonia 12's XAML source generators need Roslyn 4.14 (.NET 10 SDK); the
 official `dotnet new avalonia.app` template does not compile under a .NET 8 SDK
 either.
 
+A second window needs a second client home. `gongga-client` now claims
+`client.lock` in it, through the same `home_lock` crate that took over the
+server's `server.lock`; a second client on the same home is refused with the pid
+that holds it, and the window shows that line instead of closing. `--instance
+<name>` maps to `<client-home>/<name>` for that case. `client.toml` still lives
+in the **server** home, so two windows overwrite each other's sticky and display
+setting -- a value, not a record. See `docs/notes/home-lock.md`.
+
 ## 2. 传输层：可靠 UDP
 
 按你的选择走「跨机 + 自研轻量可靠层」。没有用 QUIC（强制 TLS，跨机自签证书很麻烦），

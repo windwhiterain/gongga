@@ -12,6 +12,7 @@ public static class LaunchParser
         string? server = null;
         string? home = null;
         string? clientHome = null;
+        string? instance = null;
         string? key = null;
         var clientOnly = false;
         var force = false;
@@ -26,6 +27,7 @@ public static class LaunchParser
                 case "--server":
                 case "--home":
                 case "--client-home":
+                case "--instance":
                 case "--key":
                     if (index + 1 == args.Length)
                     {
@@ -39,6 +41,7 @@ public static class LaunchParser
                         case "--server": server = value; break;
                         case "--home": home = value; break;
                         case "--client-home": clientHome = value; break;
+                        case "--instance": instance = value; break;
                         case "--key": key = value; break;
                     }
                     break;
@@ -56,6 +59,24 @@ public static class LaunchParser
                     options = Empty();
                     return $"unknown option: {token}";
             }
+        }
+
+        // One client per client home (the client takes a lock), so a second window
+        // names its own: `<client-home>/<instance>`, defaulting the base directory
+        // to the same place the client itself would.
+        if (instance is not null)
+        {
+            if (instance.Length == 0
+                || instance != Path.GetFileName(instance)
+                || instance is "." or "..")
+            {
+                options = Empty();
+                return "--instance needs a plain name, not a path";
+            }
+            var baseDirectory = clientHome ?? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".gongga-client");
+            clientHome = Path.Combine(baseDirectory, instance);
         }
 
         options = new LaunchOptions(

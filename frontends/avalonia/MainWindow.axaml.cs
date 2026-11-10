@@ -31,10 +31,22 @@ public partial class MainWindow : Window
 
         _client.Ended = () => Dispatcher.UIThread.Post(() =>
         {
-            if (IsVisible)
+            if (_client.SawLayout)
             {
-                Close();
+                if (IsVisible)
+                {
+                    Close();
+                }
+                return;
             }
+            // The child never reached a frame: the reason is the last thing it said,
+            // and a window that closed itself would hide it.
+            var reason = _client.ReadLogTail();
+            _model.Apply(new RenderFrame.Note(
+                LineKind.Error,
+                reason.Length == 0
+                    ? $"gongga-client exited before it connected; see {_client.LogPath ?? "its log"}"
+                    : reason));
         });
 
         var error = _client.Start(options, frame => Dispatcher.UIThread.Post(() =>

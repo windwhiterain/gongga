@@ -29,6 +29,25 @@ The headless check needs only the transport flags:
 `--server` matters for a check: without it the client dials the default
 `127.0.0.1:9700`, which may be a server somebody is actually using.
 
+## A second window
+
+A client claims its home with `client.lock` (see [`home-lock.md`](home-lock.md)),
+so two windows pointed at one client home do not both run: the second client
+exits with `another gongga client is already using this home`, and the window
+keeps itself open showing that line rather than closing silently. Give the
+second window its own home:
+
+    dotnet run -- --instance work
+
+`--instance <name>` maps to `<client-home>/<name>`, where the base directory is
+`--client-home` when given and `~/.gongga-client` otherwise. The name must be a
+plain name, not a path.
+
+What stays shared is `client.toml` in the **server** home: sticky session, shown
+sessions, block size. Two windows on one machine overwrite each other's setting
+(last writer wins); nothing is corrupted, because that file holds values rather
+than drawn records.
+
 Nothing on the Rust side had to change. `DESIGN.md` §1 already decided that a
 front-end is cross-process and cross-language, and `crates/client/src/main.rs`
 already speaks one `UiIntent` per stdin line and one `RenderMessage` per stdout
@@ -113,8 +132,9 @@ and swallows all Alt keys. The GUI binds Ctrl+Q.
 `Wire/ClientProcess.cs` spawns exactly one child with `--parent <our pid>`
 plus the connection flags, pipes stdin/stdout, and continuously drains stderr
 into `<client-home>/client.log`. Closing stdin is the window leaving; an ended
-stdout closes the window. It never kills by image name — only the `Process`
-handle it owns.
+stdout closes the window, unless no `Layout` ever arrived — then the child never
+connected, and its last log line is shown instead of a window that disappears.
+It never kills by image name — only the `Process` handle it owns.
 
 `--no-window` runs the same transport and frame model without creating an
 Avalonia window, prints one verdict line (`PASS/FAIL · frames · types · ...`)

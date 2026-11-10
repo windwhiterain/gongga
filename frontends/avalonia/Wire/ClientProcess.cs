@@ -30,6 +30,34 @@ public sealed class ClientProcess : IDisposable
     /// Raised once the child's stdout ends: the client leaving is the window leaving.
     public Action? Ended { get; set; }
 
+    /// Whether any frame ever arrived. A child that dies before its first Layout
+    /// never connected, and its reason belongs on screen instead of a window
+    /// that closes itself.
+    public bool SawLayout { get; private set; }
+
+    public string? LogPath { get; private set; }
+
+    /// The child's last diagnostic, for a window that has nothing else to show.
+    public string ReadLogTail()
+    {
+        if (LogPath is null)
+        {
+            return string.Empty;
+        }
+        try
+        {
+            return File.ReadLines(LogPath).LastOrDefault() ?? string.Empty;
+        }
+        catch (IOException)
+        {
+            return string.Empty;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return string.Empty;
+        }
+    }
+
     /// Returns null on success, or the reason the child could not be started.
     public string? Start(ClientOptions options, Action<RenderFrame> onFrame)
     {
@@ -83,8 +111,21 @@ public sealed class ClientProcess : IDisposable
             {
                 AutoFlush = true,
             };
-            _readers.Add(Task.Run(() => ReadFrames(child.StandardOutput, onFrame, () => Ended?.Invoke())));
-            _readers.Add(Task.Run(() => ReadDiagnostics(child.StandardError, home)));
+            LogPath = Path.Combine(home, "client.log");
+            var frames = Task.Run(() => ReadFrames(child.StandardOutput, frame =>
+            {
+                if (frame is RenderFrame.Layout)
+                {
+                    SawLayout = true;
+                }
+                onFrame(frame);
+            }));
+            var diagnostics = Task.Run(() => ReadDiagnostics(child.StandardError, LogPath));
+            _readers.Add(frames);
+            _readers.Add(diagnostics);
+            // Both ends are done: the child is gone and its last words are on disk.
+            _ = Task.WhenAll(frames, diagnostics)
+                .ContinueWith(_ => Ended?.Invoke(), TaskScheduler.Default);
             return null;
         }
         catch (Exception error) when (error is System.ComponentModel.Win32Exception || error is IOException)
@@ -201,10 +242,7 @@ public sealed class ClientProcess : IDisposable
         return null;
     }
 
-    private static async Task ReadFrames(
-        StreamReader output,
-        Action<RenderFrame> onFrame,
-        Action onEnd)
+    private static async Task ReadFrames(StreamReader output, Action<RenderFrame> onFrame)
     {
         try
         {
@@ -227,18 +265,13 @@ public sealed class ClientProcess : IDisposable
         catch (ObjectDisposedException)
         {
         }
-        finally
-        {
-            onEnd();
-        }
     }
 
-    private static async Task ReadDiagnostics(StreamReader error, string clientHome)
+    private static async Task ReadDiagnostics(StreamReader error, string log)
     {
         try
         {
-            Directory.CreateDirectory(clientHome);
-            var log = Path.Combine(clientHome, "client.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(log)!);
             while (await error.ReadLineAsync().ConfigureAwait(false) is { } line)
             {
                 File.AppendAllText(log, line + Environment.NewLine, Encoding.UTF8);
