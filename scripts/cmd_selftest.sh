@@ -122,16 +122,21 @@ got=$("${cli[@]}" get_messages --session main 2>&1)
 [[ "$got" == *'hello there'* ]]
 ok "get_messages --session main (omitted range is the whole transcript)" $?
 
-# 6. The bash tool as a command, in the session's persistent shell.
-ran=$("${cli[@]}" bash --session main --command "echo from-cmd > cmd-selftest.txt" 2>&1)
-[[ "$ran" == *'"ok":true'* ]]
-ok "bash main <command> (tool command)" $?
+# 6. `exec` as a command: a shell channel, named by `id`, started here.
+started=$("${cli[@]}" exec --session main --bin bash --id main/shell --wait 8000 2>&1)
+[[ "$started" == *'"ok":true'* ]]
+ok "exec main --bin bash (a shell channel)" $?
 
-# 7. The session's own shell kept the cd between the tool and the command:
-#    the file the command wrote is where the session is.
-listed=$("${cli[@]}" bash --session main --command "cat cmd-selftest.txt" 2>&1)
+# 7. That one shell kept the cd between two calls: the file the first wrote is
+#    what the second reads.
+ran=$("${cli[@]}" exec --session main --id main/shell --input 'echo from-cmd > cmd-selftest.txt' --wait 8000 2>&1)
+[[ "$ran" == *'"ok":true'* ]]
+ok "a call writes through the session's shell" $?
+
+listed=$("${cli[@]}" exec --session main --id main/shell --input 'cat cmd-selftest.txt' --wait 8000 2>&1)
 [[ "$listed" == *"from-cmd"* ]]
-ok "the tool command meets the session's persistent shell" $?
+ok "the next call reads what that shell kept" $?
+"${cli[@]}" del_channel --session main --id main/shell >/dev/null 2>&1
 
 # 8. An interpreter is a channel now: a name and the program, from the environment.
 made=$("${cli[@]}" new_channel --session main --id main/python --name python 2>&1)
@@ -145,12 +150,7 @@ grep -rq 42 "$home/channels" 2>/dev/null; py_rc=$?
 ok "and it answers 42, in its own log" $py_rc
 "${cli[@]}" del_channel --session main --id main/python >/dev/null 2>&1
 
-# 9. read_file tool command reads what bash wrote, through the session's dir.
-read_back=$("${cli[@]}" read_file --session main --path cmd-selftest.txt 2>&1)
-[[ "$read_back" == *"from-cmd"* ]]
-ok "read_file main <path> (tool command)" $?
-
-# 10. A subscription armed with a command; trigger_event fires it; the command runs
+# 9. A subscription armed with a command; trigger_event fires it; the command runs
 #     in the session that armed it, and its log row is the record.
 sub=$(GONGGA_SESSION=main "${cli[@]}" subscribe --pattern '^cmd_ping$' \
   --cmd '{"name": "trigger_event", "args": {"event": "sub_ping"}}' --id watcher \
@@ -168,29 +168,29 @@ seen=$("${cli[@]}" events --kind subscription --session main 2>&1)
 ok "the subscription's command ran in the session that armed it" $?
 say "$seen"
 
-# 11. The outcome is a log row the events command reads.
+# 10. The outcome is a log row the events command reads.
 row=$("${cli[@]}" events --kind subscription --session main 2>&1)
 { [[ "$row" == *"trigger_event"* ]] || [[ "$row" == *subscription* ]]; } && rc=0 || rc=1
 ok "the outcome is a subscription log row" $rc
 say "$row"
 
-# 12. del_subscription drops by name.
+# 11. del_subscription drops by name.
 dropped=$(GONGGA_SESSION=main "${cli[@]}" del_subscription --path watcher 2>&1)
 [[ "$dropped" == *'"ok":true'* ]]
 ok "del_subscription watcher" $?
 
-# 13. A missed subscription name is a refusal.
+# 12. A missed subscription name is a refusal.
 missed=$(GONGGA_SESSION=main "${cli[@]}" del_subscription --path watcher 2>&1)
 [[ "$missed" == *"no subscription named"* ]]
 ok "del_subscription refuses an unknown name" $?
 
-# 14. interrupt_session and the rest of the positional family answer.
+# 13. interrupt_session and the rest of the positional family answer.
 inter=$("${cli[@]}" interrupt_session --id main 2>&1)
 [[ "$inter" == *'"ok":true'* || "$inter" == *"not running"* || "$inter" == *"no turn"* ]]
 ok "interrupt_session main" $?
 say "$inter"
 
-# 15. The operation the window's gestures use crosses the wire: the protocol
+# 14. The operation the window's gestures use crosses the wire: the protocol
 #     carries it beside the commands, and the server answers it like one.
 "${cli[@]}" set_session --id doomed --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
 probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$home/server.key")" delete_session --session doomed 2>&1)
@@ -198,7 +198,7 @@ probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$
 ok "the delete_session operation is answered" $?
 say "$probe"
 
-# 16. The `skill` command is a server command: the tool's own registration put it
+# 15. The `skill` command is a server command: the tool's own registration put it
 #     in the catalog, so an operator and the model reach the same entry.
 mkdir -p "$home/skills/argv-probe" "$home/skills/body-only"
 cat > "$home/skills/argv-probe/SKILL.md" <<'MD'
@@ -323,7 +323,7 @@ absent=$("${cli[@]}" skill --session main --name no-such-skill 2>&1)
 [[ "$absent" == *"no skill named"* ]]
 ok "an unknown skill name is refused with where to look" $?
 
-# 17. The session it deleted is gone.
+# 16. The session it deleted is gone.
 left=$("${cli[@]}" get_messages --session doomed 2>&1)
 [[ "$left" == *"no session"* || "$left" == *'"ok":false'* ]]
 ok "the session the operation deleted is gone" $?
