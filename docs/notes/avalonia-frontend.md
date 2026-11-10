@@ -6,8 +6,28 @@
 workspace member and is **not** in the bundle. Avalonia is a .NET/C# UI
 framework, so a `crates/avalonia` would imply a Rust crate that does not exist;
 `DESIGN.md` §1 verdict 2 says only the TUI ships in the bundle and other UIs
-distribute themselves. The project therefore finds `gongga-client.exe` beside
-its own executable, or through `--client <path>` / `GONGGA_CLIENT_EXE`.
+distribute themselves.
+
+`gongga-client.exe` is resolved without an argument, in this order: `--client
+<path>`, `GONGGA_CLIENT_EXE`, beside the window's own assembly (what a bundle
+extracts), then walking up from `bin/Debug/net10.0` to the repository's
+`target/debug` and `target/release`. `--client` exists only for a build the
+search cannot see.
+
+## Running it
+
+The SDK lives under `%LOCALAPPDATA%\Microsoft\dotnet`, and that directory is on
+the user `PATH`, so one line from this directory starts the window:
+
+    dotnet run
+
+The headless check needs only the transport flags:
+
+    dotnet run -- --no-window --server 127.0.0.1:55901 --client_only \
+        --home <throwaway> --client-home <throwaway> --key <any>
+
+`--server` matters for a check: without it the client dials the default
+`127.0.0.1:9700`, which may be a server somebody is actually using.
 
 Nothing on the Rust side had to change. `DESIGN.md` §1 already decided that a
 front-end is cross-process and cross-language, and `crates/client/src/main.rs`

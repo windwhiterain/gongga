@@ -163,6 +163,9 @@ public sealed class ClientProcess : IDisposable
         start.ArgumentList.Add(value);
     }
 
+    /// A bundle puts the window and the client beside each other; a development
+    /// build has the window under `bin/Debug/net10.0` and the client under the
+    /// repository's `target`. Both are found without an argument.
     private static string? ResolveExecutable(string? explicitPath)
     {
         if (!string.IsNullOrEmpty(explicitPath))
@@ -174,14 +177,28 @@ public sealed class ClientProcess : IDisposable
         {
             return fromEnvironment;
         }
-        var own = Environment.ProcessPath;
-        if (own is null)
-        {
-            return null;
-        }
+
         var name = OperatingSystem.IsWindows() ? "gongga-client.exe" : "gongga-client";
-        var beside = Path.Combine(Path.GetDirectoryName(own)!, name);
-        return File.Exists(beside) ? beside : null;
+        var beside = Path.Combine(AppContext.BaseDirectory, name);
+        if (File.Exists(beside))
+        {
+            return beside;
+        }
+
+        for (var current = new DirectoryInfo(AppContext.BaseDirectory);
+             current is not null;
+             current = current.Parent)
+        {
+            foreach (var profile in new[] { "debug", "release" })
+            {
+                var candidate = Path.Combine(current.FullName, "target", profile, name);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+        return null;
     }
 
     private static async Task ReadFrames(
