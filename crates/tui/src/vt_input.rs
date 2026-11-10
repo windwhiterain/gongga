@@ -66,6 +66,7 @@ mod platform {
                 buffer.extend_from_slice(&chunk[..read]);
                 log_raw(&mut log, &chunk[..read]);
                 for event in parse(&mut buffer) {
+                    log_event(&mut log, &event);
                     if tx.send(event).is_err() {
                         return;
                     }
@@ -230,15 +231,24 @@ mod platform {
         let column = u16::try_from(*numbers.get(1)?).ok()?.saturating_sub(1);
         let row = u16::try_from(*numbers.get(2)?).ok()?.saturating_sub(1);
         let modifiers = modifiers_of(Some((button & !0b11000011) >> 2));
-        let kind = match (button & 0b1100_0011, last) {
+        // Bit 5 is motion, so a drag and a click differ by that bit alone: a
+        // handler that only knows clicks loses the gesture that selects text.
+        let held = button & 0b11;
+        let kind = match (button & 0b1100_0111, last) {
             (64, _) => MouseEventKind::ScrollUp,
             (65, _) => MouseEventKind::ScrollDown,
-            (0 | 32, _) if last == b'm' => MouseEventKind::Up(MouseButton::Left),
-            (0 | 32, _) => MouseEventKind::Down(MouseButton::Left),
-            (1 | 33, _) if last == b'm' => MouseEventKind::Up(MouseButton::Middle),
-            (1 | 33, _) => MouseEventKind::Down(MouseButton::Middle),
-            (2 | 34, _) if last == b'm' => MouseEventKind::Up(MouseButton::Right),
-            (2 | 34, _) => MouseEventKind::Down(MouseButton::Right),
+            (value, b'M') if value & 32 != 0 => match held {
+                0 => MouseEventKind::Drag(MouseButton::Left),
+                1 => MouseEventKind::Drag(MouseButton::Middle),
+                2 => MouseEventKind::Drag(MouseButton::Right),
+                _ => MouseEventKind::Moved,
+            },
+            (0, _) if last == b'm' => MouseEventKind::Up(MouseButton::Left),
+            (0, _) => MouseEventKind::Down(MouseButton::Left),
+            (1, _) if last == b'm' => MouseEventKind::Up(MouseButton::Middle),
+            (1, _) => MouseEventKind::Down(MouseButton::Middle),
+            (2, _) if last == b'm' => MouseEventKind::Up(MouseButton::Right),
+            (2, _) => MouseEventKind::Down(MouseButton::Right),
             _ => return None,
         };
         Some(Event::Mouse(MouseEvent {
@@ -373,5 +383,12 @@ mod platform {
                 "{got:?}"
             );
         }
+    }
+    fn log_event(file: &mut Option<std::fs::File>, event: &Event) {
+        let Some(file) = file else {
+            return;
+        };
+        let line = format!("E {event:?}\n");
+        let _ = file.write_all(line.as_bytes());
     }
 }
