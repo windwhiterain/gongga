@@ -390,6 +390,15 @@ Three tools override it:
 its cut is an `ok`, not an error. `check_bash`/`check_python` say their jobs were
 not stopped, since a read stopping never stops anything.
 
+Two different stops can cut a call, and SPEC gives them different aftermaths, so
+`Cut` names them separately. `Cancel` is a shutdown: a turn inside `wait` is kept and
+the next start resumes it, and every other call ends with nothing owed.
+`Interrupted` is `interrupt_session`: the wait ends, the turn stops with the answer
+this call leaves, and no restart continues it. `waited` reads which one from the
+session's stop signal at the moment the token fires -- the two are one token, so the
+flag is the only thing that can tell them apart, and a cut that guessed would tell a
+model the server was stopping when it was not.
+
 ## background_notifier
 
 The other half of `leave_running`: a command that outlived its wait is noticed the

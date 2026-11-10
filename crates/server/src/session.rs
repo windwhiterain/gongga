@@ -272,6 +272,14 @@ struct SessionInner {
     deleted: AtomicBool,
     /// Set by a `cancel` that found the turn in `wait`: the next start resumes it.
     resumable: Arc<AtomicBool>,
+    /// Set by `interrupt_session`: the turn ends where it stands, and no restart owes it.
+    ///
+    /// # Invariant
+    ///
+    /// Cleared when the next turn starts, so it says what ended the turn in flight and
+    /// nothing about the one after it. A tool call reads it to say which stop cut it,
+    /// and the session row reads it to say the same to a window.
+    interrupted: Arc<AtomicBool>,
     /// Whether a call is inside `wait` right now: the one work a cancel keeps.
     waiting: Arc<AtomicBool>,
     /// When the wait ends, epoch ms; 0 is none. A restart continues what was left.
@@ -560,6 +568,7 @@ impl SessionHandle {
         // A new turn is not a waiting one: a shutdown that kept the last turn for
         // the next start has no claim on this one.
         self.inner.resumable.store(false, Ordering::SeqCst);
+        self.inner.interrupted.store(false, Ordering::SeqCst);
         let turn = self.inner.turns.fetch_add(1, Ordering::Relaxed) + 1;
         (turn, token)
     }
@@ -600,6 +609,7 @@ impl SessionHandle {
     pub fn stop_signal(&self) -> StopSignal {
         StopSignal {
             resumable: self.inner.resumable.clone(),
+            interrupted: self.inner.interrupted.clone(),
             waiting: self.inner.waiting.clone(),
             until: self.inner.until.clone(),
         }
@@ -608,6 +618,16 @@ impl SessionHandle {
     /// Keeps this turn's row for the next start: a `cancel` found it waiting.
     pub fn mark_resumable(&self) {
         self.inner.resumable.store(true, Ordering::SeqCst);
+    }
+
+    /// Says an `interrupt_session` ended this turn, not a `cancel`.
+    pub fn mark_interrupted(&self) {
+        self.inner.interrupted.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the turn in flight was ended by `interrupt_session`.
+    pub fn interrupted(&self) -> bool {
+        self.inner.interrupted.load(Ordering::SeqCst)
     }
 
     /// Remembers a move for whoever holds this session next.
@@ -839,6 +859,8 @@ impl InboxSignal {
 #[derive(Clone)]
 pub struct StopSignal {
     resumable: Arc<AtomicBool>,
+    /// Set by `interrupt_session`: the turn ends here, and no restart continues it.
+    interrupted: Arc<AtomicBool>,
     waiting: Arc<AtomicBool>,
     /// When this wait is due to end, epoch ms; 0 is no wait. The wall clock, not a timer.
     until: Arc<AtomicI64>,
@@ -854,6 +876,7 @@ impl StopSignal {
     pub fn idle() -> Self {
         Self {
             resumable: Arc::new(AtomicBool::new(false)),
+            interrupted: Arc::new(AtomicBool::new(false)),
             waiting: Arc::new(AtomicBool::new(false)),
             until: Arc::new(AtomicI64::new(0)),
         }
@@ -899,6 +922,16 @@ impl StopSignal {
     /// Whether a `cancel` decided this turn is the next start's to resume.
     pub fn resumable(&self) -> bool {
         self.resumable.load(Ordering::SeqCst)
+    }
+
+    /// Whether `interrupt_session` decided this turn, rather than a `cancel`.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC gives the rerun to `cancel` and to it alone: an interrupted turn stops
+    /// where it stands, so the sentence a cut call leaves says which of the two it was.
+    pub fn interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
     }
 }
 
@@ -1488,6 +1521,7 @@ impl SessionManager {
                 explore: Mutex::new(crate::explore::watch_of(row.mode)),
                 deleted: AtomicBool::new(false),
                 resumable: Arc::new(AtomicBool::new(false)),
+                interrupted: Arc::new(AtomicBool::new(false)),
                 waiting: Arc::new(AtomicBool::new(false)),
                 until: Arc::new(AtomicI64::new(0)),
                 closing: Arc::new(AtomicBool::new(false)),

@@ -189,6 +189,10 @@ impl Agent {
         self.log_event(Some(session.id()), kind, &row);
         let (status, detail) = match outcome {
             TurnOutcome::Done => (SessionStatus::Idle, None),
+            // SPEC's split: cancel cancels and a restart continues; interrupt ends it.
+            TurnOutcome::Cancelled if session.interrupted() => {
+                (SessionStatus::Idle, Some("interrupted".to_string()))
+            }
             TurnOutcome::Cancelled => (SessionStatus::Idle, Some("cancelled".to_string())),
             TurnOutcome::Failed => (SessionStatus::Error, Some("see log".to_string())),
         };

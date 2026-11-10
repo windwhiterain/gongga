@@ -296,6 +296,8 @@ pub trait Tool: Send + Sync {
 pub enum Cut {
     /// Someone is talking to this session, and the turn is owed that message.
     Message,
+    /// `interrupt_session` stopped streaming and the loop; this call answers first.
+    Interrupted,
     /// The turn was cancelled, so nothing it started is owed.
     Cancelled,
 }
@@ -305,6 +307,7 @@ impl Cut {
     pub fn because(self) -> &'static str {
         match self {
             Cut::Message => "a message arrived for this session",
+            Cut::Interrupted => "`interrupt_session` ended it",
             Cut::Cancelled => "the turn was cancelled",
         }
     }
@@ -916,7 +919,10 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
     let why = loop {
         tokio::select! {
             answer = rx.recv() => return answer.unwrap_or_else(|| stopped(tool.name())),
-            _ = ctx.cancel.cancelled() => break Some(Cut::Cancelled),
+            _ = ctx.cancel.cancelled() => break Some(match ctx.stop.interrupted() {
+                true => Cut::Interrupted,
+                false => Cut::Cancelled,
+            }),
             _ = punctual.tick() => {
                 if ctx.inbox.arrived() {
                     break Some(Cut::Message);
@@ -1351,6 +1357,11 @@ impl Cmd for WaitTool {
                 Cut::Message => ToolOutcome::ok(
                     "a message arrived for this session while this call waited; it is \
                      delivered at the next step boundary",
+                ),
+                // SPEC's `interrupt_session`: the wait ends here; the context keeps what came.
+                Cut::Interrupted => ToolOutcome::ok(
+                    "`interrupt_session` ended this wait: the turn stops with this answer, \
+                     and what the session had received is saved to its context",
                 ),
                 // A `cancel` marks the turn before it fires the token, so the answer
                 // says which stop this was rather than guessing.

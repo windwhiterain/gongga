@@ -91,6 +91,17 @@ before it fires the token, calls `mark_resumable`, and keeps the `turn` row; the
 interrupted and owes nothing, so this is false for it. `interrupt_session` and
 `del_session` never set it -- their "stop" means "drop it".
 
+## SessionInner::interrupted
+
+Set by `interrupt_session`, and by nothing else. Its job is the sentence: a tool
+call cut by the stop reads it to say which verb ended its wait, and the session row
+reads it to show `idle (interrupted)` instead of `idle (cancelled)`. Cleared by
+`new_turn`, so it describes the turn in flight and never the next one -- a cancel
+that lands after an interrupt would otherwise inherit its name.
+
+It is not a flag in the SPEC sense: nothing durable reads it, and no restart owes
+the turn anything because of it.
+
 ## SessionInner::waiting
 
 Whether a call is inside `wait` right now. `StopSignal::begin_wait` sets it and its
@@ -100,9 +111,11 @@ reason is not a wait a later cancel can find.
 ## StopSignal
 
 A copy, not a handle on the session -- a tool must not be able to do anything else to
-the session that holds it. It carries `resumable` (what the stop decided) and
-`waiting` (whether this call is a wait), and nothing else: the token, not a flag, is
-what ends a call.
+the session that holds it. It carries `resumable` (what a cancel decided), `interrupted`
+(what an `interrupt_session` decided) and `waiting` (whether this call is a wait), and
+nothing else: the token, not a flag, is what ends a call. The two verbs are separate
+fields because a turn can only be ended by one of them, and the answer a cut call
+leaves has to name the right one.
 
 ## SessionHandle::open — the part still being written
 
