@@ -3,9 +3,23 @@
 The source moved from `crates/tui/src/state.rs` into the client library. The note
 keeps its name because it is about the window's state, not about a crate.
 
-The window's own state, in `~/.gongga/client.toml`. Everything the operator sets once
-and expects to find again lives here: the sticky entries, which sessions are drawn,
-the block size and the box edge, and the address `connect_server` last pointed at.
+The window's own state, in `<client-home>/client.toml` -- by default
+`~/.gongga-client/client.toml`. Everything the operator sets once and expects to find
+again lives here: the sticky entries, which sessions are drawn, the block size and the
+box edge, and the address `connect_server` last pointed at.
+
+It lives in the client home, not the harness home, because it is the window's and each
+window has its own home: two windows shared one file only because they shared a
+directory, and the last writer won. The home is already claimed by `client.lock`
+([`home-lock.md`](home-lock.md)), so one home has one window and one config.
+
+`config.toml` and `server.key` stay in the harness home: those are the server's, and
+every window dialling that server reads the same ones.
+
+A home that predates the move is not reset: `window_state::adopt_legacy` copies
+`<harness-home>/client.toml` into a client home that has no file of its own, once, and
+leaves the original for a build that still reads it. A client home that already has a
+file is never rewritten from the old one.
 
 The rule this file exists for: **client state is the window's**. A one-shot
 `gongga-cli` reads none of it and writes none of it -- it is a script or a model that
