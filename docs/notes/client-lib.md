@@ -937,6 +937,12 @@ and hung up. They are different facts about the world -- one is answered by
 starting a server, the other by looking at the one that is running -- so they are
 reported differently even though both mean "no link".
 
+The hello can be the last thing a channel carries: a refusal that lands before
+it is queued ends the channel, and the sink then answers `channel closed`
+without naming a cause. That is the same fact as a greeting that never came, so
+`dial` asks `refused` there too and reports `NoListener`; only a write that
+failed for another reason is a handshake failure.
+
 ## Greeting
 
 Opaque on purpose: the greeting *is* a `ServerMessage`, and keeping it out of the

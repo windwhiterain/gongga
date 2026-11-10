@@ -2880,9 +2880,15 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
         key: endpoint.key.clone(),
     })
     .map_err(|e| DialFailure::Fatal(e.into()))?;
-    wire.send(hello)
-        .await
-        .map_err(|e| DialFailure::Temporary(anyhow!("handshake failed: {e}")))?;
+    if let Err(e) = wire.send(hello).await {
+        // The socket, not the sink, tells a refusal from a hang-up.
+        // See `docs/notes/client-lib.md`.
+        return Err(if stream.refused() {
+            no_listener(endpoint.addr)
+        } else {
+            DialFailure::Temporary(anyhow!("handshake failed: {e}"))
+        });
+    }
 
     // The greeting confirms the handshake and downloads the catalog.
     let greeting = tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.recv())
@@ -2897,7 +2903,7 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
         // A channel that ends before a greeting ended on one of two facts, and
         // the socket is the one that knows which.
         return Err(if stream.refused() {
-            DialFailure::NoListener(anyhow!("nothing is listening at {}", endpoint.addr))
+            no_listener(endpoint.addr)
         } else {
             DialFailure::Temporary(anyhow!(
                 "{} closed the connection during the handshake",
@@ -2914,6 +2920,12 @@ pub async fn dial(endpoint: Endpoint) -> Result<(Link, Greeting), DialFailure> {
         )));
     }
     Ok((Link { sink: wire, stream }, Greeting(msg)))
+}
+
+/// The one spelling of a refusal: a front-end reads `NoListener` as "start a
+/// server", never as a retry.
+fn no_listener(addr: SocketAddr) -> DialFailure {
+    DialFailure::NoListener(anyhow!("nothing is listening at {addr}"))
 }
 
 /// Why a greeting could not be read, naming the build on each side.
