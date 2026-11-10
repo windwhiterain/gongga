@@ -7,8 +7,8 @@ command line and reading JSON off stdout:
     import gongga
 
     server = gongga.connect()                       # from GONGGA_SERVER / the home
-    server.set_session(name="main", cwd="/tmp")     # a command, its arguments by name
-    server.send_message(name="main", message="go")  # refuse -> GonggaError, with the reason
+    server.set_session(id="main", cwd="/tmp")       # a command, its arguments by name
+    server.send_message(session="main", message="go")  # refuse -> GonggaError, with the reason
     for session in server.sessions:                 # what the server published
         print(session["name"])
 
@@ -23,6 +23,16 @@ Arguments are the command's own: a string is a string, a list arrives as JSON fo
 an argument the schema types as a list, and an argument the server requires must
 be present, or the server says so. The one convenience is `session`: a command
 that acts on a session takes it by name like any other argument.
+
+The four commands SPEC's `## Python Cmd` names are commands like the rest, so a
+package skill calls them the same way:
+
+    server.ls_skill(path="harness", session="main")        # -> its id, bucket, SKILL.md
+    server.run_skill(id="harness/prefix-cache",            # one function of a package
+                     cmd={"name": "look", "args": {"path": "/tmp"}},
+                     session="main")
+    server.get_messages(session="main", range="-20:-1")    # a range of the transcript
+    server.clone_session(id="main", new_id="main-copy")    # a copy that runs its own turns
 """
 
 import json
@@ -63,6 +73,20 @@ def _frame(flags, connection, sequence, ack, message, index, count, payload=b"")
         index, count, WINDOW,
     )
     return head + payload
+
+
+def _wire(value):
+    """One argument as the wire spells it: every argument travels as a string.
+
+    # Invariant
+
+    A `cmd` is an object here and a string there, and so is a list of words: what a
+    caller means as a structure is JSON, which is what the argument's own schema says
+    it accepts. A string is itself, never quoted twice.
+    """
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
 
 
 class Reply:
@@ -181,12 +205,18 @@ class Client:
         """Ask for one command and answer with its `Reply`, refused or not.
 
         The name is positional only, so a command that has an argument called `name`
-        -- `set_session` does -- spells it like any other.
+        -- `set_session` does -- spells it like any other. An argument that is not a
+        string is sent as JSON, which is how a caller passes a `cmd` object.
         """
         self.connect()
         wanted = self._next_id
         self._next_id += 1
-        self._send({"t": "command", "id": wanted, "name": command, "args": arguments})
+        self._send({
+            "t": "command",
+            "id": wanted,
+            "name": command,
+            "args": {key: _wire(value) for key, value in arguments.items()},
+        })
 
         def answered(message):
             inner, _ = _event(message)

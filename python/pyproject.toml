@@ -1,0 +1,26 @@
+# The package a session's Python imports: SPEC's `## Python Cmd`.
+#
+# Two readers, one source. The server carries these files with `include_str!` and
+# writes them into a home's `lib/`, which is what a skill's own `import gongga`
+# resolves against; `uv run --project python` is the same code as a package, for a
+# caller that would rather have a wheel than a home.
+#
+# `gongga` is the client: every command a server publishes is a function on a
+# connection, and `ls_skill`, `run_skill`, `get_messages` and `clone_session` are
+# commands like any other. `gongga_skill` is the contract a package skill is run
+# through. Neither knows the other's job.
+[project]
+name = "gongga"
+version = "0.1.0"
+description = "The client a gongga session's Python speaks: commands as functions."
+requires-python = ">=3.9"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Two modules, no package directory: the files are the contract, and the server
+# embeds the same two, so a copy that moved into `src/` would be a second source.
+[tool.hatch.build.targets.wheel]
+only-include = ["gongga.py", "gongga_skill.py"]

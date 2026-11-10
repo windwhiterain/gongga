@@ -254,8 +254,7 @@ fn claim_recovery(
     if session.is_deleted() {
         return None;
     }
-    // SPEC: "restart will consume and continue session with cancel flag" -- this
-    // claim is that restart, so the flag has done its work.
+    // SPEC: restart consumes the flag and continues -- this claim is that restart.
     if let Err(e) = d.store.record_stop(session.id(), false, None) {
         tracing::warn!(
             session = %session.name(), error = %e,
@@ -879,6 +878,71 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
             ],
         },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "ls_skill".into(),
+            description: "List the skills a session can open, one row per skill, under \
+                      `path`. A skill's path is `<bucket>/<name>`: `project` for the \
+                      checkout's own, `harness` for the home's, `general` for the \
+                      machine's. A path names a subtree, so `ls_skill harness` is every \
+                      skill the home installed and no path is every skill there is."
+                .into(),
+            args: vec![
+                pos(
+                    "path",
+                    "Where to look, as the beginning of a skill's path: `harness`, \
+                     `harness/self-control`, or nothing for all of them. Matched by \
+                     component, so `har` matches no bucket.",
+                    false,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "session",
+                    "Whose skills: its directory is the `project` layer, and the machine \
+                     it stands on decides whether that layer is read at all.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "run_skill".into(),
+            description: "Call one function of a skill that is a Python package: `cmd` \
+                      names the function and its arguments, the way `subscribe` names the \
+                      command a match runs. The package is imported in the session's \
+                      directory on this machine, and what the function answers is this \
+                      call's result, exactly as `skill` reports it."
+                .into(),
+            args: vec![
+                pos(
+                    "id",
+                    "The skill to run, as `ls_skill` spells it: `<bucket>/<name>`.",
+                    true,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "cmd",
+                    "The call: a function name, or the whole call as an object, \
+                     `{\"name\": \"fetch\", \"args\": {\"url\": \"https://example.com\"}}`. \
+                     Each `args` entry reaches the function as `--key value`.",
+                    true,
+                    Some("cmd"),
+                    CompletionSource::None,
+                ),
+                pos(
+                    "session",
+                    "The session it runs as: its directory is where the package is \
+                     imported, and the call is that session's work.",
+                    true,
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
     ]
 }
 
@@ -1207,6 +1271,8 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "del_channel" => del_channel(d, args).await,
         "ls_session" => ls_session(d, args).await,
         "clone_session" => clone_session(d, args).await,
+        "ls_skill" => ls_skill(d, args).await,
+        "run_skill" => run_skill(d, args).await,
         "events" => events(d, args).await,
         "subscribe" => subscribe(d, args, origin.session()).await,
         "del_subscription" => del_subscription(d, args, origin.session()).await,
@@ -2255,6 +2321,104 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
             "last_seq": report.last_seq,
         }),
     )
+}
+
+/// Every skill this session's roots hold, under `path`.
+///
+/// See `docs/notes/server-commands.md`.
+///
+/// # Invariant
+///
+/// One walk: the same `installed_for` that `skill` and `@skill(...)` read, so a path
+/// this lists is a path `run_skill` takes. `path` is matched by component (`under`),
+/// which is what makes `harness` a subtree and `har` nothing.
+async fn ls_skill(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let path = args
+        .get("path")
+        .map(String::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let handle = match d.sessions.get(&session) {
+        Ok(handle) => handle,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    let listed: Vec<serde_json::Value> =
+        crate::tools::skill::installed_for(&handle.cwd(), handle.owner())
+            .iter()
+            .filter(|skill| under(&skill.id(), &path))
+            .map(crate::tools::skill::row)
+            .collect();
+    if listed.is_empty() {
+        return Outcome::ok(format!("{session}: no skill matches {path:?}"));
+    }
+    Outcome::ok(serde_json::Value::Array(listed).to_string())
+}
+
+/// Calls one function of a skill that is a Python package, as `session`.
+///
+/// # Invariant
+///
+/// The call is the `skill` tool's: the id is resolved here, because a path names one
+/// root where a name may name two, and then the same entry is started with the same
+/// argv. Nothing about how a skill runs is decided twice.
+async fn run_skill(d: &Dispatch, args: &Args) -> Outcome {
+    let session = args["session"].clone();
+    let id = args["id"].trim().to_string();
+    let action = match args.get("cmd").map(String::as_str) {
+        Some(raw) => match parse_cmd(raw) {
+            Ok(action) => action,
+            Err(why) => return Outcome::err(why),
+        },
+        None => {
+            return Outcome::err(
+                "run_skill calls a function: `run_skill <id> {\"name\": \"<function>\", \
+                 \"args\": {}}`"
+                    .to_string(),
+            );
+        }
+    };
+    let handle = match d.sessions.get(&session) {
+        Ok(handle) => handle,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    let installed = crate::tools::skill::installed_for(&handle.cwd(), handle.owner());
+    let Some(skill) = installed.iter().find(|skill| skill.id() == id) else {
+        let known: Vec<String> = installed.iter().map(|skill| skill.id()).collect();
+        return Outcome::err(format!(
+            "no skill is {id:?} here; `ls_skill` lists {}",
+            if known.is_empty() {
+                "none".to_string()
+            } else {
+                known.join(", ")
+            }
+        ));
+    };
+    // A package publishes functions; a body or a script has one entry, so `skill` runs it.
+    if skill.entry.is_some() || !skill.dir().join("__init__.py").is_file() {
+        return Outcome::err(format!(
+            "{id} is not a Python package with functions: `skill --name {}` starts what \
+             it declares",
+            skill.name
+        ));
+    }
+    // One argv: the function first, then its arguments as the words `gongga_skill`
+    // binds to parameters by name.
+    let mut words: Vec<String> = vec![action.name.clone()];
+    for (key, value) in action.args.iter() {
+        words.push(format!("--{key}"));
+        words.push(value.clone());
+    }
+    let mut call = Args::new();
+    call.insert("session".to_string(), session);
+    call.insert("id".to_string(), id.clone());
+    call.insert(
+        "args".to_string(),
+        serde_json::to_string(&words).unwrap_or_else(|_| "[]".to_string()),
+    );
+    call.insert("description".to_string(), format!("run_skill {id}"));
+    crate::tool_cmd::dispatch_tool(d, "skill", &call).await
 }
 
 /// Arms a pattern, and answers with what it armed.
