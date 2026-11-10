@@ -10,6 +10,7 @@ members = [
     "crates/bundle",
     "crates/console",
     "crates/lock",
+    "crates/relay",
 ]
 # `crates/bundle` is the distribution, not a library anybody links: a plain
 # `cargo build`/`check`/`test` must not compile a second copy of the whole
@@ -33,6 +34,7 @@ tui = { path = "crates/tui", package = "gongga-tui" }
 bridge = { path = "crates/bridge", package = "gongga-bridge" }
 console = { path = "crates/console", package = "gongga-console" }
 home_lock = { path = "crates/lock", package = "gongga-lock" }
+relay = { path = "crates/relay", package = "gongga-relay" }
 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

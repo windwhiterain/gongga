@@ -52,8 +52,8 @@ const POLL: Duration = Duration::from_millis(50);
 /// bare `PATH` name is not enough on Windows, where `python3` is often a Store stub.
 fn program_of(name: &str) -> std::path::PathBuf {
     match name {
-        "bash" => crate::config::detect_git_bash(),
-        "python" => crate::config::detect_python(),
+        "bash" => crate::detect::git_bash(),
+        "python" => crate::detect::python(),
         _ => None,
     }
     .unwrap_or_else(|| std::path::PathBuf::from(name))
@@ -94,7 +94,7 @@ pub fn run(dir: &Path) -> anyhow::Result<()> {
     // Armed so `kill` takes what the program started, not only the program.
     #[cfg(windows)]
     let mut chair = {
-        let chair = crate::tools::job::ProcessJob::own();
+        let chair = crate::job::ProcessJob::own();
         if let Some(chair) = &chair {
             chair.assign(pid);
         }

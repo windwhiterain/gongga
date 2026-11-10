@@ -5,7 +5,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+
+use crate::live::Stamp;
 
 /// What introduces a patch for an entry of the index that has changed since.
 ///
@@ -87,24 +88,6 @@ pub const REQUIRED: &[&str] = &[
 
 /// The one file section this module reads.
 const TABLE: &str = "prompts";
-
-/// What was on disk when a snapshot was read: enough to notice an edit without
-/// hashing the file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Stamp {
-    size: u64,
-    modified: Option<SystemTime>,
-}
-
-impl Stamp {
-    fn of(path: &Path) -> Option<Self> {
-        let meta = std::fs::metadata(path).ok()?;
-        Some(Self {
-            size: meta.len(),
-            modified: meta.modified().ok(),
-        })
-    }
-}
 
 /// The templates read from the home, plus what has already been complained about.
 #[derive(Default)]

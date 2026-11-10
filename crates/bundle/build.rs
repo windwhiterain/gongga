@@ -120,6 +120,7 @@ fn built() -> Vec<(&'static str, PathBuf)> {
         "gongga-tui",
         "gongga-client",
         "gongga-runner",
+        "gongga-relay",
     ]
     .into_iter()
     .map(|name| {

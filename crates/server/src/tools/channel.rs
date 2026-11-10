@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::remote::Endpoint;
 use crate::remote::transport::Runner;
 use crate::store::{ChannelRow, Store};
 use crate::tools::spec;
@@ -114,8 +113,8 @@ pub struct Channels {
     grammar: HashMap<String, spec::ChannelSpec>,
     /// Where a finished channel is announced.
     notify: Notifier,
-    /// The peers a call may name, as this machine's remotes file lists them.
-    remotes: HashMap<String, Endpoint>,
+    /// The peers a call may name: this machine's remotes file, followed live.
+    remotes: Arc<crate::remotes::Catalog>,
     /// One connection per peer, kept because a channel is read on every look.
     ///
     /// # Invariant
@@ -133,6 +132,40 @@ pub struct Channels {
     attached: std::sync::Mutex<HashSet<i64>>,
 }
 
+/// The program a channel's relay is started as: `gongga-relay`, beside this build or in
+/// the home that installed it.
+///
+/// # Invariant
+///
+/// Never this executable. A server that started itself under a flag put a build tree's
+/// path into every `exec`: a `clean` removed `target/`, and every local channel answered
+/// `os error 3` -- a missing program reported as if the caller's arguments were wrong.
+/// The relay is its own program now, so the only path it needs is its own.
+fn relay_program(home: &Path) -> PathBuf {
+    let name = if cfg!(windows) {
+        "gongga-relay.exe"
+    } else {
+        "gongga-relay"
+    };
+    if let Some(named) = std::env::var_os("GONGGA_RELAY_BIN") {
+        let named = PathBuf::from(named);
+        if named.is_file() {
+            return named;
+        }
+    }
+    if let Ok(me) = std::env::current_exe()
+        && let Some(dir) = me.parent()
+    {
+        let beside = dir.join(name);
+        if beside.is_file() {
+            return beside;
+        }
+    }
+    // A home keeps the program beside its cli. Answering with the path even when it is
+    // missing is deliberate: the spawn's message then names what was looked for.
+    home.join("bin").join(name)
+}
+
 impl Channels {
     pub fn new(
         store: Store,
@@ -140,7 +173,7 @@ impl Channels {
         server: PathBuf,
         grammar: HashMap<String, spec::ChannelSpec>,
         notify: Notifier,
-        remotes: HashMap<String, Endpoint>,
+        remotes: Arc<crate::remotes::Catalog>,
     ) -> Self {
         Self {
             store,
@@ -162,14 +195,14 @@ impl Channels {
     /// The one way a `Channels` is built, so every process that may speak to a
     /// channel agrees on where they live and which names it knows.
     pub fn for_home(cfg: &crate::config::Config, store: Store, notify: Notifier) -> Self {
-        let server = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gongga-server"));
+        let server = relay_program(&cfg.home);
         Self::new(
             store,
             cfg.home.join("channels"),
             server,
             cfg.tools.channels.clone().into_iter().collect(),
             notify,
-            remotes_of(cfg),
+            crate::remotes::Catalog::load(cfg.endpoint.answer_timeout),
         )
     }
 
@@ -187,7 +220,7 @@ impl Channels {
             PathBuf::from("gongga-server"),
             HashMap::new(),
             Arc::new(|_| {}),
-            remotes_of(cfg),
+            crate::remotes::Catalog::load(cfg.endpoint.answer_timeout),
         )
     }
 
@@ -290,9 +323,16 @@ impl Channels {
             &log,
             &words.env,
         )
-        .map_err(|e| format!("could not start a relay for {:?}: {e}", words.program))?;
-        // The relay is no part of this tree: it keeps the program alive after us.
-        crate::tools::job::release(relay.pid);
+        .map_err(|e| {
+            format!(
+                "could not start a relay for {:?} with {}: {e}",
+                words.program,
+                self.server.display()
+            )
+        })?;
+        // In this server's tree, so a server that is killed takes the channel with it:
+        // a `cancel` is what lets them go, and it is the only thing that does.
+        crate::tools::job::arm(relay.pid);
         let place = Where::Here(dir);
         let pid = self
             .await_status(&place, &log.display().to_string())
@@ -356,8 +396,8 @@ impl Channels {
         {
             return Ok(Arc::clone(runner));
         }
-        let Some(endpoint) = self.remotes.get(machine) else {
-            let mut known: Vec<&str> = self.remotes.keys().map(String::as_str).collect();
+        let Some(endpoint) = self.remotes.find(machine).map(|remote| remote.endpoint) else {
+            let mut known = self.remotes.names();
             known.sort_unstable();
             return Err(format!(
                 "no remote named {machine:?}; this machine's remotes are {}",
@@ -368,7 +408,7 @@ impl Channels {
                 }
             ));
         };
-        let spawned = crate::remote::pick::runner(endpoint, endpoint.answer_timeout())
+        let spawned = crate::remote::pick::runner(&endpoint, endpoint.answer_timeout())
             .await
             .map_err(|e| format!("{e}"))?;
         let runner = Arc::new(spawned);
@@ -911,14 +951,6 @@ impl Drop for Attached<'_> {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&self.id);
     }
-}
-
-/// The peers this home's config names, by the name a call gives.
-fn remotes_of(cfg: &crate::config::Config) -> HashMap<String, Endpoint> {
-    crate::remotes::load(cfg.endpoint.answer_timeout)
-        .into_iter()
-        .map(|remote| (remote.name, remote.endpoint))
-        .collect()
 }
 
 /// Where one channel's files are: a directory this machine has, or one a peer has.

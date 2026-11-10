@@ -921,6 +921,52 @@ impl ModelConfig {
     }
 }
 
+/// The home's `config.toml` as this process follows it.
+///
+/// # Invariant
+///
+/// Everything a request reads comes from [`Current::now`]: the file is the machine's,
+/// and changing a model, a timeout or a shell is an edit, never a restart. What
+/// placed this process -- `home`, `db_path`, `bind`, `key` -- is
+/// [`Current::anchor`], read once, because a database and a listening socket do not
+/// move. See `docs/notes/server-config.md`.
+pub struct Current {
+    config_path: PathBuf,
+    home: Option<PathBuf>,
+    live: crate::live::Live<std::sync::Arc<Config>>,
+}
+
+impl Current {
+    /// Reads the config once, and follows it from then on.
+    pub fn load(
+        config_path: Option<&Path>,
+        home: Option<&Path>,
+    ) -> anyhow::Result<std::sync::Arc<Self>> {
+        let config = Config::load_with_home(config_path, home)?;
+        Ok(std::sync::Arc::new(Self {
+            live: crate::live::Live::of(
+                vec![config.config_path.clone()],
+                std::sync::Arc::new(config.clone()),
+            ),
+            config_path: config.config_path,
+            home: home.map(Path::to_path_buf),
+        }))
+    }
+
+    /// The config the file has now: a value that did not change is the same `Arc`.
+    pub fn now(&self) -> std::sync::Arc<Config> {
+        let (config_path, home) = (self.config_path.clone(), self.home.clone());
+        self.live.current(|| {
+            Config::load_with_home(Some(&config_path), home.as_deref()).map(std::sync::Arc::new)
+        })
+    }
+
+    /// The config this process started with.
+    pub fn anchor(&self) -> std::sync::Arc<Config> {
+        self.live.initial()
+    }
+}
+
 /// A 128-bit random key, hex encoded.
 fn generate_key() -> String {
     uuid::Uuid::new_v4().simple().to_string()

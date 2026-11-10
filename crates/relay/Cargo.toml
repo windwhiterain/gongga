@@ -1,0 +1,33 @@
+[package]
+name = "gongga-relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "One channel's program, and the two files a server talks to it with"
+
+# Its own program, because a channel may outlive the server: a `cancel(keep_alive)`
+# leaves this process holding the child's stdin, and the next server adopts the channel
+# by reading the files beside it. Starting the server again to get that was a build
+# tree's path in every `exec`, and a `clean` took every local channel with it.
+[[bin]]
+name = "gongga-relay"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+which = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
