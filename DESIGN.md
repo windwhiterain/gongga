@@ -486,6 +486,44 @@ client 的 `WindowJournal`。`log.rs` 从 2387 行降到 1490 行，编译零警
 真进程 `tui_live` 退出码 0、254 帧。`client_state_selftest` 与
 `multi_client_selftest` 均 PASS。记录在 `.dev/verify/<sha>-a4-step2.json`。
 
+### The second front-end: Avalonia (2026-11-10)
+
+Verdicts given for this turn: full parity with the TUI (not a skeleton); a
+standalone `frontends/avalonia/` that is neither a Cargo member nor part of the
+bundle; install an SDK and really build it; extending the wire contract is
+allowed if the GUI needs it.
+
+**The contract did not need extending.** `render_wire.rs` already carries all 17
+`RenderMessage` variants and all 5 `UiIntent` gestures, and `crates/tui/src/pipe.rs`
+already shows how a window hosts the client child. No Rust source, no protocol
+and no bundle wiring changed. Verdict 2 of §1 ("other UIs distribute themselves")
+therefore stands. `SPEC.md` was not touched.
+
+What the second front-end proves is that the 2026-11-07 "cross-process,
+cross-language front-end" decision was real: a C# program can be a full window
+without a single line of Rust. It spawns `gongga-client.exe` with `--parent
+<its own pid>`, pipes one `UiIntent` per stdin line and one `RenderMessage` per
+stdout line, and drains stderr into `<client-home>/client.log`. Closing stdin is
+the window leaving; an ended stdout closes the window. See
+`docs/notes/avalonia-frontend.md` for the frame table, gesture table and the
+UTF-8 byte-cursor conversion (`TextBox.CaretIndex` is UTF-16).
+
+Two inconsistencies found while reading the contract, recorded rather than
+silently followed:
+
+- `docs/notes/client-render-wire.md` says "12 drawing + 5 control"; the code has
+  **11 drawing + 6 control** (`StickySession` is a control frame). The C#
+  implementation follows the code.
+- `render_wire.rs` and `docs/notes/tui-run.md` call `UiIntent::Quit` "Alt+Q", but
+  the TUI binds **Ctrl+Q** and swallows every Alt key. The GUI binds Ctrl+Q.
+
+Verification is a headless entry (`--no-window`) that runs the same transport and
+frame model against a real `gongga-client` child and prints one verdict line with
+an exit code, so a machine with no interactive desktop can still prove the round
+trip. Avalonia 12's XAML source generators need Roslyn 4.14 (.NET 10 SDK); the
+official `dotnet new avalonia.app` template does not compile under a .NET 8 SDK
+either.
+
 ## 2. 传输层：可靠 UDP
 
 按你的选择走「跨机 + 自研轻量可靠层」。没有用 QUIC（强制 TLS，跨机自签证书很麻烦），
