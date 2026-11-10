@@ -16,7 +16,6 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::remote::Endpoint;
 use crate::remote::transport::Runner;
 use crate::store::{ChannelRow, Store};
 use crate::tools::spec;
@@ -114,8 +113,8 @@ pub struct Channels {
     grammar: HashMap<String, spec::ChannelSpec>,
     /// Where a finished channel is announced.
     notify: Notifier,
-    /// The peers a call may name, as this machine's remotes file lists them.
-    remotes: HashMap<String, Endpoint>,
+    /// The peers a call may name: this machine's remotes file, followed live.
+    remotes: Arc<crate::remotes::Catalog>,
     /// One connection per peer, kept because a channel is read on every look.
     ///
     /// # Invariant
@@ -174,7 +173,7 @@ impl Channels {
         server: PathBuf,
         grammar: HashMap<String, spec::ChannelSpec>,
         notify: Notifier,
-        remotes: HashMap<String, Endpoint>,
+        remotes: Arc<crate::remotes::Catalog>,
     ) -> Self {
         Self {
             store,
@@ -203,7 +202,7 @@ impl Channels {
             server,
             cfg.tools.channels.clone().into_iter().collect(),
             notify,
-            remotes_of(cfg),
+            crate::remotes::Catalog::load(cfg.endpoint.answer_timeout),
         )
     }
 
@@ -221,7 +220,7 @@ impl Channels {
             PathBuf::from("gongga-server"),
             HashMap::new(),
             Arc::new(|_| {}),
-            remotes_of(cfg),
+            crate::remotes::Catalog::load(cfg.endpoint.answer_timeout),
         )
     }
 
@@ -397,8 +396,8 @@ impl Channels {
         {
             return Ok(Arc::clone(runner));
         }
-        let Some(endpoint) = self.remotes.get(machine) else {
-            let mut known: Vec<&str> = self.remotes.keys().map(String::as_str).collect();
+        let Some(endpoint) = self.remotes.find(machine).map(|remote| remote.endpoint) else {
+            let mut known = self.remotes.names();
             known.sort_unstable();
             return Err(format!(
                 "no remote named {machine:?}; this machine's remotes are {}",
@@ -409,7 +408,7 @@ impl Channels {
                 }
             ));
         };
-        let spawned = crate::remote::pick::runner(endpoint, endpoint.answer_timeout())
+        let spawned = crate::remote::pick::runner(&endpoint, endpoint.answer_timeout())
             .await
             .map_err(|e| format!("{e}"))?;
         let runner = Arc::new(spawned);
@@ -952,14 +951,6 @@ impl Drop for Attached<'_> {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&self.id);
     }
-}
-
-/// The peers this home's config names, by the name a call gives.
-fn remotes_of(cfg: &crate::config::Config) -> HashMap<String, Endpoint> {
-    crate::remotes::load(cfg.endpoint.answer_timeout)
-        .into_iter()
-        .map(|remote| (remote.name, remote.endpoint))
-        .collect()
 }
 
 /// Where one channel's files are: a directory this machine has, or one a peer has.

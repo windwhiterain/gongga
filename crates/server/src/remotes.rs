@@ -57,31 +57,73 @@ pub fn path() -> PathBuf {
 /// `answer_timeout` is this home's `[remote] answer_timeout_ms`, handed to every
 /// table here: a peer's silence is bounded, and what outlives it is an error.
 pub fn load(answer_timeout: Duration) -> Vec<RemoteConfig> {
-    read(&path(), answer_timeout)
+    let file = path();
+    read(&file, answer_timeout).unwrap_or_else(|e| {
+        tracing::warn!(file = %file.display(), error = %e, "could not read the remotes file");
+        Vec::new()
+    })
 }
 
 /// The remotes in `file`, in the order the file writes them.
-pub fn read(file: &Path, answer_timeout: Duration) -> Vec<RemoteConfig> {
+///
+/// No file is no remote. Anything else that cannot be read is the caller's to
+/// decide about: a file mid-edit must not be mistaken for a machine with no peers.
+pub fn read(file: &Path, answer_timeout: Duration) -> anyhow::Result<Vec<RemoteConfig>> {
     let text = match std::fs::read_to_string(file) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(e) => {
-            tracing::warn!(file = %file.display(), error = %e, "could not read the remotes file");
-            return Vec::new();
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => anyhow::bail!("reading {}: {e}", file.display()),
     };
-    let parsed: File = match toml::from_str(&text) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            tracing::warn!(file = %file.display(), error = %e, "the remotes file is not TOML");
-            return Vec::new();
-        }
-    };
-    parsed
+    let parsed: File = toml::from_str(&text)
+        .map_err(|e| anyhow::anyhow!("{} is not TOML: {e}", file.display()))?;
+    Ok(parsed
         .remotes
         .into_iter()
         .filter_map(|(name, one)| one.into_config(name.trim().to_string(), answer_timeout))
-        .collect()
+        .collect())
+}
+
+/// The remotes file as this process follows it.
+///
+/// # Invariant
+///
+/// A name resolves against the file as it is now. The file belongs to the machine,
+/// and publishing a peer is an edit, never a restart; a file that stops parsing
+/// keeps the remotes that last parsed. See `docs/notes/server-remotes.md`.
+pub struct Catalog {
+    file: PathBuf,
+    answer: Duration,
+    live: crate::live::Live<Vec<RemoteConfig>>,
+}
+
+impl Catalog {
+    pub fn load(answer: Duration) -> std::sync::Arc<Self> {
+        let file = path();
+        let first = read(&file, answer).unwrap_or_else(|e| {
+            tracing::warn!(file = %file.display(), error = %e, "could not read the remotes file");
+            Vec::new()
+        });
+        std::sync::Arc::new(Self {
+            live: crate::live::Live::of(vec![file.clone()], first),
+            file,
+            answer,
+        })
+    }
+
+    /// Every remote the file has now.
+    fn all(&self) -> Vec<RemoteConfig> {
+        self.live.current(|| read(&self.file, self.answer))
+    }
+
+    /// The names a session may name, in the file's order.
+    pub fn names(&self) -> Vec<String> {
+        self.all().into_iter().map(|remote| remote.name).collect()
+    }
+
+    /// One remote by the name a call gave.
+    pub fn find(&self, name: &str) -> Option<RemoteConfig> {
+        self.all().into_iter().find(|remote| remote.name == name)
+    }
 }
 
 impl FileRemote {

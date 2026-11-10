@@ -11,6 +11,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::live::{Stamp, stamps};
+
 /// Everything `providers.toml` says about one provider.
 #[derive(Debug, Clone)]
 pub struct Provider {
@@ -1117,24 +1119,6 @@ fn resolve_scripts(value: &mut toml::Value, dir: Option<&Path>) {
     }
 }
 
-/// The file state a roster was read from: enough to notice an edit without
-/// hashing the file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Stamp {
-    size: u64,
-    modified: Option<std::time::SystemTime>,
-}
-
-impl Stamp {
-    fn of(path: &Path) -> Option<Self> {
-        let meta = std::fs::metadata(path).ok()?;
-        Some(Self {
-            size: meta.len(),
-            modified: meta.modified().ok(),
-        })
-    }
-}
-
 /// The roster in force, and the files it came from.
 struct Live {
     /// Whether a read happened: no roster file is still an answer, and asking
@@ -1226,11 +1210,6 @@ impl Live {
     fn is_fresh(&self, paths: &[PathBuf]) -> bool {
         self.read && self.stamps == stamps(paths)
     }
-}
-
-/// What each roster file looked like when it was read.
-fn stamps(paths: &[PathBuf]) -> Vec<Option<Stamp>> {
-    paths.iter().map(|path| Stamp::of(path)).collect()
 }
 
 /// One read of every roster file, stamped with the generation it belongs to.
