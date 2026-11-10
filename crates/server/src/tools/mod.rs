@@ -789,6 +789,20 @@ impl ToolRegistry {
     }
 }
 
+/// The note a call leaves on its own row.
+///
+/// # Invariant
+///
+/// SPEC spells the shared argument `discription`; every call written before this one
+/// says `description`. They are one argument under two spellings, and a note is a
+/// label: a call is not refused over how it spelled one.
+fn note_of(args: &Value) -> Option<String> {
+    args.get("discription")
+        .or_else(|| args.get("description"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 /// Waits for one call, and ends that wait when somebody speaks or the turn stops.
 ///
 /// # Invariant
@@ -798,10 +812,7 @@ impl ToolRegistry {
 /// the turn away without stopping it. See `docs/notes/server-tools-mod.md`.
 async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOutcome {
     let started = std::time::Instant::now();
-    let description = args
-        .get("description")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let description = note_of(args);
     let max = args
         .get("max_output")
         .and_then(Value::as_u64)
