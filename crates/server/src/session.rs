@@ -10,7 +10,6 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::OwnedMutexGuard;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::BashConfig;
 use crate::remote::endpoint::Endpoint;
 use crate::store::{SessionRow, Store};
 use crate::tools::detached::DetachedRegistry;
@@ -951,10 +950,9 @@ impl Drop for WaitGuard {
 #[derive(Clone)]
 pub struct SessionManager {
     store: Store,
-    bash: BashConfig,
-    /// The model every session here runs on unless it named one, as
-    /// `provider/model_name` when the roster can place it.
-    model: String,
+    /// The config this manager reads at the point of use: a session started after
+    /// an edit gets what the file says now.
+    config: std::sync::Arc<crate::config::Current>,
     /// Detached jobs outlive shell, cancel and restart; `del_session` still deletes
     /// that session's bash.
     detached: DetachedRegistry,
@@ -1008,8 +1006,7 @@ fn session_vars(store: &Store, name: &str) -> Vec<(String, String)> {
 impl SessionManager {
     pub fn new(
         store: Store,
-        bash: BashConfig,
-        model: String,
+        config: std::sync::Arc<crate::config::Current>,
         detached: DetachedRegistry,
         shell_env: Vec<(String, String)>,
         script_env: Vec<(String, String)>,
@@ -1017,8 +1014,7 @@ impl SessionManager {
     ) -> Self {
         Self {
             store,
-            bash,
-            model,
+            config,
             detached,
             shell_env,
             script_env,
@@ -1225,7 +1221,11 @@ impl SessionManager {
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let source = model.unwrap_or(&self.model);
+        let current = self.config.now();
+        let source = model
+            .map(str::to_owned)
+            .unwrap_or_else(|| current.model.model());
+        let source = source.as_str();
         let id = self
             .store
             .create_session_on(name, source, &stored, recorded.as_deref())?;
@@ -1341,7 +1341,8 @@ impl SessionManager {
     }
 
     fn local_endpoint(&self) -> anyhow::Result<Endpoint> {
-        let program = self
+        let current = self.config.now();
+        let program = current
             .bash
             .program
             .clone()

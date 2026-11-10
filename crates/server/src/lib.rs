@@ -18,6 +18,7 @@ mod explore;
 mod fork;
 mod image;
 mod instance;
+pub mod live;
 mod live_compact;
 mod llm;
 mod meta;
@@ -33,7 +34,6 @@ mod pylib;
 mod quota;
 pub mod relay;
 pub mod remote;
-pub mod live;
 pub mod remotes;
 mod script;
 mod session;
@@ -212,8 +212,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         reachable = installed.reachable,
         "shipped content"
     );
-    // Read again: the install may have just placed this home's config.
-    let cfg = config_from(&args)?;
+    // Read again: the install may have just placed this home's config. From here
+    // the file is followed, so an edit reaches the next request, not the next start.
+    let config = crate::config::Current::load(args.config.as_deref(), args.home.as_deref())?;
+    let cfg = config.anchor();
     // Before any request is built: templates from this config, over the pin.
     let missing = prompts::install(&cfg.config_path);
     if !missing.is_empty() {
@@ -283,8 +285,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
     let sessions = SessionManager::new(
         store.clone(),
-        cfg.bash.clone(),
-        cfg.model.model(),
+        config.clone(),
         detached.clone(),
         shell_env,
         script_env.clone(),
@@ -593,7 +594,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         move || async move { commands::stop(&signalled).await },
     );
 
-    let served = net::serve(std::sync::Arc::new(cfg), socket, dispatch, bus).await;
+    let served = net::serve(cfg, socket, dispatch, bus).await;
     // Nothing new may fire once the socket stopped; turns were interrupted already.
     stop_watching.cancel();
     let _ = matcher.await;

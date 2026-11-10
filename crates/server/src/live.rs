@@ -55,6 +55,15 @@ impl<T: Clone> Live<T> {
         }
     }
 
+    /// The value this process started with: what placed it, and cannot move.
+    pub(crate) fn initial(&self) -> T {
+        self.state
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .value
+            .clone()
+    }
+
     /// The newest value: `reload` runs only when a file says it changed.
     pub(crate) fn current<F>(&self, reload: F) -> T
     where
