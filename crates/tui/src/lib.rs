@@ -349,7 +349,7 @@ impl Screen {
     ///
     /// Only a box's own content answers. A box's rules and its margin, and every
     /// row of any other block, are the pane's. See [`Log::box_at`].
-    fn box_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<usize> {
+    fn box_at(&mut self, width: u16, height: u16, column: u16, row: u16) -> Option<(usize, usize)> {
         let cell = self.cell_at(width, height, column, row)?;
         self.panes.box_at(
             &cell.name,
@@ -408,10 +408,10 @@ impl Screen {
             return false;
         };
         if hit.part == Part::Pane
-            && let Some(at) = self.box_at(width, height, column, row)
+            && let Some((at, body)) = self.box_at(width, height, column, row)
         {
             // The box and only the box: no handover, so one gesture has one result.
-            self.panes.scroll_block(at, rows);
+            self.panes.scroll_block(at, rows, body);
             return true;
         }
 

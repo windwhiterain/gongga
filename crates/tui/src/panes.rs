@@ -371,7 +371,7 @@ impl Panes {
         scroll: usize,
         row: usize,
         column: usize,
-    ) -> Option<usize> {
+    ) -> Option<(usize, usize)> {
         self.log.box_at(window, width, height, scroll, row, column)
     }
 
@@ -383,8 +383,8 @@ impl Panes {
     /// moves nothing and still holds the wheel: the cell decides, once. A box that
     /// could never move is not one the wheel is offered at all -- see
     /// [`Log::box_at`].
-    pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
-        self.log.scroll_block(at, rows)
+    pub fn scroll_block(&mut self, at: usize, rows: i64, body: usize) -> bool {
+        self.log.scroll_block(at, rows, body)
     }
 
     /// Opens or closes the `abstract` at one block, which is what a press names.

@@ -921,7 +921,7 @@ impl Log {
     /// direction -- at either end, or under a `block_size` of 0, which caps nothing
     /// and so leaves nothing inside to scroll -- moves nothing. No other number is
     /// consulted, so one cell behaves the same way whatever the cap is.
-    pub fn scroll_block(&mut self, at: usize, rows: i64) -> bool {
+    pub fn scroll_block(&mut self, at: usize, rows: i64, body: usize) -> bool {
         // The row offsets of the frame the pointer landed on: reflowing before
         // the next draw would move the hit.
         let Some(entry) = self.entries.get(at) else {
@@ -930,8 +930,9 @@ impl Log {
         if !entry.boxed() {
             return false;
         }
-        let cap = self.room(entry.kind, 0);
-        let bound = entry.travel(cap);
+        // The rows `box_at` measured for this box: the only bound this gesture
+        // may move within, so a notch never walks past what the frame draws.
+        let bound = entry.travel(body);
         // The stored row is the first one shown, so a notch into the past lowers it.
         let current = entry.inner;
         let next = (current as i64 - rows).clamp(0, bound as i64) as usize;
@@ -1026,7 +1027,7 @@ impl Log {
         scroll: usize,
         row: usize,
         column: usize,
-    ) -> Option<usize> {
+    ) -> Option<(usize, usize)> {
         let hit = self.hit(window, width, height, scroll, row, column)?;
         if !hit.boxed {
             return None;
@@ -1036,10 +1037,14 @@ impl Log {
             return None;
         }
         // A body that already fits is no scroll target: the wheel goes to the
-        // window under it, every time.
+        // window under it, every time. What fits is the rows this frame drew for
+        // it, rule included -- never the rows a block may keep. A block drawn in
+        // full would otherwise take the wheel and scroll its own past under a body
+        // the operator can already see whole, which is how a turn made hours ago
+        // surfaces from a notch that should have moved one row.
         let entry = self.entries.get(hit.block)?;
-        let cap = self.room(entry.kind, 0);
-        (entry.travel(cap) > 0).then_some(hit.block)
+        let body = hit.shown.saturating_sub(2).max(1);
+        (entry.rows() > body).then_some((hit.block, body))
     }
 
     /// The block under one row, with where that row sits inside it.
