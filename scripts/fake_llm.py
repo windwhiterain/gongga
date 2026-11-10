@@ -60,7 +60,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DUMP = os.environ.get("FAKE_LLM_DUMP")
 HEADERS_DUMP = os.environ.get("FAKE_LLM_HEADERS_DUMP")
 TOOL_NAME = os.environ.get("FAKE_LLM_TOOL")
-TOOL_ARGS = os.environ.get("FAKE_LLM_TOOL_ARGS") or '{"command":"echo hi-from-fake"}'
+TOOL_ARGS = os.environ.get("FAKE_LLM_TOOL_ARGS") or (
+    '{"bin":"bash","args":["-lc","echo hi-from-fake"]}'
+)
 WEB = os.environ.get("FAKE_LLM_WEB") == "1"
 # A model id this endpoint refuses, which is how a failed turn is produced fast.
 FAIL_MODEL = os.environ.get("FAKE_LLM_FAIL_MODEL") or ""

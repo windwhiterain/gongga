@@ -7,6 +7,9 @@
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# A fresh home installs nothing without a source, and the compiled default is a
+# network URL this machine may not reach: the content under test is this repo's own.
+export GONGGA_SHIP_URL="${GONGGA_SHIP_URL:-$root/ship}"
 bin="$root/target/debug"
 work="$root/.dev/selftest"
 home="$work/cmd-home"
@@ -320,7 +323,8 @@ body=$("${cli[@]}" skill --session main --name body-only 2>&1)
 ok "a skill with no entry says there is nothing to run" $?
 
 absent=$("${cli[@]}" skill --session main --name no-such-skill 2>&1)
-[[ "$absent" == *"no skill named"* ]]
+say "unknown skill answered: $(printf '%s' "$absent" | tail -1 | head -c 300)"
+[[ "$absent" == *"no skill with name"* && "$absent" == *"is installed here"* ]]
 ok "an unknown skill name is refused with where to look" $?
 
 # 16. The session it deleted is gone.

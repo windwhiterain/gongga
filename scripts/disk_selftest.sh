@@ -13,9 +13,14 @@
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# A fresh home installs nothing without a source, and the compiled default is a
+# network URL this machine may not reach: the content under test is this repo's own.
+export GONGGA_SHIP_URL="${GONGGA_SHIP_URL:-$root/ship}"
 bin="$root/target/debug"
 work="$root/.dev/disk-selftest"
-home="$work/home"
+# One home per run: a channel outlives the run that made it, so a reused home answers
+# the next run with `channel ... is already running`, and the test reads its own past.
+home="$work/home-$$"
 log="$work/server.log"
 dump="$work/fake-dump.jsonl"
 roster="$work/roster.toml"
@@ -165,7 +170,10 @@ env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u G
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
 wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
 server_pid=$(child_pid); sup=$(parent_of "$server_pid")
-cli=("$bin/gongga-cli.exe" --home "$home" --server "127.0.0.1:$port")
+# The server extracts its own cli into the home it serves; `target/debug` carries the
+# client under its crate name, and a run that named that path called a binary that is
+# not there -- four checks failed on "no such file", not on the disk.
+cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
 echo "--- the threshold is read from the home, and the first call is below it"
 grep -q "threshold=104857600000000" "$log"
