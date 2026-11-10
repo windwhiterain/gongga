@@ -59,12 +59,17 @@ public static class ShotRun
         File.WriteAllText(Path.Combine(directory, "tree.txt"), Describe(window));
 
         // A session in the list, clicked the way a person clicks it.
-        if (Session(window, "beta") is { } row && Click(window, row))
+        if (Session(window, "beta") is not { } row || !Click(window, row))
         {
-            SettleOn(window);
-            Capture(window, Path.Combine(directory, "03-session-clicked.png"));
-            File.WriteAllText(Path.Combine(directory, "tree-clicked.txt"), Describe(window));
+            // A missing row is a missing picture, and a run that quietly skips a
+            // step reports on a window nobody looked at.
+            Console.Error.WriteLine("no session row named beta to click");
+            window.Close();
+            return 1;
         }
+        SettleOn(window);
+        Capture(window, Path.Combine(directory, "03-session-clicked.png"));
+        File.WriteAllText(Path.Combine(directory, "tree-clicked.txt"), Describe(window));
 
         if (window.FindControl<TextBox>("Input") is { } input)
         {
