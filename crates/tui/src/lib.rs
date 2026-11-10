@@ -1409,6 +1409,13 @@ impl Tui {
                 self.apply_completion();
             }
             KeyCode::Enter => {
+                // A block the terminal delivered one line at a time: when the prompt
+                // holds the start of the clipboard, this enter ended a line of it.
+                // See `docs/notes/tui-paste.md`.
+                if let Some(rest) = crate::clipboard::rest_of_paste(self.screen.input.text()) {
+                    self.paste(&rest);
+                    return None;
+                }
                 let raw = self.screen.input.text().trim().to_string();
                 if raw.is_empty() {
                     return None;

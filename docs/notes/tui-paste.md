@@ -286,3 +286,23 @@ indistinguishable from typing; nothing here can fix that, because the terminal
 sends no marker. A real paste into a real terminal is the open check: a ConPTY
 driver was attempted and hung the shell twice, so it was removed rather than left
 as a trap.
+
+## the clipboard is the record a key stream is missing
+
+`is_paste_newline` reads a `CONTROL`-carrying `Enter` as a break in a block, which is
+what ConPTY sends for a pasted newline. A terminal that sends a plain `Enter`
+instead, one key at a time and slower than `PASTE_GAP`, defeats both rules: no run
+accumulates, and the `Enter` after the first line is indistinguishable from a send.
+That is the report this closes -- pasting a block posted its first line.
+
+The terminal cannot say what it delivered, but the clipboard can: a paste puts the
+whole text there before a single key arrives. `rest_of_paste` therefore runs on
+`Enter`: when the prompt holds the *beginning of the clipboard* and the clipboard
+breaks a line after it, the key ended a line of a block rather than the message, and
+what is left is pasted instead of sent. A single line that happens to equal the
+prompt is not that -- the rule requires a break after what is typed.
+
+The clipboard is read from the window system (`native_text`: `OpenClipboard`,
+`CF_UNICODETEXT`, `GlobalLock`) rather than by running `Get-Clipboard`, which
+answered this window in two minutes or not at all. A paste key must not wait on a
+cmdlet host.
