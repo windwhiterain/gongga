@@ -23,6 +23,18 @@ use crate::{Connection, DialFailure, Greeting, LineKind, Link, Listed, Sink};
 pub const RECONNECT_MIN: Duration = Duration::from_millis(250);
 pub const RECONNECT_MAX: Duration = Duration::from_secs(5);
 
+/// How much of a burst is decoded before the keyboard is looked at again.
+///
+/// # Invariant
+///
+/// Bounded on purpose: one paint per burst is the goal, but a stream that never
+/// pauses would keep the drain inside one step, and no step means no `select!`,
+/// no key read and no frame drawn -- which is what a fast answer looked like
+/// while somebody was typing into it. See `docs/notes/tui-run.md`.
+pub const BURST: usize = 64;
+/// And the same bound in bytes, for a burst of a few very long messages.
+pub const BURST_BYTES: usize = 256 * 1024;
+
 /// The wait between dials while a server the UI started is coming up.
 pub const SPAWN_POLL: Duration = Duration::from_millis(50);
 /// How many of those are fast: past this it is not a start but a failure.
@@ -294,6 +306,10 @@ pub async fn run(
         let step = if let Some(open) = link.as_mut() {
             let closing = ui.closing();
             tokio::select! {
+                // The keyboard first, every time: a stream that never pauses would
+                // otherwise win the race, and a window that cannot read a key
+                // cannot show one either.
+                biased;
                 event = ui.next_event() => Step::Input(event),
                 bytes = open.recv() => Step::Wire(bytes),
                 _ = closing => Step::Closing,
@@ -301,6 +317,10 @@ pub async fn run(
         } else if let Some(pending) = dialing.as_mut() {
             let closing = ui.closing();
             tokio::select! {
+                // The keyboard first, every time: a stream that never pauses would
+                // otherwise win the race, and a window that cannot read a key
+                // cannot show one either.
+                biased;
                 event = ui.next_event() => Step::Input(event),
                 outcome = pending.as_mut() => Step::Dialed(outcome),
                 _ = closing => Step::Closing,
@@ -308,6 +328,10 @@ pub async fn run(
         } else {
             let closing = ui.closing();
             tokio::select! {
+                // The keyboard first, every time: a stream that never pauses would
+                // otherwise win the race, and a window that cannot read a key
+                // cannot show one either.
+                biased;
                 event = ui.next_event() => Step::Input(event),
                 _ = tokio::time::sleep_until(next_try) => Step::Dial,
                 _ = closing => Step::Closing,
@@ -441,7 +465,14 @@ pub async fn run(
                 // Everything waiting goes in before the next frame: one paint
                 // per burst, not per delta.
                 if let Some(open) = link.as_mut() {
-                    while let Some(more) = open.try_recv() {
+                    let mut taken = 0usize;
+                    let mut read = 0usize;
+                    while taken < BURST && read < BURST_BYTES {
+                        let Some(more) = open.try_recv() else {
+                            break;
+                        };
+                        taken += 1;
+                        read += more.len();
                         let decoded = client.handle_bytes(&more, ui.sink().as_mut());
                         if let Err(e) = decoded {
                             ui.sink()

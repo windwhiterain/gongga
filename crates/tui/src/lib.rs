@@ -543,6 +543,12 @@ pub struct Tui {
     /// asks its client for candidates and never answers itself. A window that
     /// answers itself — a test — leaves it false and keeps the local completer.
     asks_client: bool,
+    /// When the run of keys being collected has been quiet long enough to be
+    /// somebody typing rather than a paste. Held in `self`, not in the wait: a
+    /// frame arriving cancels the wait, and a deadline that restarted with it
+    /// would never be reached while the answer is streaming. See
+    /// `docs/notes/tui-paste.md`.
+    quiet_at: Option<tokio::time::Instant>,
     /// The panes that have already asked for the row above them.
     ///
     /// # Invariant
@@ -938,6 +944,7 @@ impl Tui {
             dragging: None,
             note_window: client::COMMAND_WINDOW.to_string(),
             asks_client: false,
+            quiet_at: None,
             wished: HashSet::new(),
             asked: (String::new(), 0),
             tab_asked: false,
@@ -1269,6 +1276,13 @@ impl Tui {
             if let Some(operation) = self.clicked.take() {
                 return Some(UiEvent::Intent(UiIntent::Operate { operation }));
             }
+            // Painted before anything is asked: a key that changed the line must be
+            // on the screen before the loop leaves for a request, or the operator
+            // types into a row that only catches up when the answer's frames let
+            // it. See `docs/notes/tui-lib.md`.
+            if self.draw().is_err() {
+                return None;
+            }
             // Taken, not read: a request is answered once, never on every frame.
             let owed = self.screen.take_wants();
             if !owed.is_empty() {
@@ -1293,9 +1307,6 @@ impl Tui {
                     return Some(UiEvent::Intent(UiIntent::Room { windows: rooms }));
                 }
             }
-            if self.draw().is_err() {
-                return None;
-            }
             // A frame that could not fill its pane is the one asking: the reader is
             // pinned at the oldest row the window holds, so that row's neighbour
             // above is what the next frame needs.
@@ -1312,9 +1323,13 @@ impl Tui {
             // A run in progress is finished first: it lives in `self`, so a
             // cancelled wait resumes it instead of losing the keys.
             if !self.pending.is_empty() {
-                match tokio::time::timeout(PASTE_GAP, self.next_term()).await {
+                let quiet = *self
+                    .quiet_at
+                    .get_or_insert_with(|| tokio::time::Instant::now() + PASTE_GAP);
+                match tokio::time::timeout_at(quiet, self.next_term()).await {
                     // Quiet: the run is over, and a key held as a marker was not one.
                     Err(_) => {
+                        self.quiet_at = None;
                         for key in self.markers.take_probe() {
                             self.pending.push(key);
                         }
@@ -1324,6 +1339,7 @@ impl Tui {
                     Ok(Some(Ok(TermEvent::Key(key))))
                         if Self::actionable(&key) && Self::paste_key(&key) =>
                     {
+                        self.quiet_at = Some(tokio::time::Instant::now() + PASTE_GAP);
                         match self.markers.feed(key) {
                             Marker::Keys(keys) => {
                                 for key in keys {
@@ -1699,6 +1715,7 @@ impl Tui {
             &mut self.screen.completion,
             key.code,
         ) {
+            self.dirty = true;
             return None;
         }
 
@@ -1733,10 +1750,16 @@ impl Tui {
             }
             KeyCode::Char(c) => {
                 self.screen.input.insert(c);
+                // Typing is a frame of its own, always: while an answer streams the
+                // screen is painted for the answer's rows, and an input row that
+                // only appeared when the next of those arrived was one the operator
+                // had already typed past. See `docs/notes/tui-lib.md`.
+                self.dirty = true;
                 self.refresh_completion();
             }
             KeyCode::Backspace => {
                 self.screen.input.backspace();
+                self.dirty = true;
                 self.refresh_completion();
             }
             // A page is the log window, not a fixed ten rows, so short terminals work too.
