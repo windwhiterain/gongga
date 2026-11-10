@@ -1040,14 +1040,24 @@ pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
 ///
 /// See `docs/notes/server-tools-mod.md`.
 fn argument_error(tool: &dyn Tool, args: &Value) -> Option<String> {
-    let schema = tool.spec().schema();
+    argument_error_for(tool.name(), &tool.spec().schema(), args)
+}
+
+/// The same, for a name and a schema: what is missing, and what the tool does not take.
+///
+/// # Invariant
+///
+/// A key the schema does not declare is named even when nothing is missing. `exec`
+/// requires no argument -- `bin` starts a channel, `id` speaks to one -- so the only
+/// thing wrong with `{"command": [...]}` is the key itself. Answering for missing
+/// arguments alone returned `None` there, and the call's words were dropped in silence.
+fn argument_error_for(name: &str, schema: &Value, args: &Value) -> Option<String> {
     let Some(given) = args.as_object() else {
         return Some(format!(
             "`{name}` did not run: its arguments must be a JSON object, and this was {kind}.\n  \
              `{name}` takes: {signature}",
-            name = tool.name(),
             kind = json_type(args),
-            signature = signature(&schema),
+            signature = signature(schema),
         ));
     };
 
@@ -1057,20 +1067,6 @@ fn argument_error(tool: &dyn Tool, args: &Value) -> Option<String> {
         .copied()
         .filter(|k| given.get(*k).is_none_or(Value::is_null))
         .collect();
-    if missing.is_empty() {
-        return None;
-    }
-
-    let mut message = format!(
-        "`{}` did not run: {} {} required.\n",
-        tool.name(),
-        missing
-            .iter()
-            .map(|k| format!("`{k}`"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        if missing.len() == 1 { "is" } else { "are" },
-    );
 
     let declared = string_list(&schema["properties"]);
     let unexpected: Vec<String> = given
@@ -1083,14 +1079,37 @@ fn argument_error(tool: &dyn Tool, args: &Value) -> Option<String> {
             },
         )
         .collect();
-    if !unexpected.is_empty() {
+
+    if missing.is_empty() && unexpected.is_empty() {
+        return None;
+    }
+
+    let mut message = if missing.is_empty() {
+        format!(
+            "`{name}` did not run: {} {} not {} it takes.\n",
+            unexpected.join(", "),
+            if unexpected.len() == 1 { "is" } else { "are" },
+            if unexpected.len() == 1 {
+                "an argument"
+            } else {
+                "arguments"
+            },
+        )
+    } else {
+        format!(
+            "`{name}` did not run: {} {} required.\n",
+            missing
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if missing.len() == 1 { "is" } else { "are" },
+        )
+    };
+    if !missing.is_empty() && !unexpected.is_empty() {
         message.push_str(&format!("  unexpected: {}\n", unexpected.join(", ")));
     }
-    message.push_str(&format!(
-        "  `{}` takes: {}",
-        tool.name(),
-        signature(&schema)
-    ));
+    message.push_str(&format!("  `{name}` takes: {}", signature(schema)));
     Some(message)
 }
 
@@ -1341,5 +1360,56 @@ fn arrival(row: &crate::store::PendingTask) -> String {
             Some(_) => "a context notice".to_string(),
             None => "a message".to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The shape `exec` has: nothing is required, and its words are `args`.
+    fn exec_schema() -> Value {
+        json!({
+            "properties": {
+                "bin": {"type": "string"},
+                "args": {"type": "array"},
+                "id": {"type": "string"},
+            }
+        })
+    }
+
+    #[test]
+    fn a_key_the_tool_does_not_take_is_named_even_when_nothing_is_missing() {
+        let why = argument_error_for(
+            "exec",
+            &exec_schema(),
+            &json!({"command": ["bash", "-lc", "echo hi"]}),
+        )
+        .expect("a call naming an argument the tool does not take is refused");
+        assert!(
+            why.contains("`command` is not an argument it takes"),
+            "{why}"
+        );
+        assert!(why.contains("`exec` takes:"), "{why}");
+    }
+
+    #[test]
+    fn the_arguments_the_schema_declares_answer_with_nothing() {
+        assert_eq!(
+            argument_error_for("exec", &exec_schema(), &json!({"bin": "bash"})),
+            None
+        );
+    }
+
+    #[test]
+    fn a_missing_required_argument_still_says_which() {
+        let schema = json!({
+            "required": ["path"],
+            "properties": {"path": {"type": "string"}},
+        });
+        let why =
+            argument_error_for("read_file", &schema, &json!({})).expect("an empty call is refused");
+        assert!(why.contains("`path` is required"), "{why}");
     }
 }
