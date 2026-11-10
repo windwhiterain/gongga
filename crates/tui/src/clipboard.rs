@@ -28,7 +28,6 @@ fn candidates() -> &'static [(&'static str, &'static [&'static str])] {
 
 /// Programs that print the clipboard on stdout, tried in order, for a paste the
 /// terminal did not deliver itself.
-#[cfg_attr(windows, allow(dead_code))]
 fn readers() -> &'static [(&'static str, &'static [&'static str])] {
     if cfg!(windows) {
         // `Get-Clipboard` is a cmdlet, so it needs a host to run in.
@@ -142,39 +141,7 @@ pub enum FromClipboard {
 /// A failure is reported, never swallowed, and an empty clipboard is not a
 /// failure: nothing to paste has no words to say. See `docs/notes/tui-paste.md`.
 pub fn paste() -> FromClipboard {
-    #[cfg(windows)]
-    {
-        // A cmdlet host is not worth a paste: `Get-Clipboard` answered this window
-        // in two minutes or not at all.
-        return match native_text() {
-            Some(text) if text.is_empty() => FromClipboard::Empty,
-            Some(text) => FromClipboard::Ok(text),
-            None => FromClipboard::Failed("the clipboard is open to another window".to_string()),
-        };
-    }
-    #[cfg(not(windows))]
-    {
-        paste_with(readers())
-    }
-}
-
-/// The rest of a pasted block, when the prompt already holds its beginning.
-///
-/// # Invariant
-///
-/// Only a clipboard that breaks a line after what is typed is a paste: one line
-/// that happens to equal the prompt is something someone typed, and `Enter` sends
-/// it. See `docs/notes/tui-paste.md`.
-pub fn rest_of_paste(typed: &str) -> Option<String> {
-    let typed = typed.trim_end();
-    if typed.is_empty() {
-        return None;
-    }
-    let FromClipboard::Ok(text) = paste() else {
-        return None;
-    };
-    let rest = paste_text(&text).strip_prefix(typed)?.to_string();
-    rest.starts_with('\n').then_some(rest)
+    paste_with(readers())
 }
 
 /// [`paste`] against a named list, so a test exercises the spawn and the pipe
@@ -488,55 +455,4 @@ fn run_image_tool(tool: &ImageTool, dest: &Path) -> Option<Result<bool, String>>
 pub fn paste_text(raw: &str) -> String {
     // Windows clipboards hand back CRLF; `\r` would otherwise render as a glyph.
     raw.replace("\r\n", "\n").replace('\r', "\n")
-}
-
-/// The clipboard's text, read from the window system rather than a program.
-///
-/// # Invariant
-///
-/// The clipboard is opened and closed inside this call, and a lock is released on
-/// every path: another application holding it is a `None` after a short retry, not
-/// a window that stopped answering.
-#[cfg(windows)]
-fn native_text() -> Option<String> {
-    use windows_sys::Win32::System::DataExchange::{
-        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
-    };
-    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
-    use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
-    unsafe {
-        if IsClipboardFormatAvailable(CF_UNICODETEXT as u32) == 0 {
-            return None;
-        }
-        let mut opened = 0;
-        for _ in 0..10 {
-            opened = OpenClipboard(std::ptr::null_mut());
-            if opened != 0 {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        if opened == 0 {
-            return None;
-        }
-        let handle = GetClipboardData(CF_UNICODETEXT as u32);
-        let text = if handle.is_null() {
-            None
-        } else {
-            let wide = GlobalLock(handle) as *const u16;
-            if wide.is_null() {
-                None
-            } else {
-                let mut len = 0usize;
-                while *wide.add(len) != 0 {
-                    len += 1;
-                }
-                let read = String::from_utf16_lossy(std::slice::from_raw_parts(wide, len));
-                GlobalUnlock(handle);
-                Some(read)
-            }
-        };
-        CloseClipboard();
-        text
-    }
 }

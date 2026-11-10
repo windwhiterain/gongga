@@ -54,10 +54,4 @@ base64 = "0.23"
 # A console that closes asks this window to leave, and only this handler hears
 # it: without it the window parks on an event that never comes and holds its own
 # executable open. See `docs/notes/tui-closing.md`.
-windows-sys = { version = "0.61", features = [
-    "Win32_Foundation",
-    "Win32_System_Console",
-    "Win32_System_DataExchange",
-    "Win32_System_Memory",
-    "Win32_System_Ole",
-] }
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }
