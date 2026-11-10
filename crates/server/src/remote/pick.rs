@@ -27,12 +27,28 @@ pub async fn runner(endpoint: &Endpoint, answer: Duration) -> anyhow::Result<Run
         }
         Endpoint::Remote { .. } => {}
     }
-    // A named program is a preference; its greeting is what decides.
+    // A named program is a preference; its greeting is what decides -- and a greeting
+    // is not the whole answer. A channel's relay is the server, started beside the
+    // runner that asks for it, so a program standing alone greets and then cannot
+    // serve a channel. Such a program is passed over, and the pair this build carries
+    // is placed instead.
     let preferred = match endpoint.configured_runner() {
-        Some(words) => match greet(endpoint, words, answer).await {
-            Ok(runner) => return Ok(runner),
-            Err(error) => Some(error.to_string()),
-        },
+        Some(words) => {
+            if relays(endpoint, words).await {
+                match greet(endpoint, words, answer).await {
+                    Ok(runner) => return Ok(runner),
+                    Err(error) => Some(error.to_string()),
+                }
+            } else {
+                tracing::info!(
+                    peer = %endpoint.describe(),
+                    runner = %words,
+                    "the configured runner has no server beside it, so it cannot relay; \
+                     placing this build's pair instead"
+                );
+                Some(format!("{words} has no server beside it to relay with"))
+            }
+        }
         None => None,
     };
     let placed = place(endpoint).await?;
@@ -58,6 +74,29 @@ async fn greet(endpoint: &Endpoint, words: &str, answer: Duration) -> anyhow::Re
             Err(error) => Err(error),
         },
     }
+}
+
+/// Whether the programs a configured runner names can relay: the server a channel runs
+/// sits beside the runner, or the words name a program this build cannot inspect.
+///
+/// # Invariant
+///
+/// Only a path can be inspected. A bare word means the peer's `PATH` resolves it, and
+/// a distribution on `PATH` is one file that carries its own payload, so it is not
+/// second-guessed here.
+async fn relays(endpoint: &Endpoint, words: &str) -> bool {
+    let Some(program) = words.split_whitespace().next() else {
+        return false;
+    };
+    let Some(at) = program.rfind(['/', '\\']) else {
+        return true;
+    };
+    let directory = &program[..at];
+    let suffix = if is_dos(program) { ".exe" } else { "" };
+    let beside = format!("{directory}/gongga-server{suffix}");
+    run(endpoint, &format!("test -f {}", peer_quote(&beside)))
+        .await
+        .is_some()
 }
 
 /// Puts this build's payload on the peer, and answers the words that run its runner.
