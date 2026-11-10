@@ -1,4 +1,4 @@
-//! The window's own state, in `client.toml`: what the operator set once.
+//! The window's own state, in `client.toml` under the client home.
 //!
 //! See `docs/notes/tui-state.md`.
 
@@ -47,17 +47,17 @@ impl BlockSize {
         }
     }
 
-    /// Loads `home/client.toml`; a missing or unreadable file caps nothing.
-    pub fn load(home: &Path) -> Self {
-        read_file(&home.join("client.toml"))
+    /// Loads `client_home/client.toml`; a missing or unreadable file caps nothing.
+    pub fn load(client_home: &Path) -> Self {
+        read_file(&client_home.join("client.toml"))
             .block_size
             .as_deref()
             .and_then(|raw| BlockSize::parse(raw).ok())
             .unwrap_or_default()
     }
 
-    pub fn save(self, home: &Path) -> anyhow::Result<()> {
-        let path = home.join("client.toml");
+    pub fn save(self, client_home: &Path) -> anyhow::Result<()> {
+        let path = client_home.join("client.toml");
         let mut file = read_file(&path);
         file.block_size = Some(self.0.to_string());
         write_file(&path, &file)
@@ -93,17 +93,17 @@ impl BoxEdge {
         }
     }
 
-    /// Loads `home/client.toml`; a missing or unreadable file is the default margin.
-    pub fn load(home: &Path) -> Self {
-        read_file(&home.join("client.toml"))
+    /// Loads `client_home/client.toml`; a missing file is the default margin.
+    pub fn load(client_home: &Path) -> Self {
+        read_file(&client_home.join("client.toml"))
             .box_edge
             .as_deref()
             .and_then(|raw| BoxEdge::parse(raw).ok())
             .unwrap_or_default()
     }
 
-    pub fn save(self, home: &Path) -> anyhow::Result<()> {
-        let path = home.join("client.toml");
+    pub fn save(self, client_home: &Path) -> anyhow::Result<()> {
+        let path = client_home.join("client.toml");
         let mut file = read_file(&path);
         file.box_edge = Some(self.0.to_string());
         write_file(&path, &file)
@@ -124,9 +124,9 @@ pub struct Shown {
 }
 
 impl Shown {
-    /// Loads `home/client.toml`; a missing or unreadable file shows nothing.
-    pub fn load(home: &Path) -> Self {
-        let path = home.join("client.toml");
+    /// Loads `client_home/client.toml`; a missing file shows nothing.
+    pub fn load(client_home: &Path) -> Self {
+        let path = client_home.join("client.toml");
         let show = read_file(&path)
             .render_session
             .into_iter()
@@ -216,7 +216,7 @@ fn stored_show(raw: &str) -> Option<bool> {
 /// under `sticky_cmd_arguments`.
 const OLD_STICKY_KEY: &str = "persistant_cmd_arguments";
 
-/// `~/.gongga/client.toml`.
+/// `~/.gongga-client/client.toml`.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct File {
     #[serde(default)]
@@ -255,9 +255,9 @@ pub struct Sticky {
 }
 
 impl Sticky {
-    /// Loads from `home/client.toml`; a missing or unreadable file yields none.
-    pub fn load(home: &Path) -> Self {
-        let path = home.join("client.toml");
+    /// Loads from `client_home/client.toml`; a missing file yields none.
+    pub fn load(client_home: &Path) -> Self {
+        let path = client_home.join("client.toml");
         let args = read_file(&path)
             .sticky_cmd_arguments
             .into_iter()
@@ -342,6 +342,7 @@ pub type Follow = Vec<(String, String)>;
 /// Everything the window keeps between runs.
 pub struct State {
     home: PathBuf,
+    client_home: PathBuf,
     sticky: Sticky,
     shown: Shown,
     block_size: BlockSize,
@@ -349,14 +350,20 @@ pub struct State {
 }
 
 impl State {
-    /// Reads every section of `home/client.toml` once.
-    pub fn load(home: &Path) -> Self {
+    /// Reads every section of `client_home/client.toml` once.
+    ///
+    /// # Invariant
+    ///
+    /// `home` is the harness home and is kept only for what a window *reads* from
+    /// it (the skills a completion offers). Nothing here writes to it.
+    pub fn load(home: &Path, client_home: &Path) -> Self {
         Self {
             home: home.to_path_buf(),
-            sticky: Sticky::load(home),
-            shown: Shown::load(home),
-            block_size: BlockSize::load(home),
-            box_edge: BoxEdge::load(home),
+            client_home: client_home.to_path_buf(),
+            sticky: Sticky::load(client_home),
+            shown: Shown::load(client_home),
+            block_size: BlockSize::load(client_home),
+            box_edge: BoxEdge::load(client_home),
         }
     }
 
@@ -381,6 +388,7 @@ impl State {
         self.box_edge
     }
 
+    /// The harness home, for what a window reads from it (the skills on offer).
     pub fn home(&self) -> &Path {
         &self.home
     }
@@ -439,12 +447,12 @@ impl State {
 
     pub fn set_block_size(&mut self, size: BlockSize) -> anyhow::Result<()> {
         self.block_size = size;
-        size.save(&self.home)
+        size.save(&self.client_home)
     }
 
     pub fn set_box_edge(&mut self, edge: BoxEdge) -> anyhow::Result<()> {
         self.box_edge = edge;
-        edge.save(&self.home)
+        edge.save(&self.client_home)
     }
 
     /// The server the last `connect_server` pointed this window at.
@@ -454,7 +462,7 @@ impl State {
     /// Read once, when the window starts: from then on the address in force is
     /// the one this process dials, not the one a file says.
     pub fn connection(&self) -> Option<SocketAddr> {
-        let stored = read_file(&self.home.join("client.toml")).connection?;
+        let stored = read_file(&self.client_home.join("client.toml")).connection?;
         // Parsed, not formatted: `"::1:9700"` is not an address, and a file
         // that was right must not fall back to the default.
         let ip: std::net::IpAddr = stored.ip.as_deref().unwrap_or("127.0.0.1").parse().ok()?;
@@ -462,13 +470,33 @@ impl State {
     }
 
     pub fn remember(&self, addr: SocketAddr) -> anyhow::Result<()> {
-        let path = self.home.join("client.toml");
+        let path = self.client_home.join("client.toml");
         let mut file = read_file(&path);
         file.connection = Some(Stored {
             ip: Some(addr.ip().to_string()),
             port: addr.port(),
         });
         write_file(&path, &file)
+    }
+}
+
+/// Copies a `client.toml` from the harness home into a client home that has none.
+///
+/// # Invariant
+///
+/// The file used to live in the harness home, so a home that predates the move
+/// keeps what the operator set: the copy is what later writes keep, and the
+/// original is left in place for a build that still reads it. Copying happens
+/// only when the destination is absent, so a second window never rewinds a
+/// first one's settings.
+pub fn adopt_legacy(home: &Path, client_home: &Path) {
+    let old = home.join("client.toml");
+    let new = client_home.join("client.toml");
+    if new.exists() || !old.is_file() {
+        return;
+    }
+    if std::fs::create_dir_all(client_home).is_ok() {
+        let _ = std::fs::copy(&old, &new);
     }
 }
 

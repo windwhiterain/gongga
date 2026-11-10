@@ -82,12 +82,12 @@ A second window therefore needs its own client home -- `gongga-avalonia
 
 ## What a lock does not cover
 
-`client.toml` -- sticky session, shown sessions, block size, the remembered
-address -- lives in the **server** home (`~/.gongga/client.toml`), not the client
-home. Two clients on one machine still share it and can overwrite each other's
-setting. That is a value, not a record: nothing is corrupted, the last writer
-wins. Isolating it would mean moving the file, which is a migration rather than
-a lock.
+Nothing in the client's home is written by two processes any more: `client.toml` --
+sticky session, shown sessions, block size, the remembered address -- moved into that
+home ([`tui-state.md`](tui-state.md)), so the claim that admits one window is also what
+makes the file single-writer. A hand edit, a build from before the move, or a second
+window on a *different* home is outside the lock by construction: the first two are
+outside this process's knowledge, and the third is the point of having two homes.
 
 `record_dir` (the `<home>/server.cwd` file a handover reads) is in
 [`server-instance.md`](server-instance.md).

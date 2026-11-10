@@ -528,9 +528,11 @@ A second window needs a second client home. `gongga-client` now claims
 `client.lock` in it, through the same `home_lock` crate that took over the
 server's `server.lock`; a second client on the same home is refused with the pid
 that holds it, and the window shows that line instead of closing. `--instance
-<name>` maps to `<client-home>/<name>` for that case. `client.toml` still lives
-in the **server** home, so two windows overwrite each other's sticky and display
-setting -- a value, not a record. See `docs/notes/home-lock.md`.
+<name>` maps to `<client-home>/<name>` for that case. `client.toml` -- sticky
+session, shown sessions, block size, remembered address -- moved into that same
+home, so one window's settings are not another's; `config.toml` and `server.key`
+stay in the harness home because they are the server's. A home that predates the
+move keeps its settings through a one-time copy. See `docs/notes/tui-state.md`.
 
 ## 2. 传输层：可靠 UDP
 

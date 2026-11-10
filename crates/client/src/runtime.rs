@@ -225,8 +225,9 @@ pub async fn run(
     let client_home = crate::client_home_of(args);
     // One client per home: two would write the same roster and journal.
     let _held = home_lock::HomeLock::acquire(&client_home, "client.lock", "gongga client")?;
-    // The window's own state: sticky entries, drawn sessions, settings, address.
-    let mut state = State::load(&home);
+    // The window's own state, in its own home: two windows share no file.
+    crate::window_state::adopt_legacy(&home, &client_home);
+    let mut state = State::load(&home, &client_home);
     // The address in force: what the window remembers first, then the flags.
     let mut conn = args.conn.clone();
     if let Some(addr) = state.connection() {

@@ -53,7 +53,7 @@ pub struct Connection {
     /// Server address, e.g. `127.0.0.1:9700`.
     #[arg(long, global = true)]
     pub server: Option<String>,
-    /// Harness home holding config.toml and client.toml. Defaults to `~/.gongga`.
+    /// Harness home holding config.toml. Defaults to `~/.gongga`.
     #[arg(long, global = true)]
     pub home: Option<PathBuf>,
     /// This client's own directory: its events and its scrollback, never the

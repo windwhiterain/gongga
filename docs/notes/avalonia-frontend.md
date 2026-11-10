@@ -43,10 +43,10 @@ second window its own home:
 `--client-home` when given and `~/.gongga-client` otherwise. The name must be a
 plain name, not a path.
 
-What stays shared is `client.toml` in the **server** home: sticky session, shown
-sessions, block size. Two windows on one machine overwrite each other's setting
-(last writer wins); nothing is corrupted, because that file holds values rather
-than drawn records.
+`client.toml` -- sticky session, shown sessions, block size, the remembered address --
+is in the **client** home too, so each instance keeps its own. A home that predates
+that move is copied forward once, from `<harness-home>/client.toml`; see
+[`tui-state.md`](tui-state.md).
 
 Nothing on the Rust side had to change. `DESIGN.md` §1 already decided that a
 front-end is cross-process and cross-language, and `crates/client/src/main.rs`
