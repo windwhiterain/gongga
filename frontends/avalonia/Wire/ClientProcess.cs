@@ -118,6 +118,7 @@ public sealed class ClientProcess : IDisposable
                 {
                     SawLayout = true;
                 }
+                Received?.Invoke(frame);
                 onFrame(frame);
             }));
             var diagnostics = Task.Run(() => ReadDiagnostics(child.StandardError, LogPath));
@@ -134,8 +135,20 @@ public sealed class ClientProcess : IDisposable
         }
     }
 
+    /// Every line handed to the child, in the order it was written.
+    ///
+    /// # Invariant
+    ///
+    /// It reports, it does not gate: a verification run can see which gestures were
+    /// taken without a hook that could change them.
+    public Action<string>? Wrote { get; set; }
+
+    /// Every frame the child produced, for a run that has to see what arrived.
+    public Action<RenderFrame>? Received { get; set; }
+
     public void Send(string jsonLine)
     {
+        Wrote?.Invoke(jsonLine);
         lock (_writeLock)
         {
             if (_stopped || _input is null || _process is { HasExited: true })

@@ -120,7 +120,8 @@ corrupts any non-ASCII input.
 | Shift/Ctrl+click on a session | `Operate(RenderSession { solo: false, show: !shown })` |
 | click on a pane header | `Operate(StickySession)` |
 | PageUp / PageDown | scroll the sticky pane |
-| wheel a shown pane to its oldest row | `Older { windows }` |
+| wheel a shown pane to its oldest row | `Older { windows }`, once per visit to the top |
+| a pane opens, or its height changes | `Room { [(window, rows)] }` |
 | click a folding block | expand / collapse its abstract |
 
 `render_wire.rs` comments `UiIntent::Quit` as "Alt+Q", and `docs/notes/tui-run.md`
@@ -150,11 +151,31 @@ anyone's desktop:
     dotnet run -- --shots C:/tmp/shots --home <home> --client-home <home> \
         --server 127.0.0.1:<port> --key <key>
 
-It writes `01-before-frames.png` through `06-submitted.png`, plus a `tree*.txt`
-dump of every control with the box it got. The run also clicks a listed session,
-types `/set_re`, presses Tab, types a whole command and presses Enter, so the
-pictures cover the states that matter: empty, connected, pane open, completion,
-and a submitted command.
+It writes a PNG per step (`01-before-frames` through `08-stopped`), a `tree.txt`
+dump of every control with the box it got, and three machine-readable logs:
+`facts.txt` (one `PASS`/`FAIL`/`NOTE` line per claim), `wire.txt` (every line the
+window wrote to the child) and `frames.txt` (every frame that came back). Any
+`FAIL` makes the run exit 1, so a step that cannot find its row fails the run
+instead of quietly producing one picture fewer.
+
+The steps are the ones that need a real child on the other end:
+
+| step | what it claims |
+|---|---|
+| connect | a `Server` frame with a label arrived, and the list is not empty |
+| open a session | one pane, at least five rows of history, and a `Room` line on the wire |
+| newest row | a pane that just opened is scrolled to its last row |
+| PageUp / PageDown | the pane overflows and the two keys move it, both ways |
+| oldest row | scrolling to it sends `Older`, and the page lands *above* what was held while the last row stays last |
+| taller window | growing the window reports a bigger page (12 rows -> 28) |
+| Ctrl+click | a second session adds a second pane, and exactly two rows are lit |
+| pane header | clicking it moves the sticky pane |
+| one turn | a real turn ends, `Stopped` arrives, and the toast says so |
+
+The window is made short (460 high) before a pane is opened, so one page of
+history is a few rows and a transcript has something above it. `DispatcherTimer`
+does not tick on a headless dispatcher, so the toast's expiry is not asserted:
+only that the announcement happened, and that the row it announced is in view.
 
 Why not a virtual desktop: Windows desktops are one session with one input queue
 and one visible desktop at a time. Switching to another takes the screen away
@@ -191,6 +212,35 @@ when `Layout.shown` names it -- the same rule the terminal uses, where a shown
 session's name is the bright one. `tree.txt` carries `[shown]`/`[hidden]` on each
 row, so the count is a check and not an opinion: none before a click, one after,
 two once the second pane opens.
+
+## Paging found four more
+
+Reported by the operator as "two panes open, one row lit" followed by "the pane is
+empty", these came from the same off-screen run once it asked for a page:
+
+- **`Room` was never sent.** The client sizes a refill by the rows a pane can
+  draw and defaults to **one** when nobody says; nothing said, so a reopened
+  session drew a single row of its history and `Older` fetched one row per
+  request. The window now reports the page a pane can hold — before a click, so
+  the first refill is sized right, and again whenever it changes by more than a
+  row (a scrollbar appearing moves it by one, and that is not news).
+- **`Forget` left the pane bound to a dead list.** The client answers a fill by
+  dropping the window's rows and replaying them, and the model drops the
+  collection with them; a pane that captured the old instance drew nothing from
+  then on. `PaneRow.Blocks` is replaced through `Bind` on the next layout.
+- **A pane opened at the oldest row.** Rows arrive after the pane exists, and
+  nothing moved the view, so the operator met the beginning of the conversation
+  and had to scroll to the end of it. A pane follows its newest row until it is
+  scrolled away, and only while its content grows — dragging it back after
+  PageUp would make the key useless.
+- **An older page was appended at the end**, so history read `...q26, q15, q16`
+  and a screenshot showed it plainly. `Older` asks for a page and the answer comes
+  back as ordinary `Line`/`Stream` frames in the window, oldest first, with no
+  frame saying they belong above the rows already drawn. The window remembers how
+  many rows it asked for and puts the next burst above what it holds, in order.
+  That window is three seconds wide so a live row arriving later is not mistaken
+  for history. A `RenderMessage` that marks a page would be better than a count
+  and a clock; the wire has none today.
 
 ## Deliberate limits
 

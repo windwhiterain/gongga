@@ -16,7 +16,7 @@ public sealed class ClientModel : ViewModelBase
     private readonly Dictionary<string, BlockRow> _open = new();
     private readonly Dictionary<string, List<BlockRow>> _byKey = new();
     private readonly HashSet<string> _unseen = new();
-    private readonly HashSet<string> _olderPending = new();
+    private readonly Dictionary<string, Page> _olderPages = new();
     private readonly List<string> _history = new();
     private int _historyPosition;
     private WindowLayout _layout = new([], [], string.Empty, null);
@@ -157,10 +157,18 @@ public sealed class ClientModel : ViewModelBase
         switch (frame)
         {
             case RenderFrame.Line value:
-                Add(new BlockRow(value.Window, string.Empty, value.Kind, string.Empty, value.Text)
+                var lined = new BlockRow(value.Window, string.Empty, value.Kind, string.Empty, value.Text)
                 {
                     Sealed = true,
-                });
+                };
+                if (PageAt(value.Window, out var above))
+                {
+                    Insert(above, lined);
+                }
+                else
+                {
+                    Add(lined);
+                }
                 break;
 
             case RenderFrame.Stream value:
@@ -185,7 +193,6 @@ public sealed class ClientModel : ViewModelBase
                 CommandBlocks = Window(value.Value.Command);
                 QuotaText = value.Value.Quota?.Text ?? string.Empty;
                 QuotaKind = value.Value.Quota?.Kind ?? LineKind.System;
-                _olderPending.Clear();
                 break;
 
             case RenderFrame.Rewrite value:
@@ -208,11 +215,13 @@ public sealed class ClientModel : ViewModelBase
                 break;
 
             case RenderFrame.Forget value:
+                ForgetPage(value.Window);
                 ForgetWindow(value.Window);
                 break;
 
             case RenderFrame.Clear value:
                 // Contract: crates/tui/src/log.rs clear keeps the pane, Forget does not.
+                ForgetPage(value.Window);
                 Window(value.Window).Clear();
                 foreach (var key in _open.Where(pair => pair.Value.Window == value.Window)
                              .Select(pair => pair.Key).ToList())
@@ -235,6 +244,7 @@ public sealed class ClientModel : ViewModelBase
                 break;
 
             case RenderFrame.Stopped value:
+                ForgetPage(value.Session);
                 if (!_layout.Shown.Contains(value.Session))
                 {
                     _unseen.Add(value.Session);
@@ -272,6 +282,7 @@ public sealed class ClientModel : ViewModelBase
                 _windows.Clear();
                 _open.Clear();
                 _byKey.Clear();
+                _olderPages.Clear();
                 CommandBlocks = Window(_layout.Command);
                 break;
 
@@ -312,7 +323,14 @@ public sealed class ClientModel : ViewModelBase
                 return;
             }
             live = new BlockRow(value.Window, value.Key, value.Kind, value.Prefix, value.Text);
-            Add(live);
+            if (PageAt(value.Window, out var above))
+            {
+                Insert(above, live);
+            }
+            else
+            {
+                Add(live);
+            }
             _open[value.Key] = live;
         }
         else
@@ -421,6 +439,12 @@ public sealed class ClientModel : ViewModelBase
                 existing = new PaneRow(name, Window(name));
                 Panes.Add(existing);
             }
+            else
+            {
+                // A `Forget` between two layouts leaves the pane holding a list the
+                // model no longer writes to; the layout is when that is noticed.
+                existing.Bind(Window(name));
+            }
             existing.Title = layout.Listed.FirstOrDefault(row => row.Name == name)?.Title ?? string.Empty;
             existing.Sticky = name == _sticky;
         }
@@ -452,9 +476,27 @@ public sealed class ClientModel : ViewModelBase
         return blocks;
     }
 
+    /// Puts a row above the ones already held, at the offset a page fills in order.
+    private void Insert(int at, BlockRow block)
+    {
+        var blocks = Window(block.Window);
+        if (at >= blocks.Count)
+        {
+            Add(block);
+            return;
+        }
+        blocks.Insert(at, block);
+        Remember(block);
+    }
+
     private void Add(BlockRow block)
     {
         Window(block.Window).Add(block);
+        Remember(block);
+    }
+
+    private void Remember(BlockRow block)
+    {
         if (block.Key.Length == 0)
         {
             return;
@@ -557,6 +599,9 @@ public sealed class ClientModel : ViewModelBase
         Send?.Invoke(Intents.RenderSession(session, toggle ? !shown : true, !toggle));
     }
 
+    /// Whether a pane for this session is on screen.
+    public bool IsShown(string session) => _layout.Shown.Contains(session);
+
     public void ClickPaneHeader(string session) => Send?.Invoke(Intents.StickySession(session));
 
     public void DeleteStickySession()
@@ -568,13 +613,60 @@ public sealed class ClientModel : ViewModelBase
         Send?.Invoke(Intents.DeleteSession(_sticky));
     }
 
-    public void RequestOlder(string window)
+    /// Asks for the page above what this pane holds.
+    ///
+    /// # Invariant
+    ///
+    /// The rows of the answer go above the ones already held, and the wire does not
+    /// say so: a page is the next `rows` lines that arrive for this window, which is
+    /// why the count is remembered here rather than guessed from the frames.
+    public void RequestOlder(string window, int rows)
     {
-        if (!_olderPending.Add(window))
+        if (_olderPages.ContainsKey(window))
         {
             return;
         }
+        _olderPages[window] = new Page
+        {
+            Asked = Math.Max(1, rows),
+            Until = DateTime.UtcNow + PageWindow,
+        };
         Send?.Invoke(Intents.Older([window]));
+    }
+
+    /// Whether an answer for this window belongs above what it already draws.
+    private bool PageAt(string window, out int at)
+    {
+        at = 0;
+        if (!_olderPages.TryGetValue(window, out var page))
+        {
+            return false;
+        }
+        if (DateTime.UtcNow > page.Until)
+        {
+            // A page arrives as one burst; rows that turn up long after it are the
+            // session talking, and the top of the pane is not where they belong.
+            _olderPages.Remove(window);
+            return false;
+        }
+        at = page.Placed;
+        if (++page.Placed >= page.Asked)
+        {
+            _olderPages.Remove(window);
+        }
+        return true;
+    }
+
+    private void ForgetPage(string window) => _olderPages.Remove(window);
+
+    /// How long a refill's rows are taken to be one page.
+    private static readonly TimeSpan PageWindow = TimeSpan.FromSeconds(3);
+
+    private sealed class Page
+    {
+        public int Asked { get; init; }
+        public int Placed { get; set; }
+        public DateTime Until { get; init; }
     }
 
     public void MoveCompletion(int delta)

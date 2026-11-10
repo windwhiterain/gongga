@@ -64,6 +64,7 @@
                     <ScrollViewer Grid.Row="1" Tag="{Binding Name}"
                                   HorizontalScrollBarVisibility="Disabled"
                                   VerticalScrollBarVisibility="Auto"
+                                  Loaded="OnPaneLoaded" Unloaded="OnPaneUnloaded"
                                   ScrollChanged="OnPaneScrollChanged">
                         <ItemsControl ItemsSource="{Binding Blocks}"
                                       ItemTemplate="{StaticResource BlockTemplate}" />
@@ -112,7 +113,7 @@
                        HorizontalAlignment="Center" VerticalAlignment="Center"
                        Foreground="#5C6672" FontSize="13" TextWrapping="Wrap" />
 
-            <ItemsControl Grid.Column="1" ItemsSource="{Binding Panes}"
+            <ItemsControl x:Name="PaneArea" Grid.Column="1" ItemsSource="{Binding Panes}"
                           ItemTemplate="{StaticResource PaneTemplate}">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>

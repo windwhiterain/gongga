@@ -23,6 +23,19 @@ public static class Intents
         windows = windows.ToArray(),
     });
 
+    /// Rows each open pane can draw: what one page of history is sized by.
+    ///
+    /// # Invariant
+    ///
+    /// The wire wants pairs, not objects: `UiIntent::Room` carries
+    /// `Vec<(String, usize)>`, which serde writes as `["beta",24]`. A named record
+    /// would serialize as `{"window":...}` and the client would call the line bad.
+    public static string Room(IReadOnlyCollection<(string Window, int Rows)> windows) => Encode(new
+    {
+        intent = "room",
+        windows = windows.Select(pane => new object[] { pane.Window, pane.Rows }).ToArray(),
+    });
+
     public static string StickySession(string session) => Encode(new
     {
         intent = "operate",

@@ -160,17 +160,38 @@ public sealed class BlockRow : ViewModelBase
 
 public sealed class PaneRow : ViewModelBase
 {
+    private ObservableCollection<BlockRow> _blocks;
     private string _title = string.Empty;
     private bool _sticky;
 
     public PaneRow(string name, ObservableCollection<BlockRow> blocks)
     {
         Name = name;
-        Blocks = blocks;
+        _blocks = blocks;
     }
 
     public string Name { get; }
-    public ObservableCollection<BlockRow> Blocks { get; }
+
+    /// The rows this pane draws, as the model currently holds them.
+    ///
+    /// # Invariant
+    ///
+    /// It is replaced, not captured: `Forget` and `Repoint` drop a window's list and
+    /// the next frame makes a new one, so a pane holding the old instance would draw
+    /// an empty list for the rest of its life.
+    public ObservableCollection<BlockRow> Blocks
+    {
+        get => _blocks;
+        private set => Set(ref _blocks, value, nameof(Blocks));
+    }
+
+    public void Bind(ObservableCollection<BlockRow> blocks)
+    {
+        if (!ReferenceEquals(_blocks, blocks))
+        {
+            Blocks = blocks;
+        }
+    }
 
     public string Title
     {
