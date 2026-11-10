@@ -26,6 +26,10 @@
 
 ## 待办
 
-- `scripts/*_selftest.sh` 里还有 `gongga-cli bash` / `check_job` 之类调用，行删掉之后
-  这些命令不存在了，脚本要一起改。
+- 无。`scripts/cmd_selftest.sh`、`disk_selftest.sh` 已改说 `exec`；`remote_selftest.sh`
+  删掉了文件工具与 `bash`/`list_bash` 两段（两个机器的说法由 `channel_remote_selftest.sh`
+  承担）。`tool_selftest.sh` 本来就是断言这些名字**不再**被提供，保留。
+- 三个脚本都还没在真机上跑过：这棵树里没有可指向的 `gongga` 构建，只过了 `bash -n`。
 - 提示词：`prompts.rs` 目前没有点名这些工具（grep 为 0），没有要删的句子。
+- SPEC 第 39 行要求每个调用带 `discription`；代码原来只认 `description`。现在
+  `note_of` 两种拼写都认，SPEC 的拼法不会再被当成"没留备注"。
