@@ -624,6 +624,11 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
+/// The peer refused a datagram: no harness is at that address to greet it.
+fn no_server(addr: SocketAddr) -> anyhow::Error {
+    anyhow!("nothing is listening at {addr}; is a server running?")
+}
+
 // ----------------------- Connection to the harness -----------------------
 
 /// Connects and authenticates, exactly as the CLI does.
@@ -657,16 +662,28 @@ async fn dial(
         },
         key,
     };
-    sink.send(encode_client(&hello)?)
-        .await
-        .map_err(|e| anyhow!("handshake failed: {e}"))?;
+    if let Err(e) = sink.send(encode_client(&hello)?).await {
+        // The socket, not the sink, tells a refusal from a failed write.
+        // See `docs/notes/bridge-main.md`.
+        return Err(if stream.refused() {
+            no_server(addr)
+        } else {
+            anyhow!("handshake failed: {e}")
+        });
+    }
 
     let greeting = tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.recv())
         .await
         .map_err(|_| {
             anyhow!("no answer from {addr} within {HANDSHAKE_TIMEOUT:?}; is a server running?")
-        })?
-        .ok_or_else(|| anyhow!("the server closed the connection during the handshake"))?;
+        })?;
+    let Some(greeting) = greeting else {
+        return Err(if stream.refused() {
+            no_server(addr)
+        } else {
+            anyhow!("the server closed the connection during the handshake")
+        });
+    };
     let known = match decode_server(&greeting).context("decoding the greeting")? {
         ServerMessage::Denied { reason } => return Err(anyhow::Error::new(Refused(reason))),
         ServerMessage::Hello {

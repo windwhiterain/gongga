@@ -97,6 +97,13 @@ from -- a skill that needs the source lives in the checkout, never in the home),
 is meant to stay up for days. A bridge that exited with the old server took the
 whole chat integration down and needed a human to start it again.
 
+## dial (the greeting)
+
+The same fact the CLI's `dial` keeps: a refusal may end the channel before the
+hello is queued, and the sink then answers `channel closed` without saying why.
+So both places ask the socket -- `ChannelStream::refused` -- and call the
+address empty, instead of naming a handshake that never started.
+
 ## REDIAL_MIN
 
 Not a budget on how long the bridge keeps trying -- it keeps trying for as long
