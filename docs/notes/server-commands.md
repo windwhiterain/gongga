@@ -420,12 +420,13 @@ get rid of.
 
 ## interrupt
 
-Stop one session's turn, and drop what it still owed.
+Stop one session's turn. What it still owed depends on who asked.
 
-The same act as `cancel`, scoped to one session: both fire the turn's token and
-clear its pending rows, so neither leaves work for the next start. The difference
-is the scope -- "stop that one, I did not mean it" and "stop the whole server" are
-not the same request -- and the distinction is worth a command of its own.
+`interrupt_session` keeps the turn: the SPEC makes that command the one that sets
+the interrupted flag, and the next start continues what carries it. `del_session`
+drops it -- deleting a session means not wanting what it is doing either -- and
+`cancel` does whichever its caller said. Clearing the rows is what keeps the next
+start from owing work nobody asked to have back.
 
 It used to be Ctrl+X, which meant only the TUI could do it: a script, and so the
 model, had no way to stop a turn it had started. As a command it is reachable by
@@ -438,9 +439,10 @@ how long the turn takes. So delete interrupts first and only then waits, which i
 a wait measured in milliseconds.
 
 The token, not a boundary flag: a call stuck in a shell write has no boundary to
-reach. Clearing the rows is what keeps the next start from owing this work, and it
-does the same for the turns queued behind the running one, since they give up once
-they reach the front.
+reach. A delete raises no interrupted flag -- the session is going -- and clearing
+the rows is what keeps the next start from owing this work; it does the same for
+the turns queued behind the running one, since they give up once they reach the
+front.
 
 ## interrupt_session
 
@@ -449,15 +451,20 @@ and materialising it would start its shells just to stop nothing. Both "idle" an
 "no such session" are still worth saying out loud -- a silent success would read
 as "the turn did stop".
 
+The flag is SPEC's, and it is the `sessions.interrupted` column rather than the
+process: a stop ends the process, and a marker that cannot outlive it is a marker
+the next start never reads. The start that claims the turn clears it. An idle
+session and one inside `wait` are never flagged: SPEC says neither has work owed to
+a restart.
+
 ## cancel
 
 The SPEC's `cancle`: interrupt every turn and leave. `cancel` calls `interrupt`
-on every live session, which fires the turn's token and clears its pending rows;
-nothing unfinished is owed to the next start. The one thing kept is a turn inside
-`wait`: it started nothing, so `interrupt` marks it resumable, keeps its `turn` row,
-and the next start resumes the wait. Every other call is interrupted where it stands
--- keeping a turn that was mid-program would run the program twice. The listen loop
-breaks as soon as
+on every live session, which fires the turn's token. SPEC splits them: a session
+that was running and not waiting is flagged, so the next start continues it; one
+inside `wait` is not flagged but keeps its rows, so nothing queued behind the wait
+is lost and the wait itself can be picked up again. An idle session is flagged for
+neither reason -- it has nothing to continue. The listen loop breaks as soon as
 `shutdown` is pulled, without waiting for `active` to drain -- a call stuck in a
 shell write or a model stream has no step boundary to reach, and a flag it may
 never read is not worth holding the port for.

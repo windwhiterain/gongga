@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::tools::{Cmd, ToolContext, ToolOutcome};
 
@@ -208,20 +208,11 @@ fn answer(
     ctx: &ToolContext,
 ) -> ToolOutcome {
     match outcome {
-        Ok(outcome) => {
-            let mut answer = outcome.to_json();
-            if let Some(window) = answer.get("output").and_then(Value::as_str) {
-                let capped = crate::tools::spill::cap_output(
-                    crate::prompts::shared(),
-                    window,
-                    max_output_chars,
-                    Some(&ctx.output_dir),
-                    &format!("{}", outcome.id),
-                );
-                answer["output"] = json!(capped);
-            }
-            ToolOutcome::ok(answer.to_string())
-        }
+        Ok(outcome) => ToolOutcome::ok(
+            outcome
+                .result(max_output_chars, &ctx.output_dir)
+                .to_string(),
+        ),
         Err(why) => ToolOutcome::err(why),
     }
 }

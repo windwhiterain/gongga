@@ -141,16 +141,16 @@ pub struct ModelConfig {
     pub cache_tiers: HashMap<String, u64>,
     /// Percent of the tier's window left when the interrupt or a heartbeat fires.
     pub cache_margin_pct: u8,
-    /// Send a stable route affinity key, for a provider known to accept one.
+    /// Send `prompt_cache_key`, for a provider known to accept one.
     ///
     /// # Invariant
     ///
-    /// The value is the session's directory, never its name: a provider keeps a
-    /// prefix under the key that wrote it, so a key per conversation hides every
-    /// session's bytes from its siblings. See `docs/notes/server-prefix-cache.md`.
+    /// The value is the per-conversation id, the same one `session_id_headers`
+    /// carries: vendors that document it ask for session isolation, not a model
+    /// region and not a directory. See `docs/notes/server-config.md`.
     pub cache_affinity: bool,
-    /// Pin the inference instance with `X-Session-ID`, naming the same directory.
-    pub cache_session_header: bool,
+    /// Header names that carry the per-conversation id; empty sends nothing.
+    pub session_id_headers: Vec<String>,
     /// Ask the API not to retain server-side state; we replay the transcript.
     pub store: bool,
     /// How long the provider may take to answer with response headers, the
@@ -401,7 +401,7 @@ struct FileModel {
     cache_tier: Option<String>,
     cache_margin_pct: Option<u8>,
     cache_affinity: Option<bool>,
-    cache_session_header: Option<bool>,
+    session_id_headers: Option<Vec<String>>,
     headers_timeout_ms: Option<u64>,
     idle_timeout_ms: Option<u64>,
     max_retries: Option<u32>,
@@ -592,11 +592,17 @@ impl Config {
                 .or(model_file.cache_affinity)
                 .or_else(|| entry.as_ref().and_then(|e| e.cache_affinity))
                 .unwrap_or(false),
-            cache_session_header: env_or("GONGGA_CACHE_SESSION_HEADER")
-                .and_then(|v| v.parse().ok())
-                .or(model_file.cache_session_header)
-                .or_else(|| entry.as_ref().and_then(|e| e.cache_session_header))
-                .unwrap_or(false),
+            session_id_headers: env_or("GONGGA_SESSION_ID_HEADERS")
+                .map(|v| {
+                    v.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .or(model_file.session_id_headers)
+                .or_else(|| entry.as_ref().map(|e| e.session_id_headers.clone()))
+                .unwrap_or_default(),
             temperature: model_file.temperature,
             // The roster states it per model when the provider requires one; a home
             // may override what the face asks for.
@@ -907,6 +913,10 @@ impl ModelConfig {
         cfg.price = entry.price;
         // A tier belongs to the provider, not to the machine's default model.
         cfg.cache_tiers = entry.cache_ttl_tiers.clone();
+        // Session affinity is the provider's fact too: the default model's list
+        // must not be what a different provider sends.
+        cfg.cache_affinity = entry.cache_affinity.unwrap_or(false);
+        cfg.session_id_headers = entry.session_id_headers.clone();
         cfg
     }
 }

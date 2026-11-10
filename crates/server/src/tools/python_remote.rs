@@ -2,14 +2,13 @@
 //!
 //! See `docs/notes/server-tools-python.md`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use crate::remote::endpoint::Endpoint;
 use crate::remote::protocol::{Event, Stream};
 use crate::remote::transport::ShellHandle;
-use crate::session::Machine;
-use crate::tools::python::Reply;
+use crate::tools::file::Reply;
 
 /// The names a peer's interpreter is started by, in the order tried.
 ///
@@ -33,14 +32,10 @@ const PROBE: &str = "1 + 1";
 pub struct RemoteRepl {
     /// Taken by `kill`, so a stopped interpreter cannot be written to again.
     handle: Option<ShellHandle>,
-    /// The same shell, stoppable while a call holds this one.
-    control: crate::remote::transport::ShellControl,
-    cwd: PathBuf,
     /// Standard output the endpoint has sent and this side has not consumed.
     line: Vec<u8>,
     /// Everything the endpoint wrote to its stderr: a startup failure is read here.
     err: String,
-    pid: Option<u32>,
 }
 
 impl RemoteRepl {
@@ -64,12 +59,8 @@ impl RemoteRepl {
                 missing.push(format!("{program}: it did not start"));
                 continue;
             };
-            let control = handle.control();
             let mut repl = Self {
-                pid: Some(handle.pid),
-                control,
                 handle: Some(handle),
-                cwd: cwd.to_path_buf(),
                 line: Vec::new(),
                 err: String::new(),
             };
@@ -91,23 +82,6 @@ impl RemoteRepl {
             missing.join("; ")
         )
     }
-
-    pub fn machine(&self) -> Machine {
-        Machine::Remote
-    }
-
-    pub fn pid(&self) -> Option<u32> {
-        self.pid
-    }
-
-    pub fn program(&self) -> String {
-        PROGRAMS.join(" or ").to_string()
-    }
-
-    pub fn cwd(&self) -> &Path {
-        &self.cwd
-    }
-
     /// Sends one request and waits for its answer line, until `timeout` passes.
     pub async fn run_request(
         &mut self,
@@ -125,14 +99,6 @@ impl RemoteRepl {
     }
 
     /// How this interpreter is stopped without taking its lock.
-    pub fn control(&self) -> crate::tools::interpreter::Control {
-        crate::tools::interpreter::Control::Remote(self.control.clone())
-    }
-
-    /// Runs one call with no clock, for a background job.
-    pub async fn run_untimed(&mut self, request: &serde_json::Value) -> anyhow::Result<Reply> {
-        self.ask(request).await
-    }
 
     /// One request and its answer, with no clock.
     ///

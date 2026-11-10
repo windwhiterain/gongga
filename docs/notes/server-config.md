@@ -234,6 +234,12 @@ The prose is not part of this struct any more at all -- a prompt belongs to
 the request and is rendered per step, so a model swap cannot carry an
 instruction from the model it replaced.
 
+Provider-level session affinity is part of the brain too: `for_entry` must
+overwrite `cache_affinity` and `session_id_headers` from the entry, not keep
+the default model's values. A session pointed at a provider that requires a
+session header otherwise sent an empty list and was rejected with HTTP 400;
+the fake LLM never checked the header, so only the real relay exposed it.
+
 ## prose this module no longer owns
 
 Two tests used to read the system instructions out of a compiled-in file and
@@ -299,18 +305,27 @@ explained by a key. A provider that states nothing is sent nothing -- a field no
 documents buys nothing, and an endpoint that rejects an unknown one fails the request.
 
 `[model] cache_affinity` (or `GONGGA_CACHE_AFFINITY`) still overrides the roster for one
-home, and the value sent is the session's **directory**, never its name: the unit whose
-sessions send the same head. It creates no cache and costs nothing; what it can do is
-route. See `docs/notes/server-prefix-cache.md`.
+home. The value is the **per-conversation id**, not a directory: the vendors that
+document it ask for session isolation -- Ark's guide requires an unreadable internal
+session id and Tencent's says fill in a conversation id -- so a directory value
+would merge distinct conversations. It creates no cache and costs nothing; it only
+routes. See `docs/notes/server-prefix-cache.md`.
 
-`cache_session_header` adds an `X-Session-ID` header carrying the same directory, for
-endpoints that pin an inference instance that way. It is a separate fact with the same
-owner: `[[provider]] cache_session_header = true` is the roster saying this provider
-documents the header, and `[model]` / `GONGGA_CACHE_SESSION_HEADER` override it for one
-home. Tencent's guide is the one that states it; a provider that states neither gets
-neither, which is why the two are two switches and not one -- an unknown header is not
-the same risk as an unknown body field, and a provider may document one without the
-other.
+## session id headers
+
+The same per-conversation id also travels in headers when a provider documents one.
+Rather than one switch per vendor, the roster lists exact wire names:
+
+    [[provider]]
+    session_id_headers = ["X-Session-ID"]          # Tencent: pin an inference instance
+    session_id_headers = ["x-opencode-session"]   # OpenCode Go: per-conversation routing
+
+`[model] session_id_headers` (or the comma-separated `GONGGA_SESSION_ID_HEADERS`)
+overrides it for one home. Every listed name gets the same value as
+`prompt_cache_key`, and an empty list sends nothing -- an unknown header is not the
+same risk as an unknown body field, and a provider may document one without the
+other. The other OpenCode Go requirement, a client-specific `User-Agent` rather than
+a generic library name, is already met by `gongga-harness/<version>`.
 
 `[model] api` (or nothing: the roster's `[[provider]] api`) names the face a request is
 sent in. It is the endpoint label the roster declares -- `anthropic-messages` is the only

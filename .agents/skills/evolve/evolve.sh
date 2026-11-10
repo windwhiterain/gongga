@@ -16,7 +16,7 @@
 # bad build costs nothing), and only then cancel.
 #
 #   $PWD/.agents/skills/evolve/evolve.sh stage            # test, build, stage, write launcher
-#   bash --detached: <the launcher it printed>
+#   $PWD/.agents/skills/evolve/evolve.sh launch <stamp>   # start it outside this turn's job
 #   $PWD/.agents/skills/evolve/evolve.sh swap <stamp>     # verify the successor, then cancel
 #   $PWD/.agents/skills/evolve/evolve.sh status           # what is staged, who is waiting
 #   $PWD/.agents/skills/evolve/evolve.sh clean            # kill successors nobody is going to swap
@@ -154,6 +154,7 @@ write_launcher() {
     -e "s|@@CLEAN@@|$(fill "$clean")|g" \
     -e "s|@@LEASE@@|$(fill "$LEASE")|g" \
     -e "s|@@BUNDLE@@|$(fill "$bundle")|g" \
+    -e "s|@@SERVEDFILE@@|$(fill "$RUN/evolve-$stamp-launch.served")|g" \
     > "$path" <<'LAUNCH'
 #!/usr/bin/env bash
 # Successor for @@STAMP@@: waits outside the old server, then takes the home.
@@ -264,6 +265,12 @@ while :; do
     # The home is this process's now: a claim left behind would block the next
     # handover until somebody noticed it was stale.
     rm -rf '@@LEASE@@'
+    # This process is the server from here on. A pid file left behind reads as a
+    # successor still waiting, and `clean` kills waiters -- it would follow this
+    # pid down the tree and take the server with it. The heartbeat goes too: it
+    # is the one thing `swap` reads as "somebody is ready to take the home".
+    rm -f '@@PIDFILE@@' '@@BEATFILE@@'
+    printf '%s\n' "$(date +%s)" > '@@SERVEDFILE@@'
     if [ '@@BUNDLE@@' = "1" ]; then
       GONGGA_HOME="$NEW_HOME" exec "$NEW" server "${ARGS[@]}"
     fi
@@ -319,16 +326,56 @@ same_as_server() { # candidate server_pid
   [ "$(parent_of "$server_pid")" = "$candidate" ]
 }
 
+# The directory of a channel that answers, found by asking it.
+#
+# # Invariant
+#
+# Its program is the one hand on this machine that is in no job of the server's:
+# relays are spawned detached, and `swap` cancels with `keep_alive`, which leaves
+# the program running. A successor handed to it therefore outlives the server it
+# replaces.
+#
+# A live pid is not enough to hand a handover to: a relay whose program lost its
+# stdin keeps running and reads nothing, and its row looks exactly like a working
+# one. So each candidate is asked to write a file, and one that does not answer
+# in two seconds is passed over -- the cost of a wrong choice is the home.
+live_channel() {
+  local dir pid probe i
+  for dir in "$HOME_DIR"/channels/*/; do
+    [ -f "$dir/status" ] || continue
+    grep -q '"exit":null' "$dir/status" 2>/dev/null || continue
+    pid="$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$dir/status")"
+    alive "$pid" || continue
+    probe="$HOME_DIR/channel-probe-$$-${RANDOM}"
+    rm -f "$probe"
+    printf 'input %s\n' \
+      "$(printf 'echo ok > %s\n' "$probe" | base64 -w0)" >>"$dir/in"
+    for i in $(seq 1 20); do
+      if [ -f "$probe" ]; then
+        rm -f "$probe"
+        printf '%s\n' "$dir"
+        return 0
+      fi
+      sleep 0.1
+    done
+    rm -f "$probe"
+    echo "note: ${dir%/} (pid $pid) answers nothing; trying the next channel" >&2
+  done
+  return 1
+}
+
 # The command line of a running process, as one string; failure when it cannot
 # be read at all.
 server_cmdline() { # pid
   local pid="$1"
   case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
-      # `wmic` is deprecated but present wherever Git Bash is; `//value` drops
-      # the column header, and every line still carries the `CommandLine=` key.
-      wmic process where "ProcessId=$pid" get CommandLine //value 2>/dev/null \
-        | sed -n 's/^CommandLine=//p' | tr -d '\r' | sed '/^$/d'
+      # Through PowerShell, not `wmic`: this machine's security policy blacklists
+      # wmic.exe, and a blocked program is not a program that can be retried. The
+      # query is the same one `parent_of` already makes.
+      powershell -NoProfile -Command \
+        "(Get-CimInstance Win32_Process -Filter 'ProcessId=$pid').CommandLine" \
+        2>/dev/null | tr -d '\r' | sed '/^$/d'
       ;;
     *)
       [ -r "/proc/$pid/cmdline" ] || return 1
@@ -588,8 +635,8 @@ unknown; refusing to stage a handover that would produce a server nobody owns"
   } > "$RUN/evolve-$stamp.txt"
   cat "$RUN/evolve-$stamp.txt"
   echo
-  echo "next: launch detached, then swap"
-  echo "  bash --detached: $launcher   (see SKILL.md on why it must not be a plain child)"
+  echo "next: launch it outside this job, then swap"
+  echo "  $PWD/.agents/skills/evolve/evolve.sh launch $stamp"
   echo "  $PWD/.agents/skills/evolve/evolve.sh swap $stamp"
   echo
   if [ "$clean" = 1 ]; then
@@ -599,6 +646,49 @@ unknown; refusing to stage a handover that would produce a server nobody owns"
   # the wait for the home may last minutes.
   LEASE_HELD=0
   echo "an earlier attempt still waiting will leave on its own; 'clean' says who is left"
+}
+
+# Starts a stage's launcher where the cancel cannot reach it.
+#
+# # Invariant
+#
+# The successor has to outlive the server it replaces, so it may not be a child
+# of anything that server's job holds -- and a shell of the turn being cancelled
+# is exactly that. A channel's program is not: relays are detached, and `swap`
+# cancels with `keep_alive`, which leaves the program running. So the launcher is
+# handed to a live channel instead of being started from this shell.
+cmd_launch() {
+  local stamp="${1:?usage: evolve.sh launch <stamp>}"
+  local launcher="$RUN/evolve-$stamp-launch.sh"
+  [ -f "$launcher" ] || die "no launcher for $stamp; run stage first"
+  local ch
+  ch="$(live_channel || true)"
+  [ -n "$ch" ] || die "no live channel to start the successor from; \
+open a window (its shell keeps one) and retry"
+
+  local log="$RUN/evolve-$stamp-launch.log" cmd pid i
+  # A pid or a beat left by an earlier attempt would be read as this one waiting.
+  rm -f "$RUN/evolve-$stamp-launch.pid" "$RUN/evolve-$stamp-launch.beat"
+  cmd="bash $(printf '%q' "$launcher") </dev/null >>$(printf '%q' "$log") 2>&1 &"
+  printf 'input %s\n' "$(printf '%s\n' "$cmd" | base64 -w0)" >>"$ch/in"
+  echo "successor handed to ${ch%/} (that program is in no job of this server)"
+
+  for i in $(seq 1 100); do
+    pid="$(cat "$RUN/evolve-$stamp-launch.pid" 2>/dev/null || true)"
+    [ -n "$pid" ] && break
+    sleep 0.1
+  done
+  [ -n "$pid" ] || die "the channel did not start it; see $log"
+  for i in $(seq 1 100); do
+    [ -s "$RUN/evolve-$stamp-launch.beat" ] && break
+    sleep 0.1
+  done
+  [ -s "$RUN/evolve-$stamp-launch.beat" ] || die "pid $pid never beat; see $log"
+  # The claim `swap` reads: this successor came from a program a cancel cannot
+  # end. Its pid and heartbeat look the same either way -- only the one that
+  # started it knows which process tree it is in, so it says so here.
+  printf '%s\n' "${ch%/}" >"$RUN/evolve-$stamp-launch.outside"
+  echo "successor pid $pid is waiting; swap $stamp hands the home to it"
 }
 
 cmd_swap() {
@@ -656,10 +746,39 @@ its launcher has already left the queue -- run stage again if you meant the newe
   if [ -z "$CLI" ] || [ ! -x "$CLI" ]; then
     die "no gongga CLI to send cancel with; is one on PATH?"
   fi
+  # A successor that hangs from the server is one the cancel ends with it: it
+  # beats until the old process exits and then goes with the job, leaving the
+  # home unserved and this turn with nothing to resume it. A process started
+  # from a shell of this turn is exactly that, and nothing visible from here
+  # tells the two kinds apart -- so the handover that knows writes it down, and
+  # one started by hand has to be restarted through `launch`.
+  [ -f "$RUN/evolve-$stamp-launch.outside" ] || die "successor pid $launch_pid was not \
+started by '$0 launch'; a shell of this turn is in the server's job, and a cancel takes \
+a successor started from one with it -- run '$0 launch $stamp' and swap again"
   disk_line "disk before:"
   echo "old server pid $pid; successor $exe (pid $launch_pid) is waiting"
   echo "cancelling: this turn is cancelled and preserved, the successor resumes it"
-  "$CLI" cancel
+  # `keep_alive` because the successor was handed to a channel. The turn needs no
+  # flag of its own: SPEC's `cancel` flags every running session that is not
+  # waiting, and the successor's start is what continues it.
+  #
+  # # Invariant
+  #
+  # A refused *argument* means nothing was cancelled -- the arg table is read
+  # before the command runs -- so dropping one and asking again is safe. Any
+  # other failure is not: the cancel may have been carried out and only the
+  # answer lost, and a second one can reach the successor that has just bound.
+  # So only that refusal is retried, and it is recognised by its own words.
+  local out
+  if ! out="$("$CLI" cancel --keep_alive true 2>&1)"; then
+    case "$out" in
+    *"has no argument --keep_alive"*)
+      echo "note: this server predates keep_alive; cancelling plainly" >&2
+      "$CLI" cancel
+      ;;
+    *) echo "$out" >&2 ;;
+    esac
+  fi
 }
 
 cmd_status() {
@@ -813,7 +932,9 @@ cmd_clean() {
   fi
   removed=$(find "$RUN" -maxdepth 1 -type f \
     \( -name 'evolve-*-launch.sh' -o -name 'evolve-*-launch.pid' \
-       -o -name 'evolve-*-launch.beat' \
+       -o -name 'evolve-*-launch.beat' -o -name 'evolve-*-launch.outside' \
+       -o -name 'evolve-*-launch.served' \
+       -o -name 'evolve-*-launch.log' \
        -o -name 'evolve-*-gongga.exe' -o -name 'evolve-*-server.exe' \
        -o -name 'evolve-*.txt' \) \
     ! \( "${keep[@]}" \) -print -delete 2>/dev/null | wc -l)
@@ -822,6 +943,7 @@ cmd_clean() {
 
 case "${1:-help}" in
   stage)  shift; cmd_stage "$@" ;;
+  launch) shift; cmd_launch "$@" ;;
   swap)   shift; cmd_swap "$@" ;;
   status) cmd_status ;;
   clean)  shift; cmd_clean "$@" ;;

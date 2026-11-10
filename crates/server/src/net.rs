@@ -48,8 +48,97 @@ struct Queued {
     arrived: std::time::Instant,
 }
 
-pub async fn serve(cfg: Arc<Config>, d: Arc<Dispatch>, bus: EventBus) -> anyhow::Result<()> {
-    let socket = Arc::new(UdpSocket::bind(cfg.bind).await?);
+/// Binds the listen address, taking it from its holder only when told to.
+///
+/// # Invariant
+///
+/// A port somebody else holds is an error, named in full: who holds it, and the
+/// two ways to be rid of it. A server that stops whatever is on its address by
+/// itself ends servers nobody asked it to touch -- on 2026-11-10 a throwaway
+/// server started on a copy of this home cancelled the one being used, and the
+/// work of that night went with it. `--force` is the whole of the permission.
+pub async fn bind_address(addr: SocketAddr, force: bool) -> anyhow::Result<UdpSocket> {
+    let taken = match UdpSocket::bind(addr).await {
+        Ok(socket) => return Ok(socket),
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => e,
+        Err(e) => return Err(e.into()),
+    };
+    let holder = udp_owner(addr);
+    let who = match holder {
+        Some(pid) => format!(" (pid {pid} holds it)"),
+        None => String::new(),
+    };
+    if !force {
+        return Err(anyhow::anyhow!(
+            "{addr} is already in use{who}; nothing was stopped. Pass --force to stop it, \
+             or ask it to stop with `cancel`"
+        ));
+    }
+    let Some(pid) = holder else {
+        return Err(anyhow::anyhow!(
+            "{taken}; --force could not find which process holds {addr}"
+        ));
+    };
+    tracing::warn!(pid, %addr, "stopping what holds the address, as --force asks");
+    if !crate::tools::detached::kill_tree(pid).await {
+        return Err(anyhow::anyhow!(
+            "{addr} is held by pid {pid}, and it did not stop"
+        ));
+    }
+    // The port frees when the holder is really gone, not when the kill returns.
+    for _ in 0..50 {
+        if let Ok(socket) = UdpSocket::bind(addr).await {
+            return Ok(socket);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(anyhow::anyhow!(
+        "{addr} was held by pid {pid}; it was stopped, but the port did not free"
+    ))
+}
+
+/// The pid listening on this UDP address, as the system's own table has it.
+///
+/// # Invariant
+///
+/// `netstat` rather than the API behind it: this runs once, at a startup about
+/// to read a database, and the alternative is a page of unsafe code for one
+/// number that is printed here anyway.
+#[cfg(windows)]
+fn udp_owner(addr: SocketAddr) -> Option<u32> {
+    let out = std::process::Command::new("netstat")
+        .args(["-ano", "-p", "UDP"])
+        .output()
+        .ok()?;
+    let port = addr.port().to_string();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let mut cols = line.split_whitespace();
+        if cols.next() != Some("UDP") {
+            continue;
+        }
+        let local = cols.next()?;
+        if local.rsplit(':').next() != Some(port.as_str()) {
+            continue;
+        }
+        let _foreign = cols.next();
+        if let Some(pid) = cols.next().and_then(|p| p.parse().ok()) {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn udp_owner(_addr: SocketAddr) -> Option<u32> {
+    None
+}
+
+pub async fn serve(
+    cfg: Arc<Config>,
+    socket: Arc<UdpSocket>,
+    d: Arc<Dispatch>,
+    bus: EventBus,
+) -> anyhow::Result<()> {
     let local = socket.local_addr()?;
     tracing::info!(%local, "gongga server listening (UDP)");
 
@@ -351,6 +440,7 @@ fn origin_of(client: &ClientInfo, peer: SocketAddr) -> Origin {
         label: client.label.clone(),
         peer,
         session: client.session.clone(),
+        parent: client.parent.clone(),
     }
 }
 
@@ -415,6 +505,7 @@ async fn authenticate(
                         conn_id,
                         label = %client.label,
                         build = %client.build,
+                        parent = client.parent.as_deref().unwrap_or("-"),
                         "client connected"
                     );
                     return Some(client);

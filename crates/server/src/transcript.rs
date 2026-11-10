@@ -93,12 +93,26 @@ impl Iterator for Transcript {
         self.after_seq = seq;
         // The pictures ride in `display`, what the row recorded: a copy is read
         // when a request is built.
-        let pictures = match kind.as_str() {
-            "tool_result" | "text" => {
+        let pictures = match crate::store::Kind::parse(&kind) {
+            Some(
+                crate::store::Kind::Text
+                | crate::store::Kind::Inject
+                | crate::store::Kind::ToolResult,
+            ) => {
                 let value = serde_json::from_str(&display).unwrap_or_default();
                 crate::store::images_of(&value)
             }
-            _ => Vec::new(),
+            Some(
+                crate::store::Kind::Reasoning
+                | crate::store::Kind::ToolCall
+                | crate::store::Kind::Notice
+                | crate::store::Kind::ThinkingMark
+                | crate::store::Kind::System
+                | crate::store::Kind::Tools
+                | crate::store::Kind::BuiltinCall
+                | crate::store::Kind::LiveCompactRequest,
+            ) => Vec::new(),
+            None => Vec::new(),
         };
         Some(Ok(crate::body::Stored { item, pictures }))
     }

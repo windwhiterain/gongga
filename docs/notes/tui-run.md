@@ -273,7 +273,9 @@ hundred milliseconds would bury the log without adding information.
 
 A server this window started -- or a handover of it -- is stopped on the way out,
 through `cancel` rather than a kill: `cancel` is SPEC's stop -- it finishes what
-cannot be serialised and stores the rest, which a killed process cannot do.
+cannot be serialised, raises the interrupted flag on every turn it cut, and the
+next start continues them. A killed process cannot leave that flag, which is the
+whole difference: a window closing is not the end of the work it was watching.
 
 # Invariant
 

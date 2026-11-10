@@ -9,7 +9,7 @@
 //! restart. This process reads and writes two files in the channel's directory and
 //! never holds a pipe of the program's own.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,7 @@ use crate::tools::spec;
 pub struct Outcome {
     pub id: String,
     pub output: String,
-    /// Total time since the channel started, not since this call.
+    /// Time since the channel's last input, or its start: SPEC's `time`.
     pub time: Duration,
     /// Whether `until` was found. No `until` given is never a match.
     pub matched: bool,
@@ -51,16 +51,40 @@ impl Outcome {
             },
         })
     }
+
+    /// A call's answer, capped like every tool's output.
+    ///
+    /// # Invariant
+    ///
+    /// One builder for the call and for the notice.
+    pub fn result(&self, max_output_chars: usize, output_dir: &std::path::Path) -> Value {
+        let mut answer = self.to_json();
+        if let Some(window) = answer.get("output").and_then(Value::as_str) {
+            let capped = crate::tools::spill::cap_output(
+                crate::prompts::shared(),
+                window,
+                max_output_chars,
+                Some(output_dir),
+                &self.id,
+            );
+            answer["output"] = json!(capped);
+        }
+        answer
+    }
 }
 
-/// What a channel says when it ends on its own, for the caller's session.
+/// What a channel owes the session waiting on it: an end, or the marker a call asked
+/// for while the program runs on.
 #[derive(Debug, Clone)]
 pub struct ChannelEnd {
     pub session: String,
     pub id: String,
     pub output: String,
     pub time: Duration,
+    /// `None` while the program runs: the case of a channel that only matched.
     pub exit: Option<i32>,
+    /// Whether the marker a call asked for is what brought this on.
+    pub matched: bool,
 }
 
 /// How a finished channel reaches its session: an inbox row, built by the caller.
@@ -99,6 +123,14 @@ pub struct Channels {
     /// The server's own, not a session's: a channel outlives the session's shells,
     /// and the relay it reads runs on the peer whether this process is here or not.
     runners: tokio::sync::Mutex<HashMap<String, Arc<Runner>>>,
+    /// The channels a call is inside right now.
+    ///
+    /// # Invariant
+    ///
+    /// A call answers with what it saw; the watcher answers what a session was waiting
+    /// for. Both would be one end told twice, so the watcher skips what a call holds.
+    /// In memory, because a call is only ever in this process.
+    attached: std::sync::Mutex<HashSet<i64>>,
 }
 
 impl Channels {
@@ -118,6 +150,7 @@ impl Channels {
             notify,
             remotes,
             runners: tokio::sync::Mutex::new(HashMap::new()),
+            attached: std::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -396,6 +429,9 @@ impl Channels {
         until: Option<&str>,
     ) -> Result<Outcome, String> {
         let row = self.row_of(session, id)?;
+        // Whoever is inside the channel is the one that tells the session: the watcher
+        // skips what a call holds.
+        let _held = self.attach(row.id);
         let place = self.place_of(&row).await?;
         let grammar = self.grammar_of(&row.program);
         // `time` is what this call cost: from its own write, or from the last one.
@@ -434,6 +470,11 @@ impl Channels {
                 _ => None,
             },
         };
+        // The flag says a caller waits here, for what. It outlives this call only if
+        // the call gives up first.
+        self.store
+            .set_channel_wait(session, id, marker.as_deref().unwrap_or(""))
+            .map_err(quiet)?;
         let deadline = Instant::now() + wait;
         loop {
             let fresh = place.read_from("out", row.upto).await?;
@@ -483,6 +524,11 @@ impl Channels {
             .map_err(quiet)?;
         if let Some(code) = gone {
             self.store.finish_channel(row.id, code).map_err(quiet)?;
+        }
+        if matched || gone.is_some() {
+            // What it waited for is in the answer: the flag goes, so the watcher cannot
+            // repeat it.
+            self.store.take_channel_wait(row.id).map_err(quiet)?;
         }
         Ok(Outcome {
             id: row.path.clone(),
@@ -602,6 +648,37 @@ impl Channels {
             .map_err(quiet)
     }
 
+    /// Ends every channel of every session; one this server cannot reach is left
+    /// as the row it is.
+    ///
+    /// # Invariant
+    ///
+    /// `kill` in the command file and the row gone: the pair `stop_session` writes one
+    /// session at a time. A row left behind would be adopted by the next start as a
+    /// channel that answers nothing.
+    pub async fn stop_every(&self) -> usize {
+        let rows = match self.store.live_channels() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("could not read the live channels: {e}");
+                return 0;
+            }
+        };
+        let mut ended = 0;
+        for row in rows {
+            match self.place_of(&row).await {
+                Ok(place) => {
+                    if place.append("in", "kill\n").await.is_ok() {
+                        ended += 1;
+                    }
+                    let _ = self.store.delete_channel(&row.session, &row.path);
+                }
+                Err(e) => tracing::warn!(channel = %row.path, "{e}"),
+            }
+        }
+        ended
+    }
+
     /// Ends every channel of one session, for `del_session`.
     pub async fn stop_session(&self, session: &str) -> usize {
         let rows = match self.store.channels_of(session) {
@@ -628,13 +705,36 @@ impl Channels {
         stopped
     }
 
-    /// Watches every live channel, and tells a session when its program ends.
+    /// Marks a channel as one a call is inside, until the guard drops.
+    fn attach(&self, id: i64) -> Attached<'_> {
+        self.attached
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id);
+        Attached {
+            held: &self.attached,
+            id,
+        }
+    }
+
+    /// Whether a call is inside this channel right now.
+    fn is_attached(&self, id: i64) -> bool {
+        self.attached
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&id)
+    }
+
+    /// Watches every live channel, and tells a session what it is waiting for.
     ///
     /// # Invariant
     ///
     /// A notice is one more `check`: it reads the same window, so a session is never
-    /// told bytes it already read, and never loses the tail. The stop token is what
-    /// keeps a `cancel` from announcing what it just ended.
+    /// told bytes it already read and never loses the tail. The stop token keeps a
+    /// `cancel` from announcing what it just ended.
+    ///
+    /// Only a flagged channel speaks, and once: `new`/`check` set it, the call clears
+    /// it when it answers, and the claim lets the watcher speak for one no call is in.
     pub fn watch(self: &Arc<Self>, stop: CancellationToken) -> tokio::task::JoinHandle<()> {
         let channels = Arc::clone(self);
         tokio::spawn(async move {
@@ -651,37 +751,76 @@ impl Channels {
                     }
                 };
                 for row in live {
+                    // Nobody is waiting on it: however it ends, it owes no notice.
+                    let Some(marker) = row.wait_marker.clone() else {
+                        continue;
+                    };
+                    // A call inside it answers its session with what it saw; saying it
+                    // again here is the double notice.
+                    if channels.is_attached(row.id) {
+                        continue;
+                    }
                     let Ok(place) = channels.place_of(&row).await else {
                         continue;
                     };
-                    let Some(status) = place.status().await else {
-                        continue;
-                    };
-                    let Some(exit) = status.exit else {
-                        continue;
-                    };
-                    if channels.store.finish_channel(row.id, exit).is_err() {
-                        continue;
-                    }
+                    let ended = place.status().await.and_then(|status| status.exit);
                     // The window is not taken here: a notice that consumed it would be
                     // the one way to lose it.
                     let fresh = place.read_from("out", row.upto).await.unwrap_or_default();
-                    let output = look(&fresh, row.upto, None, &spec::ChannelSpec::default()).window;
+                    let grammar = channels.grammar_of(&row.program);
+                    let looked = look(
+                        &fresh,
+                        row.upto,
+                        (!marker.is_empty()).then_some(marker.as_str()),
+                        &grammar,
+                    );
+                    if ended.is_none() && !looked.matched {
+                        continue;
+                    }
+                    // The flag is the token: whoever clears it is the one that speaks.
+                    if !channels.store.take_channel_wait(row.id).unwrap_or(false) {
+                        continue;
+                    }
+                    if let Some(exit) = ended {
+                        // The claim above is what makes this once; moving the row is
+                        // another writer's to do, and a refusal here is no failure.
+                        let _ = channels.store.finish_channel(row.id, exit);
+                    }
+                    // A notice is a read: it carries the window, so the cursor
+                    // moves with it.
+                    let _ = channels.store.set_channel_upto(row.id, looked.upto);
                     (channels.notify)(ChannelEnd {
                         session: row.session.clone(),
                         id: row.path.clone(),
-                        output,
+                        output: looked.window,
+                        // SPEC's `time`: since the last input.
                         time: Duration::from_millis(
-                            (now_millis() - row.started_at)
+                            (now_millis() - row.wrote_at.unwrap_or(row.started_at))
                                 .max(0)
                                 .try_into()
                                 .unwrap_or(0),
                         ),
-                        exit: Some(exit),
+                        exit: ended,
+                        matched: looked.matched,
                     });
                 }
             }
         })
+    }
+}
+
+/// A call's hold on one channel, released when the call answers.
+struct Attached<'a> {
+    held: &'a std::sync::Mutex<HashSet<i64>>,
+    id: i64,
+}
+
+impl Drop for Attached<'_> {
+    fn drop(&mut self) {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
     }
 }
 

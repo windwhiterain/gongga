@@ -164,7 +164,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Its own column rather than `updated_at`, which a tuning change rewrites:
     -- the list is ordered by this, so writing it anywhere else would move a row
     -- for a reason the operator did not give.
-    ended_at INTEGER
+    ended_at INTEGER,
+    -- SPEC's interrupted flag: a stop cut this session's turn, and the next start
+    -- continues it. Set by `interrupt` on a session that was busy and not inside
+    -- `wait`, cleared by the start that claims the turn. Its own column because a
+    -- flag in the process is a flag a stop cannot leave behind, and a pending row
+    -- is not the same fact: a turn can owe work with no row left to say so.
+    interrupted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -348,6 +354,9 @@ CREATE TABLE IF NOT EXISTS channels (
     -- When this channel was last written to: what a call's `time` is measured
     -- from. NULL until the first write, so the program's start stands then.
     wrote_at     INTEGER,
+    -- What a caller is waiting for, and whether one is: the marker a call has to
+    -- see (`''` for the end alone), or NULL for nobody waiting.
+    wait_marker  TEXT,
     UNIQUE (session, path)
 );
 
@@ -491,11 +500,31 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
+    // A channel says when a caller waits on it, and for what.
+    add_column_if_missing(
+        conn,
+        "channels",
+        "wait_marker",
+        "ALTER TABLE channels ADD COLUMN wait_marker TEXT",
+    )?;
+    // A channel says when a caller waits on it, and for what.
+    add_column_if_missing(
+        conn,
+        "channels",
+        "wait_marker",
+        "ALTER TABLE channels ADD COLUMN wait_marker TEXT",
+    )?;
     add_column_if_missing(
         conn,
         "sessions",
         "ended_at",
         "ALTER TABLE sessions ADD COLUMN ended_at INTEGER",
+    )?;
+    add_column_if_missing(
+        conn,
+        "sessions",
+        "interrupted",
+        "ALTER TABLE sessions ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0",
     )?;
     backfill_ended_at(conn)?;
     settle_handover(conn)?;
@@ -605,10 +634,10 @@ fn settle_handover(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         tx.execute(
             "INSERT INTO messages (session_id, seq, kind, content, display, call_id, created_at)
              VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1),
-                     'text', ?2, ?3, NULL, ?4)",
+                     'inject', ?2, ?3, NULL, ?4)",
             params![
                 session_id,
-                wire_item("text", &value).map(|item| item.to_string()),
+                wire_item(Kind::Inject, &value).map(|item| item.to_string()),
                 value.to_string(),
                 now_millis()
             ],
@@ -644,7 +673,9 @@ fn backfill_wire_items(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         conn.execute(
             "UPDATE messages SET content = ?1, call_id = ?2 WHERE id = ?3",
             params![
-                wire_item(&kind, &value).map(|item| item.to_string()),
+                Kind::parse(&kind)
+                    .and_then(|kind| wire_item(kind, &value))
+                    .map(|item| item.to_string()),
                 value.get("call_id").and_then(|v| v.as_str()),
                 id
             ],
@@ -1132,13 +1163,47 @@ impl Store {
         Ok(())
     }
 
+    /// Raises or clears SPEC's interrupted flag for one session.
+    ///
+    /// # Invariant
+    ///
+    /// A stop raises it on every session whose turn it cut, and the start that
+    /// continues that turn clears it: "restart will consume and continue sessions
+    /// with interrupted flag". The column is the whole record, because the flag
+    /// cannot live in the process that the stop is ending -- a turn row can be
+    /// gone by the time the next start looks, and a flag cannot.
+    pub fn set_interrupted(&self, id: i64, interrupted: bool) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET interrupted = ?1 WHERE id = ?2",
+            params![i64::from(interrupted), id],
+        )?;
+        Ok(())
+    }
+
+    /// Every session a stop left owing a turn, oldest first.
+    ///
+    /// # Invariant
+    ///
+    /// Read once, by the start that inherits them: a flagged session continues
+    /// even when no pending row survived, which is what makes the flag the
+    /// memory rather than a decoration on the rows.
+    pub fn interrupted_sessions(&self) -> anyhow::Result<Vec<(i64, String)>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare("SELECT id, name FROM sessions WHERE interrupted <> 0 ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     // -- transcript --------------------------------------------------------
 
     /// Appends a message and returns its sequence number within the session.
     pub fn append_message(
         &self,
         session_id: i64,
-        kind: &str,
+        kind: Kind,
         content: &serde_json::Value,
     ) -> anyhow::Result<i64> {
         Self::append_message_conn(&self.lock(), session_id, kind, content)
@@ -1147,7 +1212,7 @@ impl Store {
     fn append_message_conn(
         conn: &rusqlite::Connection,
         session_id: i64,
-        kind: &str,
+        kind: Kind,
         content: &serde_json::Value,
     ) -> anyhow::Result<i64> {
         let seq: i64 = conn.query_row(
@@ -1164,7 +1229,7 @@ impl Store {
              RETURNING seq",
             params![
                 session_id,
-                kind,
+                kind.as_str(),
                 wire_item(kind, content).map(|item| item.to_string()),
                 serde_json::to_string(content)?,
                 content.get("call_id").and_then(|v| v.as_str()),
@@ -1378,7 +1443,7 @@ impl Store {
     /// Stores the prompt the next request is built from, bytes and all.
     pub fn append_prompt(&self, session_id: i64, prompt: &Prompt) -> anyhow::Result<i64> {
         let payload = serde_json::to_value(prompt)?;
-        self.append_message(session_id, "system", &payload)
+        self.append_message(session_id, Kind::System, &payload)
     }
 
     /// The newest stored tool set, or nothing before a session's first stamp.
@@ -1400,7 +1465,7 @@ impl Store {
     /// Stores the tool set the next request is built from, bytes and all.
     pub fn append_tool_set(&self, session_id: i64, tool_set: &ToolSet) -> anyhow::Result<i64> {
         let payload = serde_json::to_value(tool_set)?;
-        self.append_message(session_id, "tools", &payload)
+        self.append_message(session_id, Kind::Tools, &payload)
     }
 
     // -- what a stream has said so far -------------------------------------
@@ -1487,12 +1552,12 @@ impl Store {
             // Appended last; see `docs/notes/server-store.md`.
             let stored = match part.as_str() {
                 "output" => Some((
-                    "text",
+                    Kind::Text,
                     json!({"role": "assistant", "text": text, "interrupted": true,
                            "item_id": item_id, "turn": turn}),
                 )),
                 "reasoning" => Some((
-                    "reasoning",
+                    Kind::Reasoning,
                     json!({"summary": text, "item_id": item_id,
                            "interrupted": true, "turn": turn}),
                 )),
@@ -1561,7 +1626,7 @@ impl Store {
         for (call_id, name, step) in &open {
             self.append_message(
                 session_id,
-                "tool_result",
+                Kind::ToolResult,
                 &json!({
                     "call_id": call_id,
                     "output": interrupted_call(),
@@ -1912,7 +1977,7 @@ impl Store {
         drop(statement);
         artifacts.push(call_seq);
 
-        let result_seq = Self::append_message_conn(&tx, session_id, "tool_result", content)?;
+        let result_seq = Self::append_message_conn(&tx, session_id, Kind::ToolResult, content)?;
         tx.execute(
             "INSERT INTO live_compact_checkpoints
              (session_id, segment_after_seq, request_seq, round_start_seq,
@@ -2172,6 +2237,7 @@ impl Store {
         tx: &rusqlite::Transaction<'_>,
         session_id: i64,
         expanded: &crate::meta::Expanded,
+        kind: Kind,
     ) -> anyhow::Result<i64> {
         let no_text = tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM messages
@@ -2202,7 +2268,7 @@ impl Store {
         Ok(Self::append_message_conn(
             tx,
             session_id,
-            "text",
+            kind,
             &user_row(expanded),
         )?)
     }
@@ -2232,12 +2298,15 @@ impl Store {
             ],
         )?;
         let id = tx.last_insert_rowid();
-        let seq = self.append_user_conn(&tx, session_id, expanded)?;
+        let seq = self.append_user_conn(&tx, session_id, expanded, Kind::Text)?;
         tx.commit()?;
         Ok((
             id,
             OperatorRows {
-                lines: vec![expanded.text.clone()],
+                lines: vec![OperatorLine {
+                    text: expanded.text.clone(),
+                    injected: false,
+                }],
                 seq,
             },
         ))
@@ -2401,8 +2470,11 @@ impl Store {
 
             let expanded = crate::meta::Expanded::from_json(&payload)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
-            written.seq = self.append_user_conn(&tx, session_id, &expanded)?;
-            written.lines.push(expanded.text.clone());
+            written.seq = self.append_user_conn(&tx, session_id, &expanded, Kind::Inject)?;
+            written.lines.push(OperatorLine {
+                text: expanded.text.clone(),
+                injected: true,
+            });
             if let Some((round, segment_after, generation)) = compact_round {
                 let request = crate::live_compact::Request {
                     request_seq: written.seq,
@@ -2414,7 +2486,7 @@ impl Store {
                 Self::append_message_conn(
                     &tx,
                     session_id,
-                    crate::live_compact::REQUEST_KIND,
+                    Kind::LiveCompactRequest,
                     &serde_json::to_value(request)?,
                 )?;
             }
@@ -2706,7 +2778,7 @@ impl Store {
     pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker
              FROM channels WHERE session = ?1 ORDER BY path",
         )?;
         let rows = stmt
@@ -2720,7 +2792,7 @@ impl Store {
     pub fn live_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker
              FROM channels WHERE ended_at IS NULL ORDER BY id",
         )?;
         let rows = stmt
@@ -2733,7 +2805,7 @@ impl Store {
     pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker
              FROM channels WHERE session = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query(params![session, path])?;
@@ -2763,13 +2835,34 @@ impl Store {
         Ok(())
     }
 
-    /// Says what became of a channel that ended.
-    pub fn finish_channel(&self, id: i64, exit: i32) -> anyhow::Result<()> {
-        self.lock().execute(
+    /// Says what became of a channel that ended, and whether this was the telling.
+    ///
+    /// # Invariant
+    ///
+    /// `WHERE ended_at IS NULL` is the claim: two writers may see one end, and only
+    /// the one that moved the row may speak of it.
+    pub fn finish_channel(&self, id: i64, exit: i32) -> anyhow::Result<bool> {
+        Ok(self.lock().execute(
             "UPDATE channels SET ended_at = ?2, exit = ?3 WHERE id = ?1 AND ended_at IS NULL",
             params![id, now_millis(), exit],
+        )? > 0)
+    }
+
+    /// Records that a caller waits on this channel, and for what.
+    pub fn set_channel_wait(&self, session: &str, path: &str, marker: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET wait_marker = ?3 WHERE session = ?1 AND path = ?2",
+            params![session, path, marker],
         )?;
         Ok(())
+    }
+
+    /// Clears the flag, and says whether this caller cleared it: one delivery, claimed.
+    pub fn take_channel_wait(&self, id: i64) -> anyhow::Result<bool> {
+        Ok(self.lock().execute(
+            "UPDATE channels SET wait_marker = NULL WHERE id = ?1 AND wait_marker IS NOT NULL",
+            params![id],
+        )? > 0)
     }
 
     /// Gives a channel another name. The directory does not move: the name is a key
@@ -2993,9 +3086,17 @@ pub struct SubscriptionRow {
 #[derive(Debug, Clone, Default)]
 pub struct OperatorRows {
     /// The lines, in the order they landed.
-    pub lines: Vec<String>,
+    pub lines: Vec<OperatorLine>,
     /// The seq of the last row this transaction wrote.
     pub seq: i64,
+}
+
+/// One line a transaction wrote, and whose words they are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorLine {
+    pub text: String,
+    /// The harness's own words: drawn as its own block, never as the operator's.
+    pub injected: bool,
 }
 
 /// A row of unfinished work, replayed on the next start.
@@ -3076,6 +3177,9 @@ pub struct ChannelRow {
     pub upto: u64,
     /// When this channel was last written to; `None` before the first write.
     pub wrote_at: Option<i64>,
+    /// What a caller waits for: the marker, `Some("")` for the end alone. `None` is
+    /// nobody waiting.
+    pub wait_marker: Option<String>,
 }
 
 fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
@@ -3092,6 +3196,7 @@ fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
         exit: row.get(9)?,
         upto: row.get::<_, i64>(10)?.max(0) as u64,
         wrote_at: row.get(11)?,
+        wait_marker: row.get(12)?,
     })
 }
 
@@ -3216,6 +3321,62 @@ pub struct MessageRow {
     pub elapsed_ms: Option<u64>,
 }
 
+/// What one row of the transcript is, as a closed set.
+///
+/// # Invariant
+///
+/// Matched exhaustively wherever a row is decided about -- what a request sends,/// what a reader draws -- so a new kind is a build error at each. It was a `&str`,/// and the kind that reached a wildcard stored a message the model never got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Text,
+    Reasoning,
+    ToolCall,
+    ToolResult,
+    Notice,
+    ThinkingMark,
+    Inject,
+    System,
+    Tools,
+    BuiltinCall,
+    LiveCompactRequest,
+}
+
+impl Kind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Kind::Text => "text",
+            Kind::Reasoning => "reasoning",
+            Kind::ToolCall => "tool_call",
+            Kind::ToolResult => "tool_result",
+            Kind::Notice => "notice",
+            Kind::ThinkingMark => "thinking_mark",
+            Kind::Inject => "inject",
+            Kind::System => "system",
+            Kind::Tools => "tools",
+            Kind::BuiltinCall => "builtin_call",
+            Kind::LiveCompactRequest => crate::live_compact::REQUEST_KIND,
+        }
+    }
+
+    /// The variant a stored kind names; `None` is a row this build cannot name.
+    pub(crate) fn parse(kind: &str) -> Option<Self> {
+        match kind {
+            "text" => Some(Kind::Text),
+            "reasoning" => Some(Kind::Reasoning),
+            "tool_call" => Some(Kind::ToolCall),
+            "tool_result" => Some(Kind::ToolResult),
+            "notice" => Some(Kind::Notice),
+            "thinking_mark" => Some(Kind::ThinkingMark),
+            "inject" => Some(Kind::Inject),
+            "system" => Some(Kind::System),
+            "tools" => Some(Kind::Tools),
+            "builtin_call" => Some(Kind::BuiltinCall),
+            other if other == crate::live_compact::REQUEST_KIND => Some(Kind::LiveCompactRequest),
+            _ => None,
+        }
+    }
+}
+
 impl MessageRow {
     /// Flatten one stored row, for callers with no store at hand.
     pub(crate) fn parse(seq: i64, kind: &str, content: &str) -> Self {
@@ -3232,18 +3393,18 @@ impl MessageRow {
             ok: None,
             elapsed_ms: None,
         };
-        match kind {
-            "text" => {
+        match Kind::parse(kind) {
+            Some(Kind::Text) => {
                 row.role = str_of("role");
                 row.text = str_of("text").unwrap_or_default();
             }
-            "reasoning" => row.text = str_of("summary").unwrap_or_default(),
-            "tool_call" => {
+            Some(Kind::Reasoning) => row.text = str_of("summary").unwrap_or_default(),
+            Some(Kind::ToolCall) => {
                 row.call_id = str_of("call_id");
                 row.name = str_of("name");
                 row.text = str_of("arguments").unwrap_or_default();
             }
-            "tool_result" => {
+            Some(Kind::ToolResult) => {
                 row.call_id = str_of("call_id");
                 row.text = str_of("output").unwrap_or_default();
                 // Absent on a row written before the outcome was kept: a read
@@ -3252,22 +3413,34 @@ impl MessageRow {
                 row.elapsed_ms = value.get("elapsed_ms").and_then(|v| v.as_u64());
             }
             // The harness talking to the reader: no role, no answer in the model's mouth.
-            "notice" | "thinking_mark" => row.text = str_of("text").unwrap_or_default(),
+            Some(Kind::Notice | Kind::ThinkingMark | Kind::Inject) => {
+                row.text = str_of("text").unwrap_or_default()
+            }
             // The reader sees which prompt was in force, not 10k characters of it.
-            "system" => {
+            Some(Kind::System) => {
                 let cwd = str_of("cwd").unwrap_or_default();
                 let chars = str_of("instructions").unwrap_or_default().chars().count();
                 row.text = format!(
                     "[prompt in force] {chars} characters of instructions, read from {cwd}"
                 );
             }
+            // The set in force: how big it is, not the schema the model reads.
+            Some(Kind::Tools) => {
+                let count = value
+                    .get("tools")
+                    .and_then(|v| v.as_array())
+                    .map(|list| list.len())
+                    .unwrap_or(0);
+                row.text = format!("tool set in force: {count} tool(s)");
+            }
+            Some(Kind::LiveCompactRequest) => row.text = "live compact requested".to_string(),
             // Something that ran at the provider, not here: it has no output to
             // show, so the line describes what it did instead.
-            "builtin_call" => {
+            Some(Kind::BuiltinCall) => {
                 let item = value.get("item").unwrap_or(&serde_json::Value::Null);
                 row.text = activity_brief(item);
             }
-            other => tracing::warn!("unknown message kind {other}"),
+            None => tracing::warn!("unknown message kind {kind}"),
         }
         row
     }
@@ -3305,7 +3478,7 @@ fn user_row(expanded: &crate::meta::Expanded) -> serde_json::Value {
     row
 }
 
-fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value> {
+fn wire_item(kind: Kind, value: &serde_json::Value) -> Option<serde_json::Value> {
     let text_of = |key: &str| {
         value
             .get(key)
@@ -3317,8 +3490,9 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
     match kind {
         // Records a request reads, not messages it sends: the prompt and the tool
         // set in force keep their payload in `display`.
-        "system" | "tools" => None,
-        "text" => {
+        Kind::System | Kind::Tools => None,
+        // An injection is a user turn to the model: the kind names the reader's block.
+        Kind::Text | Kind::Inject => {
             let role = text_of("role");
             Some(if role == "assistant" {
                 json!({"role": "assistant", "content": [{"type": "output_text", "text": text_of("text")}]})
@@ -3326,7 +3500,7 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
                 json!({"role": role, "content": text_of("text")})
             })
         }
-        "reasoning" => {
+        Kind::Reasoning => {
             // Byte for byte, never rebuilt; see `docs/notes/server-store.md`.
             if let Some(item) = value.get("item").filter(|item| item.is_object()) {
                 return Some(item.clone());
@@ -3349,20 +3523,20 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             }
             Some(item)
         }
-        "tool_call" => Some(json!({
+        Kind::ToolCall => Some(json!({
             "type": "function_call",
             "call_id": text_of("call_id"),
             "name": text_of("name"),
             "arguments": text_of("arguments"),
         })),
         // A boundary the harness draws, not a thing the reader said.
-        "thinking_mark" => Some(json!({"role": "user", "content": text_of("text")})),
-        "tool_result" => Some(json!({
+        Kind::ThinkingMark => Some(json!({"role": "user", "content": text_of("text")})),
+        Kind::ToolResult => Some(json!({
             "type": "function_call_output",
             "call_id": text_of("call_id"),
             "output": text_of("output"),
         })),
-        "builtin_call" => {
+        Kind::BuiltinCall => {
             let item = value.get("item")?;
             if item.is_null() {
                 return None;
@@ -3374,7 +3548,8 @@ fn wire_item(kind: &str, value: &serde_json::Value) -> Option<serde_json::Value>
             // Read back now, not at send time: replayability is the row's property.
             crate::llm::sendable_activity(item, replayable, crate::blobs::dir())
         }
-        _ => None,
+        // Records a request reads rather than messages it sends: the harness.
+        Kind::Notice | Kind::LiveCompactRequest => None,
     }
 }
 

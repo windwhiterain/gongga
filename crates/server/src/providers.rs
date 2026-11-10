@@ -3,8 +3,11 @@
 //! See `docs/notes/server-providers.md`.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +18,15 @@ pub struct Provider {
     pub name: String,
     pub endpoints: Vec<Endpoint>,
     pub models: Vec<Model>,
+    /// A script that produces this provider's models, when the list is dynamic.
+    ///
+    /// # Invariant
+    ///
+    /// `None` means the static `[[provider.model]]` rows are the whole list. A
+    /// named script is run when the roster is read and its models join the static
+    /// ones; it prints one `FileModel` array as JSON. A failed script is logged
+    /// and never retires the static rows. See `docs/notes/server-providers.md`.
+    pub models_script: Option<PathBuf>,
     /// How long this provider holds a cached prefix, in seconds, when the roster
     /// states it.
     ///
@@ -35,15 +47,17 @@ pub struct Provider {
     /// field nobody documents buys nothing, and an endpoint that rejects an unknown one
     /// fails the request. It is the roster's fact, not the home's.
     pub cache_affinity: Option<bool>,
-    /// Whether this provider documents a header that pins a request to one inference
-    /// instance (`X-Session-ID`).
+    /// The provider-specific headers that carry a per-conversation id, by their
+    /// exact wire names (`X-Session-ID`, `x-opencode-session`, ...).
     ///
     /// # Invariant
     ///
-    /// The same rule as `cache_affinity`, and a separate fact: a body field and a
-    /// header are two spellings, and a provider may document one of them. See
-    /// `docs/notes/server-config.md`.
-    pub cache_session_header: Option<bool>,
+    /// These are one kind of thing -- a vendor extension naming the conversation
+    /// -- so they are a list of names, not one switch per vendor. A header nobody
+    /// documents is not one to send, because an endpoint that rejects an unknown
+    /// header fails the request; the value is always the per-conversation id,
+    /// never the directory. See `docs/notes/server-llm.md`.
+    pub session_id_headers: Vec<String>,
     /// The face this provider is worth being spoken in, by its endpoint's label.
     ///
     /// # Invariant
@@ -228,8 +242,8 @@ pub struct Entry {
     pub api: String,
     /// The longest answer this model gives, when the roster states it.
     pub max_output_tokens: Option<u32>,
-    /// Whether the provider documents `X-Session-ID`; `None` sends nothing.
-    pub cache_session_header: Option<bool>,
+    /// Header names that carry the per-conversation id; empty sends nothing.
+    pub session_id_headers: Vec<String>,
 }
 
 impl Entry {
@@ -366,7 +380,10 @@ impl Catalog {
                 Ok(mut value) => {
                     resolve_scripts(&mut value, path.parent());
                     match parse_value(value) {
-                        Ok(providers) => catalog.providers = providers,
+                        Ok(mut providers) => {
+                            attach_scripted_models(&mut providers);
+                            catalog.providers = providers;
+                        }
                         Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
                     }
                 }
@@ -625,7 +642,7 @@ impl Catalog {
             cache_ttl_secs: provider.cache_ttl_secs,
             cache_ttl_tiers: provider.cache_ttl_tiers.clone(),
             cache_affinity: provider.cache_affinity,
-            cache_session_header: provider.cache_session_header,
+            session_id_headers: provider.session_id_headers.clone(),
             api: endpoint.api.clone(),
             max_output_tokens: found.max_output_tokens,
             tier: found.tier.clone(),
@@ -739,6 +756,9 @@ struct FileProvider {
     endpoint: Vec<FileEndpoint>,
     #[serde(default)]
     model: Vec<FileModel>,
+    /// A script that prints the model list as JSON, when the list is dynamic.
+    #[serde(default)]
+    models_script: Option<PathBuf>,
     #[serde(default)]
     quota_query: Vec<FileQuota>,
     /// How long a cached prefix survives at this provider, in seconds.
@@ -750,9 +770,9 @@ struct FileProvider {
     /// Whether this provider documents `prompt_cache_key`.
     #[serde(default)]
     cache_affinity: Option<bool>,
-    /// Whether this provider documents the `X-Session-ID` header.
+    /// Header names that carry the per-conversation id.
     #[serde(default)]
-    cache_session_header: Option<bool>,
+    session_id_headers: Vec<String>,
     /// The endpoint label this provider is worth being spoken in.
     #[serde(default)]
     api: Option<String>,
@@ -836,28 +856,8 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                         base_url: e.base_url,
                     })
                     .collect(),
-                models: p
-                    .model
-                    .into_iter()
-                    .map(|m| Model {
-                        name: if m.name.is_empty() {
-                            m.id.clone()
-                        } else {
-                            m.name
-                        },
-                        id: m.id,
-                        context: m.context,
-                        max_output_tokens: m.max_output_tokens,
-                        endpoints: m.endpoints,
-                        reasoning_levels: m.reasoning_levels,
-                        reasoning_default: m.reasoning_default,
-                        reasoning_mapping: m.reasoning_mapping,
-                        modalities: m.modalities,
-                        builtin_tools: m.builtin_tools,
-                        price: m.price,
-                        tier: m.tier,
-                    })
-                    .collect(),
+                models: p.model.into_iter().map(model_from_file).collect(),
+                models_script: p.models_script,
                 quota: p
                     .quota_query
                     .into_iter()
@@ -873,13 +873,197 @@ fn parse_value(value: toml::Value) -> Result<Vec<Provider>, toml::de::Error> {
                 cache_ttl_secs: p.cache_ttl_secs,
                 cache_ttl_tiers: p.cache_ttl_tiers,
                 cache_affinity: p.cache_affinity,
-                cache_session_header: p.cache_session_header,
+                session_id_headers: p.session_id_headers,
                 api: p.api,
                 key_env: p.key_env,
             }
         })
         .collect();
     Ok(providers)
+}
+
+/// One static roster row, or one a script printed, as the server's [`Model`].
+///
+/// # Invariant
+///
+/// The same conversion for both sources, so a model's fields mean one thing
+/// whether the TOML named it or a script discovered it. An empty name takes the
+/// id, as the roster has no other title to show.
+fn model_from_file(m: FileModel) -> Model {
+    Model {
+        name: if m.name.is_empty() {
+            m.id.clone()
+        } else {
+            m.name
+        },
+        id: m.id,
+        context: m.context,
+        max_output_tokens: m.max_output_tokens,
+        endpoints: m.endpoints,
+        reasoning_levels: m.reasoning_levels,
+        reasoning_default: m.reasoning_default,
+        reasoning_mapping: m.reasoning_mapping,
+        modalities: m.modalities,
+        builtin_tools: m.builtin_tools,
+        price: m.price,
+        tier: m.tier,
+    }
+}
+
+/// How long a model-discovery script may run before it is stopped.
+///
+/// # Invariant
+///
+/// A hang guard, not a budget: a dead endpoint cannot keep the child, and this
+/// roster read, alive for the life of the server. Mirrors `quota::READER_TIMEOUT`.
+const SCRIPT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs each provider's discovery script and joins its models to the static rows.
+///
+/// # Invariant
+///
+/// A script that cannot be read -- no Python, a bad exit, a timeout, bad JSON --
+/// is logged and leaves the static rows in place, never emptying the provider.
+/// A scripted id the static rows already name is skipped, the static one kept.
+fn attach_scripted_models(providers: &mut [Provider]) {
+    for provider in providers {
+        let Some(script) = provider.models_script.clone() else {
+            continue;
+        };
+        match run_models_script(&script) {
+            Ok(scripted) => {
+                let fresh: Vec<Model> = scripted
+                    .into_iter()
+                    .filter(|m| !provider.models.iter().any(|known| known.id == m.id))
+                    .collect();
+                provider.models.extend(fresh);
+            }
+            Err(problem) => tracing::warn!(
+                provider = %provider.id,
+                script = %script.display(),
+                "model script failed: {problem}"
+            ),
+        }
+    }
+}
+
+/// Runs one discovery script and parses the `FileModel` array it prints.
+fn run_models_script(script: &Path) -> Result<Vec<Model>, String> {
+    let program = crate::config::detect_python()
+        .ok_or_else(|| "no Python to run the model script".to_string())?;
+    let output = run_bounded(&program, script)?;
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if said.is_empty() {
+            format!("the model script exited {}", output.status)
+        } else {
+            said
+        });
+    }
+    let files: Vec<FileModel> =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+            .map_err(|e| format!("the model script did not print a model array: {e}"))?;
+    Ok(files.into_iter().map(model_from_file).collect())
+}
+
+/// Runs a script with piped streams, stopping a child that overruns the timeout.
+///
+/// # Invariant
+///
+/// The streams are pumped on their own threads so a full pipe cannot deadlock
+/// the child while this thread waits. The watchdog kills a child that overruns;
+/// a child that finishes in time sets the flag and the watchdog stands down.
+fn run_bounded(program: &Path, script: &Path) -> Result<std::process::Output, String> {
+    let mut command = std::process::Command::new(program);
+    command
+        .arg(script)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("cannot run the model script: {e}"))?;
+    let stdout: Option<Box<dyn Read + Send>> = child
+        .stdout
+        .take()
+        .map(|p| Box::new(p) as Box<dyn Read + Send>);
+    let stderr: Option<Box<dyn Read + Send>> = child
+        .stderr
+        .take()
+        .map(|p| Box::new(p) as Box<dyn Read + Send>);
+    let child = Arc::new(Mutex::new(child));
+
+    let out: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let err: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let pumps = [(stdout, Arc::clone(&out)), (stderr, Arc::clone(&err))]
+        .into_iter()
+        .filter_map(|(pipe, sink)| {
+            pipe.map(|p| std::thread::spawn(move || collect_stream(p, sink)))
+        })
+        .collect::<Vec<_>>();
+
+    let done = Arc::new(AtomicBool::new(false));
+    let watch_child = Arc::clone(&child);
+    let watch_done = Arc::clone(&done);
+    let watcher = std::thread::spawn(move || {
+        const SLICE: Duration = Duration::from_millis(50);
+        let ticks = SCRIPT_TIMEOUT.as_millis() / SLICE.as_millis();
+        for _ in 0..ticks.max(1) {
+            if watch_done.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(SLICE);
+        }
+        if !watch_done.load(Ordering::SeqCst)
+            && let Ok(mut child) = watch_child.lock()
+        {
+            let _ = child.kill();
+        }
+    });
+
+    let mut status = None;
+    while status.is_none() {
+        match child
+            .lock()
+            .map_err(|e| e.to_string())?
+            .try_wait()
+            .map_err(|e| e.to_string())?
+        {
+            Some(code) => status = Some(code),
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    done.store(true, Ordering::SeqCst);
+    let _ = watcher.join();
+    for pump in pumps {
+        let _ = pump.join();
+    }
+    let take = |sink: Arc<Mutex<Vec<u8>>>| {
+        sink.lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
+    };
+    Ok(std::process::Output {
+        status: status.unwrap(),
+        stdout: take(out),
+        stderr: take(err),
+    })
+}
+
+/// Pumps one child stream into a shared buffer until the child closes it.
+fn collect_stream(mut pipe: impl Read, sink: Arc<Mutex<Vec<u8>>>) {
+    let mut buffer = [0u8; 4096];
+    loop {
+        match pipe.read(&mut buffer) {
+            Ok(0) => return,
+            Ok(n) => {
+                if let Ok(mut sink) = sink.lock() {
+                    sink.extend_from_slice(&buffer[..n]);
+                }
+            }
+            Err(_) => return,
+        }
+    }
 }
 
 /// Turns every `quota_query.script` of one layer into the path it names, from
@@ -898,22 +1082,33 @@ fn resolve_scripts(value: &mut toml::Value, dir: Option<&Path>) {
         return;
     };
     for provider in providers {
-        let Some(queries) = provider
-            .get_mut("quota_query")
-            .and_then(|q| q.as_array_mut())
-        else {
+        let Some(table) = provider.as_table_mut() else {
+            continue;
+        };
+        // The provider's own model-discovery script, resolved the same way.
+        if let Some(script) = table
+            .get("models_script")
+            .and_then(|s| s.as_str())
+            .filter(|s| !Path::new(s).is_absolute())
+        {
+            table.insert(
+                "models_script".to_string(),
+                toml::Value::String(dir.join(script).to_string_lossy().to_string()),
+            );
+        }
+        let Some(queries) = table.get_mut("quota_query").and_then(|q| q.as_array_mut()) else {
             continue;
         };
         for query in queries {
-            let Some(table) = query.as_table_mut() else {
+            let Some(query) = query.as_table_mut() else {
                 continue;
             };
-            let script = table
+            let script = query
                 .get("script")
                 .and_then(|s| s.as_str())
                 .map(str::to_string);
             if let Some(script) = script.filter(|s| !Path::new(s).is_absolute()) {
-                table.insert(
+                query.insert(
                     "script".to_string(),
                     toml::Value::String(dir.join(script).to_string_lossy().to_string()),
                 );

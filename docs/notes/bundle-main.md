@@ -143,19 +143,29 @@ a directory -- the directory simply stays, and the next install retires it once 
 processes have exited. Killing the client was the first shape of this and it made
 every upgrade close the reader's window.
 
-One server is not asked to stop: the one a window was told to use. `--client_only`
-says "there is a server, and it is not mine", and a window that starts no server
-will not take the port -- so the retire leaves that server running and its
-directory with it. Stopping it here is what made `gongga tui --client_only` a
-window that waited for a server the bundle had just killed, on every upgrade.
-`--client_only` exists so that a server upgrade does not break the client, and
-this is where that promise is kept.
+One server is not asked to stop: the one a program that takes no port was told to
+use. Only two programs replace a server -- `gongga-server`, and a window that did
+not say `--client_only`. A `--client_only` window says "there is a server, and it
+is not mine"; a one-shot command says the same thing by existing, because it only
+reads a server and never binds one. Stopping either one's server is what made
+`gongga tui --client_only` a window that waited for a server the bundle had just
+killed, on every upgrade.
 
-`--force` is the exception to "asked, not killed". It skips `ask_to_cancel` for
-every retired directory and stops the server by the pid `running_in` found under
-that directory, then waits for the pid to go away before `take_over` starts the
-new build. `--client_only` still wins: a window that needs no port does not get
-one freed for it. See the section below for what this costs.
+The one-shot case is not hypothetical. This file places its payload in
+`$GONGGA_HOME` whatever `--home` the command it is about to run was given -- so a
+`gongga-cli ... --server <somewhere else>` invoked from a home other than the one
+being served used to retire the *served* home's build: it asked that server to
+`cancel`, and the turn it was running went with it. Two such stops cost a session
+its work. A client therefore retires nothing.
+
+`--force` is passed *on* rather than consumed here: it goes into the `cancel` this
+file asks with (`gongga-cli --force ... cancel`), because the command line is this
+home's and may be a build other than the one asking -- what it can do about a server
+that will not stop is its own business, and a pid this file guessed is a pid it may
+kill twice. Only a refusal sends this file to `kill` and `wait_until_gone` itself,
+before `take_over` starts the new build. `--client_only` still wins: a window that
+needs no port does not get one freed for it. See the section below for what this
+costs.
 
 ## What this is not
 
@@ -227,7 +237,12 @@ way out of a stuck *old* server, not of this build.
 it calls `retire`; the program parses argv only afterwards, so write the flag
 *after* the program word (`gongga tui --force`, not `gongga --force tui`). It is a
 global flag in `client::Args`, so the command line accepts it too, and
-`check_flag_order` still requires it before a command name.
+`check_flag_order` still requires it before a command name -- where it means the
+same thing one step down: a `cancel` the server refuses is followed by the pid the
+greeting named, watchdog first (`client::server::force_stop`). That is why `retire`
+passes the flag on rather than killing here itself: the same sentence, one hop
+further, and only a wrap that cannot speak the protocol at all falls back to the
+kill this file does.
 
 What it costs: `taskkill /T` on Windows takes the server's whole process tree
 with it, including every background job the server was holding, where a `cancel`

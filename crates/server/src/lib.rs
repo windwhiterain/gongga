@@ -86,6 +86,9 @@ pub struct Args {
     pub parent: Option<u32>,
     /// That process's build, when the one that started this named it.
     pub parent_build: Option<String>,
+    /// Stop whatever holds `--bind` and listen anyway. Without it a taken port
+    /// is an error: see `net::bind_address`.
+    pub force: bool,
 }
 
 /// The same as an empty command line: every value comes from the home's config.
@@ -101,6 +104,7 @@ impl Default for Args {
             log_format: LogFormat::Text,
             parent: None,
             parent_build: None,
+            force: false,
         }
     }
 }
@@ -324,30 +328,23 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         store.clone(),
         {
             let store = store.clone();
+            let capped_at = cfg.bash.max_output_chars;
+            let spill_dir = output_dir.clone();
             Arc::new(move |end: crate::tools::channel::ChannelEnd| {
                 // A deleted session owes nothing, and its rows would be stranded.
                 if matches!(store.get_session(&end.session), Ok(None)) {
                     return;
                 }
-                let status = match end.exit {
-                    Some(0) => "finished successfully".to_string(),
-                    Some(code) => format!("finished with exit status {code}"),
-                    None => "ended, though its exit status could not be read".to_string(),
+                // The notice is the call's own answer, late: the same `Result` a
+                // `check` returns, built by the same one builder.
+                let outcome = crate::tools::channel::Outcome {
+                    id: end.id.clone(),
+                    output: end.output.clone(),
+                    time: end.time,
+                    matched: end.matched,
+                    exit: end.exit,
                 };
-                let ran = crate::agent::spent(end.time.as_millis() as u64);
-                // A preview: `check` still holds the window, because a notice that
-                // consumed it would be the one way to lose the output.
-                let said = if end.output.trim().is_empty() {
-                    String::new()
-                } else {
-                    let preview: String = end.output.chars().take(500).collect();
-                    format!("\n\nWhat it said since you last read it:\n{preview}")
-                };
-                let message = format!(
-                    "The channel {:?} you started has {status} after {ran}. `check {}` reads \
-                     what it printed; `del_channel {}` forgets it.{said}",
-                    end.id, end.id, end.id
-                );
+                let message = outcome.result(capped_at, &spill_dir).to_string();
                 // Marked: the server talking, so it must not wake an idle session.
                 if let Err(e) = store.add_pending_task(
                     &end.session,
@@ -401,7 +398,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         context_limit_percent: cfg.agent.context_limit_percent,
         home: cfg.home.clone(),
         output_dir: output_dir.clone(),
-        detached: detached.clone(),
         jobs: crate::tools::tunnel::JobRegistry::new(),
     });
 
@@ -576,6 +572,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         "gongga server starting"
     );
 
+    // Before the shutdown path: a server that never listened must not wait on
+    // tasks it never started.
+    let socket = std::sync::Arc::new(net::bind_address(cfg.bind, args.force).await?);
+
     // A signal, or a dead window: a stop request, on the path `cancel` takes.
     let signalled = dispatch.clone();
     signal::watch(
@@ -584,7 +584,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         move || async move { commands::stop(&signalled).await },
     );
 
-    let served = net::serve(Arc::new(cfg), dispatch, bus).await;
+    let served = net::serve(std::sync::Arc::new(cfg), socket, dispatch, bus).await;
     // Nothing new may fire once the socket stopped; turns were interrupted already.
     stop_watching.cancel();
     let _ = matcher.await;
@@ -592,7 +592,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let _ = detached_watch.await;
     // Every exit from `serve` lands here, so nothing it started outlives the
     // stop decision. See `docs/notes/server-main.md`.
-    sessions.close_shells().await;
+    sessions.closing();
     let stopped = scripts.stop_all().await;
     if stopped > 0 {
         tracing::info!(stopped, "stopped scripts still running at the stop");

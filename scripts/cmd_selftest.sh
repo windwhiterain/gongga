@@ -133,10 +133,17 @@ listed=$("${cli[@]}" bash --session main --command "cat cmd-selftest.txt" 2>&1)
 [[ "$listed" == *"from-cmd"* ]]
 ok "the tool command meets the session's persistent shell" $?
 
-# 8. python tool command.
-py=$("${cli[@]}" python --session main --code "print(6 * 7)" 2>&1)
-[[ "$py" == *"42"* ]]
-ok "python main <code> (tool command)" $?
+# 8. An interpreter is a channel now: a name and the program, from the environment.
+made=$("${cli[@]}" new_channel --session main --id main/python --name python 2>&1)
+[[ "$made" == *'"ok":true'* ]]
+ok "new_channel starts a python channel" $?
+# A REPL's read window lags one prompt: the write's answer is what the *next* read
+# sees, so the record is the channel's own log.
+"${cli[@]}" input_channel --session main --id main/python --input 'print(6 * 7)' --wait 8000 >/dev/null 2>&1
+"${cli[@]}" input_channel --session main --id main/python --input 'pass' --wait 8000 >/dev/null 2>&1
+grep -rq 42 "$home/channels" 2>/dev/null; py_rc=$?
+ok "and it answers 42, in its own log" $py_rc
+"${cli[@]}" del_channel --session main --path main/python >/dev/null 2>&1
 
 # 9. read_file tool command reads what bash wrote, through the session's dir.
 read_back=$("${cli[@]}" read_file --session main --path cmd-selftest.txt 2>&1)

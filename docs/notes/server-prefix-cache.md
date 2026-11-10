@@ -86,9 +86,11 @@ a row of a skill table is re-measured, never deleted.
 A provider caches a prefix per endpoint, so what a request can reuse is the bytes another
 request already sent -- not a conversation and not a process. The thing that remembers
 orderings is therefore keyed by the unit whose requests send the same head: a session's
-**directory**, the same value the card states and the affinity key names. One row in
+**directory**, the same value the card states. One row in
 `prefix_layout` per owner, read once into the process's mutex and written back after
-every plan, so a restart plans from what the last run learnt.
+every plan, so a restart plans from what the last run learnt. (The internal layout's
+owner is the directory; the *outbound* `prompt_cache_key` and session headers are a
+separate matter -- they carry the per-conversation id, as `server-config.md` states.)
 
 Why the unit matters, and why "per session" was a hole: the forests exist to *choose*
 among the orderings that were emitted ("the cheapest chain, then the rest", above). A
@@ -183,7 +185,7 @@ MiniMax's own pages say what the two faces offer, and they are not the same thin
 
 Three consequences for this module follow, and none of them is a bug in the plan:
 
-- **`prompt_cache_key` is not a documented MiniMax field.** So the directory value is a
+- **`prompt_cache_key` is not a documented MiniMax field.** So the per-conversation id is a
   hint for the providers that document one (LongCat's measurement) and a no-op here; no
   reading of this face can be explained by the key.
 - **What the automatic cache warms is a prefix in a fixed module order**, tools first.

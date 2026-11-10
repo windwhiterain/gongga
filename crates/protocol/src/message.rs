@@ -51,6 +51,16 @@ pub struct ClientInfo {
     /// that subscribed, not the one the pattern mentions.
     #[serde(default)]
     pub session: Option<String>,
+    /// The program that started this one, as `name/pid`, when the platform says.
+    ///
+    /// # Invariant
+    ///
+    /// Asked of the operating system, never guessed from the environment. A row that
+    /// records a `cancel` has to answer "who asked" past the client's own pid: a
+    /// client started by a shell is only placeable through the shell, and a pid
+    /// alone outlives nothing worth reading. See `docs/notes/protocol-message.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 // Server -> client
@@ -397,6 +407,14 @@ pub enum ResponsePart {
     /// row is a row like any other, and a window that drops it drops the half of
     /// the conversation it was answering.
     Input,
+    /// The harness's own words, injected into the transcript: a start card, a
+    /// notice, or advice.
+    ///
+    /// # Invariant
+    ///
+    /// Its own part, not `Input`: the model reads the row as a user turn and only
+    /// the reader has to see who wrote it. See `docs/notes/client-lib.md`.
+    Inject,
 }
 
 /// The turn a read re-sends a stored row under, which no live turn can use.

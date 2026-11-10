@@ -274,15 +274,25 @@ Modifier keys break a run rather than joining one: `Alt+Enter` and `Shift+Enter`
 are the line break, `Alt+K` kills to end of line, and Ctrl+letter is swallowed on
 purpose. `only_text_joins_a_run` holds that line.
 
-## What this does not fix
+## The markers, read out of the key stream
 
-The `ESC[200~` markers themselves. They do not reach this code on Windows --
-what arrives is the text, which is why the run is all it takes. A terminal that
-both sends markers *and* has no paste parser would put `[200~` in the prompt; no
-such case has been observed, so guessing at a stripper would be guessing.
+`ESC[200~` is the exact answer: inside it every break is text, and no rule has to
+guess. crossterm 0.29 enables it (`EnableBracketedPaste`) but never turns it back into
+`Event::Paste` on Windows -- its console parser has no arm for the sequence -- so the
+marker arrives as six ordinary keys.
 
-A paste delivered in one- or two-key runs with pauses between them is still
-indistinguishable from typing; nothing here can fix that, because the terminal
-sends no marker. A real paste into a real terminal is the open check: a ConPTY
-driver was attempted and hung the shell twice, so it was removed rather than left
-as a trap.
+`PasteMarkers` reads that sequence from the key stream. While the markers are open,
+every key is text, breaks included, and nothing is held except the six keys that might
+be the end marker. A key that turns out not to be a marker is handed back to the
+operator in order, and a stream that stops mid-marker releases what it held at the
+quiet gap, so a lone `Esc` is never swallowed.
+
+This is exact where the terminal sends the markers (VS Code, Windows Terminal, kitty,
+wezterm -- all of them do when the app asks). Where it does not, the burst rule and the
+clipboard comparison above still stand, and QuickEdit is off so a console cannot paste
+behind the app's back.
+
+## What a paste still cannot survive
+
+A terminal that neither sends the markers nor replays faster than a hand. Nothing can
+separate those keystrokes from typing, and the rules here say so rather than pretend.

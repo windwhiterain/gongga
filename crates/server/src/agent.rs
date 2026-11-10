@@ -20,8 +20,7 @@ use crate::config::ModelConfig;
 use crate::llm::{LlmClient, LlmEvent};
 use crate::providers::{self};
 use crate::session::SessionHandle;
-use crate::store::Store;
-use crate::tools::detached::DetachedRegistry;
+use crate::store::{Kind, Store};
 use crate::tools::{ToolContext, ToolRegistry};
 
 /// How much of a turn's answer a `turn_end` row carries.
@@ -95,8 +94,6 @@ pub struct Agent {
     pub live_compact_interval_tokens: u64,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
-    /// Detached jobs of every session, reached through `ToolContext`.
-    pub detached: DetachedRegistry,
     /// Jobs running in this process, so a call can stop one by its id.
     pub jobs: crate::tools::tunnel::JobRegistry,
 }
@@ -958,18 +955,11 @@ impl Agent {
         phases.llm_started = Some(requested);
         // One tier for the whole turn, settled before its first request.
         let tier = self.cache_tier(llm, tier);
-        // The directory, not the session name, is the unit that shares a prefix.
-        let affinity = if prompt.cwd.is_empty() {
-            name.to_string()
-        } else {
-            prompt.cwd.clone()
-        };
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.index.as_deref(),
             prompt.tail.as_deref(),
             &source,
-            &affinity,
             &tools.tools,
             effort,
             tier.as_deref(),
@@ -1070,7 +1060,10 @@ impl Agent {
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);
                     self.settle_item(session, &item_id);
-                    self.announce_row(name, self.store.append_message(id, "reasoning", &payload));
+                    self.announce_row(
+                        name,
+                        self.store.append_message(id, Kind::Reasoning, &payload),
+                    );
                 }
                 // The provider executed this one; keeping the item verbatim is
                 // what lets the next request carry the same transcript.
@@ -1086,7 +1079,7 @@ impl Agent {
                         name,
                         self.store.append_message(
                             id,
-                            "builtin_call",
+                            Kind::BuiltinCall,
                             &json!({"item": item, "replayable": replayable}),
                         ),
                     );
@@ -1106,7 +1099,7 @@ impl Agent {
                     self.announce_row(
                         name,
                         self.store
-                            .append_message(id, "notice", &json!({"text": text})),
+                            .append_message(id, Kind::Notice, &json!({"text": text})),
                     );
                 }
                 LlmEvent::Output { item_id, text } => {
@@ -1117,7 +1110,7 @@ impl Agent {
                             name,
                             self.store.append_message(
                                 id,
-                                "text",
+                                Kind::Text,
                                 &json!({"role":"assistant","text":text}),
                             ),
                         );
@@ -1145,7 +1138,7 @@ impl Agent {
                         name,
                         self.store.append_message(
                             id,
-                            "tool_call",
+                            Kind::ToolCall,
                             &json!({"call_id": call_id, "name": tool, "arguments": arguments,
                                     "step": step}),
                         ),
@@ -1459,12 +1452,10 @@ impl Agent {
             channels: self.channels.clone(),
             home: self.home.clone(),
             output_dir: self.output_dir.clone(),
-            shells: session.shells(),
-            pythons: session.pythons(),
+            workspace: session.workspace(),
             reader: session.reader(),
             machine,
             remote: session.remote_name(),
-            detached: self.detached.clone(),
             jobs: self.jobs.clone(),
             events: Some(tx),
             cancel: tool_cancel.clone(),
@@ -1593,7 +1584,10 @@ impl Agent {
             )
             .to_string();
             content["output"] = json!(output.clone());
-            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            self.announce_row(
+                name,
+                self.store.append_message(id, Kind::ToolResult, &content),
+            );
             tail = output.clone();
         } else if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
             status = "error";
@@ -1601,11 +1595,17 @@ impl Agent {
             output = format!("ERROR: live_compact checkpoint was not committed: {reason}");
             content["output"] = json!(output.clone());
             content["ok"] = json!(false);
-            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            self.announce_row(
+                name,
+                self.store.append_message(id, Kind::ToolResult, &content),
+            );
             let _ = self.store.reset_live_compact_request(id);
             tail = output.clone();
         } else if !checkpointed {
-            self.announce_row(name, self.store.append_message(id, "tool_result", &content));
+            self.announce_row(
+                name,
+                self.store.append_message(id, Kind::ToolResult, &content),
+            );
         }
         let tool_ok = status == "ok";
         tracing::info!(
@@ -1666,7 +1666,7 @@ impl Agent {
             name,
             self.store.append_message(
                 id,
-                "tool_result",
+                Kind::ToolResult,
                 &json!({
                     "call_id": call_id,
                     "output": said,
@@ -1712,11 +1712,17 @@ impl Agent {
     /// See `docs/notes/server-agent.md`.
     pub(crate) fn announce_operator_rows(&self, session: &str, rows: crate::store::OperatorRows) {
         for line in &rows.lines {
+            // The harness's own words are its own block: the operator's echo is
+            // drawn as theirs, and this as the harness talking.
+            let part = match line.injected {
+                true => ResponsePart::Inject,
+                false => ResponsePart::Input,
+            };
             self.bus.publish(Event::Response(ResponseEvent {
                 session: session.to_string(),
                 turn: protocol::REPLAY_TURN,
-                part: ResponsePart::Input,
-                text: line.clone(),
+                part,
+                text: line.text.clone(),
                 done: true,
                 call_id: None,
             }));
@@ -1764,17 +1770,20 @@ impl Agent {
             if !text.trim().is_empty() {
                 let stored = match part {
                     ResponsePart::Output => Some((
-                        "text",
+                        Kind::Text,
                         json!({"role": "assistant", "text": text, "interrupted": true}),
                     )),
                     ResponsePart::Reasoning => Some((
-                        "reasoning",
+                        Kind::Reasoning,
                         json!({"summary": text, "item_id": item_id.clone(),
                                "interrupted": true}),
                     )),
                     // A call's text is its arguments; an activity is progress;
                     // the operator's words are not the model's to store.
-                    ResponsePart::ToolCall | ResponsePart::Activity | ResponsePart::Input => None,
+                    ResponsePart::ToolCall
+                    | ResponsePart::Activity
+                    | ResponsePart::Input
+                    | ResponsePart::Inject => None,
                 };
                 if let Some((kind, payload)) = stored {
                     self.announce_row(name, self.store.append_message(id, kind, &payload));
@@ -1809,7 +1818,7 @@ impl Agent {
     fn append_thinking_mark(&self, id: i64, session: &str) {
         match self.store.append_message(
             id,
-            "thinking_mark",
+            Kind::ThinkingMark,
             &json!({"text": crate::store::THINKING_MARK}),
         ) {
             Ok(seq) => {
@@ -1831,7 +1840,7 @@ impl Agent {
         self.announce_row(
             session,
             self.store
-                .append_message(id, "notice", &json!({"text": said})),
+                .append_message(id, Kind::Notice, &json!({"text": said})),
         );
         self.bus.publish(Event::Log {
             level: LogLevel::Error,
@@ -2220,6 +2229,9 @@ fn summary_keys(tool: &str) -> &'static [&'static str] {
         // SPEC lists bash's own set; another tool is summarised by nothing yet,
         // which still reads better than a wall of JSON.
         "bash" => &["name", "background", "time_out"],
+        // SPEC's `new(name #abstraction, wait #abstraction)`: what a channel
+        // is opened on, and nothing else.
+        "new" => &["name", "wait"],
         "check_job" => &["job_id", "wait_ms"],
         _ => &[],
     }
@@ -2308,5 +2320,6 @@ fn part_name(part: ResponsePart) -> &'static str {
         ResponsePart::Activity => "activity",
         // Never streamed: a replayed message is a row, and a row is not drafted.
         ResponsePart::Input => "input",
+        ResponsePart::Inject => "inject",
     }
 }
