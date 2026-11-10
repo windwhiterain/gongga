@@ -195,7 +195,7 @@ argv to `client::main` when invoked under that name or given a command.
 | [`tui-panes.md`](tui-panes.md) | `crates/tui/src/panes.rs` |
 | [`tui-pipe.md`](tui-pipe.md) | `crates/tui/src/pipe.rs` (the window as a pipe host) |
 | [`tui-render.md`](tui-render.md) | `crates/tui/src/render.rs` |
-| [`tui-roster.md`](tui-roster.md) | `crates/client/src/window_roster.rs` (moved out of `crates/tui/src/roster.rs`, re-exported there) |
+| [`tui-roster.md`](tui-roster.md) | `crates/client/src/window_roster.rs` (A-2; the TUI re-export was deleted 2026-11-10) |
 | [`tui-table.md`](tui-table.md) | `crates/tui/src/table.rs` |
 | [`tui-tree.md`](tui-tree.md) | `crates/tui/src/tree.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |

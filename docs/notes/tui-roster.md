@@ -1,9 +1,10 @@
 # client/window_roster.rs (was tui/roster.rs)
 
 The session list this window drew last, on disk. A-2 moved the source into the
-client library: the pipe front-end needs the same `known_list` answer as the TUI,
-and neither answer is a terminal fact. `crates/tui/src/roster.rs` is now only a
-re-export, so the TUI's call sites did not change.
+client library: `PipeFrontend::known_list` reads it before a greeting and
+`PipeFrontend::send(Layout)` writes it, and neither answer is a terminal fact.
+After A-2 `crates/tui/src/roster.rs` held only a one-line re-export; with the
+in-process fallback gone (2026-11-10) that file was deleted too.
 
 ## Why a client keeps a list at all
 
@@ -59,14 +60,16 @@ client.
 
 ## `know` -- written by the frame that drew a list
 
-`Tui::set_layout` calls `know` once per layout, which is once per change the client
-announces. The write happens only when the rows changed, so a redraw costs nothing
-and a list that never changes is never rewritten.
+`PipeFrontend::send` calls `know` for every `RenderMessage::Layout`, which is
+once per list the client announces. The write happens only when the rows
+changed, so a redraw costs nothing and a list that never changes is never
+rewritten.
 
-The whole file, from one place. A partial write would put two writers on one file,
-and a window that cannot record its list is not a window that stops drawing one:
-the failure is said once (in the error kind, in the command window) and the frame
-goes on. `roster_failed` is that latch.
+The whole file, from one place. A partial write would put two writers on one
+file, and a window that cannot record its list is not a window that stops
+drawing one: the client reports the failure on stderr and still sends the
+frame. A `Layout` with no listed sessions is the same as an empty record, so
+`know` writes nothing at all.
 
 ## The greeting is the validation
 

@@ -85,7 +85,6 @@ async fn send(input: &mut ChildStdin, intent: &UiIntent) -> anyhow::Result<()> {
 /// Runs the window over the two pipes until either end goes away.
 pub async fn run(args: &client::Args) -> anyhow::Result<()> {
     let client_home = client::client_home_of(args);
-    let endpoint = client::endpoint_name(&args.conn);
     let mut child = Command::new(client_program()?)
         .args(client_args(args))
         .stdin(Stdio::piped())
@@ -110,7 +109,7 @@ pub async fn run(args: &client::Args) -> anyhow::Result<()> {
         }
     });
 
-    let mut tui = Tui::for_pipe(&client_home, &endpoint)?;
+    let mut tui = Tui::for_pipe()?;
     let mut seen = tui.input_line();
     let result = loop {
         tokio::select! {

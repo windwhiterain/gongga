@@ -95,9 +95,11 @@ Dropping a frame when a pipe is full would lose a line the operator waits for.
 `gongga-client` is a real binary, `runtime::run` owns the loop and one `Client`,
 and `WindowJournal` / `Roster` hold the window's records in the client library.
 The TUI now spawns the binary by default and the bundle carries it (steps 6 and
-7), so `encode_intent` is the UI's half of the round trip. Still missing:
-splitting `Entry`'s fold state away from its data (A-4), the multi-client L3
-(step 8), and deleting the in-process fallback in `tui/src/lib.rs`.
+7), so `encode_intent` is the UI's half of the round trip. Steps 8 (multi-client
+L3) and the in-process fallback deletion are done. A-4 remains, but its original
+shape -- splitting `Entry`'s data blocks into the client -- is stale after the
+fallback went away; see `DESIGN.md` §1, "A-4 复核", for the two directions
+awaiting a decision.
 
 Two different links, two different transports. UI <-> client is one-to-one and
 local: stdin carries `UiIntent`, stdout carries `RenderMessage`, one JSON value

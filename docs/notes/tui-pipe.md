@@ -19,9 +19,8 @@ Neither polls the other's pid.
 
 ## Drawing is still `TuiSink`
 
-`run.rs::apply_frame` turns the 12 drawing frames back into `Sink` calls on the
-same `TuiSink` the in-process loop used, so a line is drawn exactly once, in the
-same order. The 6 control frames are not drawings and land on the window's own
+`run.rs::apply_frame` turns the 12 drawing frames back into `Sink` calls on
+`TuiSink`, so a line is drawn exactly once, in the same order. The 6 control frames are not drawings and land on the window's own
 view state:
 
 | frame | the window does |
@@ -41,30 +40,36 @@ handled here rather than by `apply_frame`'s drawing half.
 `Tui::for_pipe` uses an empty `Completer` and `Panes::new()` (no `Cache`). A
 changed input line sends `UiIntent::Complete`; the client's `SharedCompleter`
 answers with `Completion`, so command syntax never crosses to the UI.
-`set_layout` skips `Roster::know` in pipe mode: the client owns that file.
+The client records the session list itself, in `PipeFrontend::send(Layout)`.
 
 `Panes::keep_bodies()` turns off `end_frame`'s eviction. Without a journal to
 read cold bodies back from, dropping them would lose rows, so a pipe window
 keeps them in memory. That is the one cost of a purely drawing front-end.
 
-`Screen::server_text` lets the header show the label the client spelled instead
-of requiring a local `Server` value; `run.rs::Frontend for Tui` still uses
-`Screen::server` on the in-process path.
+`Screen::server_text` is the header's only source of the own / not own words; the
+client spells them, so the TUI needs no local `Server` value. The same-process
+loop that once computed them here is gone (2026-11-10), together with `Tui`'s
+`Frontend` / `WindowFacts` / `WindowView` impls, `run.rs::interactive`, and the
+`TuiSink` overrides for the five cursor methods (`Sink`'s empty defaults suffice).
 
 ## Deliberate limits
 
-- `GONGGA_TUI_IN_PROCESS=1` still reaches the old same-process `interactive()`.
-  It exists to compare the two paths and should be deleted, together with
-  `Tui`'s `Frontend` / `WindowFacts` / `WindowView` impls, once shape 2 settles.
-- `Entry`'s fold state and `Ledger.pages` remain in the TUI (A-4). The client's
-  `WindowJournal` answers a refill from appended records and resends the rows,
-  so the UI does not need `rewind` / `older` / `landed`.
+- The pipe is the only entry point. `GONGGA_TUI_IN_PROCESS`, `run.rs::interactive`
+  and the three trait impls it needed were deleted on 2026-11-10; so were the
+  `Tui` fields and methods that only that path used, and `crates/tui/src/roster.rs`
+  (a one-line re-export after A-2).
+- `Entry`'s fold state and `Ledger.pages` remain in the TUI, but A-4's original
+  plan -- moving `Entry`'s data blocks into the client -- is stale: on the pipe
+  path nothing calls `landed` / `rewind` / `record_seal`, and the client's disk
+  journal only records stamp / floor. See `DESIGN.md` §1, "A-4 复核", for the
+  two directions awaiting a decision.
 - A malformed stdout frame is skipped: the UI has no journal to record it in,
   and writing to the terminal would corrupt the screen.
 
 ## Verification
 
-`tui_live.py` window-state and wheel scenarios pass with the default pipe mode
-(no `GONGGA_TUI_IN_PROCESS` set), and `<client-home>/client.log` proves the
-child was started. `client_state_selftest.sh` still passes. Machine-readable
-record: `.dev/verify/<sha>-a3.json`.
+`tui_live.py` window-state and wheel scenarios pass with the default pipe mode,
+and `<client-home>/client.log` proves the child was started.
+`client_state_selftest.sh` and `multi_client_selftest.sh` still pass.
+Machine-readable records: `.dev/verify/<sha>-a3.json`,
+`.dev/verify/<sha>-multi-client.json`.

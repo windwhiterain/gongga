@@ -18,7 +18,6 @@ mod panes;
 pub mod pipe;
 pub mod program;
 mod render;
-mod roster;
 pub mod run;
 mod table;
 mod tree;
@@ -50,26 +49,7 @@ use ratatui_image::picker::{Picker, ProtocolType};
 pub use crate::input::{InputLine, apply_completion};
 pub use crate::log::Log;
 pub use crate::panes::Panes;
-pub use crate::run::interactive;
 pub use client::runtime::Server;
-
-impl client::window_refill::WindowFacts for Tui {
-    fn stamp_of(&self, window: &str) -> Option<(i64, i64)> {
-        Tui::stamp_of(self, window)
-    }
-    fn floor_of(&self, window: &str) -> Option<i64> {
-        Tui::floor_of(self, window)
-    }
-    fn room_of(&self, window: &str) -> usize {
-        Tui::room_of(self, window)
-    }
-    fn drawn(&self) -> &[String] {
-        Tui::drawn(self)
-    }
-    fn refresh_completion(&mut self, _version: u64) {
-        Tui::refresh_completion(self)
-    }
-}
 
 /// The modifiers a terminal forwards with a mouse event, as a gesture's own.
 ///
@@ -89,13 +69,7 @@ pub fn main(args: client::Args) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    // Shape 2 is the default; the in-process loop stays reachable for a
-    // comparison while the pipe host is proved.
-    if std::env::var_os("GONGGA_TUI_IN_PROCESS").is_some() {
-        runtime.block_on(interactive(&args))
-    } else {
-        runtime.block_on(pipe::run(&args))
-    }
+    runtime.block_on(pipe::run(&args))
 }
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
@@ -215,8 +189,6 @@ pub struct Screen {
     pub status: String,
     /// What kind of thing the status line is saying, for its colour.
     pub status_kind: LineKind,
-    /// Whose server this window is on, once a dial has answered.
-    pub server: Option<Server>,
     /// The header's own / not own words, spelled by a client over the pipe.
     pub server_text: Option<String>,
     pub placeholder: String,
@@ -530,24 +502,6 @@ pub struct Tui {
     input_area: Rect,
     /// Where a drag began, while the button is still down.
     dragging: Option<usize>,
-    /// Answers the loop has not read yet: one pair per `cmd_result`.
-    ///
-    /// # Invariant
-    ///
-    /// A queue the sink fills and the loop drains, because the outcome arrives
-    /// inside a frame the command layer is already parsing: what the window keeps
-    /// for an accepted command is the window's, and this is how it hears.
-    answers: Vec<(u64, bool)>,
-    /// The session list this window drew last, and the file it lives in.
-    ///
-    /// # Invariant
-    ///
-    /// Written by the frames that drew a list and read once, before the first dial:
-    /// a window renders its own state, so a list it had is a list it can draw. The
-    /// failure to record one is said once and then left alone -- a window that
-    /// cannot write still draws. See `docs/notes/tui-roster.md`.
-    roster: roster::Roster,
-    roster_failed: bool,
     /// The window a note about this front-end is written down in.
     ///
     /// # Invariant
@@ -557,8 +511,6 @@ pub struct Tui {
     /// `cmd`), so the link's answer is the only one that can be right.
     /// See `docs/notes/tui-cache.md`.
     note_window: String,
-    /// True when a client process owns the records and the command vocabulary.
-    pipe: bool,
 }
 
 /// A vocabulary with no words: a pipe window asks its client for candidates.
@@ -689,33 +641,14 @@ fn cell_shaped(size: FontSize) -> bool {
 }
 
 impl Tui {
-    /// The window, whose rows are written down under this client's own root.
-    pub fn new(
-        completer: SharedCompleter,
-        client_home: &Path,
-        endpoint: &str,
-    ) -> anyhow::Result<Self> {
-        Self::assemble(completer, client_home, endpoint, false)
-    }
-
     /// A window that only draws: the client keeps the records and the words.
-    pub fn for_pipe(client_home: &Path, endpoint: &str) -> anyhow::Result<Self> {
-        let mut window = Self::assemble(
-            std::sync::Arc::new(EmptyCompleter),
-            client_home,
-            endpoint,
-            true,
-        )?;
+    pub fn for_pipe() -> anyhow::Result<Self> {
+        let mut window = Self::assemble()?;
         window.screen.panes.keep_bodies();
         Ok(window)
     }
 
-    fn assemble(
-        completer: SharedCompleter,
-        client_home: &Path,
-        endpoint: &str,
-        pipe: bool,
-    ) -> anyhow::Result<Self> {
+    fn assemble() -> anyhow::Result<Self> {
         enable_raw_mode().context("enabling raw mode")?;
         // Before the alternate screen: the platform's thread must find it here.
         let watched = closing::watch();
@@ -749,30 +682,22 @@ impl Tui {
             cursor_hidden: false,
             screen: Screen {
                 cover: Some(cover),
-                panes: if pipe {
-                    Panes::new()
-                } else {
-                    Panes::with_cache(client_home, endpoint)
-                },
+                panes: Panes::new(),
                 completion: None,
                 input: InputLine::default(),
                 status: "connecting".to_string(),
                 status_kind: LineKind::System,
-                server: None,
                 server_text: None,
                 placeholder: "message the agent, or / for a command (Tab completes)".to_string(),
                 sticky_session: None,
             },
-            completer,
+            completer: std::sync::Arc::new(EmptyCompleter),
             history: Vec::new(),
             history_pos: None,
             input_seen: None,
             clicked: None,
             input_area: Rect::default(),
             dragging: None,
-            answers: Vec::new(),
-            roster: roster::Roster::new(client_home, endpoint),
-            roster_failed: false,
             note_window: client::COMMAND_WINDOW.to_string(),
             events: EventStream::new(),
             mouse_captured: true,
@@ -782,7 +707,6 @@ impl Tui {
             pending: Vec::new(),
             settled: None,
             stashed: None,
-            pipe,
         };
         // Said once: a window that cannot hear the console closing leaves
         // it in raw mode when it goes.
@@ -819,14 +743,6 @@ impl Tui {
         }
     }
 
-    /// Says whose server this window is on, or clears it when the link went away.
-    pub fn set_server(&mut self, server: Option<Server>) {
-        if self.screen.server != server {
-            self.screen.server = server;
-            self.dirty = true;
-        }
-    }
-
     /// The header's words, spelled by the client rather than a local `Server`.
     pub fn set_server_text(&mut self, label: Option<String>) {
         if self.screen.server_text != label {
@@ -857,26 +773,6 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// A `connect_server` moved the address: the rows on screen are the old
-    /// endpoint's, so they go.
-    ///
-    /// # Invariant
-    ///
-    /// Nothing is deleted. The other endpoint's records are still under this client
-    /// root, and switching back finds them; what this drops is the blocks in memory,
-    /// which the next frame refuses to draw as the new server's. See
-    /// `docs/notes/tui-cache.md`.
-    pub fn repoint(&mut self, client_home: &Path, endpoint: &str) {
-        self.screen.panes.repoint(client_home, endpoint);
-        self.roster.repoint(client_home, endpoint);
-        self.dirty = true;
-    }
-
-    /// The session list this window drew last, for a start that has no link yet.
-    pub fn known_list(&self) -> Vec<client::Listed> {
-        self.roster.load()
-    }
-
     /// What kind of thing the status line says, for its colour.
     pub fn set_status_kind(&mut self, kind: LineKind) {
         if self.screen.status_kind != kind {
@@ -885,44 +781,13 @@ impl Tui {
         }
     }
 
-    /// How tall one block may get, as the command layer last said.
-    pub fn set_block_size(&mut self, lines: usize) {
-        self.screen.panes.set_block_size(lines);
-        self.dirty = true;
-    }
-
-    /// How much of a window each side of a box gives back to the pane.
-    pub fn set_box_edge(&mut self, columns: usize) {
-        self.screen.panes.set_box_edge(columns);
-        self.dirty = true;
-    }
-
     /// How the events area is divided, as the command layer last said.
     pub fn set_layout(&mut self, layout: &Layout) {
         if !layout.command.is_empty() {
             self.note_window = layout.command.clone();
         }
         self.screen.panes.layout(layout);
-        // The client owns the roster now: a pipe window only draws the list.
-        if !self.pipe
-            && let Err(e) = self.roster.know(&layout.listed)
-            && !self.roster_failed
-        {
-            self.roster_failed = true;
-            let note = format!("this window's session list could not be recorded: {e}");
-            self.say(LineKind::Error, note);
-        }
         self.dirty = true;
-    }
-
-    /// Files one command's outcome for the loop.
-    pub fn settled(&mut self, id: u64, ok: bool) {
-        self.answers.push((id, ok));
-    }
-
-    /// Takes every outcome filed since the last call.
-    pub fn take_settled(&mut self) -> Vec<(u64, bool)> {
-        std::mem::take(&mut self.answers)
     }
 
     /// A session stopped: its turn ended, and the window says so.
@@ -997,46 +862,6 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Writes down that this window has drawn every row up to `seq` of the
-    /// session whose `created_at` is `created`.
-    ///
-    /// # Invariant
-    ///
-    /// The front-end's half of the sync stamp, and the only thing this process
-    /// knows that the server does not. See `docs/notes/tui-cache.md`.
-    pub fn stamp(&mut self, name: &str, created: i64, seq: i64) {
-        self.screen.panes.stamp(name, created, seq);
-    }
-
-    /// What this window's journal says it has drawn, and of which session.
-    pub fn stamp_of(&self, name: &str) -> Option<(i64, i64)> {
-        self.screen.panes.stamp_of(name)
-    }
-
-    /// Throws away what no stored row accounts for: the server is about to send
-    /// this window's tail again.
-    pub fn rewind(&mut self, name: &str) {
-        self.screen.panes.rewind(name);
-        self.dirty = true;
-    }
-
-    /// The oldest transcript row this window's journal says it holds.
-    pub fn floor_of(&self, name: &str) -> Option<i64> {
-        self.screen.panes.floor_of(name)
-    }
-
-    /// The rows arriving from here on are older than the ones this window holds.
-    pub fn older(&mut self, name: &str) {
-        self.screen.panes.older(name);
-        self.dirty = true;
-    }
-
-    /// A page of older rows landed: this window holds every row from `floor` up.
-    pub fn landed(&mut self, name: &str, created: i64, drawn: i64, floor: i64) {
-        self.screen.panes.landed(name, created, drawn, floor);
-        self.dirty = true;
-    }
-
     /// The windows whose operator asked to read above what they had.
     ///
     /// # Invariant
@@ -1045,16 +870,6 @@ impl Tui {
     /// it from here on and the window does not keep asking on its behalf.
     pub fn take_wants(&mut self) -> Vec<String> {
         self.screen.take_wants()
-    }
-
-    /// The rows a window's pane could draw last frame: what one page is.
-    pub fn room_of(&self, name: &str) -> usize {
-        self.screen.panes.room_of(name)
-    }
-
-    /// The windows a frame drew last: a window nobody draws costs nothing.
-    pub fn drawn(&self) -> &[String] {
-        self.screen.panes.drawn()
     }
 
     /// Puts a line back into the prompt, cursor at the end. The counterpart of Enter.
