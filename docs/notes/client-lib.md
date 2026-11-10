@@ -200,6 +200,25 @@ So an answer keeps its window only while that window is one the client draws: a 
 session's, or the command line's. Anything else is said on the command line, where the
 commands that named nobody are read too.
 
+## Client::cancel -- the channels are asked for
+
+A client's `cancel` carries `keep_alive: true`, and that is not the default: SPEC's
+`cancel` ends every channel unless the flag asks. The reason is what a channel *is*.
+Its relay is detached when it starts (`Job::release`), so the program keeps running
+whether this server lives or not; stopping the server does not reach it. Ending the
+row as well reaches nothing but the bookkeeping -- the row goes, the relay lives on
+unwatched, and the session is told a channel end notice with `exit: null` and "the
+server stopped this channel as it was cancelled" for work that was still going.
+
+Measured 2026-11-10 in one session: a window taking the home over ended 120 channel
+talks at once -- 42 at 18:49:04, 74 at 19:56:34, and 4 more at 20:02:14 when the
+relays that were mid-command finished on their own. The model read all of them as
+failures, and the batch it saw was the one `cancel` had written.
+
+With `keep_alive` the row stays, the relay keeps its shell, and the next start adopts
+it (`docs/notes/server-channel.md`). The window that asks may be on its way out --
+that is the point: the work does not end because the window did.
+
 ## Client::set_sessions and Sink::forget
 
 Both announcements -- the greeting a redial brings and the streamed `Sessions` -- carry

@@ -2393,18 +2393,28 @@ impl Link {
     /// start. What it leaves is the canceled flag `cancel` raises on every
     /// session whose turn it cut, and the next start continues those -- so a window
     /// on its way out, or a window taking the home over, does not end the work it
-    /// was watching. `keep_alive` is not asked for: the channels are this home's
-    /// programs, and the server ending is what ends them.
+    /// was watching.
+    ///
+    /// # Invariant
+    ///
+    /// `keep_alive` is asked for. A channel's program is already out of this tree,
+    /// so the server ending does not reach it; ending the row with the server would
+    /// lose the shell the next start adopts, and hand back `exit: null` with "the
+    /// server stopped this channel" for work that was still going. Measured
+    /// 2026-11-10: one window taking the home over ended 120 channel talks at once,
+    /// which the model then read as failures. See `docs/notes/client-lib.md`.
     ///
     /// The answer is what makes it a stop and not a wish -- `send` only queues,
     /// and a window asking on its way out is one statement away from dropping the
     /// runtime that would write it. See `docs/notes/client-lib.md`.
     pub async fn cancel(&mut self) -> bool {
+        let mut args = protocol::Args::default();
+        args.insert("keep_alive".to_string(), "true".to_string());
         let asked = self
             .send(ClientMessage::Command {
                 id: CANCEL_ID,
                 name: "cancel".to_string(),
-                args: Default::default(),
+                args,
             })
             .await;
         if asked.is_err() {
