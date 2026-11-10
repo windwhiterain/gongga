@@ -1,0 +1,166 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Gongga.Avalonia.ViewModels"
+        xmlns:wire="clr-namespace:Gongga.Avalonia.Wire"
+        xmlns:v="clr-namespace:Gongga.Avalonia.Views"
+        x:Class="Gongga.Avalonia.MainWindow"
+        x:DataType="vm:ClientModel"
+        Width="1280" Height="820"
+        MinWidth="760" MinHeight="480"
+        Background="#10141A"
+        Title="gongga"
+        Closed="OnClosed">
+
+    <Window.Resources>
+        <v:KindBrushConverter x:Key="KindBrush" />
+        <v:StickyBrushConverter x:Key="StickyBrush" />
+
+        <DataTemplate x:Key="BlockTemplate" x:DataType="vm:BlockRow" DataType="vm:BlockRow">
+            <Border Background="Transparent" Padding="8,3,8,4"
+                    BorderBrush="#222831" BorderThickness="0,0,0,1"
+                    PointerPressed="OnBlockPressed">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{Binding Mark}" VerticalAlignment="Top" Width="18"
+                               FontFamily="Consolas, monospace" FontWeight="Bold"
+                               Foreground="{Binding Kind, Converter={StaticResource KindBrush}}" />
+                    <StackPanel>
+                        <TextBlock Text="{Binding Tag}" FontSize="11" Foreground="#7E8792"
+                                   IsVisible="{Binding HasTag}" />
+                        <SelectableTextBlock Text="{Binding DisplayText}" TextWrapping="Wrap"
+                                             FontFamily="Consolas, monospace" FontSize="13"
+                                             Foreground="#B9C0C9" />
+                        <ItemsControl ItemsSource="{Binding Head.Fields}"
+                                      IsVisible="{Binding Structured}" Margin="0,2,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="wire:HeadField" DataType="wire:HeadField">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Label}" Width="110"
+                                                   Foreground="#7E8792" FontSize="11" />
+                                        <TextBlock Text="{Binding Value}" TextWrapping="Wrap"
+                                                   Foreground="#B9C0C9" FontSize="11" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <DataTemplate x:Key="PaneTemplate" x:DataType="vm:PaneRow" DataType="vm:PaneRow">
+            <Border Margin="3" BorderThickness="1" CornerRadius="3"
+                    BorderBrush="{Binding Sticky, Converter={StaticResource StickyBrush}}"
+                    Background="#141A21">
+                <Grid RowDefinitions="Auto,*">
+                    <Border Grid.Row="0" Background="#1B222B" Padding="8,4"
+                            Tag="{Binding Name}" PointerPressed="OnPaneHeaderPressed">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding Name}" FontWeight="Bold" Foreground="#E7EBF0" />
+                            <TextBlock Text="{Binding Title}" Margin="10,0,0,0"
+                                       Foreground="#7E8792" FontSize="11" />
+                        </StackPanel>
+                    </Border>
+                    <ScrollViewer Grid.Row="1" Tag="{Binding Name}"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  VerticalScrollBarVisibility="Auto"
+                                  ScrollChanged="OnPaneScrollChanged">
+                        <ItemsControl ItemsSource="{Binding Blocks}"
+                                      ItemTemplate="{StaticResource BlockTemplate}" />
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid RowDefinitions="Auto,*,Auto,Auto,Auto,Auto">
+        <Border Grid.Row="0" Padding="12,7"
+                Background="{Binding StatusKind, Converter={StaticResource KindBrush}, ConverterParameter=header}">
+            <TextBlock Text="{Binding Header}" Foreground="#F2F5F8" FontWeight="SemiBold" />
+        </Border>
+
+        <Grid Grid.Row="1" ColumnDefinitions="250,*">
+            <ListBox Grid.Column="0" ItemsSource="{Binding Sessions}"
+                     Background="#12171E" BorderThickness="0,0,1,0" BorderBrush="#222831"
+                     Padding="0,4">
+                <ListBox.ItemTemplate>
+                    <DataTemplate x:DataType="vm:SessionRow" DataType="vm:SessionRow">
+                        <Border Background="Transparent" Padding="8,4"
+                                Tag="{Binding Name}" PointerPressed="OnSessionPressed">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding Mark}" Width="16"
+                                               Foreground="{Binding MarkKind, Converter={StaticResource KindBrush}}" />
+                                    <TextBlock Text="{Binding Name}" Foreground="#DCE2E9" />
+                                </StackPanel>
+                                <TextBlock Text="{Binding Title}" Margin="16,1,0,0"
+                                           Foreground="#7E8792" FontSize="10" />
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ListBox.ItemTemplate>
+            </ListBox>
+
+            <ItemsControl Grid.Column="1" ItemsSource="{Binding Panes}"
+                          ItemTemplate="{StaticResource PaneTemplate}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <UniformGrid Rows="1" />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+            </ItemsControl>
+        </Grid>
+
+        <Border Grid.Row="2" Padding="12,2" Background="#161C24">
+            <TextBlock Text="{Binding QuotaText}" FontSize="11"
+                       Foreground="{Binding QuotaKind, Converter={StaticResource KindBrush}}" />
+        </Border>
+
+        <ScrollViewer Grid.Row="3" MaxHeight="140" Background="#12171E"
+                      VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding CommandBlocks}"
+                          ItemTemplate="{StaticResource BlockTemplate}" />
+        </ScrollViewer>
+
+        <Grid Grid.Row="4" RowDefinitions="Auto,*">
+            <Border Grid.Row="0" Background="#1C2530" Padding="8,4"
+                    IsVisible="{Binding CompletionVisible}">
+                <StackPanel>
+                    <TextBlock Text="{Binding CompletionSubject}" FontSize="11"
+                               Foreground="#7E8792" />
+                    <ListBox ItemsSource="{Binding Candidates}" MaxHeight="150"
+                             Background="Transparent" BorderThickness="0">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate x:DataType="vm:CandidateView" DataType="vm:CandidateView">
+                                <Border Background="Transparent" Padding="6,2"
+                                        PointerPressed="OnCandidatePressed">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Insert}" Width="180"
+                                                   Foreground="#E7EBF0" />
+                                        <TextBlock Text="{Binding Detail}"
+                                                   Foreground="#7E8792" FontSize="11" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </StackPanel>
+            </Border>
+
+            <TextBox x:Name="Input" Grid.Row="1" AcceptsReturn="True"
+                     TextWrapping="Wrap" MinHeight="64" MaxHeight="180"
+                     Padding="10,8" Background="#0D1116" Foreground="#E7EBF0"
+                     CaretBrush="#7FD4E8" BorderThickness="0,1,0,0" BorderBrush="#222831"
+                     FontFamily="Consolas, monospace" FontSize="13"
+                     Text="{Binding InputText, Mode=TwoWay}"
+                     TextChanged="OnInputTextChanged" KeyDown="OnInputKeyDown" />
+        </Grid>
+
+        <Border Grid.Row="5" Padding="12,4" Background="#161C24">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="{Binding HelpText}" Foreground="#7E8792" FontSize="11" />
+                <TextBlock Text="{Binding Toast}" Margin="16,0,0,0"
+                           Foreground="#E8C46A" FontSize="11" FontWeight="Bold" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

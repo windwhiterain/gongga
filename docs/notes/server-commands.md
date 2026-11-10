@@ -428,8 +428,9 @@ Three verbs stop a turn and SPEC gives each its own aftermath, so the caller say
 which one it is (`Stop`): `Cancel` keeps this turn's rows and lets a restart
 continue it; `Interrupt` ends the turn where it stands and keeps nothing for a
 restart; `Delete` owes nothing at all. The verb is recorded on the session before
-the token fires, because a tool call reads it at the moment it is cut -- the wait's
-answer says which stop ended it, and the session row says the same to a window.
+the token fires, because the status a window is told is read from it. No tool call
+reads it: SPEC's answer to a waiting call is "make it early return", so what a call
+answers is what it has, never the name of the verb that ended the turn.
 That word is the whole difference between "idle (cancelled)" and "idle
 (interrupted)": before it existed, an `interrupt_session` was reported as a cancel,
 with a sentence about a server that was not stopping and a turn a restart would
@@ -456,19 +457,19 @@ and materialising it would start its shells just to stop nothing. Both "idle" an
 "no such session" are still worth saying out loud -- a silent success would read
 as "the turn did stop".
 
-SPEC asks this verb for no flag: it ends the tool waiting, hands the result back as
-the call's answer and stops the loop with everything received already in context,
-so the turn is over rather than owed. A marker here would have a later restart
-finish a turn that had already ended. `cancel` is the only writer of the flag, and
-`sessions.canceled` is where it lives rather than the process: a stop ends the
-process, and a marker that cannot outlive it is a marker the next start never reads.
+SPEC asks this verb for no flag: for a waiting tool call it makes an early return,
+and it stops the loop with everything received already in context, so the turn is over
+rather than owed. A marker here would have a later restart finish a turn that had
+already ended. `cancel` is the only writer of the flag, and `sessions.canceled` is where
+it lives rather than the process: a stop ends the process, and a marker that cannot
+outlive it is a marker the next start never reads.
 
-"Over rather than owed" is three separate things in the code, and this verb has to
-do all three or it is a cancel wearing another name: no `mark_resumable` (so
-`finish_turn` drops the turn's pending row instead of leaving it), `mark_interrupted`
-(so the cut call and the session's status say `interrupted`), and the cut itself
-(`Cut::Interrupted`), which is what makes the wait answer "interrupt_session ended
-this wait" rather than "the server is stopping".
+"Over rather than owed" is two things in the code, and this verb has to do both or it is
+a cancel wearing another name: no `mark_resumable` (so `finish_turn` drops the turn's
+pending row instead of leaving it) and `mark_interrupted` (so a window is told
+`interrupted` rather than `cancelled`). The call itself needs nothing from here: its
+token ends, it returns what it has, and the sentence is its own -- see
+`docs/notes/server-tools-mod.md`.
 
 ## cancel
 
@@ -477,7 +478,14 @@ running session before the first token fires, and SPEC splits them: one that was
 running and not waiting is canceled (`sessions.canceled`), so the next start
 continues it; one inside `wait` gets the clock that wait was due to end at
 (`sessions.waiting_until`) and keeps its rows, so nothing queued behind the wait
-is lost and the wait itself is finished later rather than skipped. An idle session
+is lost and the wait itself is finished later rather than skipped.
+
+That clock is a ceiling, not a schedule. A `wait` ends on what arrives, and a `cancel`
+ends every channel -- each one's end notice is a `channel` inject row -- so a session
+whose inbox already holds rows has what it was waiting for: the next start clears the
+flag and starts it at once. Only a session with nothing to read sits out the time that
+was left. Without that, a stop that ended the very channel a session was waiting on
+would leave it asleep for the whole remainder, with the answer already in the queue. An idle session
 gets neither -- it has nothing to continue. The listen loop breaks as soon as
 `shutdown` is pulled, without waiting for `active` to drain -- a call stuck in a
 shell write or a model stream has no step boundary to reach, and a flag it may

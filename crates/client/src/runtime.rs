@@ -223,6 +223,8 @@ pub async fn run(
     let home = crate::home_of(args);
     // Both are this process's own: where a row lives never depends on a greeting.
     let client_home = crate::client_home_of(args);
+    // One client per home: two would write the same roster and journal.
+    let _held = home_lock::HomeLock::acquire(&client_home, "client.lock", "gongga client")?;
     // The window's own state: sticky entries, drawn sessions, settings, address.
     let mut state = State::load(&home);
     // The address in force: what the window remembers first, then the flags.

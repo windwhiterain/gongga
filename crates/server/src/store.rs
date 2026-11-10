@@ -363,6 +363,9 @@ CREATE TABLE IF NOT EXISTS channels (
     -- What a caller is waiting for, and whether one is: the marker a call has to
     -- see (`''` for the end alone), or NULL for nobody waiting.
     wait_marker  TEXT,
+    -- The marker this channel's last write ended its reply with: SPEC's "sticky
+    -- value", so a read that writes nothing still knows where a reply ends.
+    until_sentinel TEXT NOT NULL DEFAULT '',
     UNIQUE (session, path)
 );
 
@@ -597,6 +600,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "channels",
         "wrote_at",
         "ALTER TABLE channels ADD COLUMN wrote_at INTEGER",
+    )?;
+    add_column_if_missing(
+        conn,
+        "channels",
+        "until_sentinel",
+        "ALTER TABLE channels ADD COLUMN until_sentinel TEXT NOT NULL DEFAULT ''",
     )?;
     add_column_if_missing(
         conn,
@@ -2819,7 +2828,7 @@ impl Store {
     pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker, until_sentinel
              FROM channels WHERE session = ?1 ORDER BY path",
         )?;
         let rows = stmt
@@ -2833,7 +2842,7 @@ impl Store {
     pub fn live_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker, until_sentinel
              FROM channels WHERE ended_at IS NULL ORDER BY id",
         )?;
         let rows = stmt
@@ -2846,7 +2855,7 @@ impl Store {
     pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker
+            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker, until_sentinel
              FROM channels WHERE session = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query(params![session, path])?;
@@ -2894,6 +2903,20 @@ impl Store {
         self.lock().execute(
             "UPDATE channels SET wait_marker = ?3 WHERE session = ?1 AND path = ?2",
             params![session, path, marker],
+        )?;
+        Ok(())
+    }
+
+    /// Remembers the marker this write ends its reply with: SPEC's sticky util.
+    pub fn set_channel_sentinel(
+        &self,
+        session: &str,
+        path: &str,
+        sentinel: &str,
+    ) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET until_sentinel = ?3 WHERE session = ?1 AND path = ?2",
+            params![session, path, sentinel],
         )?;
         Ok(())
     }
@@ -3221,6 +3244,8 @@ pub struct ChannelRow {
     /// What a caller waits for: the marker, `Some("")` for the end alone. `None` is
     /// nobody waiting.
     pub wait_marker: Option<String>,
+    /// The marker this channel's last write ended its reply with; `''` before one.
+    pub until_sentinel: String,
 }
 
 fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
@@ -3238,6 +3263,7 @@ fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
         upto: row.get::<_, i64>(10)?.max(0) as u64,
         wrote_at: row.get(11)?,
         wait_marker: row.get(12)?,
+        until_sentinel: row.get(13)?,
     })
 }
 

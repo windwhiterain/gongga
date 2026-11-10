@@ -1,0 +1,11 @@
+[package]
+name = "gongga-lock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "One home, one owner: the pid-claiming lock a server and a client both take"
+
+[dependencies]
+anyhow = { workspace = true }

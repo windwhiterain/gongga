@@ -133,6 +133,7 @@ impl Cmd for NewTool {
                     input,
                     wait_of(&args, self.wait.default),
                     until,
+                    Some(&ctx.cancel),
                 )
                 .await;
             answer(outcome, self.wait.max_output_chars, ctx)
@@ -163,6 +164,7 @@ impl Cmd for CheckTool {
                     args.get("input").and_then(Value::as_str),
                     wait_of(&args, self.wait.default),
                     args.get("until").and_then(Value::as_str),
+                    Some(&ctx.cancel),
                 )
                 .await;
             answer(outcome, self.wait.max_output_chars, ctx)

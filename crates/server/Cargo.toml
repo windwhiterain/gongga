@@ -27,6 +27,7 @@ test = false
 protocol = { workspace = true }
 skill = { workspace = true }
 console = { workspace = true }
+home_lock = { workspace = true }
 
 tokio = { workspace = true }
 serde = { workspace = true }

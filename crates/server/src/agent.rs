@@ -178,7 +178,7 @@ impl Agent {
             "origin": origin,
             "elapsed_ms": started.elapsed().as_millis() as u64,
         });
-        // A cut turn did not end, so it does not say it did: see server-agent.md.
+        // A stopped turn did not end, so it does not say it did: see server-agent.md.
         let kind = match outcome {
             TurnOutcome::Cancelled => "turn_interrupted",
             _ => {

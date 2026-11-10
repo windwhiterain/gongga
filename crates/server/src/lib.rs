@@ -180,7 +180,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     supervise::remember();
     let cfg = config_from(&args)?;
     // Claim the home before opening the database: one server per home.
-    let _instance = instance::InstanceLock::acquire(&cfg.home)?;
+    let _instance = home_lock::HomeLock::acquire(&cfg.home, "server.lock", "gongga server")?;
+    instance::record_dir(&cfg.home);
     // Off this thread before anything reads a roster: no start waits for a
     // network. See `docs/notes/server-agents.md`.
     agents::start();

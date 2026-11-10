@@ -2092,7 +2092,7 @@ async fn input_channel(d: &Dispatch, args: &Args) -> Outcome {
     match d
         .agent
         .channels
-        .talk(&session, &id, Some(&input), wait, until)
+        .talk(&session, &id, Some(&input), wait, until, None)
         .await
     {
         Ok(outcome) => Outcome::ok_with(
@@ -2957,9 +2957,9 @@ enum Stop {
 ///
 /// # Invariant
 ///
-/// SPEC gives the canceled flag to `cancel` alone, and `cancel` writes it itself;
-/// this only fires the token and records which verb fired it, so the answer a cut
-/// call leaves can say whether a restart continues it.
+/// SPEC gives the canceled flag to `cancel` alone, and `cancel` writes it itself; this
+/// fires the token and records which verb fired it, so the turn's own rows and the
+/// session's status can say whether a restart continues it.
 fn interrupt(d: &Dispatch, name: &str, why: Stop) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);
@@ -3184,18 +3184,26 @@ pub fn nudge_inboxes(d: &Dispatch) -> usize {
         return 0;
     };
     // A stop left this session inside `wait`; its clock decides when it starts.
-    let waiting: std::collections::HashMap<String, i64> = d
+    let waiting: std::collections::HashMap<String, (i64, i64)> = d
         .store
         .waiting_sessions()
         .unwrap_or_default()
         .into_iter()
-        .map(|(_, name, until)| (name, until))
+        .map(|(id, name, until)| (name, (id, until)))
         .collect();
     let now = crate::store::now_millis();
     let mut started = 0;
     for (name, tasks) in recovery_groups(tasks) {
-        if waiting.get(&name).is_some_and(|until| *until > now) {
-            continue;
+        if let Some((id, until)) = waiting.get(&name)
+            && *until > now
+        {
+            // A `wait` ends on what arrives; these rows are that, so the clock is done.
+            if !owes_a_turn(&tasks) {
+                continue;
+            }
+            if let Err(e) = d.store.record_stop(*id, false, None) {
+                tracing::warn!(session = %name, error = %e, "could not clear a wait its news ended");
+            }
         }
         let Ok(session) = d.sessions.get(&name) else {
             continue;
@@ -3293,12 +3301,12 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
     // The sessions this pass already gave a turn, so the flag below adds nothing.
     let mut woken: std::collections::HashSet<String> = std::collections::HashSet::new();
     // A wait still running is a reason not to start this session's rows now.
-    let waiting: std::collections::HashMap<String, i64> = d
+    let waiting: std::collections::HashMap<String, (i64, i64)> = d
         .store
         .waiting_sessions()
         .unwrap_or_default()
         .into_iter()
-        .map(|(_, name, until)| (name, until))
+        .map(|(id, name, until)| (name, (id, until)))
         .collect();
     let now = crate::store::now_millis();
     for (name, tasks) in recovery_groups(tasks) {
@@ -3366,10 +3374,16 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
         }
         let owed = owes_a_turn(&kept);
-        // What the wait was waiting for: kept, and started by its clock rather than
-        // by this pass. See the loop below.
-        if waiting.get(&name).is_some_and(|until| *until > now) {
-            continue;
+        // Rows already here are the news the wait waited for; with none, the clock decides.
+        if let Some((id, until)) = waiting.get(&name)
+            && *until > now
+        {
+            if !owed {
+                continue;
+            }
+            if let Err(e) = d.store.record_stop(*id, false, None) {
+                tracing::warn!(session = %name, error = %e, "could not clear a wait its news ended");
+            }
         }
         let owned = kept
             .iter()
@@ -3397,6 +3411,17 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         tokio::spawn(async move {
             if left > 0 {
                 tokio::time::sleep(Duration::from_millis(u64::try_from(left).unwrap_or(0))).await;
+            }
+            // News may have answered this wait: only the row still being there says
+            // this clock is the one that ends it.
+            let still = later
+                .store
+                .waiting_sessions()
+                .unwrap_or_default()
+                .into_iter()
+                .any(|(_, name, _)| name == owed);
+            if !still {
+                return;
             }
             // Cleared here, not when read: until it fires the row holds a nudge back.
             if let Err(e) = later.store.record_stop(id, false, None) {

@@ -427,6 +427,7 @@ impl Channels {
         input: Option<&str>,
         wait: Duration,
         until: Option<&str>,
+        cancel: Option<&CancellationToken>,
     ) -> Result<Outcome, String> {
         let row = self.row_of(session, id)?;
         // Whoever is inside the channel is the one that tells the session: the watcher
@@ -436,10 +437,20 @@ impl Channels {
         let grammar = self.grammar_of(&row.program);
         // `time` is what this call cost: from its own write, or from the last one.
         let mut since = row.wrote_at.unwrap_or(row.started_at);
-        // A sentinel is generated per write, and only for a write: a read alone has
-        // nothing to frame.
-        let sentinel = if input.is_some() && grammar.until.as_deref().is_some_and(has_sentinel) {
-            Some(new_sentinel())
+        // SPEC's util is sticky: the marker the last write left, so a read knows its end.
+        let sentinel = if grammar.until.as_deref().is_some_and(has_sentinel) {
+            match (row.until_sentinel.is_empty(), input.is_some()) {
+                (true, true) => {
+                    let fresh = new_sentinel();
+                    self.store
+                        .set_channel_sentinel(session, id, &fresh)
+                        .map_err(quiet)?;
+                    Some(fresh)
+                }
+                (false, _) => Some(row.until_sentinel.clone()),
+                // Nothing has been written yet, so no reply is waiting to end.
+                (true, false) => None,
+            }
         } else {
             None
         };
@@ -494,6 +505,10 @@ impl Channels {
             }
             if Instant::now() >= deadline {
                 // Nothing arrived: what is there is the answer, and the cursor moves.
+                return self.answer(row, looked.window, false, looked.upto, None, ended, since);
+            }
+            // SPEC: a waiting call returns early; the window now is its answer.
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
                 return self.answer(row, looked.window, false, looked.upto, None, ended, since);
             }
             tokio::time::sleep(LOOK).await;
