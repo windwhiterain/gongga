@@ -57,8 +57,17 @@ questions: a reader may `tail -f` it, and that is not this server's cursor. The 
 is the server's own, per session, and taking the window is what advances it — so a
 finished channel's notice and a `check` never hand the same bytes over twice.
 
-`until` is the caller's marker: the window is cut at it and the marker is not
-returned, because `matched` is the answer to "was it there".
+`until` is the marker a reply ends at: the window is cut there and the marker is not
+returned, because `matched` is the answer to "was it there". A call that names none takes
+the name's own (`[channel.<name>]`), and the one `bash` has is `{{sentinel}}` -- the text
+this server writes into the command line, `echo __gongga-...__$?`.
+
+That value is sticky per channel (`channels.until_sentinel`): the write that makes one
+remembers it, so a `check` that writes nothing still knows where the last reply ends and
+`matched` can answer for it. Generated per write and thrown away, as it was before the
+column, a read-only `check` had no marker at all -- so it could only ever answer at its
+`wait`, which is the shape a model then learns to live with: every read costs the whole
+ceiling.
 
 `time` is what *this call* cost, and its start is the call's own input: a `check` that
 writes measures from that write, and one that only reads measures from the channel's
@@ -73,7 +82,8 @@ One section per name `new` knows, and nothing there is about a tool:
 ```toml
 [channel.bash]
 spawn = ["--norc", "--noprofile"]
-write = "{{input}}\n"
+write = "{{input}}; echo {{sentinel}}$?\n"
+until = "{{sentinel}}"
 
 [channel.GONGGA_CLI]
 kind = "cmd"
@@ -88,8 +98,8 @@ entry honest -- a `cmd` is a channel this server answers itself, so it belongs b
 the ones it starts.
 
 A name the table does not mention is raw: started with the call's own words, framed by
-the call's own `until`. That is why `bash` has no `until`: its sentinel is the caller's
-business and the model never carries it.
+whatever `until` the call states, and by no marker when it states none. `bash` is not raw:
+its sentinel is the table's, and the model never carries it.
 
 ## A channel on a peer
 
