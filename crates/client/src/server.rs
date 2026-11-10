@@ -150,6 +150,35 @@ pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> anyhow::R
     )
 }
 
+/// Ends the server that answered, by pid, when its own `cancel` was not enough.
+///
+/// # Invariant
+///
+/// The watchdog first, for the reason `stop` does it: a server killed under a live
+/// watchdog is started again, and the pid just ended comes back as a new one. The
+/// server follows, and the answer is whether it is gone -- not whether the kill was
+/// accepted, because a pid that was already reaped answers yes to `taskkill` and no
+/// to `alive`.
+///
+/// # Invariant
+///
+/// Nothing is sent. This is what `--force` means: a server that did not take a
+/// `cancel` -- a build whose command list has none, one that answered with an error,
+/// one whose turn would not end -- is stopped rather than left holding the port.
+pub(crate) async fn force_stop(pid: u32, supervisor: Option<u32>) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    if !alive(pid) {
+        return true;
+    }
+    if let Some(supervisor) = supervisor {
+        kill(supervisor);
+    }
+    kill(pid);
+    waits_out(pid, CANCEL_GRACE).await
+}
+
 /// Whether `pid` is gone before `grace` runs out.
 async fn waits_out(pid: u32, grace: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + grace;

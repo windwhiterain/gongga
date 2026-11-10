@@ -164,7 +164,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Its own column rather than `updated_at`, which a tuning change rewrites:
     -- the list is ordered by this, so writing it anywhere else would move a row
     -- for a reason the operator did not give.
-    ended_at INTEGER
+    ended_at INTEGER,
+    -- SPEC's interrupted flag: a stop cut this session's turn, and the next start
+    -- continues it. Set by `interrupt` on a session that was busy and not inside
+    -- `wait`, cleared by the start that claims the turn. Its own column because a
+    -- flag in the process is a flag a stop cannot leave behind, and a pending row
+    -- is not the same fact: a turn can owe work with no row left to say so.
+    interrupted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -513,6 +519,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "sessions",
         "ended_at",
         "ALTER TABLE sessions ADD COLUMN ended_at INTEGER",
+    )?;
+    add_column_if_missing(
+        conn,
+        "sessions",
+        "interrupted",
+        "ALTER TABLE sessions ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0",
     )?;
     backfill_ended_at(conn)?;
     settle_handover(conn)?;
@@ -1149,6 +1161,39 @@ impl Store {
             params![status_name(status), id],
         )?;
         Ok(())
+    }
+
+    /// Raises or clears SPEC's interrupted flag for one session.
+    ///
+    /// # Invariant
+    ///
+    /// A stop raises it on every session whose turn it cut, and the start that
+    /// continues that turn clears it: "restart will consume and continue sessions
+    /// with interrupted flag". The column is the whole record, because the flag
+    /// cannot live in the process that the stop is ending -- a turn row can be
+    /// gone by the time the next start looks, and a flag cannot.
+    pub fn set_interrupted(&self, id: i64, interrupted: bool) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET interrupted = ?1 WHERE id = ?2",
+            params![i64::from(interrupted), id],
+        )?;
+        Ok(())
+    }
+
+    /// Every session a stop left owing a turn, oldest first.
+    ///
+    /// # Invariant
+    ///
+    /// Read once, by the start that inherits them: a flagged session continues
+    /// even when no pending row survived, which is what makes the flag the
+    /// memory rather than a decoration on the rows.
+    pub fn interrupted_sessions(&self) -> anyhow::Result<Vec<(i64, String)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT id, name FROM sessions WHERE interrupted <> 0 ORDER BY id")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     // -- transcript --------------------------------------------------------

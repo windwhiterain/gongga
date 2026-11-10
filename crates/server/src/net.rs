@@ -440,6 +440,7 @@ fn origin_of(client: &ClientInfo, peer: SocketAddr) -> Origin {
         label: client.label.clone(),
         peer,
         session: client.session.clone(),
+        parent: client.parent.clone(),
     }
 }
 
@@ -504,6 +505,7 @@ async fn authenticate(
                         conn_id,
                         label = %client.label,
                         build = %client.build,
+                        parent = client.parent.as_deref().unwrap_or("-"),
                         "client connected"
                     );
                     return Some(client);

@@ -51,6 +51,7 @@ fn new(
   until: optional[str] = none,
   remote: optional[str] = <session's remote>,
   cwd: optional[path] = <session's cwd>) -> Result
+)
 fn check(id: Channel, input: optional[str] = none, wait: optional[time] = none, until: optional[str] = none) -> Result
 fn wait(time: time)
 fn <tool>(**args):
@@ -103,9 +104,8 @@ fn send_message(session: Session, message: str)
   # inject message when step end.
   # interrupt if tool waiting.
 fn interrupt_session(id: Session):
-  # stop llm streaming, everything received must be saved to context.
-  # end tool waiting.
-  # set interrupted flag to that session, restart will consume and continue sesisons with interrupted flag.
+  # end tool waiting, return result as tool call result.
+  # stop llm streaming and loop, everything received must be saved to context.
   # for sessions idle or calling `wait`, do not set interrupted flag.
 fn trigger_event(event: Event)
 Subscription := path
@@ -113,9 +113,12 @@ fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, sessio
     # when pattern matched triggered event, run the cmd.
 fn del_subscription(path: path, session: Session)
 fn ls_subsscription(path: path, sesssion: Session)
-cancel(keep_alive: bool = false, keep_turn: bool = false):
-  # interrupt every running session then quit, by default kill all channel, optionally make everychannel background, keep them alive so retart will adopt them.
-  # keep_turn sets the interrupted flag on every session it interrupts, so restart continues them: a handover needs that, a person stopping work does not.
+cancel(keep_alive: bool = false):
+  # queue following notices.
+  # for running sessions that are not waiting, set canceled flag to them, restart will auto continue session with cancel flag.
+  # for running sessions that are waiting, set waiting flag to them, restart will continue their waiting for the lefting time.
+  # interrupt every running session, then quit, by default kill all channel, if keep_alive, make every channel detached, retart will adopt them.
+  # killing channel/failed to adopting channel will produce channel end notice.
 ```
 ## Python Cmd
 provided by a shipped uv python package.

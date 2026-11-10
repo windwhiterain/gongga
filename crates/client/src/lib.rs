@@ -82,7 +82,13 @@ pub struct Args {
     /// binary another is a flag the reader cannot type.
     #[arg(long = "client_only", alias = "client-only", global = true)]
     pub client_only: bool,
-    /// Stop a server of another build by pid instead of asking it to cancel.
+    /// Stop a server that will not take a `cancel`, by the pid its greeting named.
+    ///
+    /// # Invariant
+    ///
+    /// Only a `cancel` is forced: the flag says what to do when *that* stop is
+    /// refused, not what every command means. The watchdog goes first, because a
+    /// server killed under a live one is started again. See `docs/notes/client-lib.md`.
     #[arg(long, global = true)]
     pub force: bool,
     #[command(subcommand)]
@@ -2362,30 +2368,26 @@ impl Link {
         let _ = self.send(ClientMessage::Bye).await;
     }
 
-    /// Stops the server as `cancel` does, keeping the turn that was running.
+    /// Stops the server as `cancel` does, and answers whether it heard.
     ///
     /// # Invariant
     ///
     /// SPEC's stop, not a kill: a kill loses the work `cancel` stores for the next
-    /// start. Every caller of this is a *handover* -- a window on its way out, a
-    /// window taking the home over -- so it asks for `keep_turn`, and the next
-    /// start continues the turn instead of finding nothing to replay. Without it
-    /// the interrupt is a person stopping work, and the work goes with the server.
-    /// A person stopping work has `gongga-cli cancel`, which asks for neither
-    /// flag. `keep_alive` stays off: the channels are this home's programs, and
-    /// the server ending is what ends them.
+    /// start. What it leaves is the interrupted flag `cancel` raises on every
+    /// session whose turn it cut, and the next start continues those -- so a window
+    /// on its way out, or a window taking the home over, does not end the work it
+    /// was watching. `keep_alive` is not asked for: the channels are this home's
+    /// programs, and the server ending is what ends them.
     ///
     /// The answer is what makes it a stop and not a wish -- `send` only queues,
     /// and a window asking on its way out is one statement away from dropping the
     /// runtime that would write it. See `docs/notes/client-lib.md`.
     pub async fn cancel(&mut self) -> bool {
-        let mut args = protocol::Args::new();
-        args.insert("keep_turn".to_string(), "true".to_string());
         let asked = self
             .send(ClientMessage::Command {
                 id: CANCEL_ID,
                 name: "cancel".to_string(),
-                args,
+                args: Default::default(),
             })
             .await;
         if asked.is_err() {
@@ -2613,12 +2615,32 @@ pub fn server_address(ip: Option<&str>, port: &str) -> anyhow::Result<SocketAddr
 ///
 /// See `docs/notes/client-lib.md`.
 pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
-    let (mut client, mut link) = connect(args).await?;
+    let (mut client, mut link, answering) = connect_answering(args).await?;
     let result = run_once(&mut client, &mut link, command).await;
     // A best-effort goodbye lets the server tear the connection down now
     // instead of waiting out the idle timeout.
     link.goodbye().await;
+    // `--force`: the stop this process asked for is the outcome, so a refusal is
+    // not the answer -- the pid the greeting named is. Only a stop is forced: a
+    // command that is not `cancel` never asked for one.
+    if args.force && stops_a_server(command) {
+        if crate::server::force_stop(answering.server, answering.supervisor).await {
+            return Ok(());
+        }
+    }
     result
+}
+
+/// Whether `command` is the one that ends a server, so `--force` applies to it.
+///
+/// # Invariant
+///
+/// The command the operator typed, not a table of aliases: `cancel` is SPEC's word
+/// and the one `--force` is documented against. Anything else runs as asked, force
+/// or no force -- a flag that changed the meaning of `send_message` would be a flag
+/// nothing could reason about.
+fn stops_a_server(command: &[String]) -> bool {
+    command.first().map(String::as_str) == Some("cancel")
 }
 
 async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> anyhow::Result<()> {
@@ -2954,6 +2976,26 @@ pub fn build_client(args: &Args) -> Client {
 /// Connects and returns a client that already knows the server's catalog.
 /// One-shot only: it never reconnects.
 async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
+    let (client, link, _) = connect_answering(args).await?;
+    Ok((client, link))
+}
+
+/// Who answered a dial, as the pids a `--force` stop needs.
+#[derive(Clone, Copy, Debug)]
+struct Answering {
+    /// The server itself: the process whose `cancel` this dial asked for.
+    server: u32,
+    /// Its watchdog, when one started it. Left running, it starts the server again.
+    supervisor: Option<u32>,
+}
+
+/// As `connect`, and keeps the pids the greeting named.
+///
+/// # Invariant
+///
+/// Read before `apply`, which consumes the greeting. A front-end that never asks
+/// for them pays nothing: the pair is a copy, and the greeting is the handshake's.
+async fn connect_answering(args: &Args) -> anyhow::Result<(Client, Link, Answering)> {
     // One-shot mode's caller is a script: add the usual cause to the words.
     let (link, greeting) = match dial(endpoint(&args.conn)?).await {
         Ok(pair) => pair,
@@ -2966,9 +3008,13 @@ async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
             ));
         }
     };
+    let answering = Answering {
+        server: greeting.pid(),
+        supervisor: greeting.supervisor(),
+    };
     let mut client = build_client(args);
     greeting.apply(&mut client, &mut NullSink::default());
-    Ok((client, link))
+    Ok((client, link, answering))
 }
 
 /// Identifies this client to the server.
@@ -2984,7 +3030,112 @@ fn client_info() -> ClientInfo {
         label: client_label(),
         // Only this process knows whose shell it is: `subscribe` needs it.
         session: calling_session(),
+        // And only the operating system knows what started it: a `cancel` needs it.
+        parent: parent_of_this_process(),
     }
+}
+
+/// The program that started this one, as `name/pid`.
+///
+/// # Invariant
+///
+/// Read from the process table, not from the environment. `GONGGA_SESSION` names the
+/// session a shell belongs to and says nothing about which program ran what; a row
+/// that only carries the client's own pid cannot be placed, and that is exactly the
+/// question a `cancel` raises. See `docs/notes/protocol-message.md`.
+fn parent_of_this_process() -> Option<String> {
+    let (pid, name) = platform_parent()?;
+    Some(match name {
+        Some(name) => format!("{name}/pid-{pid}"),
+        None => format!("pid-{pid}"),
+    })
+}
+
+#[cfg(windows)]
+fn platform_parent() -> Option<(u32, Option<String>)> {
+    use std::os::raw::c_void;
+
+    #[repr(C)]
+    struct ProcessEntry32W {
+        dw_size: u32,
+        cnt_usage: u32,
+        th32_process_id: u32,
+        th32_default_heap_id: usize,
+        th32_module_id: u32,
+        cnt_threads: u32,
+        th32_parent_process_id: u32,
+        pc_pri_class_base: i32,
+        dw_flags: u32,
+        sz_exe_file: [u16; 260],
+    }
+
+    const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+
+    unsafe extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut c_void;
+        fn Process32FirstW(snapshot: *mut c_void, entry: *mut ProcessEntry32W) -> i32;
+        fn Process32NextW(snapshot: *mut c_void, entry: *mut ProcessEntry32W) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+        fn GetCurrentProcessId() -> u32;
+    }
+
+    let mut entry = ProcessEntry32W {
+        dw_size: std::mem::size_of::<ProcessEntry32W>() as u32,
+        cnt_usage: 0,
+        th32_process_id: 0,
+        th32_default_heap_id: 0,
+        th32_module_id: 0,
+        cnt_threads: 0,
+        th32_parent_process_id: 0,
+        pc_pri_class_base: 0,
+        dw_flags: 0,
+        sz_exe_file: [0; 260],
+    };
+    // SAFETY: the snapshot handle is closed below, and `entry` is a live, correctly
+    // sized PROCESSENTRY32W for as long as the two calls read and write it.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot as isize == -1 {
+            return None;
+        }
+        let me = GetCurrentProcessId();
+        let mut answer = None;
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                if entry.th32_process_id == me {
+                    let parent = entry.th32_parent_process_id;
+                    let name = String::from_utf16_lossy(&entry.sz_exe_file)
+                        .trim_end_matches('\0')
+                        .to_string();
+                    answer = Some((parent, (!name.is_empty()).then_some(name)));
+                    break;
+                }
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+        answer
+    }
+}
+
+#[cfg(unix)]
+fn platform_parent() -> Option<(u32, Option<String>)> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // `pid (comm) state ppid ...`: the comm may hold spaces, so count from the close.
+    let after = stat.rsplit_once(')')?.1;
+    let ppid: u32 = after.split_whitespace().nth(1)?.parse().ok()?;
+    let name = std::fs::read_to_string(format!("/proc/{ppid}/comm"))
+        .ok()
+        .map(|comm| comm.trim().to_string())
+        .filter(|comm| !comm.is_empty());
+    Some((ppid, name))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn platform_parent() -> Option<(u32, Option<String>)> {
+    None
 }
 
 /// What this program calls itself on the wire: its own file name and its pid.

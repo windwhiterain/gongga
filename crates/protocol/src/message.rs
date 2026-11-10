@@ -51,6 +51,16 @@ pub struct ClientInfo {
     /// that subscribed, not the one the pattern mentions.
     #[serde(default)]
     pub session: Option<String>,
+    /// The program that started this one, as `name/pid`, when the platform says.
+    ///
+    /// # Invariant
+    ///
+    /// Asked of the operating system, never guessed from the environment. A row that
+    /// records a `cancel` has to answer "who asked" past the client's own pid: a
+    /// client started by a shell is only placeable through the shell, and a pid
+    /// alone outlives nothing worth reading. See `docs/notes/protocol-message.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 // Server -> client

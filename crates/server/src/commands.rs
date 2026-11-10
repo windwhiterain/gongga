@@ -91,11 +91,15 @@ impl Drop for ActiveGuard {
 /// ask reached the process. See `docs/notes/server-commands.md`.
 #[derive(Debug, Clone)]
 pub enum Origin {
-    /// A client asked: its label, its peer, and the session it ran from, if any.
+    /// A client asked: its label, its peer, the session it ran from and the program
+    /// that started it, where those are known.
     Client {
         label: String,
         peer: SocketAddr,
         session: Option<String>,
+        /// What started the client, as `name/pid`: the one fact a `cancel` row needs
+        /// and the client's own pid cannot give.
+        parent: Option<String>,
     },
     /// No client asked: a signal reached this process, or the process it follows ended.
     Signal { reason: String },
@@ -124,12 +128,19 @@ impl Origin {
                 label,
                 peer,
                 session,
-            } => match session.as_deref().map(str::trim) {
-                Some(session) if !session.is_empty() => {
-                    format!("{label} at {peer}, from session {session}")
+                parent,
+            } => {
+                let started = match parent.as_deref().map(str::trim) {
+                    Some(parent) if !parent.is_empty() => format!(" (started by {parent})"),
+                    _ => String::new(),
+                };
+                match session.as_deref().map(str::trim) {
+                    Some(session) if !session.is_empty() => {
+                        format!("{label} at {peer}, from session {session}{started}")
+                    }
+                    _ => format!("{label} at {peer}{started}"),
                 }
-                _ => format!("{label} at {peer}"),
-            },
+            }
             Origin::Signal { reason } => reason.clone(),
             Origin::Tool { session } => format!("a tool in session {session}"),
         }
@@ -242,6 +253,14 @@ fn claim_recovery(
     let gate = session.try_claim()?;
     if session.is_deleted() {
         return None;
+    }
+    // SPEC: "restart will consume and continue sessions with interrupted flag" --
+    // this claim is that restart, so the flag has done its work.
+    if let Err(e) = d.store.set_interrupted(session.id(), false) {
+        tracing::warn!(
+            session = %session.name(), error = %e,
+            "could not clear the interrupted flag this start continued"
+        );
     }
     if tasks.is_empty() {
         match d
@@ -421,8 +440,10 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "interrupt_session".into(),
-            description: "Stop the turn one session is running. The turn is kept: the next start \
-                      continues it. Background jobs keep running."
+            description: "Stop the turn one session is running. Everything received is kept, and \
+                      the session is flagged: the next start continues the turn. SPEC leaves an \
+                      idle session, and one inside `wait`, unflagged -- neither has work owed to \
+                      a restart. Background jobs keep running."
                 .into(),
             args: vec![{
                 let mut spec = pos(
@@ -440,37 +461,24 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "cancel".into(),
-            description: "Interrupt every running turn and shut the server down at once. A \
-                      running turn is kept for the next start only when `keep_turn` asks: a \
-                      handover resumes it, a person stopping work does not want it back. This \
-                      is the only stop that lets background jobs go: they are processes of \
-                      their own, outlive this server and are adopted on the next start. Any \
-                      other stop -- a signal, a killed process -- ends every job it started \
-                      with it. Channels are ended too unless `keep_alive` asks for them: their \
-                      programs are processes of their own, and one left running is adopted by \
-                      the                       next start instead of the session losing the shell it was using. A \
-                      window on its way out asks for `keep_turn` and not `keep_alive`: it \
-                      hands the home over, so the next start continues the turn, while the \
-                      channels end because their relays go with this server."
+            description: "Interrupt every running turn and shut the server down at once. SPEC: \
+                      every running session that is not waiting is flagged, and the next start \
+                      continues it. This is the only stop that lets background jobs go: they are \
+                      processes of their own, outlive this server and are adopted on the next \
+                      start. Any other stop -- a signal, a killed process -- ends every job it \
+                      started with it. \
+                      Channels are ended too unless `keep_alive` asks for them: their programs \
+                      are processes of their own, and one left running is adopted by the next \
+                      start instead of the session losing the shell it was using."
                 .into(),
-            args: vec![
-                arg(
-                    "keep_alive",
-                    "`true` leaves every channel's program running so the next start adopts it; \
-                     a channel that is not kept ends with this server.",
-                    false,
-                    Some("true|false"),
-                    CompletionSource::None,
-                ),
-                arg(
-                    "keep_turn",
-                    "`true` keeps the interrupted turns so the next start continues them, which \
-                     is what a handover needs; without it the work is dropped with the server.",
-                    false,
-                    Some("true|false"),
-                    CompletionSource::None,
-                ),
-            ],
+            args: vec![arg(
+                "keep_alive",
+                "`true` leaves every channel's program running so the next start adopts it; \
+                 a channel that is not kept ends with this server.",
+                false,
+                Some("true|false"),
+                CompletionSource::None,
+            )],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -1178,7 +1186,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "list_paths" => list_paths(d, args).await,
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => {
-            // SPEC's flags: `cancel` takes them, the signal path passes false.
+            // SPEC's flag: `cancel` takes it, the signal path passes false.
             let keep_alive = match args.get("keep_alive") {
                 None => false,
                 Some(raw) => match parse_bool(raw) {
@@ -1186,14 +1194,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
                     Err(e) => return Outcome::err(e),
                 },
             };
-            let keep_turn = match args.get("keep_turn") {
-                None => false,
-                Some(raw) => match parse_bool(raw) {
-                    Ok(kept) => kept,
-                    Err(e) => return Outcome::err(e),
-                },
-            };
-            cancel(d, origin, keep_alive, keep_turn).await
+            cancel(d, origin, keep_alive).await
         }
         "get_messages" => get_messages(d, args).await,
         "new_channel" => new_channel(d, args).await,
@@ -2583,7 +2584,7 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
 
 fn prepare_delete(d: &Dispatch, name: &str) -> (bool, usize) {
     // A delete drops the turn even when it was waiting: nothing of it is kept.
-    let interrupted = interrupt(d, name, false, false);
+    let interrupted = interrupt(d, name, false);
     if let Some(session) = d.sessions.peek(name) {
         session.mark_deleted();
     }
@@ -2671,26 +2672,38 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
     finish_delete(d, &name, was_busy, dropped).await
 }
 
-/// Stops one session's turn and drops its pending rows.
-fn interrupt(d: &Dispatch, name: &str, keep_waiting: bool, keep_turn: bool) -> (bool, usize) {
+/// Stops one session's turn, and records that the next start owes it.
+///
+/// # Invariant
+///
+/// SPEC's flag, and SPEC's exceptions: "set interrupted flag to that session,
+/// restart will consume and continue sessions with interrupted flag" and "for
+/// sessions idle or calling `wait`, do not set interrupted flag". An idle session
+/// started nothing; one inside `wait` is not mid-program, and its news arrives on
+/// its own. `owes` is the caller's word -- a delete owes nothing at all -- and the
+/// row is written before the token fires, because the token is what ends the turn
+/// and a turn cannot leave a note after it is cut.
+fn interrupt(d: &Dispatch, name: &str, owes: bool) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);
     };
     // Read before the cancel: afterwards there is nothing left to ask.
     let was_busy = session.busy();
     let in_wait = session.stop_signal().is_waiting();
-    // SPEC: a wait lives across a cancel. Marked before the token fires, because
-    // the token is what ends the wait.
-    let waiting = keep_waiting && in_wait;
-    // SPEC: an interrupted turn is the next start's to continue, unless the
-    // session was idle or only inside `wait`.
-    let resume = waiting || (keep_turn && was_busy && !in_wait);
-    if resume {
+    let flagged = owes && was_busy && !in_wait;
+    if flagged {
+        // The turn the token ends keeps its rows: it is owed, not abandoned.
         session.mark_resumable();
+        if let Err(e) = d.store.set_interrupted(session.id(), true) {
+            tracing::warn!(
+                session = %name, error = %e,
+                "could not record that the next start owes this turn"
+            );
+        }
     }
     session.cancel();
-    // Aborting is deliberate, so the work is not owed unless a start will resume it.
-    let dropped = if resume {
+    // Aborting is deliberate, so the work is not left behind unless it is owed.
+    let dropped = if flagged || (owes && in_wait) {
         d.store
             .clear_pending_tasks_except(name, "turn")
             .unwrap_or(0)
@@ -2710,11 +2723,9 @@ async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => Outcome::err(e.to_string()),
         };
     }
-    // SPEC: this drops the turn and the next start continues it; only a `cancel`
-    // keeps a waiting one.
-    let (was_busy, dropped) = interrupt(d, &name, false, true);
+    let (was_busy, dropped) = interrupt(d, &name, true);
     let mut message = if was_busy {
-        format!("interrupted {name}")
+        format!("interrupted {name}; the next start continues this turn")
     } else {
         format!("{name} is idle")
     };
@@ -2738,7 +2749,7 @@ pub(crate) async fn stop(d: &Dispatch) {
     let reason = crate::signal::reason()
         .unwrap_or("a signal reached the server")
         .to_string();
-    let said = cancel(d, &Origin::Signal { reason }, false, false).await;
+    let said = cancel(d, &Origin::Signal { reason }, false).await;
     tracing::info!(answer = %said.message, "stopped as a signal asks");
 }
 
@@ -2750,7 +2761,7 @@ pub(crate) async fn stop(d: &Dispatch) {
 /// learns the server is stopping, and its `payload.by` is the only place that
 /// says who asked. The status that follows from it states the fact, not the
 /// name -- see `docs/notes/server-commands.md`.
-async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool, keep_turn: bool) -> Outcome {
+async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
     // The listen loop keeps dispatching through the notice window.
     d.shutting_down.store(true, Ordering::SeqCst);
     // SPEC: every *running* session; an idle one has nothing to interrupt.
@@ -2761,9 +2772,9 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool, keep_turn: bool
         .filter(|session| session.busy())
         .collect();
     for session in &running {
-        // Fire the token: a stuck call has no boundary. A wait is the exception;
-        // `interrupt` keeps its turn.
-        interrupt(d, session.name(), true, keep_turn);
+        // Fire the token: a stuck call has no boundary. SPEC: a session that is
+        // running and not waiting is flagged, so the next start continues it.
+        interrupt(d, session.name(), true);
     }
     // Only a protocol `cancel` lets jobs go; every other stop ends them here.
     let (released, killed) = match origin {
@@ -2815,12 +2826,9 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool, keep_turn: bool
         None => "; every channel was kept alive, and the next start adopts them".to_string(),
     };
     let said = format!(
-        "interrupted {} session(s); {}; {jobs}{channels}",
-        running.len(),
-        match keep_turn {
-            true => "their turns are kept and the next start continues them",
-            false => "nothing is left for the next start",
-        }
+        "interrupted {} session(s); their turns are kept and the next start continues them; \
+         {jobs}{channels}",
+        running.len()
     );
     tracing::warn!(
         running = running.len(),
@@ -2974,6 +2982,8 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         let _ = d.store.delete_pending_task(task.id);
     }
     let mut resumed = 0;
+    // The sessions this pass already gave a turn, so the flag below adds nothing.
+    let mut woken: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (name, tasks) in recovery_groups(tasks) {
         let Ok(session) = d.sessions.get(&name) else {
             // Only a confirmed missing session may discard owed work.
@@ -3046,6 +3056,30 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             .collect();
         if let Some(work) = claim_recovery(d, session, owned, owed) {
             tracing::info!(session = %name, "replaying work left pending");
+            spawn_turn(d, work);
+            woken.insert(name);
+            resumed += 1;
+        }
+    }
+    // SPEC: "restart will consume and continue sessions with interrupted flag".
+    // A row is the words owed; the flag is the turn, and a session can owe a turn
+    // with no row left to say so -- the turn that was running had already read its
+    // own, and the stop took the rest. This is that turn continuing.
+    for (id, name) in d.store.interrupted_sessions().unwrap_or_default() {
+        if woken.contains(&name) {
+            continue;
+        }
+        let Ok(session) = d.sessions.get(&name) else {
+            continue;
+        };
+        if session.busy() {
+            continue;
+        }
+        if let Some(work) = claim_recovery(d, session, Vec::new(), true) {
+            tracing::info!(
+                session = %name, id,
+                "continuing the turn a stop interrupted"
+            );
             spawn_turn(d, work);
             resumed += 1;
         }

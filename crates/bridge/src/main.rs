@@ -651,6 +651,9 @@ async fn dial(
             label: format!("bridge/pid-{}", std::process::id()),
             // Not a session's: it speaks for whoever wrote to it.
             session: None,
+            // And not a shell's: a bridge is started by a window, which says so
+            // itself when it writes to this one.
+            parent: None,
         },
         key,
     };

@@ -68,16 +68,27 @@ fn run() -> Result<u8, String> {
 ///
 /// # Invariant
 ///
-/// A window told not to start a server (`--client_only`) will not take the port,
-/// so the server that holds it keeps it: that flag exists so a server upgrade
-/// does not break the client, and retiring the old build stops that server
-/// exactly there. Every other program replaces the server. See `bundle-main.md`.
+/// Only a program that will bind this home's port replaces the server, because only
+/// that one is waiting for it: `gongga-server`, and a window that did not say
+/// `--client_only`.
+///
+/// # Invariant
+///
+/// A one-shot command is not one of them. It has no port to take, and this file
+/// places its payload in `$GONGGA_HOME` whatever `--home` the command was given --
+/// so a `gongga-cli ... --server <somewhere else>` run from one home used to retire
+/// the server of another, and the `cancel` it asks with took that server's turn with
+/// it. See `bundle-main.md`.
 fn keeps_the_server(program: &str, args: &[std::ffi::OsString]) -> bool {
-    program == "gongga-tui"
-        && args.iter().any(|arg| {
+    match program {
+        "gongga-server" => false,
+        "gongga-tui" => !args.iter().any(|arg| {
             let arg = arg.to_string_lossy();
             arg == "--client_only" || arg == "--client-only"
-        })
+        }),
+        // `gongga-cli` and every other name: a client, which reads a server.
+        _ => true,
+    }
 }
 
 /// The programs, embedded at build time by the `payload` feature.

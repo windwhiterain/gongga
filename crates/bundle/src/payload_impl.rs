@@ -121,7 +121,8 @@ pub fn file_name(name: &str) -> String {
 /// work (`commands.rs`). A window or a command in flight is never touched, so a
 /// build whose clients are still up keeps its directory until they exit. `ours`
 /// is the payload of the build asking. `keeps_servers` leaves the port alone;
-/// `force` skips the ask. See `bundle-main.md`.
+/// `force` rides into the ask, so a server that refuses it is stopped by pid
+/// instead of left holding the port. See `bundle-main.md`.
 pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool, force: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -162,8 +163,10 @@ fn stop_programs_in(dir: &Path, ours: &Path, keeps_servers: bool, force: bool) -
         // window that was told to use it.
         return false;
     }
-    // A cancel that never answers holds the port; force takes that as its answer.
-    if force || !ask_to_cancel(ours, dir, server) {
+    // `force` travels with the ask instead of replacing it: the command line knows
+    // how to stop a build its own plain `cancel` cannot reach, and only a stop that
+    // was refused is a stop to kill.
+    if !ask_to_cancel(ours, dir, server, force) {
         kill(server.pid);
         wait_until_gone(server.pid);
     }
@@ -183,7 +186,14 @@ fn outlives_its_build(process: &Process) -> bool {
 }
 
 /// Whether a server running from `dir` answered a `cancel` and stopped.
-fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process) -> bool {
+///
+/// # Invariant
+///
+/// `force` is passed on, not consumed here: the command line is this home's, it may
+/// be a build other than this one, and what it can do about a server that will not
+/// stop is its own business. This file only falls back to a kill when the answer is
+/// no.
+fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process, force: bool) -> bool {
     // The key is the home's, two levels up from a build in `payload/<stamp>`.
     let home = dir.parent().and_then(|payload| payload.parent());
     let key = home
@@ -205,6 +215,9 @@ fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process) -> bool {
     let Some(port) = server.port else {
         return false;
     };
+    if force {
+        cancel.arg("--force");
+    }
     cancel
         .arg("--server")
         .arg(format!("127.0.0.1:{port}"))
