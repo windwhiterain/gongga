@@ -472,6 +472,31 @@ read, `Sink::rewind` for a tail — the half-written block no stored row account
 for. A refused refill is recorded and not retried until the next link, so a
 window cannot spin at frame rate asking for something the server refuses.
 
+## Held rows, and a page that arrives as rows
+
+A window used to be one range: `floor` to `drawn`. That is true of a window the
+scroll built, and false the moment the operator reads a range by hand --
+`/get_messages --range 1:5` on a window at row 300 puts five rows in the copy that
+are nowhere near the window's floor. Two things then went wrong at once. `holds`
+answered "duplicate" for every row between them, so a repeat of a row the copy did
+*not* have was dropped on the floor; and the read's rows were drawn as lines,
+appended under the newest row, and drawn a second time as a page when the scroll
+finally reached them.
+
+`Held` is the exact answer: the rows the copy holds, kept as touching runs, written
+by `hand_over` -- the one call that writes a row to the copy -- and reset by a
+declaration. `Sync::holds` is membership, `Sync::floor` is the bottom of the run the
+window ends at, and a row below that floor is *past*: it goes to the copy at once and
+waits in `Sync::past`, because an answer's rows all arrive before its `cmd_result`
+and a page is an order, not a race. `land_past` draws them in one piece when that
+`cmd_result` arrives.
+
+Neither side may guess the other's rows. A page that does not touch the window's floor
+is not drawn at all: its rows are the copy's, and the scroll reaches them the way it
+reaches any row, by pages that touch. And the local replay in `answer_older` keeps
+only the run that ends at `floor - 1` for the same reason -- the journal can hold rows
+behind a gap, and a page that jumps the gap says the rows in it do not exist.
+
 ## Client::handle_event
 
 Nothing is filtered here. Every event goes to the front-end, whichever session it

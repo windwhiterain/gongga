@@ -160,6 +160,16 @@ pub async fn answer_older(
         if let Some(floor) = ui.floor_of(&name).map(|floor| floor.max(1) as u64) {
             let count = ui.room_of(&name).max(1).saturating_mul(16).clamp(16, 600);
             let mut held = ui.events(&name, floor, count);
+            // Only the run that touches the window: a row behind a gap is the
+            // copy's, not this page's.
+            let mut touch = floor.saturating_sub(1);
+            held.retain(|(seq, _)| {
+                let keep = *seq == touch;
+                if keep {
+                    touch = touch.saturating_sub(1);
+                }
+                keep
+            });
             if !held.is_empty() {
                 held.reverse();
                 let start = held[0].0;
