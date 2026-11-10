@@ -416,6 +416,26 @@ impl Panes {
         self.log.relabel(key, tag, kind);
     }
 
+    /// Puts a page of the past above what `window` holds, and answers its rows.
+    pub fn prepend(&mut self, window: &str, rows: &[client::render_wire::PastRow]) -> usize {
+        self.log.prepend(window, rows)
+    }
+
+    /// Holds a pane's rows while a page goes in above them.
+    ///
+    /// # Invariant
+    ///
+    /// The scroll is counted from the newest row, so rows inserted above it push
+    /// the whole pane down; the reader's place is a row, and it moves with them.
+    /// A pane at the bottom is following the newest row and stays there.
+    pub fn hold_place(&mut self, window: &str, rows: usize) {
+        if let Some(pane) = self.panes.iter_mut().find(|pane| pane.name == window)
+            && pane.scroll > 0
+        {
+            pane.scroll += rows;
+        }
+    }
+
     /// Caps every view's blocks, and the ones opened later too.
     pub fn set_block_size(&mut self, lines: usize) {
         self.log.set_block_size(lines);
@@ -518,6 +538,23 @@ impl Panes {
     ///
     /// Read after a frame, never during one: only the frame knows how tall a pane
     /// is, and a pane nothing has drawn yet is not a page anyone can ask for.
+    /// The panes whose oldest row is the top of their frame.
+    ///
+    /// # Invariant
+    ///
+    /// Pinned is what the render knows: a scroll it cannot fill is clamped to
+    /// `max_scroll`, so `scroll >= max_scroll` is all a pane can say about rows it
+    /// does not hold. A pane with nothing to scroll is pinned too -- its frame is
+    /// short of rows, not at the end of them.
+    pub fn pinned(&self) -> Vec<String> {
+        self.panes
+            .iter()
+            .filter(|pane| pane.kind == Kind::Shown)
+            .filter(|pane| pane.scroll >= pane.max_scroll)
+            .map(|pane| pane.name.clone())
+            .collect()
+    }
+
     pub fn rooms(&self) -> Vec<(String, usize)> {
         self.panes
             .iter()

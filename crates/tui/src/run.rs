@@ -112,6 +112,12 @@ pub(crate) fn apply_frame(tui: &mut Tui, frame: RenderMessage) -> Option<UiInten
             tui.set_sticky_session(name.as_deref());
             None
         }
+        // A page of the past: newer than nothing, so it goes above what the
+        // window holds instead of at its end.
+        RenderMessage::Older { window, rows } => {
+            tui.prepend_rows(&window, &rows);
+            None
+        }
         drawing => {
             let mut sink = TuiSink(tui);
             draw(&mut sink, drawing);
@@ -157,12 +163,13 @@ fn draw(sink: &mut TuiSink<'_>, frame: RenderMessage) {
         RenderMessage::Forget { window } => sink.forget(&window),
         RenderMessage::Clear { window } => sink.clear(&window),
         RenderMessage::Stopped { session, failed } => sink.stopped(&session, failed),
-        // The six control frames were answered by `apply_frame`.
+        // The control frames were answered by `apply_frame`.
         RenderMessage::Draft { .. }
         | RenderMessage::Server { .. }
         | RenderMessage::Repoint { .. }
         | RenderMessage::Vocabulary { .. }
         | RenderMessage::Completion { .. }
+        | RenderMessage::Older { .. }
         | RenderMessage::StickySession { .. } => {}
     }
 }

@@ -87,6 +87,36 @@ pub enum RenderMessage {
         subject: Option<String>,
         candidates: Vec<Candidate>,
     },
+    /// A page of the past, to be drawn *above* what the window already holds.
+    ///
+    /// # Invariant
+    ///
+    /// One frame, finished rows: a page is older than every row the window has, so
+    /// a front-end that appends it draws the past as the newest thing on screen.
+    /// It carries the page as an order instead of a stream of calls, because a
+    /// page has already happened: nothing of it will be rewritten. See
+    /// `docs/notes/client-render-wire.md`.
+    Older {
+        window: String,
+        rows: Vec<PastRow>,
+    },
+}
+
+/// One finished row of a page of the past: a line, or a block that already ended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "row", rename_all = "snake_case")]
+pub enum PastRow {
+    Line {
+        kind: LineKind,
+        text: String,
+    },
+    /// A block that streams under `tag`, kept by `key` while it lived.
+    Block {
+        key: String,
+        kind: LineKind,
+        tag: String,
+        text: String,
+    },
 }
 
 /// The cursor half of `Sink`: what a client and its window journal say to each other.
@@ -168,6 +198,20 @@ pub struct WireSink {
 }
 
 impl WireSink {
+    /// A page of the past, drawn above what the window holds.
+    ///
+    /// # Invariant
+    ///
+    /// A frame, not a cursor message: where the page goes is the front-end's to
+    /// decide, and the daemon's own record of it is `landed`. See
+    /// `docs/notes/client-render-wire.md`.
+    pub fn prepend(&mut self, window: &str, rows: &[PastRow]) {
+        self.render.push(RenderMessage::Older {
+            window: window.to_string(),
+            rows: rows.to_vec(),
+        });
+    }
+
     pub fn take_render(&mut self) -> Vec<RenderMessage> {
         std::mem::take(&mut self.render)
     }

@@ -47,6 +47,20 @@ pub enum Record {
         text: String,
         done: bool,
     },
+    /// One row of a session's transcript, as the server stated it.
+    ///
+    /// # Invariant
+    ///
+    /// The client's copy of the server's state, keyed by the number the server gave
+    /// it: `seq` is the transcript's own, so the rows a window can draw again are
+    /// exactly the ones written here, and a row the window is short of is a number
+    /// that is not. A journal without these has a boundary but no content -- which
+    /// is a window that cannot read its own past. See `docs/notes/tui-cache.md`.
+    Event {
+        seq: u64,
+        session: String,
+        body: protocol::Event,
+    },
     /// One session's transcript now ends at `seq`, and every block recorded
     /// above this record was drawn from a stored row.
     ///
@@ -329,11 +343,12 @@ impl Cache {
         framed.extend_from_slice(&len);
         framed.extend_from_slice(&body);
         framed.extend_from_slice(&len);
-        self.with(window, true, |file| {
+        let wrote = self.with(window, true, |file| {
             let at = file.seek(SeekFrom::End(0)).ok()?;
             file.write_all(&framed).ok()?;
             Some(at)
-        })
+        });
+        wrote
     }
 
     /// Writes down that this window's view holds nothing from here on.
@@ -422,6 +437,30 @@ impl Cache {
             at = start;
         }
         None
+    }
+
+    /// The rows this window holds above `before`, newest first, at most `count`.
+    ///
+    /// # Invariant
+    ///
+    /// Walked back from the journal's end and stopped at the newest `Clear`: what a
+    /// window drew before a cut is not a page its reader can be handed again. The
+    /// rows come back with their own numbers, which is what says where each one
+    /// goes -- above the ones already held, never at the end. See
+    /// `docs/notes/tui-cache.md`.
+    pub fn events(&self, window: &str, before: u64, count: usize) -> Vec<(u64, protocol::Event)> {
+        let mut out = Vec::new();
+        let mut at = self.end(window);
+        while at > 0 && out.len() < count {
+            let start = self.back(window, at, 1);
+            match self.read(window, start) {
+                Some(Record::Event { seq, body, .. }) if seq < before => out.push((seq, body)),
+                Some(Record::Clear) => break,
+                _ => {}
+            }
+            at = start;
+        }
+        out
     }
 
     /// Writes down that the tail above the last stamp is thrown away.

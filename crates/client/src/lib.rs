@@ -43,6 +43,7 @@ use protocol::{
 use tokio::net::UdpSocket;
 
 use crate::commands::{parse_args, render_args};
+use crate::render_wire::PastRow;
 
 const DEFAULT_SERVER: &str = "127.0.0.1:9700";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -533,6 +534,17 @@ pub trait Sink {
     /// here states a fact about its own window -- which is what
     /// `SessionInfo::transcript` is later compared against.
     fn transcript(&mut self, _session: &str, _created: i64, _seq: i64) {}
+    /// The stored row `seq` of `session` is being drawn by the calls that follow.
+    ///
+    /// # Invariant
+    ///
+    /// A row and its number together: what a window drew is written down with the
+    /// transcript's own number, so the same rows can be handed over again from disk
+    /// rather than asked for again. Only the side that receives a `(seq, event)`
+    /// pair can do this -- a front-end sees text and has no number to key it with.
+    /// See `docs/notes/client-lib.md`.
+    fn row(&mut self, _window: &str, _seq: u64, _event: &Event) {}
+
     /// `window` is about to be refilled: drop what no stored row accounts for.
     ///
     /// # Invariant
@@ -548,6 +560,28 @@ pub trait Sink {
     /// window already holds -- and nothing is dropped: the page is the rows the
     /// transcript has just before the window's oldest one.
     fn older(&mut self, _window: &str) {}
+    /// A page of the past, whole: the rows go above what `window` holds.
+    ///
+    /// # Invariant
+    ///
+    /// One call for one page, and its rows are finished. A front-end that takes
+    /// its rows one at a time appends them, and the past is then drawn where the
+    /// present is -- which is why the page is an order rather than a stream of
+    /// calls. The default replays it for a front-end that has no place for a page
+    /// of its own, and appends too. See `docs/notes/client-render-wire.md`.
+    fn older_page(&mut self, window: &str, rows: &[PastRow]) {
+        for row in rows {
+            match row {
+                PastRow::Line { kind, text } => self.line(window, *kind, text),
+                PastRow::Block {
+                    key,
+                    kind,
+                    tag,
+                    text,
+                } => self.stream(window, key, *kind, tag, text, true),
+            }
+        }
+    }
     /// A page of older rows landed, so `window` holds every row from `floor` up.
     ///
     /// # Invariant
@@ -564,6 +598,119 @@ pub trait Sink {
     /// running: a front-end that shows it and one that ignores it hear the same
     /// fact. See `docs/notes/client-lib.md`.
     fn stopped(&mut self, _session: &str, _failed: bool) {}
+}
+
+/// One page of the past, collected before it is drawn.
+///
+/// # Invariant
+///
+/// A page is what has already happened, so its rows are finished when it is
+/// handed over: a call and the label its result gave it are one row, and a block
+/// is never left open. News that is not a row -- a note, the layout, the sticky
+/// session -- is not the page's: this sink records rows and drops the rest, and
+/// the sink that draws a window gets that news on its own.
+/// See `docs/notes/client-lib.md`.
+#[derive(Default)]
+pub(crate) struct Page {
+    pub(crate) rows: Vec<PastRow>,
+    /// Where the block under a key is, while the page is still being collected.
+    at: HashMap<String, usize>,
+}
+
+impl Page {
+    fn block(&mut self, key: &str) -> Option<&mut PastRow> {
+        let at = self.at.get(key).copied()?;
+        self.rows.get_mut(at)
+    }
+}
+
+impl Sink for Page {
+    fn line(&mut self, _window: &str, kind: LineKind, text: &str) {
+        self.rows.push(PastRow::Line {
+            kind,
+            text: text.to_string(),
+        });
+    }
+
+    fn stream(
+        &mut self,
+        _window: &str,
+        key: &str,
+        kind: LineKind,
+        tag: &str,
+        text: &str,
+        done: bool,
+    ) {
+        if let Some(PastRow::Block {
+            tag: label,
+            text: body,
+            ..
+        }) = self.block(key)
+        {
+            if !tag.is_empty() {
+                label.clear();
+                label.push_str(tag);
+            }
+            if done {
+                body.clear();
+            }
+            body.push_str(text);
+        } else {
+            self.rows.push(PastRow::Block {
+                key: key.to_string(),
+                kind,
+                tag: tag.to_string(),
+                text: text.to_string(),
+            });
+            if !done {
+                self.at.insert(key.to_string(), self.rows.len() - 1);
+            }
+            return;
+        }
+        if done {
+            self.at.remove(key);
+        }
+    }
+
+    fn status(&mut self, _text: &str) {}
+
+    fn rewrite(&mut self, _window: &str, key: &str, text: &str) {
+        if let Some(PastRow::Block { text: body, .. }) = self.block(key) {
+            body.clear();
+            body.push_str(text);
+        }
+    }
+
+    fn relabel(&mut self, _window: &str, key: &str, tag: &str, kind: LineKind) {
+        if let Some(PastRow::Block {
+            tag: label,
+            kind: row_kind,
+            ..
+        }) = self.block(key)
+        {
+            label.clear();
+            label.push_str(tag);
+            *row_kind = kind;
+        }
+    }
+
+    /// A call arrives with the shape it was drawn in, and its key may be one the
+    /// page has not seen: the row is made here rather than looked for.
+    fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
+        if self.at.contains_key(key) {
+            self.relabel(window, key, &head_label(head), kind_of(head.kind));
+            self.rewrite(window, key, &head.detail());
+            return;
+        }
+        self.stream(
+            window,
+            key,
+            kind_of(head.kind),
+            &head_label(head),
+            &head.detail(),
+            !streamed,
+        );
+    }
 }
 
 /// The one-shot mode's sink: it prints nothing, but it remembers what went
@@ -742,6 +889,27 @@ struct Sync {
     ///
     /// Cleared by a greeting and nothing else: a refusal answers one range, not a moment.
     blocked: bool,
+}
+
+impl Sync {
+    /// Whether the range this window holds already contains the row `seq` names.
+    ///
+    /// # Invariant
+    ///
+    /// A window holds one range: `floor` up to the row it ends at. A stored row
+    /// inside that range is a duplicate -- `get_messages` asks for rows that exist,
+    /// and a replay asks for the same ones -- and drawing it again is the same
+    /// words twice on the screen. Outside it, the row is either older than the
+    /// window (a page, not an append) or newer (news). See `docs/notes/client-lib.md`.
+    fn holds(&self, seq: u64) -> bool {
+        let Some(floor) = self.floor else {
+            return false;
+        };
+        let Drawn::At { seq: drawn, .. } = self.drawn else {
+            return false;
+        };
+        (floor.max(0) as u64..=drawn.max(0) as u64).contains(&seq)
+    }
 }
 
 /// A refill in flight: what the window is owed, and what arrived meanwhile.
@@ -1233,17 +1401,31 @@ impl Client {
             self.handle_answer(event, sink);
             return;
         };
-        let skipped = self.cursor.is_some_and(|last| seq > last + 1);
-        self.cursor = Some(self.cursor.map_or(seq, |last| last.max(seq)));
-        if skipped {
-            self.holed = true;
-        }
+        // A refill's rows carry the store's numbers, which are older than the
+        // stream's cursor and say nothing about what the stream skipped: buffered
+        // before the bookkeeping, so an answer is never read as a hole.
         if let Some(session) = event.session()
             && let Some(sync) = self.sync.get_mut(session)
             && let Some(fill) = sync.fill.as_mut()
         {
             fill.buffered.push((seq, event));
             return;
+        }
+        let skipped = self.cursor.is_some_and(|last| seq > last + 1);
+        self.cursor = Some(self.cursor.map_or(seq, |last| last.max(seq)));
+        if skipped {
+            self.holed = true;
+        }
+        // A stored row the window already draws, sent again -- `get_messages` asks
+        // for rows that exist -- is the same words twice, so it is not drawn. A
+        // `Transcript` is not a row: it says where a session stands, and dropping
+        // one would leave the window's stamp behind.
+        if let Some(session) = event.session() {
+            if row_of(&event) && self.sync.get(session).is_some_and(|sync| sync.holds(seq)) {
+                return;
+            }
+            // The client's copy of the server's state, written where it is drawn.
+            sink.row(session, seq, &event);
         }
         self.handle_event(event, sink);
     }
@@ -1282,7 +1464,7 @@ impl Client {
     /// told. A front-end that records what it is handed -- the TUI's journal --
     /// therefore keeps a hidden session's rows, and showing it again draws them.
     /// See `docs/notes/client-lib.md`.
-    fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
+    pub(crate) fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
         match event {
             Event::Cmd { id, name, args } => {
                 // Neither the completion's questions nor a refill is the operator's
@@ -1725,8 +1907,26 @@ impl Client {
             sync.floor = Some(sync.floor.map_or(floor, |held| held.min(floor)));
             sink.landed(&name, sync_created, last_seq, floor);
         }
-        for (_, event) in owed {
-            self.handle_event(event, sink);
+        if fill.older {
+            // The page is collected first, then drawn in one piece above the
+            // window: a front-end that takes the rows one at a time has nowhere to
+            // put them but the end, which is where "now" is.
+            let mut page = Page::default();
+            for (seq, event) in owed {
+                // A page is rows the window did not hold: they belong in the copy too.
+                if let Some(session) = event.session() {
+                    sink.row(session, seq, &event);
+                }
+                self.handle_event(event, &mut page);
+            }
+            sink.older_page(&name, &page.rows);
+        } else {
+            for (seq, event) in owed {
+                if let Some(session) = event.session() {
+                    sink.row(session, seq, &event);
+                }
+                self.handle_event(event, sink);
+            }
         }
         self.refresh(sink);
         true
@@ -1947,21 +2147,32 @@ impl Client {
     /// One page, and only when there is something above the floor: a window whose
     /// floor is the transcript's first row is owed nothing, and asking again would
     /// be a request the answer could not change.
-    pub fn ask_older(&mut self, name: &str, room: usize) -> Option<ClientMessage> {
+    /// A page of the past, anchored at the row the window is short of.
+    ///
+    /// # Invariant
+    ///
+    /// The page *ends* at `floor - 1`, the one row above the oldest the window
+    /// holds: that row is the window's own fact, and it is what the request is
+    /// anchored on. `history` is how much further back this page reaches -- a
+    /// prefetch, never a count of rows the pane still needs. The two are not the
+    /// same number and cannot be: one row of a transcript can draw twenty on the
+    /// screen, and a folded block draws eight of them as one. A page the render
+    /// could not fill is the render's to ask for again, which is cheaper than
+    /// translating rows into rows. See `docs/notes/client-lib.md`.
+    pub fn ask_older(&mut self, name: &str, history: usize) -> Option<ClientMessage> {
         let sync = self.sync.get(name)?;
         if sync.fill.is_some() || sync.blocked {
             return None;
         }
-        let room = room.max(1) as i64;
         let above = sync.floor?.saturating_sub(1);
         if above < 1 {
             return None;
         }
-        let first = (above - room + 1).max(1);
+        let reach = above.saturating_sub(history.max(1) as i64 - 1).max(1);
         self.begin_fill(
             name,
-            format!("{first}:{above}"),
-            First::Named(first),
+            format!("{reach}:{above}"),
+            First::Named(reach),
             false,
             true,
         )
@@ -2279,6 +2490,14 @@ fn title_note(session: &protocol::SessionInfo) -> String {
 /// session row, a status, a usage reading and a deletion are no part of a
 /// transcript, so an answer never carries them -- and dropping one because it was
 /// numbered before the answer would lose it for good.
+/// Whether this event draws a row of a transcript, so a window can already have it.
+fn row_of(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::Response(_) | Event::ToolCall(_) | Event::ToolAnswer(_)
+    )
+}
+
 fn restated(event: &Event) -> bool {
     match event {
         Event::Response(_)

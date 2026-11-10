@@ -7,7 +7,7 @@ use std::path::Path;
 use std::pin::Pin;
 
 use gongga_client::render_wire::{
-    CursorMessage, RenderMessage, UiIntent, WireSink, decode_intent, encode_frame,
+    CursorMessage, PastRow, RenderMessage, UiIntent, WireSink, decode_intent, encode_frame,
 };
 use gongga_client::runtime::{self, Frontend, FrontendEvent, Server};
 use gongga_client::window_journal::WindowJournal;
@@ -100,8 +100,10 @@ impl PipeFrontend {
             }
         }
         if let RenderMessage::Forget { window } = &message {
+            // The window's view starts empty; its journal does not. The copy is the
+            // client's record of what the server said, so a refill drops the facts
+            // and keeps the rows -- they are exactly what the next frame reads back.
             self.journal.forget(window);
-            self.journal.cache().remove(window);
         }
         match encode_frame(&message) {
             Ok(frame) => {
@@ -139,6 +141,9 @@ impl WindowFacts for PipeFrontend {
     }
     fn drawn(&self) -> &[String] {
         self.journal.drawn()
+    }
+    fn events(&self, window: &str, before: u64, count: usize) -> Vec<(u64, protocol::Event)> {
+        self.journal.events(window, before, count)
     }
     // Only a real vocabulary change is a frame; the UI asks for candidates itself.
     fn refresh_completion(&mut self, version: u64) {
@@ -318,11 +323,21 @@ impl Sink for PipeSink<'_> {
     fn transcript(&mut self, session: &str, created: i64, seq: i64) {
         self.wire.transcript(session, created, seq);
     }
+    fn row(&mut self, window: &str, seq: u64, event: &gongga_client::protocol::Event) {
+        // The client's copy of the server's state: written here, where the pair
+        // exists, never by the UI -- a frame carries text and no number.
+        self.front.journal.event(window, seq, window, event);
+    }
     fn rewind(&mut self, window: &str) {
         self.wire.rewind(window);
     }
     fn older(&mut self, window: &str) {
         self.wire.older(window);
+    }
+    fn older_page(&mut self, window: &str, rows: &[PastRow]) {
+        // The one thing the pipe can say that a cursor message cannot: the rows go
+        // above what the window holds. See `docs/notes/client-render-wire.md`.
+        self.wire.prepend(window, rows);
     }
     fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
         self.wire.landed(window, created, drawn, floor);

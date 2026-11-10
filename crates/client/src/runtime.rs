@@ -531,9 +531,9 @@ pub async fn run(
         )
         .await;
         // Same place, same reason: what a frame drew decides what is fetched.
-        crate::window_refill::answer_transcripts(&mut client, link.as_ref(), &*ui).await;
+        crate::window_refill::answer_transcripts(&mut client, link.as_ref(), &mut *ui).await;
         // And what the operator asked to read above: a page of the past.
-        crate::window_refill::answer_older(&mut client, link.as_ref(), &*ui, &mut owed).await;
+        crate::window_refill::answer_older(&mut client, link.as_ref(), &mut *ui, &mut owed).await;
     };
 
     // SPEC's stop, for the server the bar drew as own, and nothing for one that is

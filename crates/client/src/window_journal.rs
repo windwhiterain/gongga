@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use crate::protocol;
 use crate::render_wire::CursorMessage;
 use crate::window_cache::{Cache, Record};
 
@@ -116,6 +117,30 @@ impl WindowJournal {
     pub fn stamp(&mut self, window: &str, created: i64, seq: i64) {
         self.cache.stamp(window, created, seq);
         self.stamps.insert(window.to_string(), (created, seq));
+    }
+
+    /// Writes down one row of a transcript: the client's copy of the server's state.
+    ///
+    /// # Invariant
+    ///
+    /// Written where the row is drawn, with the number the server gave it, so the
+    /// journal and the window say the same thing about the same row. This is the
+    /// client's and not a front-end's: only the side that receives a `(seq, event)`
+    /// pair can key a row by its number. See `docs/notes/client-window-journal.md`.
+    pub fn event(&mut self, window: &str, seq: u64, session: &str, body: &protocol::Event) {
+        self.cache.append(
+            window,
+            &Record::Event {
+                seq,
+                session: session.to_string(),
+                body: body.clone(),
+            },
+        );
+    }
+
+    /// The rows this window holds above `before`, newest first, at most `count`.
+    pub fn events(&self, window: &str, before: u64, count: usize) -> Vec<(u64, protocol::Event)> {
+        self.cache.events(window, before, count)
     }
 
     /// What a window has drawn, and of which session: the disk is the authority.

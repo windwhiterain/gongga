@@ -465,8 +465,8 @@ async fn run_commands(
         // A command's own events first: they are the answer, and the result that
         // follows is the sentence about it.
         let mut broken = false;
-        for event in outcome.events {
-            if send_event(&sink, None, event).await.is_err() {
+        for (seq, event) in outcome.events {
+            if send_event(&sink, seq, event).await.is_err() {
                 broken = true;
                 break;
             }

@@ -293,7 +293,16 @@ pub struct Outcome {
     pub ok: bool,
     pub message: String,
     pub data: Option<serde_json::Value>,
-    pub events: Vec<Event>,
+    /// The events this answer is made of, each with the number it was stored at.
+    ///
+    /// # Invariant
+    ///
+    /// A row that came off the store goes out with its own `seq`, because a client
+    /// that keeps the server's state must key the row by that number: a row sent
+    /// without one can only be appended where it arrived, never placed. Only a row
+    /// that is not stored yet -- the stream still being written -- goes out with
+    /// `None`. See `SPEC.md`, "Client".
+    pub events: Vec<(Option<u64>, Event)>,
 }
 
 impl Outcome {
@@ -325,7 +334,7 @@ impl Outcome {
     }
 
     /// Attaches the rows this command answers with, oldest first.
-    pub fn with_events(mut self, events: Vec<Event>) -> Self {
+    pub fn with_events(mut self, events: Vec<(Option<u64>, Event)>) -> Self {
         self.events = events;
         self
     }
@@ -2240,24 +2249,29 @@ fn replay_transcript(
         Ok(t) => t,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let mut events: Vec<Event> = read
+    let mut events: Vec<(Option<u64>, Event)> = read
         .messages
         .iter()
-        .filter_map(|row| row_event(name, row, true))
+        .filter_map(|row| {
+            row_event(name, row, true).map(|event| (Some(row.seq.max(0) as u64), event))
+        })
         .collect();
     // Published and not yet stored: what a window that reconnected has no other copy of.
     for part in &open {
         if part.text.trim().is_empty() {
             continue;
         }
-        events.push(Event::Response(ResponseEvent {
-            session: name.to_string(),
-            turn: part.turn,
-            part: part.part,
-            text: part.text.clone(),
-            done: false,
-            call_id: part.call_id.clone(),
-        }));
+        events.push((
+            None,
+            Event::Response(ResponseEvent {
+                session: name.to_string(),
+                turn: part.turn,
+                part: part.part,
+                text: part.text.clone(),
+                done: false,
+                call_id: part.call_id.clone(),
+            }),
+        ));
     }
     let count = events.len();
     let message = format!(
@@ -2672,14 +2686,17 @@ async fn events(d: &Dispatch, args: &Args) -> Outcome {
         let payload = serde_json::from_str(&row.payload)
             .unwrap_or_else(|_| serde_json::Value::String(row.payload.clone()));
         last_id = row.id;
-        events.push(Event::Record {
-            id: row.id,
-            seq: row.seq,
-            session: row.session_id.and_then(|id| names.get(&id).cloned()),
-            kind: row.kind.clone(),
-            payload,
-            at: row.created_at,
-        });
+        events.push((
+            Some(row.seq.max(0) as u64),
+            Event::Record {
+                id: row.id,
+                seq: row.seq,
+                session: row.session_id.and_then(|id| names.get(&id).cloned()),
+                kind: row.kind.clone(),
+                payload,
+                at: row.created_at,
+            },
+        ));
     }
     let message = if rows.is_empty() {
         format!("no rows after id {after}")
@@ -2724,7 +2741,9 @@ fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
     let events = t
         .messages
         .iter()
-        .filter_map(|row| row_event(name, row, false))
+        .filter_map(|row| {
+            row_event(name, row, false).map(|event| (Some(row.seq.max(0) as u64), event))
+        })
         .collect();
     // The rows are the events; a long read is many small messages, not one that
     // cannot be carried.

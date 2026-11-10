@@ -26,6 +26,14 @@ pub trait WindowFacts {
     fn drawn(&self) -> &[String];
     /// The vocabulary changed; `version` names the new one so a UI can dedupe.
     fn refresh_completion(&mut self, version: u64);
+    /// The rows this window's journal holds above `before`, newest first.
+    ///
+    /// # Invariant
+    ///
+    /// The client's copy of the server's state, read back by number: a page comes
+    /// from here first, and from the server only when the journal has nothing above
+    /// `before`. See `docs/notes/client-window-journal.md`.
+    fn events(&self, window: &str, before: u64, count: usize) -> Vec<(u64, protocol::Event)>;
 }
 
 /// One input line, handed to the command layer or sent as a message.
@@ -91,7 +99,7 @@ pub fn declare(client: &mut crate::Client, ui: &dyn WindowFacts) {
 pub async fn answer_transcripts(
     client: &mut crate::Client,
     link: Option<&crate::Link>,
-    ui: &dyn WindowFacts,
+    ui: &mut dyn crate::runtime::Frontend,
 ) {
     let Some(open) = link else {
         return;
@@ -100,6 +108,18 @@ pub async fn answer_transcripts(
     for name in behind {
         if !ui.drawn().iter().any(|drawn| *drawn == name) {
             continue;
+        }
+        // The copy on disk is what the window shows first: a client that kept the
+        // server's state does not ask for rows it can already draw. Only the rows
+        // it is short of go over the wire.
+        let count = ui.room_of(&name).max(1).saturating_mul(16).clamp(16, 600);
+        let mut held = ui.events(&name, u64::MAX, count);
+        if !held.is_empty() {
+            held.reverse();
+            let mut sink = ui.sink();
+            for (_, event) in held {
+                client.handle_event(event, &mut *sink);
+            }
         }
         let Some(message) = client.ask_transcript(&name, ui.room_of(&name)) else {
             continue;
@@ -123,7 +143,7 @@ pub async fn answer_transcripts(
 pub async fn answer_older(
     client: &mut crate::Client,
     link: Option<&crate::Link>,
-    ui: &dyn WindowFacts,
+    ui: &mut dyn crate::runtime::Frontend,
     owed: &mut Vec<String>,
 ) {
     let Some(open) = link else {
@@ -134,7 +154,31 @@ pub async fn answer_older(
         if ui.floor_of(&name).is_some_and(|floor| floor <= 1) {
             continue;
         }
-        // One page, shaped by the pane. A fill already on its way answers it too.
+        // The local copy first: the rows above the oldest this window holds are in
+        // the journal, numbered. Replayed by the code that drew them the first time,
+        // so a page read from disk is the page the server would have sent.
+        if let Some(floor) = ui.floor_of(&name).map(|floor| floor.max(1) as u64) {
+            let count = ui.room_of(&name).max(1).saturating_mul(16).clamp(16, 600);
+            let mut held = ui.events(&name, floor, count);
+            if !held.is_empty() {
+                held.reverse();
+                let start = held[0].0;
+                let mut page = crate::Page::default();
+                for (_, event) in held {
+                    client.handle_event(event, &mut page);
+                }
+                if !page.rows.is_empty() {
+                    let (created, drawn) = ui.stamp_of(&name).unwrap_or((0, 0));
+                    let mut sink = ui.sink();
+                    sink.older_page(&name, &page.rows);
+                    sink.landed(&name, created, drawn, start as i64);
+                    continue;
+                }
+            }
+        }
+        // Anchored at the row the window is short of; the pane's height is only
+        // how much history comes back with it. A fill already on its way answers
+        // it too.
         match client.ask_older(&name, ui.room_of(&name)) {
             Some(message) => {
                 if open.send(message.clone()).await.is_err() {

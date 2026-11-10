@@ -17,6 +17,7 @@ use ratatui::text::{Line, Span};
 use crate::LineKind;
 use crate::markdown;
 use client::protocol;
+use client::render_wire::PastRow;
 use client::window_index::{Ledger, RowIndex};
 
 /// One block: a line that may still be growing, plus its rows.
@@ -776,6 +777,55 @@ impl Log {
         if let Some(ledger) = self.views.get_mut(&window) {
             ledger.index.shift(pos, after as isize - before as isize);
         }
+    }
+
+    /// Puts a page of the past above what `window` holds, and answers the rows
+    /// that went in.
+    ///
+    /// # Invariant
+    ///
+    /// The page is older than every row the window holds, so its blocks go in
+    /// front of the window's first one -- never at the end, which is where the
+    /// present is. The rows keep the page's order, oldest first, and the ledger is
+    /// rebuilt once: a page arrives whole, so no frame ever draws half of it. See
+    /// `docs/notes/tui-log.md`.
+    pub fn prepend(&mut self, name: &str, rows: &[PastRow]) -> usize {
+        if rows.is_empty() {
+            return 0;
+        }
+        let width = self.width_of(name);
+        let at = self
+            .views
+            .get(name)
+            .and_then(|ledger| ledger.blocks.first().copied())
+            .unwrap_or(self.entries.len());
+        for (offset, row) in rows.iter().enumerate() {
+            let mut entry = match row {
+                PastRow::Line { kind, text } => Entry::new(name, *kind, text.clone(), width),
+                PastRow::Block {
+                    key,
+                    kind,
+                    tag,
+                    text,
+                } => {
+                    let mut entry = Entry::with_tag(name, *kind, tag, text.clone(), width);
+                    entry.key = key.clone();
+                    entry
+                }
+            };
+            // A page is what already happened: nothing of it streams in later.
+            entry.sealed = true;
+            self.entries.insert(at + offset, entry);
+        }
+        // The live blocks are held by position, and a page puts every one of them
+        // at or after its own place further down.
+        for slot in self.open.values_mut() {
+            if *slot >= at {
+                *slot += rows.len();
+            }
+        }
+        self.reindex();
+        (at..at + rows.len()).map(|at| self.contributions(at)).sum()
     }
 
     /// Adds a finished line to the window `name` names. Costs what the line is worth.

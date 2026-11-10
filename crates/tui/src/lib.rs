@@ -23,6 +23,7 @@ mod table;
 mod tree;
 mod vt_input;
 
+use std::collections::HashSet;
 use std::io::{self, Stdout, Write, stdout};
 use std::path::Path;
 use std::time::Duration;
@@ -542,6 +543,14 @@ pub struct Tui {
     /// asks its client for candidates and never answers itself. A window that
     /// answers itself — a test — leaves it false and keeps the local completer.
     asks_client: bool,
+    /// The panes that have already asked for the row above them.
+    ///
+    /// # Invariant
+    ///
+    /// A pin asks once. A page that lands clears its window, so a frame that is
+    /// still short asks again; a page that never comes leaves the name here, so a
+    /// pin cannot spin. See `docs/notes/tui-lib.md`.
+    wished: HashSet<String>,
     /// The line the client was last asked about, so one question is one intent.
     asked: (String, usize),
     /// A Tab pressed before the candidates arrived, waiting for the answer.
@@ -929,6 +938,7 @@ impl Tui {
             dragging: None,
             note_window: client::COMMAND_WINDOW.to_string(),
             asks_client: false,
+            wished: HashSet::new(),
             asked: (String::new(), 0),
             tab_asked: false,
             rooms: Vec::new(),
@@ -1105,6 +1115,26 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// Draws a page of the past above what its window holds.
+    ///
+    /// # Invariant
+    ///
+    /// One gesture, one order: the page goes in above, and the rows already there
+    /// stay where the reader left them. A pane at the bottom is following the
+    /// newest row and stays at the bottom, because a page of the past is not news.
+    /// See `docs/notes/tui-log.md`.
+    pub fn prepend_rows(&mut self, name: &str, rows: &[client::render_wire::PastRow]) {
+        let added = self.screen.panes.prepend(name, rows);
+        if added == 0 {
+            return;
+        }
+        // The row that was missing arrived: a frame still short of its pane asks
+        // for the next one.
+        self.wished.remove(name);
+        self.screen.panes.hold_place(name, added);
+        self.dirty = true;
+    }
+
     /// Empties the window a deleted session's lines were read in.
     ///
     /// # Invariant
@@ -1265,6 +1295,19 @@ impl Tui {
             }
             if self.draw().is_err() {
                 return None;
+            }
+            // A frame that could not fill its pane is the one asking: the reader is
+            // pinned at the oldest row the window holds, so that row's neighbour
+            // above is what the next frame needs.
+            let pinned = self.screen.panes.pinned();
+            self.wished.retain(|name| pinned.contains(name));
+            let owed: Vec<String> = pinned
+                .into_iter()
+                .filter(|name| !self.wished.contains(name))
+                .collect();
+            if !owed.is_empty() {
+                self.wished.extend(owed.iter().cloned());
+                return Some(UiEvent::Intent(UiIntent::Older { windows: owed }));
             }
             // A run in progress is finished first: it lives in `self`, so a
             // cancelled wait resumes it instead of losing the keys.
