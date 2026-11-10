@@ -963,7 +963,7 @@ pub struct SessionManager {
     /// The same facts with a native `PATH`, for programs that are not workspace.
     script_env: Vec<(String, String)>,
     /// The named peers a session may run on. See `docs/notes/server-remote.md`.
-    remotes: Vec<crate::remotes::RemoteConfig>,
+    remotes: std::sync::Arc<crate::remotes::Catalog>,
     live: Arc<Mutex<HashMap<String, SessionHandle>>>,
     /// One shell per remote, opened only to list a directory for completion.
     ///
@@ -1013,7 +1013,7 @@ impl SessionManager {
         detached: DetachedRegistry,
         shell_env: Vec<(String, String)>,
         script_env: Vec<(String, String)>,
-        remotes: Vec<crate::remotes::RemoteConfig>,
+        remotes: std::sync::Arc<crate::remotes::Catalog>,
     ) -> Self {
         Self {
             store,
@@ -1142,9 +1142,9 @@ impl SessionManager {
         Some(reader)
     }
 
-    /// The remote names a session may name, in the config's order.
+    /// The remote names a session may name, in the file's order.
     pub fn remote_names(&self) -> Vec<String> {
-        self.remotes.iter().map(|r| r.name.clone()).collect()
+        self.remotes.names()
     }
 
     /// The detached jobs of every session.
@@ -1320,20 +1320,23 @@ impl SessionManager {
                  for this machine"
             );
         }
-        match self.remotes.iter().find(|r| r.name == name) {
+        match self.remotes.find(name) {
             Some(remote) => Ok(remote.endpoint.clone()),
-            None => anyhow::bail!(
-                "no remote named {name:?}; this server knows {}",
-                if self.remotes.is_empty() {
-                    "no remotes at all".to_string()
-                } else {
-                    self.remotes
-                        .iter()
-                        .map(|t| format!("{:?}", t.name))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                }
-            ),
+            None => {
+                let known = self.remotes.names();
+                anyhow::bail!(
+                    "no remote named {name:?}; this server knows {}",
+                    if known.is_empty() {
+                        "no remotes at all".to_string()
+                    } else {
+                        known
+                            .iter()
+                            .map(|t| format!("{t:?}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                )
+            }
         }
     }
 
