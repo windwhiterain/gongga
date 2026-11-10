@@ -626,48 +626,6 @@ impl ToolRegistry {
             "wait" => Box::new(WaitTool {
                 timeout: bash_timeout,
             }),
-            // The environment's own Python, once per call: no interpreter is kept.
-            "read_file" | "write_file" | "replace" => {
-                let (python, _lib) = self
-                    .settings
-                    .python
-                    .as_ref()
-                    .ok_or("this build configures no Python")?;
-                let cap = row.max_output_chars.unwrap_or(python.max_output_chars);
-                match row.cmd.as_str() {
-                    "read_file" => Box::new(file::ReadFileTool {
-                        program: python.program.clone(),
-                        args: python.args.clone(),
-                        timeout: python.timeout,
-                        max_output_chars: cap,
-                    }),
-                    "write_file" => Box::new(file::WriteFileTool {
-                        program: python.program.clone(),
-                        args: python.args.clone(),
-                        timeout: python.timeout,
-                        max_output_chars: cap,
-                    }),
-                    _ => Box::new(file::ReplaceTool {
-                        program: python.program.clone(),
-                        args: python.args.clone(),
-                        timeout: python.timeout,
-                        max_output_chars: cap,
-                    }),
-                }
-            }
-            "skill" => {
-                let skill = self
-                    .settings
-                    .skill
-                    .as_ref()
-                    .ok_or("this build configures no skill programs")?;
-                Box::new(skill::SkillTool {
-                    programs: skill.programs.clone(),
-                    lib: skill.lib.clone(),
-                    timeout: skill.timeout,
-                    max_output_chars: max_output_chars.min(skill.max_output_chars),
-                })
-            }
             "exec" => {
                 // The channels are the call's own, and the default wait is the row's.
                 Box::new(exec::ExecTool {
@@ -831,6 +789,20 @@ impl ToolRegistry {
     }
 }
 
+/// The note a call leaves on its own row.
+///
+/// # Invariant
+///
+/// SPEC spells the shared argument `discription`; every call written before this one
+/// says `description`. They are one argument under two spellings, and a note is a
+/// label: a call is not refused over how it spelled one.
+fn note_of(args: &Value) -> Option<String> {
+    args.get("discription")
+        .or_else(|| args.get("description"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 /// Waits for one call, and ends that wait when somebody speaks or the turn stops.
 ///
 /// # Invariant
@@ -840,10 +812,7 @@ impl ToolRegistry {
 /// the turn away without stopping it. See `docs/notes/server-tools-mod.md`.
 async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOutcome {
     let started = std::time::Instant::now();
-    let description = args
-        .get("description")
-        .and_then(Value::as_str)
-        .map(str::to_string);
+    let description = note_of(args);
     let max = args
         .get("max_output")
         .and_then(Value::as_u64)

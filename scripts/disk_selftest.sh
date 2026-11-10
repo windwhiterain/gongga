@@ -176,7 +176,8 @@ ok "the server read the threshold this home declared" $?
 # so waiting for one of them to fail waits for the first big write -- which on a
 # server that mostly reads may be never. That is the whole reason the reading
 # happens after every call.
-tool_ok=$("${cli[@]}" bash --session spill --command "echo hello" 2>&1)
+tool_ok=$("${cli[@]}" exec --session spill --bin bash --id spill/once \
+  --args '["-lc", "echo hello"]' --wait 8000 2>&1)
 [[ "$tool_ok" == *hello* ]]
 ok "the tool call succeeded" $?
 
@@ -191,15 +192,17 @@ rows = c.execute("select id, payload from events where kind = 'disk_space'").fet
 assert len(rows) == 1, f"one episode, one row: {rows}"
 payload = json.loads(rows[0][1])
 assert payload["session"] == "spill", payload
-assert payload["tool"] == "bash", payload
+assert payload["tool"] == "exec", payload
 assert payload["tool_ok"] is True, payload
 assert payload["threshold"] > 0 and payload["volumes"], payload
 INNER
 ok "the event carries the session, the tool, the threshold and the volumes" $?
 
 # The same low disk on the next call is not news: one call is not an episode.
-"${cli[@]}" bash --session spill --command "echo again" >/dev/null 2>&1
-"${cli[@]}" bash --session spill --command "echo and again" >/dev/null 2>&1
+"${cli[@]}" exec --session spill --bin bash --id spill/twice \
+  --args '["-lc", "echo again"]' --wait 8000 >/dev/null 2>&1
+"${cli[@]}" exec --session spill --bin bash --id spill/thrice \
+  --args '["-lc", "echo and again"]' --wait 8000 >/dev/null 2>&1
 python - "$home" <<'INNER'
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)

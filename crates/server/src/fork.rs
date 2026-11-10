@@ -82,17 +82,20 @@ impl Fork {
         let official = self.fast_forward_official()?;
         let rebased = self.rebase_personal(&official);
         if let Some(official) = official
-            && rebased == Rebasing::Conflicted
+            && let Rebasing::Conflicted(why) = &rebased
         {
-            tracing::warn!(
+            // An error, not a warning: the checkout is left behind, and every later
+            // start reads the content it was left at. The words are git's own, because
+            // "conflicts" and "a dirty tree refused to move" are not the same fault.
+            tracing::error!(
                 fork = %self.dir.display(),
-                "the personal branch conflicts with upstream; left as it was, and the \
-                 commits to rebase are in `git -C {} log --oneline {official}..{PERSONAL}`",
+                "the personal branch was not rebased: {why}; the commits to rebase are \
+                 in `git -C {} log --oneline {official}..{PERSONAL}`",
                 self.dir.display()
             );
         }
         Ok(match rebased {
-            Rebasing::Conflicted => Sync::Conflicted,
+            Rebasing::Conflicted(_) => Sync::Conflicted,
             _ if before == self.head() => Sync::Current,
             _ => Sync::Fetched,
         })
@@ -228,23 +231,32 @@ impl Fork {
         {
             return Rebasing::Settled;
         }
-        if git(&self.dir, &["rebase", "-q", base]).status.success() {
+        // No `--autostash`: a checkout holding work is the reader's, and moving it is
+        // not this function's to do. The refusal is reported, with git's own words.
+        let rebase = git(&self.dir, &["rebase", "-q", base]);
+        if rebase.status.success() {
             return Rebasing::Rebased;
         }
+        let why = String::from_utf8_lossy(&rebase.stderr)
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("git said nothing")
+            .trim()
+            .to_string();
         let _ = git(&self.dir, &["rebase", "--abort"]);
-        Rebasing::Conflicted
+        Rebasing::Conflicted(why)
     }
 }
 
 /// What happened to the personal branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Rebasing {
     /// Nothing to do: no personal branch, or it is already on top.
     Settled,
     /// Moved onto the official branch.
     Rebased,
-    /// Refused: a rebase was attempted, hit a conflict, and was undone.
-    Conflicted,
+    /// Refused, and undone: git's first line of complaint, in git's own words.
+    Conflicted(String),
 }
 
 /// Whether anything at all is at `dir`.
