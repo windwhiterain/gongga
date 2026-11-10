@@ -6,11 +6,22 @@ that scenario needs. `--list-scenarios` prints them; `--scenario NAME` runs one.
 Line protocol is documented in `tui_live.py`.
 """
 
+# The window opens on its cover, and the first gesture closes it without reaching
+# the line underneath. Every scenario has to get past it and none of them is about
+# it, so all of them start the same way: three frames first, because a press sent
+# before the window has drawn is a press it never reads.
+COVER = [
+    "label the cover: one gesture closes it, and the key stops there",
+    "sleep-until-frame 3 30000",
+    "keys x",
+    "wait 300",
+]
+
 SCENARIOS = {
     "single-stream": {
         "description": "one session, a long streaming answer that carries a tool call",
         "options": {"tool": "bash", "fake": "stream"},
-        "script": [
+        "script": COVER + [
             "# a: the ordinary case -- type a command, send a message, watch it stream",
             "expect session(s) 20000",
             "label creating the session through the real input path",
@@ -49,7 +60,7 @@ SCENARIOS = {
     "two-sessions": {
         "description": "two sessions streaming at once, interleaved by session tag",
         "options": {"tool": "bash", "fake": "stream"},
-        "script": [
+        "script": COVER + [
             "# b: main is mid-turn while peer starts its own; the log carries both",
             "expect session(s) 20000",
             "label creating both sessions, and leaving the turn on main",
@@ -82,7 +93,7 @@ SCENARIOS = {
     "session-tree": {
         "description": "path names drawn as a tree: a prefix is a group row, its marker folds",
         "options": {"fake": "plain"},
-        "script": [
+        "script": COVER + [
             "# d: a session name with segments is a path, and the list is a tree",
             "expect session(s) 20000",
             "label four sessions, two of them sharing a prefix",
@@ -156,7 +167,7 @@ SCENARIOS = {
     "gesture-operations": {
         "description": "the window's own gestures: a click asks for an operation",
         "options": {"tool": "bash", "fake": "stream"},
-        "script": [
+        "script": COVER + [
             "# the gestures are operations, not command lines: the window asks for"
             "# what it means and the command layer answers it. Alt is the modifier a"
             "# terminal forwards (VS Code keeps Shift+click for selection), and the"
@@ -181,7 +192,7 @@ SCENARIOS = {
     "event-ui-toggles": {
         "description": "completion popup, block size and split toggled while both sessions stream",
         "options": {"tool": "bash", "fake": "stream"},
-        "script": [
+        "script": COVER + [
             "# c: UI state changes on top of two live streams",
             "expect session(s) 20000",
             "label creating both sessions",
@@ -246,7 +257,7 @@ SCENARIOS = {
     "window-state": {
         "description": "the commands the window runs itself, and SPEC's `sticky to xxx`",
         "options": {"tool": "bash", "fake": "stream"},
-        "script": [
+        "script": COVER + [
             "# e: the window's own entries, and what belongs to a model not surviving it",
             "expect session(s) 20000",
             "label setting the entries a model owns, and one that belongs to it",
@@ -289,7 +300,7 @@ SCENARIOS = {
     "reference-in-word": {
         "description": "an @ reference typed straight after prose: the popup replaces from the @",
         "options": {"fake": "plain"},
-        "script": [
+        "script": COVER + [
             "# e: the server reads `看下@file(x)`, so the popup must not eat the Chinese",
             "expect session(s) 20000",
             "label a session, so a message has a directory to list",
@@ -323,6 +334,63 @@ SCENARIOS = {
             "expect 用@skill(self-control) 4000",
             "alt q",
             "settle 4000",
+        ],
+    },
+    "completion-through-client": {
+        "description": "completion over the pipe, on a token whose candidates the client owns",
+        "options": {"fake": "plain"},
+        "script": COVER + [
+            "# Tab over the pipe: a session name is in the client's catalog, not in",
+            "# the window's word list, so a popup filled here is the round trip.",
+            "expect session(s) 20000",
+            "keys /set_session main",
+            "enter",
+            "wait 900",
+            "expect session is now main 8000",
+            "label a session name completes through the client",
+            "keys /del_session m",
+            "key tab",
+            "wait 700",
+            "label the completed name is on the line, and nothing else is",
+            "expect del_session main 6000",
+            "label leaving",
+            "alt q",
+            "settle 4000",
+        ],
+    },
+    "wheel-after-unfold": {
+        "description": "the wheel over a folded log, then the wheel over an item opened by a click",
+        "options": {"tool": "bash", "fake": "stream"},
+        "script": COVER + [
+            "# A log longer than its pane: the wheel, then the wheel again once a",
+            "# folded block is open. Repeating one command makes one kind of event,",
+            "# which is what `--block_size 2` folds into a block.",
+            "expect session(s) 20000",
+        ]
+        + ["keys /set_session main", "enter", "wait 250"] * 16
+        + [
+            "label a log longer than the pane",
+            "resize 100 20",
+            "wait 1500",
+            "wheel up 4",
+            "sleep-until-frame 1 5000",
+            "label folded into blocks",
+            "keys /set_render --block_size 2",
+            "enter",
+            "wait 900",
+            "wheel up 3",
+            "sleep-until-frame 1 5000",
+            "label unfolding one block by clicking a row",
+            "click 20 12",
+            "wait 900",
+            "wheel up 3",
+            "sleep-until-frame 1 5000",
+            "label a wheel after the unfold moves the log again",
+            "wheel up 3",
+            "sleep-until-frame 1 5000",
+            "label leaving",
+            "alt q",
+            "settle 5000",
         ],
     },
 }

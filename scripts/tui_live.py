@@ -1491,6 +1491,11 @@ class Driver:
             self.wait_ms(40)
         elif command == "send-message":
             self.type_text(decode_text(argument), 2)
+            # The window glues an `Enter` to a machine-fast run of text: that
+            # break is a paste's newline, not the operator sending, and the line
+            # keeps the words. Waiting out that glue is what makes this Enter the
+            # operator's. See `docs/notes/tui-paste.md`.
+            self.wait_ms(200)
             self.send(b"\r")
         elif command == "resize":
             parts = argument.split()
@@ -1998,13 +2003,16 @@ class Stack:
         bridge = os.path.join(self.run_dir, "pty_bridge.py")
         write_bridge(bridge)
         self.conpty = ConPty(cols, rows, bridge, self.options.python, os.path.join(self.run_dir, "client.status"))
-        # The client's own words first: `--client_only` is what makes the window
-        # wait for a server instead of starting one, and the harness has to be
-        # able to say it.
+        # The harness starts the server, so the window must not: a client with a
+        # server to start first cancels the one already serving the address, and
+        # what is left is a window whose link died before it drew. `--client_only`
+        # is also the flag `--client-arg` names as its example, so a scenario that
+        # passes it again says what this already says.
         command = self.conpty.spawn(
             self.options.client_exe,
             list(self.options.client_arg)
             + [
+                "--client_only",
                 "--home",
                 self.options.home,
                 "--client-home",
