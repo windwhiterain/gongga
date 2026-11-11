@@ -876,14 +876,8 @@ struct Sync {
     /// whose rows are not one run is a window that read a range of its own, and a
     /// guess about the rows between would either draw one twice or lose it.
     held: Held,
-    /// Rows that arrived below the window's floor and have not been drawn yet.
-    ///
-    /// # Invariant
-    ///
-    /// The past of one answer, in arrival order: an answer's rows come before its
-    /// `CmdResult`, and drawing them one at a time appends them, so they wait for
-    /// that row and land together. See [`Client::land_past`].
-    past: Vec<(u64, Event)>,
+    /// Live events wait until the fetched pages reach their snapshot's tail.
+    deferred: Vec<(u64, Event)>,
     /// Whether a page has been read for this window at all.
     ///
     /// # Invariant
@@ -898,6 +892,7 @@ struct Sync {
     ///
     /// Cleared by a greeting and nothing else: a refusal answers one range, not a moment.
     blocked: bool,
+    snapshot_cursor: Option<u64>,
 }
 
 /// The rows a copy holds, as runs that touch.
@@ -912,10 +907,6 @@ struct Held {
 }
 
 impl Held {
-    fn is_empty(&self) -> bool {
-        self.runs.is_empty()
-    }
-
     fn clear(&mut self) {
         self.runs.clear();
     }
@@ -984,11 +975,6 @@ impl Sync {
     fn holds(&self, seq: u64) -> bool {
         self.held.contains(seq as i64)
     }
-
-    /// Whether the row is older than every row the window holds -- the past.
-    fn below(&self, seq: u64) -> bool {
-        self.floor().is_some_and(|floor| (seq as i64) < floor)
-    }
 }
 
 /// A refill in flight: what the window is owed, and what arrived meanwhile.
@@ -1004,6 +990,8 @@ struct Fill {
     id: u64,
     /// What the bus sent while the answer was on its way.
     buffered: Vec<(u64, Event)>,
+    rows: std::collections::BTreeMap<u64, Event>,
+    open: Vec<Event>,
     /// Whether the whole window is re-read, rather than the tail after its stamp.
     whole: bool,
     /// Whether the page is the rows *above* what the window holds, not below.
@@ -1013,36 +1001,6 @@ struct Fill {
     /// A page of the past never rewinds and never restamps: the tail stays as it is
     /// and the page lands above it. See [`Client::ask_older`].
     older: bool,
-    /// Where this page's oldest row comes from, once it is answered.
-    floor: First,
-    /// Whether the front-end was told to make room: once per fill, not per event.
-    rewound: bool,
-}
-
-/// The oldest row a page will have, as the request names it.
-///
-/// # Invariant
-///
-/// A range spelled `-N:` is resolved by the server against the transcript as it
-/// stands when it answers, so its first row is only known then: `Counted` is the
-/// one form that cannot be read off the words sent. Anything else names its first
-/// row, and that is the number the page's floor will be.
-#[derive(Debug, Clone, Copy)]
-enum First {
-    /// The range's start, as written.
-    Named(i64),
-    /// Counted back from the answered transcript's last row, by this many rows.
-    Counted(i64),
-}
-
-impl First {
-    /// The oldest row a page of this width has, given where the transcript ended.
-    fn at(self, last_seq: i64) -> i64 {
-        match self {
-            First::Named(first) => first.max(1),
-            First::Counted(room) => (last_seq - room + 1).max(1),
-        }
-    }
 }
 
 /// What the operator typed, for the purpose of echoing it back into the log.
@@ -1402,6 +1360,7 @@ impl Client {
                 for sync in self.sync.values_mut() {
                     sync.fill = None;
                     sync.blocked = false;
+                    sync.snapshot_cursor = None;
                 }
                 self.attempts = 0;
                 self.draining = server.draining;
@@ -1424,9 +1383,13 @@ impl Client {
                 sink.note(LineKind::Error, &format!("connection refused: {reason}"));
             }
             ServerMessage::Event { seq, event } => self.handle_delta(seq, event, sink),
+            ServerMessage::Row { id, seq, event } => self.handle_row(id, seq, event, sink),
             // A kind this build does not know: the tag is what a reader needs;
             // the payload is the sending side's business.
-            ServerMessage::Unknown { event, .. } => {
+            ServerMessage::Unknown { event, seq, .. } => {
+                if let Some(seq) = seq {
+                    self.advance_cursor(seq);
+                }
                 let kind = event
                     .get("t")
                     .and_then(|t| t.as_str())
@@ -1473,46 +1436,80 @@ impl Client {
     /// name that was lost. [`Client::take_hole`] is how a front-end hears it.
     ///
     /// While a refill is in flight its events wait here. See [`Fill`].
-    fn handle_delta(&mut self, seq: Option<u64>, event: Event, sink: &mut dyn Sink) {
+    fn handle_delta(&mut self, seq: Option<u64>, mut event: Event, sink: &mut dyn Sink) {
         let Some(seq) = seq else {
             // A command's own answer: no position in the stream, but a refill's
             // events do arrive this way.
-            self.handle_answer(event, sink);
+            self.handle_event(event, sink);
             return;
         };
-        // A refill's rows are buffered before the bookkeeping: an answer is never a hole.
+        if !self.advance_cursor(seq) {
+            return;
+        }
+        if let Some(sync) = event.session().and_then(|session| self.sync.get(session))
+            && sync.snapshot_cursor.is_some_and(|cursor| seq <= cursor)
+        {
+            if restated(&event) {
+                return;
+            }
+            if let Event::Session { session } = &mut event {
+                session.transcript = session.transcript.max(sync.server);
+            }
+        }
         if let Some(session) = event.session()
             && let Some(sync) = self.sync.get_mut(session)
             && let Some(fill) = sync.fill.as_mut()
+            && !fill.older
+            && row_of(&event)
         {
             fill.buffered.push((seq, event));
             return;
         }
-        let skipped = self.cursor.is_some_and(|last| seq > last + 1);
-        self.cursor = Some(self.cursor.map_or(seq, |last| last.max(seq)));
-        if skipped {
+        self.handle_event(event, sink);
+    }
+
+    fn advance_cursor(&mut self, seq: u64) -> bool {
+        if self.cursor.is_some_and(|last| seq <= last) {
+            return false;
+        }
+        if self
+            .cursor
+            .is_some_and(|last| last.checked_add(1) != Some(seq))
+        {
             self.holed = true;
         }
-        // A row already drawn is not drawn twice; a `Transcript` is never dropped.
-        if let Some(session) = event.session() {
-            let stored = row_of(&event);
-            if stored && self.sync.get(session).is_some_and(|sync| sync.holds(seq)) {
-                return;
+        self.cursor = Some(seq);
+        !self.holed
+    }
+
+    fn handle_row(&mut self, id: u64, seq: Option<u64>, event: Event, sink: &mut dyn Sink) {
+        let Some(session) = event.session().map(str::to_owned) else {
+            self.handle_event(event, sink);
+            return;
+        };
+        let Some(sync) = self.sync.get_mut(&session) else {
+            return;
+        };
+        if let Some(fill) = sync.fill.as_mut().filter(|fill| fill.id == id) {
+            match seq {
+                Some(seq) => {
+                    fill.rows.insert(seq, event);
+                }
+                None => fill.open.push(event),
             }
-            // A row below the floor is the past: it waits, so one answer lands as
-            // one page. See [`Client::land_past`].
-            let past = stored && self.sync.get(session).is_some_and(|sync| sync.below(seq));
-            if let Some(sync) = self.sync.get_mut(session)
-                && past
-            {
-                sync.past.push((seq, event.clone()));
-            }
-            // The client's copy of the server's state, written where it is drawn.
-            self.hand_over(sink, session, seq, &event);
-            if past {
-                return;
-            }
+            return;
         }
+        if !self.results.contains_key(&id) {
+            return;
+        }
+        let Some(seq) = seq else {
+            self.handle_event(event, sink);
+            return;
+        };
+        if sync.holds(seq) {
+            return;
+        }
+        self.hand_over(sink, &session, seq, &event);
         self.handle_event(event, sink);
     }
 
@@ -1528,89 +1525,6 @@ impl Client {
             sync.held.insert(seq as i64);
         }
         sink.row(session, seq, event);
-    }
-
-    /// Draws the rows that arrived under a window's floor as one page above it.
-    ///
-    /// # Invariant
-    ///
-    /// A page is drawn only where it touches the window: a row below the floor with
-    /// a gap under it belongs to the copy, not to the screen, and the scroll reaches
-    /// it by touching pages like any other row. Drawing it now and prepending it
-    /// again later is one row in two places. Called where an answer ends, because
-    /// until then its rows are still arriving and a page is an order, not a race.
-    fn land_past(&mut self, sink: &mut dyn Sink) {
-        let owed: Vec<String> = self
-            .sync
-            .iter()
-            .filter(|(_, sync)| !sync.past.is_empty())
-            .map(|(name, _)| name.clone())
-            .collect();
-        for name in owed {
-            // The borrow ends before the page is drawn: an unlanded row goes back.
-            let (past, created, drawn) = {
-                let Some(sync) = self.sync.get_mut(&name) else {
-                    continue;
-                };
-                let mut past = std::mem::take(&mut sync.past);
-                past.sort_by_key(|(seq, _)| *seq);
-                past.dedup_by_key(|(seq, _)| *seq);
-                // The page must end just above the window's oldest row: an island is
-                // the copy's, not the screen's.
-                let touches = match (past.last(), sync.floor()) {
-                    (Some((top, _)), Some(floor)) => *top as i64 + 1 == floor,
-                    _ => false,
-                };
-                let drawn = match sync.drawn {
-                    Drawn::At { created, seq } if touches => Some((created, seq)),
-                    _ => None,
-                };
-                // Not drawn, and dropped, a row's number answers "duplicate" for ever.
-                let Some((created, drawn)) = drawn else {
-                    sync.past = past;
-                    continue;
-                };
-                (past, created, drawn)
-            };
-            let start = past[0].0 as i64;
-            let mut page = Page::default();
-            for (_, event) in past {
-                self.handle_event(event, &mut page);
-            }
-            if page.rows.is_empty() {
-                continue;
-            }
-            sink.older_page(&name, &page.rows);
-            sink.landed(&name, created, drawn, start);
-            if let Some(sync) = self.sync.get_mut(&name) {
-                sync.held.insert_run(start, drawn);
-            }
-        }
-    }
-
-    /// One event that is this connection's answer rather than the stream's.
-    ///
-    /// # Invariant
-    ///
-    /// The first event of a refill is what says the window must make room: the
-    /// rows that follow are the window's whole tail, so the half-written block
-    /// that no stored row accounts for must go before the first of them lands.
-    fn handle_answer(&mut self, event: Event, sink: &mut dyn Sink) {
-        if let Some(session) = event.session()
-            && let Some(sync) = self.sync.get_mut(session)
-            && let Some(fill) = sync.fill.as_mut()
-            && !fill.rewound
-        {
-            fill.rewound = true;
-            let window = session.to_string();
-            match (fill.whole, fill.older) {
-                (true, _) => sink.forget(&window),
-                // A page of the past lands above the window, so nothing goes.
-                (false, true) => sink.older(&window),
-                (false, false) => sink.rewind(&window),
-            }
-        }
-        self.handle_event(event, sink);
     }
 
     /// One event from the server, given to the front-end whatever window it names.
@@ -1657,9 +1571,6 @@ impl Client {
                 ..
             } => {
                 self.unconfirmed.retain(|(other, _)| *other != id);
-                // An answer is complete: what it carried below a window's floor is
-                // now a page, whole. See [`Client::land_past`].
-                self.land_past(sink);
                 // A refill's answer says how far its transcript reaches, nothing else.
                 if self.settle_fill(id, ok, &message, data.as_ref(), sink) {
                     return;
@@ -1870,10 +1781,21 @@ impl Client {
     /// because the server hands the name out again -- a new session must not open
     /// on the deleted one's lines. See `docs/notes/client-lib.md`.
     fn set_sessions(&mut self, sessions: Vec<SessionInfo>, sink: &mut dyn Sink) {
+        let current: HashMap<_, _> = sessions
+            .iter()
+            .map(|row| (row.name.as_str(), row))
+            .collect();
         for old in &self.sessions {
-            if !sessions.iter().any(|new| new.name == old.name) {
+            if !current.get(old.name.as_str()).is_some_and(|row| {
+                row.created_at == old.created_at && row.transcript >= old.transcript
+            }) {
                 sink.forget(&old.name);
                 self.sync.remove(&old.name);
+            }
+        }
+        for old in &self.seeded {
+            if !current.contains_key(old.name.as_str()) {
+                sink.forget(&old.name);
             }
         }
         // As published: a value completed for a session belongs to that
@@ -1899,19 +1821,23 @@ impl Client {
         let entry = self.sync.entry(row.name.clone()).or_insert(Sync {
             created: row.created_at,
             server: row.transcript,
-            drawn: Drawn::Unknown,
+            drawn: Drawn::At {
+                created: row.created_at,
+                seq: 0,
+            },
             fill: None,
             held: Held::default(),
-            past: Vec::new(),
+            deferred: Vec::new(),
             loaded: false,
             blocked: false,
+            snapshot_cursor: None,
         });
         if entry.created != row.created_at {
             entry.created = row.created_at;
             entry.drawn = Drawn::Unknown;
             entry.fill = None;
             entry.held.clear();
-            entry.past.clear();
+            entry.deferred.clear();
             entry.loaded = false;
             entry.blocked = false;
         }
@@ -1924,6 +1850,14 @@ impl Client {
         // The server has just spoken about this name: the window's own row is the
         // older word and stops standing in for it.
         self.seeded.retain(|held| held.name != row.name);
+        if self
+            .sync
+            .get(&row.name)
+            .is_some_and(|sync| sync.created != row.created_at || row.transcript < sync.server)
+        {
+            sink.forget(&row.name);
+            self.sync.remove(&row.name);
+        }
         self.stamp_server(&row);
         // A name never listed here has no journal either: the whole transcript is owed.
         if added && let Some(sync) = self.sync.get_mut(&row.name) {
@@ -1953,7 +1887,10 @@ impl Client {
     /// One transcript grew: the server's side of the comparison, and the
     /// front-end's chance to stamp what it just drew.
     fn announce_transcript(&mut self, session: &str, seq: i64, sink: &mut dyn Sink) {
-        let mut stamp = None;
+        if self.sync.get(session).is_some_and(|sync| seq < sync.server) {
+            sink.forget(session);
+            self.declare_empty(session);
+        }
         if let Some(sync) = self.sync.get_mut(session) {
             // A current window stays current: the events that drew the row came first.
             let current = matches!(
@@ -1961,19 +1898,16 @@ impl Client {
                 Drawn::At { created, seq } if created == sync.created && seq == sync.server
             );
             sync.server = seq;
-            if current {
+            if current && sync.fill.is_none() {
                 sync.drawn = Drawn::At {
                     created: sync.created,
                     seq,
                 };
-                stamp = Some((sync.created, seq));
+                sync.held.insert_run(sync.floor().unwrap_or(seq), seq);
             }
         }
         if let Some(row) = self.sessions.iter_mut().find(|s| s.name == session) {
             row.transcript = seq;
-        }
-        if let Some((created, seq)) = stamp {
-            sink.transcript(session, created, seq);
         }
     }
 
@@ -2008,93 +1942,100 @@ impl Client {
         else {
             return false;
         };
-        let field = |key: &str| {
-            data.and_then(|d| d.get(key))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0)
-        };
-        let last_seq = field("last_seq");
-        let as_of = data.and_then(|d| d.get("as_of")).and_then(|v| v.as_u64());
         let Some(sync) = self.sync.get_mut(&name) else {
             return true;
         };
         let Some(fill) = sync.fill.take() else {
             return true;
         };
-        // It was never the operator's line, so no answer of it is owed anywhere.
         self.results.remove(&id);
-        if !ok || as_of.is_none() {
-            // Refused, not pending: the window says why once and waits for a new link.
-            if let Some(sync) = self.sync.get_mut(&name) {
-                sync.blocked = true;
-            }
+        let bounds = data
+            .and_then(|data| {
+                Some((
+                    data.get("first_seq")?.as_i64()?,
+                    data.get("through_seq")?.as_i64()?,
+                    data.get("last_seq")?.as_i64()?,
+                    data.get("as_of")?.as_u64()?,
+                ))
+            })
+            .filter(|(first, through, last, _)| *first >= 1 && *through >= 0 && *through <= *last);
+        let Some((first, through, last, as_of)) = bounds.filter(|_| ok) else {
+            sync.blocked = true;
             sink.note(
                 LineKind::Error,
                 &format!("{name}: its transcript could not be fetched: {message}"),
             );
-            // A refusal is not a picture of anything, so not one of the events that
-            // waited behind it is in it.
             for (_, event) in fill.buffered {
                 self.handle_event(event, sink);
             }
             return true;
+        };
+        let created = sync.created;
+        if fill.whole {
+            sync.held.clear();
+            sink.clear(&name);
+        } else if !fill.older {
+            sink.rewind(&name);
         }
-        let sync_created = sync.created;
-        let as_of = as_of.unwrap_or_default();
-        // What the answer covers goes: a replayed row, or one older than its
-        // picture. See `docs/notes/client-lib.md`.
-        let (owed, restated): (Vec<_>, Vec<_>) = fill
-            .buffered
-            .into_iter()
-            .partition(|(seq, event)| *seq > as_of || !restated(event));
-        drop(restated);
-        sync.server = last_seq;
-        let floor = fill.floor.at(last_seq);
-        // The row above the one the window's oldest run ends at, before this page.
-        let above = sync.floor().map(|held| held.saturating_sub(1));
-        if fill.older {
-            // A page of the past: the end stays, and the window now reaches down
-            // to where this page starts.
-            if let Some(above) = above {
-                sync.held.insert_run(floor, above);
+        let mut page = Page::default();
+        for (seq, event) in fill.rows {
+            if seq < first as u64 || seq > through as u64 {
+                continue;
             }
-            let drawn = match sync.drawn {
-                Drawn::At { seq, .. } => seq,
-                Drawn::Unknown => 0,
-            };
-            sink.landed(&name, sync_created, drawn, floor);
-        } else {
-            // The tail: the window now ends where the answer does, and the page it
-            // was given says which rows it holds.
-            sync.loaded = true;
-            sync.drawn = Drawn::At {
-                created: sync.created,
-                seq: last_seq,
-            };
-            sync.held.insert_run(floor, last_seq);
-            sink.landed(&name, sync_created, last_seq, floor);
-        }
-        if fill.older {
-            // Collected, then drawn above the window in one piece: a row one at a
-            // time only appends.
-            let mut page = Page::default();
-            for (seq, event) in owed {
-                // A page is rows the window did not hold: they belong in the copy too.
-                if let Some(session) = event.session() {
-                    self.hand_over(sink, session, seq, &event);
-                }
+            if self.sync.get(&name).is_some_and(|sync| sync.holds(seq)) {
+                continue;
+            }
+            self.hand_over(sink, &name, seq, &event);
+            if fill.older {
                 self.handle_event(event, &mut page);
-            }
-            sink.older_page(&name, &page.rows);
-        } else {
-            for (seq, event) in owed {
-                if let Some(session) = event.session() {
-                    self.hand_over(sink, session, seq, &event);
-                }
+            } else {
                 self.handle_event(event, sink);
             }
         }
-        self.refresh(sink);
+        if fill.older {
+            sink.older_page(&name, &page.rows);
+        }
+        if let Some(sync) = self.sync.get_mut(&name) {
+            sync.server = sync.server.max(last);
+            sync.held.insert_run(first, through);
+            if !fill.older {
+                sync.loaded = true;
+                sync.drawn = Drawn::At {
+                    created,
+                    seq: through,
+                };
+                if through == last {
+                    sync.snapshot_cursor = Some(as_of);
+                }
+            }
+            sink.landed(&name, created, through, first);
+        }
+        if !fill.older && through == last {
+            for event in fill.open {
+                self.handle_event(event, sink);
+            }
+        }
+        if through < last && !fill.older {
+            if let Some(sync) = self.sync.get_mut(&name) {
+                sync.deferred.extend(fill.buffered);
+            }
+        } else {
+            for (seq, event) in fill.buffered {
+                if seq > as_of {
+                    self.handle_event(event, sink);
+                }
+            }
+            if !fill.older
+                && !self.holed
+                && let Some(sync) = self.sync.get_mut(&name)
+            {
+                sync.held.insert_run(last.saturating_add(1), sync.server);
+                sync.drawn = Drawn::At {
+                    created,
+                    seq: sync.server,
+                };
+            }
+        }
         true
     }
 
@@ -2140,7 +2081,7 @@ impl Client {
             sync.fill = None;
             // Nothing in flight will be answered, so its page does not land: the
             // rows are already in the copy.
-            sync.past.clear();
+            sync.deferred.clear();
         }
         self.refresh(sink);
         let lines: Vec<String> = std::mem::take(&mut self.unconfirmed)
@@ -2209,10 +2150,15 @@ impl Client {
             return;
         };
         sync.held.clear();
-        if sync.created != created {
-            sync.drawn = Drawn::Unknown;
+        if sync.created != created || drawn > sync.server {
+            sync.drawn = Drawn::At {
+                created: sync.created,
+                seq: 0,
+            };
+            sync.loaded = false;
             return;
         }
+        sync.loaded = true;
         sync.drawn = Drawn::At {
             created,
             seq: drawn,
@@ -2254,6 +2200,7 @@ impl Client {
             // Past the server's own end: rows were truncated, so the window
             // holds rows that no longer exist.
             Drawn::At { seq, .. } if seq > sync.server => Some(1),
+            Drawn::At { .. } if !sync.loaded => Some(1),
             Drawn::At { seq, .. } if seq < sync.server => Some(seq + 1),
             Drawn::At { .. } => None,
         }
@@ -2272,6 +2219,9 @@ impl Client {
             let created = sync.created;
             sync.drawn = Drawn::At { created, seq: 0 };
             sync.held.clear();
+            sync.loaded = false;
+            sync.fill = None;
+            sync.blocked = false;
         }
     }
 
@@ -2282,6 +2232,31 @@ impl Client {
     ///
     /// Never echoes: it is the window's own question, not the operator's line. Its
     /// rows arrive as the events that drew them live, so a refill looks like a stream.
+    pub(crate) fn needs_restore(&self, name: &str) -> bool {
+        self.sync
+            .get(name)
+            .is_some_and(|sync| !sync.loaded && sync.fill.is_none())
+    }
+
+    pub(crate) fn visible_floor(&self, name: &str, rows: usize) -> i64 {
+        self.sync
+            .get(name)
+            .map(|sync| sync.server.saturating_sub(rows.max(1) as i64 - 1).max(1))
+            .unwrap_or(1)
+    }
+
+    pub(crate) fn drawn_floor(&self, name: &str) -> Option<i64> {
+        self.sync.get(name)?.floor()
+    }
+
+    pub(crate) fn extend_drawn(&mut self, name: &str, created: i64, first: i64, through: i64) {
+        if let Some(sync) = self.sync.get_mut(name)
+            && sync.created == created
+        {
+            sync.held.insert_run(first, through);
+        }
+    }
+
     pub fn ask_transcript(&mut self, name: &str, room: usize) -> Option<ClientMessage> {
         let sync = self.sync.get(name)?;
         if sync.fill.is_some() || sync.blocked {
@@ -2289,17 +2264,13 @@ impl Client {
         }
         // One page, never a transcript: the rows a pane can draw, or the tail after.
         let room = room.max(1) as i64;
-        let (range, first) = match sync.loaded {
-            false if sync.drawn != Drawn::Unknown => (format!("-{room}:"), First::Counted(room)),
-            false => return None,
-            true => {
-                let from = self.behind_one(name)?;
-                (format!("{from}:{}", from + room - 1), First::Named(from))
-            }
+        let range = if sync.loaded {
+            let from = self.behind_one(name)?;
+            format!("{from}:{}", from.saturating_add(room - 1))
+        } else {
+            format!("-{room}:")
         };
-        // Whole only for rows it cannot name: a page appended to those would repeat.
-        let whole = !sync.loaded && sync.held.is_empty() && sync.drawn != Drawn::Unknown;
-        self.begin_fill(name, range, first, whole, false)
+        self.begin_fill(name, range, !sync.loaded, false)
     }
 
     /// Whether a refill of this window is already on its way.
@@ -2342,13 +2313,7 @@ impl Client {
             return None;
         }
         let reach = above.saturating_sub(history.max(1) as i64 - 1).max(1);
-        self.begin_fill(
-            name,
-            format!("{reach}:{above}"),
-            First::Named(reach),
-            false,
-            true,
-        )
+        self.begin_fill(name, format!("{reach}:{above}"), false, true)
     }
 
     /// Sends one `get_messages` refill and remembers what the window is owed.
@@ -2356,7 +2321,6 @@ impl Client {
         &mut self,
         name: &str,
         range: String,
-        first: First,
         whole: bool,
         older: bool,
     ) -> Option<ClientMessage> {
@@ -2372,11 +2336,11 @@ impl Client {
         let sync = self.sync.get_mut(name)?;
         sync.fill = Some(Fill {
             id,
-            buffered: Vec::new(),
+            buffered: std::mem::take(&mut sync.deferred),
+            rows: std::collections::BTreeMap::new(),
+            open: Vec::new(),
             whole,
             older,
-            floor: first,
-            rewound: false,
         });
         Some(ClientMessage::Command {
             id,
@@ -2976,7 +2940,7 @@ async fn ask(
             anyhow::bail!("server disconnected");
         };
         let event = match decode_server(&bytes)? {
-            ServerMessage::Event { event, .. } => event,
+            ServerMessage::Event { event, .. } | ServerMessage::Row { event, .. } => event,
             _ => continue,
         };
         client.handle_event(event.clone(), &mut printer);
@@ -3109,7 +3073,7 @@ async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> a
             anyhow::bail!("server disconnected");
         };
         let event = match decode_server(&bytes)? {
-            ServerMessage::Event { event, .. } => event,
+            ServerMessage::Event { event, .. } | ServerMessage::Row { event, .. } => event,
             // A kind this build does not know: printed as it arrived, never
             // attributed to a session; `--json` gets the bytes.
             ServerMessage::Unknown { event, .. } => {

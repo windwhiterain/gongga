@@ -99,8 +99,16 @@ impl WindowJournal {
                 drawn,
                 floor,
             } => {
-                // No blocks to rewrite on this path: the boundary and the stamp
-                // are the two records a refill needs to read back.
+                let (floor, drawn) = match self.stamp_of(&window).zip(self.floor_of(&window)) {
+                    Some(((old_created, old_drawn), old_floor))
+                        if old_created == created
+                            && floor <= old_drawn.saturating_add(1)
+                            && drawn.saturating_add(1) >= old_floor =>
+                    {
+                        (floor.min(old_floor), drawn.max(old_drawn))
+                    }
+                    _ => (floor, drawn),
+                };
                 self.cache.append(&window, &Record::Floor { seq: floor });
                 self.cache.stamp(&window, created, drawn);
                 self.stamps.insert(window.clone(), (created, drawn));
@@ -236,11 +244,10 @@ impl WindowJournal {
 
     /// Forgets a window whose session was deleted.
     pub fn forget(&mut self, window: &str) {
+        self.cache.remove(window);
         self.stamps.remove(window);
         self.floors.remove(window);
-        self.room.remove(window);
         self.wants.remove(window);
-        self.drawn.retain(|name| name != window);
     }
 }
 

@@ -16,8 +16,9 @@ connection. Every addition was a lockstep upgrade of every client, which is why
 "publish one event" used to look expensive.
 
 `decode_server` now falls back. When the outer tag says `event` and the payload is
-an object carrying a `t` of its own, the bytes are kept as `Unknown { event, why }`
-and the client shows the kind instead of dying. Two shapes reach it:
+an envelope containing an `event` with its own `t`, the bytes and stream position
+are kept as `Unknown { event, seq, why }`. The client advances its cursor and
+shows the kind instead of dying. Two shapes reach it:
 
 * a `t` this build does not know — a newer server's event;
 * a `t` this build knows, in a shape it cannot read — the server learned a
@@ -59,10 +60,15 @@ number, and it is the answer to "which of these did a client miss" without anybo
 having to guess — an event numbered above the one after the last it applied is a
 hole, and nothing in this build invents the events inside it.
 
-`None` is an event that is only *this connection's* answer: a command's own rows
-and its `cmd_result`. Those are not part of the stream everybody else sees, so they
-have no place in it; a client that treated them as news could not tell a repeat
-from a gap.
+`None` is a connection-local command echo or `cmd_result`, not a published event.
+Command content uses `ServerMessage::Row { id, seq, event }`: `id` identifies the
+request, and `seq` is a stored row number, or `None` for an unfinished snapshot
+part. Neither advances the global stream cursor.
+
+A replay result states `first_seq`, `through_seq`, `last_seq` and `as_of`. Only the
+returned interval becomes held; the transcript's total length does not claim
+that intermediate pages arrived. The client retains `as_of` per session so
+covered rendering events arriving after the result are not drawn twice.
 
 The number restarts with the process, so it is only comparable with events from the
 same `ServerInfo::pid` — which is why a greeting states the position its stream

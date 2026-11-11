@@ -56,6 +56,9 @@ pub enum RenderMessage {
     Clear {
         window: String,
     },
+    Rewind {
+        window: String,
+    },
     StickySession {
         name: Option<String>,
     },
@@ -332,7 +335,7 @@ impl Sink for WireSink {
     }
 
     fn rewind(&mut self, window: &str) {
-        self.cursor.push(CursorMessage::Rewind {
+        self.render.push(RenderMessage::Rewind {
             window: window.to_string(),
         });
     }

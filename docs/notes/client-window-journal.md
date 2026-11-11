@@ -74,11 +74,12 @@ stamps, floors, drawn, room and settled are answered here and only here. See
 
 ## Invariants worth keeping
 
-- `Rewind` keeps the stamp: everything up to it was drawn from rows that still
-  exist. Only the unaccounted tail goes.
-- `Older` does not move the stamp: a page of the past lands above the held rows,
-  so the row the window ends at is unchanged. `Landed` names both the new stamp
-  and the new floor.
+- Disk stamps describe fetched transcript ranges, not the live rendered watermark.
+  `Landed` merges touching cached intervals; disconnected ranges are not claimed.
+- `Rewind` is a rendering frame that drops unfinished blocks, not cached rows.
+- `Older` prepends a page without moving the live rendered watermark.
+- `Forget` deletes the invalid journal but preserves viewport membership and height;
+  only a subsequent layout changes those facts.
 - `room_of` answers 1 when a pane has not reported. `ask_transcript` floors the
   room at 1 anyway, so a fresh window asks for one row rather than nothing.
 - Nothing here is a query protocol. A frame *reports* what it drew; the client

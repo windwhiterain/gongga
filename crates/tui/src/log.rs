@@ -799,24 +799,28 @@ impl Log {
             .get(name)
             .and_then(|ledger| ledger.blocks.first().copied())
             .unwrap_or(self.entries.len());
-        for (offset, row) in rows.iter().enumerate() {
-            let mut entry = match row {
-                PastRow::Line { kind, text } => Entry::new(name, *kind, text.clone(), width),
-                PastRow::Block {
-                    key,
-                    kind,
-                    tag,
-                    text,
-                } => {
-                    let mut entry = Entry::with_tag(name, *kind, tag, text.clone(), width);
-                    entry.key = key.clone();
-                    entry
-                }
-            };
-            // A page is what already happened: nothing of it streams in later.
-            entry.sealed = true;
-            self.entries.insert(at + offset, entry);
-        }
+        let entries: Vec<Entry> = rows
+            .iter()
+            .map(|row| {
+                let mut entry = match row {
+                    PastRow::Line { kind, text } => Entry::new(name, *kind, text.clone(), width),
+                    PastRow::Block {
+                        key,
+                        kind,
+                        tag,
+                        text,
+                    } => {
+                        let mut entry = Entry::with_tag(name, *kind, tag, text.clone(), width);
+                        entry.key = key.clone();
+                        entry
+                    }
+                };
+                // A page is what already happened: nothing of it streams in later.
+                entry.sealed = true;
+                entry
+            })
+            .collect();
+        self.entries.splice(at..at, entries);
         // The live blocks are held by position, and a page puts every one of them
         // at or after its own place further down.
         for slot in self.open.values_mut() {
@@ -894,6 +898,14 @@ impl Log {
     /// The indexes the removal invalidates are repaired here: an `open` entry whose
     /// block left with the window leaves too.
     fn forget_blocks(&mut self, window: &str) {
+        self.remove_blocks(window, false);
+    }
+
+    pub fn rewind(&mut self, window: &str) {
+        self.remove_blocks(window, true);
+    }
+
+    fn remove_blocks(&mut self, window: &str, unfinished: bool) {
         if !self
             .entries
             .iter()
@@ -904,7 +916,7 @@ impl Log {
         let mut moved = Vec::with_capacity(self.entries.len());
         let mut kept = Vec::with_capacity(self.entries.len());
         for entry in std::mem::take(&mut self.entries) {
-            let mine = entry.window.as_ref() != window;
+            let mine = entry.window.as_ref() != window || (unfinished && entry.sealed);
             moved.push(mine.then_some(kept.len()));
             if mine {
                 kept.push(entry);

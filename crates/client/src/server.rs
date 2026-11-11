@@ -202,13 +202,23 @@ async fn waits_out(pid: u32, grace: Duration) -> bool {
 /// a failure to ask counts as alive -- the kill below is what resolves it.
 #[cfg(windows)]
 pub fn alive(pid: u32) -> bool {
-    let mut query = std::process::Command::new("tasklist");
-    query.args(["/NH", "/FI", &format!("PID eq {pid}")]);
-    console::apply(&mut query, 0);
-    query
-        .output()
-        .map(|out| String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()))
-        .unwrap_or(true)
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut std::ffi::c_void;
+        fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
+        fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        fn GetLastError() -> u32;
+    }
+    // SYNCHRONIZE grants only a liveness wait; access errors do not prove a process is dead.
+    unsafe {
+        let handle = OpenProcess(0x00100000, 0, pid);
+        if handle.is_null() {
+            return GetLastError() != 87;
+        }
+        let status = WaitForSingleObject(handle, 0);
+        CloseHandle(handle);
+        status != 0
+    }
 }
 
 #[cfg(not(windows))]

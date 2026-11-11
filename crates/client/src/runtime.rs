@@ -248,7 +248,7 @@ pub async fn run(
     let mut endpoint = crate::endpoint_name(&conn);
 
     let mut client = crate::build_client(args);
-    let window = command::Window::new(client.completer());
+    let mut window = command::Window::new(client.completer());
     let mut ui: Box<dyn Frontend> = make(window.shared(), &client_home, &endpoint)?;
     // What this window drew last: a greeting may never come.
     // See `docs/notes/tui-roster.md`.
@@ -408,7 +408,15 @@ pub async fn run(
                     // The rows on screen are the old endpoint's: they go, and the
                     // next frame reads this one's records instead.
                     endpoint = crate::endpoint_name(&conn);
+                    let unanswered = client.set_offline(0, ui.sink().as_mut());
+                    give_back(&mut *ui, unanswered);
                     ui.repoint(&client_home, &endpoint);
+                    client = crate::build_client(args);
+                    window = command::Window::new(client.completer());
+                    client.seed_listed(ui.known_list());
+                    dialing = None;
+                    pending.clear();
+                    owed.clear();
                     link = None;
                     ui.set_server(None);
                     backoff = RECONNECT_MIN;
@@ -523,7 +531,7 @@ pub async fn run(
                         // Applying the greeting is what the server says; what
                         // this window kept is the other half of the comparison.
                         greeting.apply(&mut client, ui.sink().as_mut());
-                        crate::window_refill::declare(&mut client, &*ui);
+                        crate::window_refill::declare(&mut client, &mut *ui);
                         link = Some(open);
                         backoff = RECONNECT_MIN;
                     }

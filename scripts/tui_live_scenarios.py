@@ -78,7 +78,7 @@ SCENARIOS = {
             "wait 300",
             "expect [main] 20000",
             "label typing peer's command while main is still streaming",
-            "keys /send_message peer \"peer, talk through your own session at length\"",
+            "keys /send_message --session peer --message \"peer, talk through your own session at length\"",
             "enter",
             "wait 300",
             "settle 40000",

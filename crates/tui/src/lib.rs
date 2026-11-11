@@ -1132,11 +1132,6 @@ impl Tui {
     /// See `docs/notes/tui-log.md`.
     pub fn prepend_rows(&mut self, name: &str, rows: &[client::render_wire::PastRow]) {
         let added = self.screen.panes.prepend(name, rows);
-        if added == 0 {
-            return;
-        }
-        // The row that was missing arrived: a frame still short of its pane asks
-        // for the next one.
         self.wished.remove(name);
         self.screen.panes.hold_place(name, added);
         self.dirty = true;
@@ -1198,6 +1193,11 @@ impl Tui {
     /// Drops what one window holds: SPEC's command row shows only the last one.
     pub fn clear(&mut self, name: &str) {
         self.screen.panes.clear(name);
+        self.dirty = true;
+    }
+
+    pub fn rewind(&mut self, name: &str) {
+        self.screen.panes.rewind(name);
         self.dirty = true;
     }
 

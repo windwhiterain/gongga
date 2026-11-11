@@ -6,6 +6,7 @@
 //! live or whether it may keep them, and nothing here is derived from a greeting.
 //! See `docs/notes/tui-cache.md`.
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -126,8 +127,8 @@ pub enum Record {
 /// would mean walking the whole file forwards.
 const FRAME: u64 = 4;
 
-/// The framing a journal is written in. Bumped when `Record` changes shape.
-const VERSION: u32 = 2;
+/// Version 3 keys events only by transcript sequence, never by stream position.
+const VERSION: u32 = 3;
 
 /// One window's journal, held open for as long as this process draws it.
 ///
@@ -141,6 +142,8 @@ struct Slot {
     path: PathBuf,
     /// `None` until the first read or write, and again after a reset or a removal.
     file: Option<File>,
+    /// Built on the first events query; only offsets after the newest `Clear` survive.
+    events: Option<BTreeMap<u64, u64>>,
 }
 
 impl Slot {
@@ -153,6 +156,7 @@ impl Slot {
                 std::process::id()
             )),
             file: None,
+            events: None,
         }
     }
 }
@@ -251,7 +255,14 @@ impl Cache {
                 }
             }
             if let Some(path) = chosen.clone() {
-                journals.insert(window.clone(), Slot { path, file: None });
+                journals.insert(
+                    window.clone(),
+                    Slot {
+                        path,
+                        file: None,
+                        events: None,
+                    },
+                );
             }
             // What is left over belongs to nobody: a pid says a process that ran.
             for one in &files {
@@ -276,7 +287,7 @@ impl Cache {
         &self,
         window: &str,
         create: bool,
-        f: impl FnOnce(&mut File) -> Option<T>,
+        f: impl FnOnce(&mut Slot) -> Option<T>,
     ) -> Option<T> {
         let dir = self.dir.as_ref()?;
         let mut journals = self
@@ -295,9 +306,19 @@ impl Cache {
             if create {
                 open.create(true);
             }
-            slot.file = open.open(&slot.path).ok();
+            let mut file = open.open(&slot.path).ok()?;
+            let end = file.metadata().ok()?.len();
+            if end > 0
+                && (Self::record_at(&mut file).is_none()
+                    || Self::previous(&mut file, end).is_none())
+            {
+                file.set_len(0).ok()?;
+                file.seek(SeekFrom::Start(0)).ok()?;
+            }
+            slot.events = None;
+            slot.file = Some(file);
         }
-        f(slot.file.as_mut()?)
+        f(slot)
     }
 
     /// Where this window's journal lives, whether or not it is open.
@@ -324,6 +345,7 @@ impl Cache {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(slot) = journals.get_mut(window) {
             slot.file = None;
+            slot.events = None;
         }
     }
 
@@ -335,20 +357,28 @@ impl Cache {
     /// start: a caller that keeps it can read that block back without its neighbours.
     pub fn append(&self, window: &str, record: &Record) -> Option<u64> {
         self.dir.as_ref()?;
-        let mut body = Vec::new();
-        body.extend_from_slice(&VERSION.to_le_bytes());
-        body.extend_from_slice(&serde_json::to_vec(record).ok()?);
-        let len = (body.len() as u32).to_le_bytes();
-        let mut framed = Vec::with_capacity(body.len() + 8);
-        framed.extend_from_slice(&len);
-        framed.extend_from_slice(&body);
-        framed.extend_from_slice(&len);
-        let wrote = self.with(window, true, |file| {
+        let mut framed = Vec::new();
+        Self::encode(record, &mut framed)?;
+        self.with(window, true, |slot| {
+            let file = slot.file.as_mut()?;
             let at = file.seek(SeekFrom::End(0)).ok()?;
-            file.write_all(&framed).ok()?;
+            if file.write_all(&framed).is_err() {
+                // A partial write must be validated before another append uses this file.
+                slot.file = None;
+                slot.events = None;
+                return None;
+            }
+            if let Some(events) = &mut slot.events {
+                match record {
+                    Record::Event { seq, .. } => {
+                        events.insert(*seq, at);
+                    }
+                    Record::Clear => events.clear(),
+                    _ => {}
+                }
+            }
             Some(at)
-        });
-        wrote
+        })
     }
 
     /// Writes down that this window's view holds nothing from here on.
@@ -394,16 +424,11 @@ impl Cache {
         let path = self.path(window)?;
         let next = path.with_extension("rewrite");
         let mut framed: Vec<u8> = Vec::new();
-        let mut offsets = Vec::with_capacity(records.len());
+        let mut offsets = Vec::new();
+        offsets.try_reserve(records.len()).ok()?;
         for record in records {
-            let at = framed.len() as u64;
-            let mut body = Vec::new();
-            body.extend_from_slice(&VERSION.to_le_bytes());
-            body.extend_from_slice(&serde_json::to_vec(record).ok()?);
-            let len = (body.len() as u32).to_le_bytes();
-            framed.extend_from_slice(&len);
-            framed.extend_from_slice(&body);
-            framed.extend_from_slice(&len);
+            let at = u64::try_from(framed.len()).ok()?;
+            Self::encode(record, &mut framed)?;
             offsets.push(at);
         }
         {
@@ -425,42 +450,79 @@ impl Cache {
     ///
     /// # Invariant
     ///
-    /// Found the way a stamp is: walking back stops at the first record this build
-    /// cannot read, for the same reason every other backward walk does.
+    /// Walking back stops at `Clear` or the first record this build cannot read.
     pub fn floor(&self, window: &str, before: u64) -> Option<(u64, i64)> {
-        let mut at = before.min(self.end(window));
-        while at > 0 {
-            let start = self.back(window, at, 1);
-            if let Some(Record::Floor { seq }) = self.read(window, start) {
-                return Some((start, seq));
+        self.with(window, false, |slot| {
+            let file = slot.file.as_mut()?;
+            let mut at = before.min(file.metadata().ok()?.len());
+            while at > 0 {
+                let (start, record) = Self::previous(file, at)?;
+                match record {
+                    Record::Floor { seq } => return Some((start, seq)),
+                    Record::Clear => return None,
+                    _ => {}
+                }
+                at = start;
             }
-            at = start;
-        }
-        None
+            None
+        })
     }
 
     /// The rows this window holds above `before`, newest first, at most `count`.
     ///
     /// # Invariant
     ///
-    /// Walked back from the journal's end and stopped at the newest `Clear`: what a
-    /// window drew before a cut is not a page its reader can be handed again. The
-    /// rows come back with their own numbers, which is what says where each one
-    /// goes -- above the ones already held, never at the end. See
-    /// `docs/notes/tui-cache.md`.
+    /// Only events after the newest `Clear` are indexed. Each sequence has one
+    /// offset, with the last write winning, so duplicates never consume a page's
+    /// count and append order never changes transcript order. The index is built
+    /// once on demand and maintained by append, not rebuilt for every page.
     pub fn events(&self, window: &str, before: u64, count: usize) -> Vec<(u64, protocol::Event)> {
-        let mut out = Vec::new();
-        let mut at = self.end(window);
-        while at > 0 && out.len() < count {
-            let start = self.back(window, at, 1);
-            match self.read(window, start) {
-                Some(Record::Event { seq, body, .. }) if seq < before => out.push((seq, body)),
-                Some(Record::Clear) => break,
-                _ => {}
+        self.with(window, false, |slot| {
+            let result = (|| {
+                let file = slot.file.as_mut()?;
+                if slot.events.is_none() {
+                    let mut events = BTreeMap::new();
+                    let end = file.metadata().ok()?.len();
+                    let mut at = 0;
+                    file.seek(SeekFrom::Start(at)).ok()?;
+                    while at < end {
+                        let (next, record) = Self::record_at(file)?;
+                        match record {
+                            Record::Event { seq, .. } => {
+                                events.insert(seq, at);
+                            }
+                            Record::Clear => events.clear(),
+                            _ => {}
+                        }
+                        at = next;
+                    }
+                    slot.events = Some(events);
+                }
+                let mut out = Vec::new();
+                for (&seq, &at) in slot.events.as_ref()?.range(..before).rev().take(count) {
+                    file.seek(SeekFrom::Start(at)).ok()?;
+                    match Self::record_at(file)? {
+                        (
+                            _,
+                            Record::Event {
+                                seq: found, body, ..
+                            },
+                        ) if found == seq => {
+                            out.try_reserve(1).ok()?;
+                            out.push((seq, body));
+                        }
+                        _ => return None,
+                    }
+                }
+                Some(out)
+            })();
+            if result.is_none() {
+                slot.events = None;
+                slot.file = None;
             }
-            at = start;
-        }
-        out
+            result
+        })
+        .unwrap_or_default()
     }
 
     /// Writes down that the tail above the last stamp is thrown away.
@@ -483,7 +545,8 @@ impl Cache {
 
     /// The record written at `at`, if one is there and this build can read it.
     pub fn read(&self, window: &str, at: u64) -> Option<Record> {
-        self.with(window, false, |file| {
+        self.with(window, false, |slot| {
+            let file = slot.file.as_mut()?;
             file.seek(SeekFrom::Start(at)).ok()?;
             Self::record_at(file).map(|(_, record)| record)
         })
@@ -491,11 +554,12 @@ impl Cache {
 
     /// Where the `count` records before `from` begin, or 0 when the file starts first.
     pub fn back(&self, window: &str, from: u64, count: usize) -> u64 {
-        self.with(window, false, |file| {
+        self.with(window, false, |slot| {
+            let file = slot.file.as_mut()?;
             let end = file.seek(SeekFrom::End(0)).ok()?;
             let mut at = from.min(end);
             for _ in 0..count {
-                at = Self::previous(file, at)?;
+                at = Self::previous(file, at)?.0;
             }
             Some(at)
         })
@@ -508,41 +572,47 @@ impl Cache {
     ///
     /// `at` is the record's own offset, which is what a refill cuts at: a block
     /// whose record was written above this one was drawn after the last row the
-    /// stamp accounts for. Walking back stops at the first record this build
-    /// cannot read, for the same reason every other backward walk does.
+    /// stamp accounts for. Walking back stops at `Clear` or the first record this
+    /// build cannot read.
     pub fn stamp_at(&self, window: &str, before: u64) -> Option<(u64, i64, i64)> {
-        let mut at = before.min(self.end(window));
-        while at > 0 {
-            let start = self.back(window, at, 1);
-            if let Some(Record::Stamp { created, seq }) = self.read(window, start) {
-                return Some((start, created, seq));
+        self.with(window, false, |slot| {
+            let file = slot.file.as_mut()?;
+            let mut at = before.min(file.metadata().ok()?.len());
+            while at > 0 {
+                let (start, record) = Self::previous(file, at)?;
+                match record {
+                    Record::Stamp { created, seq } => return Some((start, created, seq)),
+                    Record::Clear => return None,
+                    _ => {}
+                }
+                at = start;
             }
-            at = start;
-        }
-        None
+            None
+        })
     }
 
     /// The record just before `at`, if the file holds one this build understands.
-    fn previous(file: &mut File, at: u64) -> Option<u64> {
-        if at < FRAME {
+    fn previous(file: &mut File, at: u64) -> Option<(u64, Record)> {
+        let mut tail = [0u8; 4];
+        file.seek(SeekFrom::Start(at.checked_sub(FRAME)?)).ok()?;
+        file.read_exact(&mut tail).ok()?;
+        let len = u64::from(u32::from_le_bytes(tail));
+        let start = at.checked_sub(FRAME.checked_add(len)?.checked_add(FRAME)?)?;
+        let mut head = [0u8; 4];
+        file.seek(SeekFrom::Start(start)).ok()?;
+        file.read_exact(&mut head).ok()?;
+        if head != tail {
             return None;
         }
-        let mut tail = [0u8; 4];
-        file.seek(SeekFrom::Start(at - FRAME)).ok()?;
-        file.read_exact(&mut tail).ok()?;
-        let len = u32::from_le_bytes(tail) as u64;
-        let start = at.checked_sub(FRAME + len + FRAME)?;
-        // A body this build cannot read ends the walk: what precedes a record it
-        // cannot parse is not addressable from the end.
-        let mut body = vec![0u8; len as usize];
-        file.seek(SeekFrom::Start(start + FRAME)).ok()?;
-        file.read_exact(&mut body).ok()?;
-        Self::decode(&body).map(|_| start)
+        file.seek(SeekFrom::Start(start)).ok()?;
+        let (next, record) = Self::record_at(file)?;
+        (next == at).then_some((start, record))
     }
 
     /// Every record from `from` to the end, oldest first.
     pub fn forward(&self, window: &str, from: u64) -> Vec<(u64, Record)> {
-        self.with(window, false, |file| {
+        self.with(window, false, |slot| {
+            let file = slot.file.as_mut()?;
             let end = file.seek(SeekFrom::End(0)).ok()?;
             let mut at = from;
             let mut out = Vec::new();
@@ -561,22 +631,45 @@ impl Cache {
         .unwrap_or_default()
     }
 
+    /// Both length fields must represent the entire versioned body without truncation.
+    fn encode(record: &Record, framed: &mut Vec<u8>) -> Option<()> {
+        let body = serde_json::to_vec(record).ok()?;
+        let len = u32::try_from(body.len().checked_add(4)?)
+            .ok()?
+            .to_le_bytes();
+        framed.try_reserve(body.len().checked_add(12)?).ok()?;
+        framed.extend_from_slice(&len);
+        framed.extend_from_slice(&VERSION.to_le_bytes());
+        framed.extend_from_slice(&body);
+        framed.extend_from_slice(&len);
+        Some(())
+    }
+
     /// One record read forwards at the handle's position, and where the next starts.
     fn record_at(file: &mut File) -> Option<(u64, Record)> {
         let at = file.stream_position().ok()?;
+        let end = file.metadata().ok()?.len();
         let mut head = [0u8; 4];
-        if file.read_exact(&mut head).is_err() {
+        file.read_exact(&mut head).ok()?;
+        let len = u64::from(u32::from_le_bytes(head));
+        let next = at
+            .checked_add(FRAME)?
+            .checked_add(len)?
+            .checked_add(FRAME)?;
+        if len < 4 || next > end {
             return None;
         }
-        let len = u32::from_le_bytes(head) as usize;
-        let mut body = vec![0u8; len];
+        let len = usize::try_from(len).ok()?;
+        let mut body = Vec::new();
+        body.try_reserve(len).ok()?;
+        body.resize(len, 0);
         file.read_exact(&mut body).ok()?;
         let mut tail = [0u8; 4];
         file.read_exact(&mut tail).ok()?;
-        if u32::from_le_bytes(tail) as usize != len {
+        if head != tail {
             return None;
         }
-        Self::decode(&body).map(|record| (at + FRAME + len as u64 + FRAME, record))
+        Self::decode(&body).map(|record| (next, record))
     }
 
     /// One framed body as a record: the version first, so a foreign one is refused.

@@ -342,6 +342,10 @@ impl Panes {
         self.log.clear(window);
     }
 
+    pub fn rewind(&mut self, window: &str) {
+        self.log.rewind(window);
+    }
+
     /// Replaces the whole text of one block: an answer re-rendered as markdown.
     pub fn rewrite(&mut self, key: &str, text: &str) {
         self.log.rewrite(key, text);
@@ -425,14 +429,12 @@ impl Panes {
     ///
     /// # Invariant
     ///
-    /// The scroll is counted from the newest row, so rows inserted above it push
-    /// the whole pane down; the reader's place is a row, and it moves with them.
-    /// A pane at the bottom is following the newest row and stays there.
+    /// The scroll is counted from the newest row, so a prepend leaves it unchanged.
+    /// The previous frame's row count moves with the old rows instead: `anchor`
+    /// must not mistake history inserted above them for new rows appended below.
     pub fn hold_place(&mut self, window: &str, rows: usize) {
-        if let Some(pane) = self.panes.iter_mut().find(|pane| pane.name == window)
-            && pane.scroll > 0
-        {
-            pane.scroll += rows;
+        if let Some(pane) = self.panes.iter_mut().find(|pane| pane.name == window) {
+            pane.last_rows = pane.last_rows.saturating_add(rows);
         }
     }
 
