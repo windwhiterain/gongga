@@ -318,7 +318,14 @@ impl Channels {
         let log = dir.join("relay.log");
         let relay = crate::tools::detached::DetachedJob::launch_program(
             &self.server,
-            &["--relay".to_string(), dir.display().to_string()],
+            &[
+                "--relay".to_string(),
+                dir.display().to_string(),
+                // The pair's version: a relay of another build refuses to hold this
+                // channel, and names both numbers instead of failing inside it.
+                "--build".to_string(),
+                protocol::BUILD.to_string(),
+            ],
             &self.root,
             &log,
             &words.env,
