@@ -228,14 +228,20 @@ payload already names, once, on the open that adds them. A payload naming neithe
 stays NULL, which is how "stands in no step" is spelled, and a payload that is not
 JSON is skipped rather than failing a whole home's migration.
 
-`open_calls` asks two questions and takes the union: the newest `(turn, step)` in
-the session, and the trailing run of tool rows -- the shape a row written before the
-columns can still be found by. Both are filtered by `call_id`, so the union costs a
-few rows and can never call an answered call open. The boundary is the last row that
-is neither half of a call and not the last result: a step writes all its calls before
-it runs the first, so `a, b, result a` is a real crash shape and `b` sits below the
-newest result. `answer_open_calls` copies the call's own pair onto the answer it
-appends, so the repaired row lands in the step it belongs to.
+`seal_calls` is the one way a row written before the columns gets an answer. It runs
+on the open that adds them, *before* the ALTER: from that moment the question is
+asked of a row's own pair, so a call written before them has to be answered while the
+transcript can still be asked about it. Its own insert is deliberate -- `append_message`
+writes the columns it is making room for. A crash in the middle leaves the columns
+absent, so the next start asks again; asking twice answers nothing, because what it
+writes is a result the next question sees.
+
+`open_calls` then reads one thing: the newest `(turn, step)` in the session, and every
+call in it that no result names. A turn answers its calls before it ends, so that is
+the only place a half-written step can be. A resumed turn reuses its numbers, so an
+older row sharing the pair is read too -- its answered calls filter themselves out by
+`call_id`, never by position. `answer_open_calls` copies the call's own pair onto the
+answer it appends, so the repaired row lands in the step it belongs to.
 
 ## pictures in a row
 

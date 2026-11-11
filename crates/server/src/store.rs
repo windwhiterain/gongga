@@ -451,7 +451,7 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 }
 
 /// Adds columns a `CREATE TABLE IF NOT EXISTS` cannot add to an old database.
-fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+fn migrate(conn: &Connection) -> anyhow::Result<()> {
     // Renamed twice as the words settled: `llm` -> the model, `model` -> `model_name`.
     if has_column(conn, "sessions", "llm") && !has_column(conn, "sessions", "provider") {
         conn.execute("ALTER TABLE sessions RENAME COLUMN llm TO provider", [])?;
@@ -606,6 +606,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     // A row's step was only in its payload; as columns it is a range read.
     if !has_column(conn, "messages", "step") {
+        let answered = seal_calls(conn)?;
+        if answered > 0 {
+            tracing::info!(answered, "answered the calls a transcript ended inside");
+        }
         conn.execute("ALTER TABLE messages ADD COLUMN turn INTEGER", [])?;
         conn.execute("ALTER TABLE messages ADD COLUMN step INTEGER", [])?;
         backfill_steps(conn)?;
@@ -691,6 +695,82 @@ fn settle_handover(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     }
     tx.execute("ALTER TABLE sessions DROP COLUMN handover", [])?;
     tx.commit()
+}
+
+/// The row that answers a call nothing answered, in the step the call is in.
+fn interrupted_result(call_id: &str, call: &serde_json::Value) -> serde_json::Value {
+    let mut payload = json!({
+        "call_id": call_id,
+        "output": interrupted_call(),
+        "images": [],
+        "step": call.get("step").cloned().unwrap_or_default(),
+        "ok": false,
+        "elapsed_ms": 0,
+        "tool": call.get("name").and_then(|v| v.as_str()).unwrap_or_default(),
+    });
+    // The answer belongs to the step the call is in, not to one of its own.
+    if let Some(turn) = call.get("turn") {
+        payload["turn"] = turn.clone();
+    }
+    payload
+}
+
+/// Answers the calls a transcript ended inside, before a row stated its own step.
+///
+/// # Invariant
+///
+/// Runs once, on the open that adds `turn` and `step`, and *before* it: from then
+/// on the question is a row's own columns, so an older call has to be answered while
+/// the transcript still answers for it. A crash leaves the columns absent and the
+/// next start asks again; answering twice does nothing, since the result it writes
+/// is what the next question sees.
+fn seal_calls(conn: &Connection) -> anyhow::Result<usize> {
+    let rows: Vec<(i64, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT c.session_id, c.call_id, c.display FROM messages c
+              WHERE c.kind = 'tool_call' AND c.call_id IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM messages r
+                     WHERE r.session_id = c.session_id AND r.kind = 'tool_result'
+                       AND r.call_id = c.call_id)
+              ORDER BY c.session_id, c.seq",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get(2)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut answered = 0;
+    for (session_id, call_id, display) in rows {
+        let call: serde_json::Value = serde_json::from_str(&display).unwrap_or_default();
+        let payload = interrupted_result(&call_id, &call);
+        // Its own insert: `append_message` writes the columns this makes room for.
+        conn.query_row(
+            "INSERT INTO messages (session_id, seq, kind, content, display, call_id, created_at)
+             VALUES (
+                ?1,
+                (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1),
+                ?2, ?3, ?4, ?5, ?6
+             )
+             RETURNING seq",
+            params![
+                session_id,
+                Kind::ToolResult.as_str(),
+                wire_item(Kind::ToolResult, &payload).map(|item| item.to_string()),
+                serde_json::to_string(&payload)?,
+                call_id,
+                now_millis()
+            ],
+            |r| r.get::<_, i64>(0),
+        )?;
+        conn.execute(
+            "UPDATE tool_calls SET output = ?1, status = 'cancelled', finished_at = ?2
+              WHERE session_id = ?3 AND call_id = ?4",
+            params![interrupted_call(), now_millis(), session_id, call_id],
+        )?;
+        answered += 1;
+    }
+    Ok(answered)
 }
 
 /// Gives the rows written before turn and step were columns the ones their payload
@@ -1674,26 +1754,24 @@ impl Store {
         Ok(settled)
     }
 
-    /// The calls `session` ends inside: the ones a run died before answering.
+    /// The calls the step this session stops in left unanswered.
     ///
     /// # Invariant
     ///
-    /// Two shapes, one answer: the newest `(turn, step)` in the session, and the
-    /// trailing run of tool rows -- the shape a row written before these columns
-    /// can still be found by. Both filtered by `call_id`, never by position alone.
-    /// See `docs/notes/server-store.md`.
+    /// Read from the rows' own `(turn, step)`: a turn answers its calls before it
+    /// ends, so the newest pair in the transcript names the only step that can still
+    /// be half-written. A call there with no result naming it is what a provider
+    /// refuses to continue. Rows written before these were columns are settled by
+    /// [`seal_calls`] on the open that adds them.
     pub fn open_calls(&self, session_id: i64) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT c.call_id, c.display FROM messages c
+               JOIN (SELECT turn, step FROM messages
+                      WHERE session_id = ?1 AND turn IS NOT NULL AND step IS NOT NULL
+                      ORDER BY turn DESC, step DESC LIMIT 1) last
+                 ON c.turn = last.turn AND c.step = last.step
               WHERE c.session_id = ?1 AND c.kind = 'tool_call' AND c.call_id IS NOT NULL
-                AND ( c.seq > COALESCE((
-                        SELECT MAX(seq) FROM messages
-                         WHERE session_id = ?1 AND kind NOT IN ('tool_call', 'tool_result')), 0)
-                      OR (c.turn, c.step) = (
-                        SELECT turn, step FROM messages
-                         WHERE session_id = ?1 AND turn IS NOT NULL AND step IS NOT NULL
-                         ORDER BY turn DESC, step DESC LIMIT 1) )
                 AND NOT EXISTS (
                     SELECT 1 FROM messages r
                      WHERE r.session_id = c.session_id AND r.kind = 'tool_result'
@@ -1721,19 +1799,7 @@ impl Store {
     pub fn answer_open_calls(&self, session_id: i64) -> anyhow::Result<usize> {
         let open = self.open_calls(session_id)?;
         for (call_id, call) in &open {
-            let mut payload = json!({
-                "call_id": call_id,
-                "output": interrupted_call(),
-                "images": [],
-                "step": call.get("step").cloned().unwrap_or_default(),
-                "ok": false,
-                "elapsed_ms": 0,
-                "tool": call.get("name").and_then(|v| v.as_str()).unwrap_or_default(),
-            });
-            // The answer belongs to the step the call is in, not to one of its own.
-            if let Some(turn) = call.get("turn") {
-                payload["turn"] = turn.clone();
-            }
+            let payload = interrupted_result(call_id, call);
             self.append_message(session_id, Kind::ToolResult, &payload)?;
             self.finish_tool_call(session_id, call_id, &interrupted_call(), "cancelled")?;
         }
