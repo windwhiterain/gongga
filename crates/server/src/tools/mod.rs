@@ -747,10 +747,12 @@ impl ToolRegistry {
         ctx: &ToolContext,
     ) -> ToolOutcome {
         let Some(tool) = self.get(name) else {
-            return ToolOutcome::err(format!(
-                "unknown tool {name:?}; available: {}",
-                self.names().join(", ")
-            ));
+            // SPEC `fn <tool>(**args)`: an unregistered name is a cmd a skill taught; the command layer runs it.
+            let words = match args.as_object() {
+                Some(table) => named_words(table),
+                None => protocol::Args::new(),
+            };
+            return run_command(&ctx.session, name, words, &ctx.cancel).await;
         };
         // The name this call was made under, as the row spells it now.
         let mut named = ctx.clone();

@@ -35,16 +35,6 @@ impl Cmd for ExecTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
             let args = spelled(args);
-            // SPEC's `fn <tool>(**args)`: a table is a server cmd named by its `cmd` key; the session rides along.
-            if let Some(table) = args.get("args").and_then(Value::as_object) {
-                let Some(name) = table.get("cmd").and_then(Value::as_str) else {
-                    return ToolOutcome::err(
-                        "`args` as a table is a server cmd: give it a `cmd` key naming the command, and the rest as its arguments",
-                    );
-                };
-                let words = crate::tools::named_words(table);
-                return crate::tools::run_command(&ctx.session, name, words, &ctx.cancel).await;
-            }
             let bin = text(&args, "bin");
             let asked = text(&args, "id");
             // A path in a namespace, however it is spelled: Git Bash rewrites a leading
@@ -111,9 +101,7 @@ impl Cmd for ExecTool {
                 }
                 Some(Value::Object(_)) => {
                     return ToolOutcome::err(
-                        "`args` given as a table is a cmd's arguments, and this build routes \
-                         no name to the command layer yet: pass a list of words, or call the \
-                         cmd itself"
+                        "`exec` runs programs as channels and takes a list of words; a server cmd is called by its own name as a tool, its schema in a skill"
                             .to_string(),
                     );
                 }
