@@ -328,6 +328,10 @@ impl Agent {
             step = step.wrapping_add(1);
         };
 
+        // Interrupt: fold the inbox into context while the gate is held, so nudge finds nothing to wake.
+        if matches!(outcome.0, TurnOutcome::Cancelled) && session.interrupted() {
+            self.deliver_inbox(id, &name);
+        }
         tracing::info!(session = %name, outcome = ?outcome.0, elapsed = ?started.elapsed(), "turn end");
         outcome
     }
@@ -422,7 +426,7 @@ impl Agent {
     }
 
     /// Moves the session's inbox into the transcript in one durable transaction.
-    fn deliver_inbox(&self, id: i64, name: &str) -> usize {
+    pub(crate) fn deliver_inbox(&self, id: i64, name: &str) -> usize {
         match self.store.deliver_pending(id, name) {
             // `waited` is the "no answer yet" number: a message written mid-step lands
             // only here.
@@ -1060,7 +1064,8 @@ impl Agent {
                     summary,
                 } => {
                     // The item, not a summary of it; see `docs/notes/server-agent.md`.
-                    let payload = json!({"item": item, "summary": summary, "item_id": item_id});
+                    let payload = json!({"item": item, "summary": summary, "item_id": item_id,
+                                         "turn": turn, "step": step});
                     said.insert(item_id.clone());
                     streamed.remove(&item_id);
                     self.settle_item(session, &item_id);
@@ -1084,7 +1089,8 @@ impl Agent {
                         self.store.append_message(
                             id,
                             Kind::BuiltinCall,
-                            &json!({"item": item, "replayable": replayable}),
+                            &json!({"item": item, "replayable": replayable,
+                                    "turn": turn, "step": step}),
                         ),
                     );
                 }
@@ -1115,7 +1121,8 @@ impl Agent {
                             self.store.append_message(
                                 id,
                                 Kind::Text,
-                                &json!({"role":"assistant","text":text}),
+                                &json!({"role":"assistant","text":text,
+                                        "turn": turn, "step": step}),
                             ),
                         );
                     }
@@ -1144,7 +1151,7 @@ impl Agent {
                             id,
                             Kind::ToolCall,
                             &json!({"call_id": call_id, "name": tool, "arguments": arguments,
-                                    "step": step}),
+                                    "turn": turn, "step": step}),
                         ),
                     );
                     let _ = self.store.start_tool_call(id, &call_id, &tool, &arguments);
@@ -1423,7 +1430,7 @@ impl Agent {
         if cancel.is_cancelled() {
             // Its row exists and a provider wants it answered; a row the body would
             // otherwise invent is written once instead.
-            self.answer_interrupted(id, name, &call_id, &tool, step);
+            self.answer_interrupted(id, name, &call_id, &tool, turn, step);
             return true;
         }
         let model = llm.model().to_string();
@@ -1543,7 +1550,7 @@ impl Agent {
             .map(crate::image::ImageRef::to_json)
             .collect();
         let mut content = json!({"call_id": call_id, "output": output, "images": images,
-                    "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
+                    "turn": turn, "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
         let mut checkpointed = false;
         let mut checkpoint_error = None;
         // Unasked-for call: a no-op, not an error (an error invites a retry loop).
@@ -1664,7 +1671,15 @@ impl Agent {
     /// meant the same transcript could go out as two different byte sequences; the
     /// missing answer is a row now, written once -- and the window is told, because a
     /// block left open is a block the reader cannot tell from a running tool.
-    fn answer_interrupted(&self, id: i64, name: &str, call_id: &str, tool: &str, step: u32) {
+    fn answer_interrupted(
+        &self,
+        id: i64,
+        name: &str,
+        call_id: &str,
+        tool: &str,
+        turn: u64,
+        step: u32,
+    ) {
         let said = crate::store::interrupted_call();
         self.announce_row(
             name,
@@ -1675,6 +1690,7 @@ impl Agent {
                     "call_id": call_id,
                     "output": said,
                     "images": [],
+                    "turn": turn,
                     "step": step,
                     "ok": false,
                     "elapsed_ms": 0,
@@ -1775,12 +1791,13 @@ impl Agent {
                 let stored = match part {
                     ResponsePart::Output => Some((
                         Kind::Text,
-                        json!({"role": "assistant", "text": text, "interrupted": true}),
+                        json!({"role": "assistant", "text": text, "interrupted": true,
+                               "turn": turn}),
                     )),
                     ResponsePart::Reasoning => Some((
                         Kind::Reasoning,
                         json!({"summary": text, "item_id": item_id.clone(),
-                               "interrupted": true}),
+                               "interrupted": true, "turn": turn}),
                     )),
                     // A call's text is its arguments; an activity is progress;
                     // the operator's words are not the model's to store.

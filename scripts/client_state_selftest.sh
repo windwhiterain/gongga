@@ -99,20 +99,20 @@ TOML
 before=$(md5sum "$home/client.toml" | cut -d' ' -f1)
 
 cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
-"${cli[@]}" set_session --id s1 --model fake/flash-fake >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"s1","model":"fake/flash-fake"}}' >/dev/null 2>&1
 after_create=$(md5sum "$home/client.toml" | cut -d' ' -f1)
 
 # 1. A required session is not filled from the window's entry: the line fails,
 #    and nothing is delivered to the session the entry names.
-sent=$("${cli[@]}" send_message --message "should not land" 2>&1); code=$?
+sent=$("${cli[@]}" '{"name":"send_message","args":{"message":"should not land"}}' 2>&1); code=$?
 [[ $code -ne 0 && "$sent" == *"missing required argument"* ]]
 ok "send_message with no --session is refused instead of using the sticky session" $?
-read_back=$("${cli[@]}" get_messages --session s1 2>&1)
+read_back=$("${cli[@]}" '{"name":"get_messages","args":{"session":"s1"}}' 2>&1)
 [[ "$read_back" != *"should not land"* ]]
 ok "the refused message never reached s1" $?
 
 # 2. The same for a read: no sticky range, no sticky session.
-got=$("${cli[@]}" get_messages 2>&1); code=$?
+got=$("${cli[@]}" '{"name":"get_messages","args":{}}' 2>&1); code=$?
 [[ $code -ne 0 && "$got" == *"missing required argument"* ]]
 ok "get_messages with no --session is refused" $?
 
@@ -123,7 +123,7 @@ ok "set_session leaves client.toml byte for byte as the window wrote it" $?
 
 # 4. The commands that carry that state are not published to a one-shot process.
 for name in set_sticky del_sticky set_render set_render_session connect_server; do
-  out=$("${cli[@]}" "$name" 2>&1); code=$?
+  out=$("${cli[@]}" "{\"name\":\"$name\"}" 2>&1); code=$?
   [[ $code -ne 0 && "$out" == *"unknown command"* ]]
   ok "$name is not a command this program has" $?
   say "$out"
@@ -131,11 +131,11 @@ done
 
 # 5. `--cache_tier none` is a statement: the value that sends no tier at all, and
 #    the only one a model that declares none can take.
-clear=$("${cli[@]}" set_session --id plain --model fake/flash-fake --cache_tier none 2>&1); code=$?
+clear=$("${cli[@]}" '{"name":"set_session","args":{"id":"plain","model":"fake/flash-fake","cache_tier":"none"}}' 2>&1); code=$?
 [[ $code -eq 0 && "$clear" == *'"ok":true'* ]]
 ok "set_session --cache_tier none is accepted" $?
 say "$clear"
-bad=$("${cli[@]}" set_session --id plain --model fake/flash-fake --cache_tier 9h 2>&1); code=$?
+bad=$("${cli[@]}" '{"name":"set_session","args":{"id":"plain","model":"fake/flash-fake","cache_tier":"9h"}}' 2>&1); code=$?
 [[ $code -ne 0 && "$bad" == *"is not a tier this model declares"* && "$bad" == *"none"* ]]
 ok "an undeclared tier is refused, and none is named among the values" $?
 say "$bad"

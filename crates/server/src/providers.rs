@@ -382,10 +382,7 @@ impl Catalog {
                 Ok(mut value) => {
                     resolve_scripts(&mut value, path.parent());
                     match parse_value(value) {
-                        Ok(mut providers) => {
-                            attach_scripted_models(&mut providers);
-                            catalog.providers = providers;
-                        }
+                        Ok(providers) => catalog.providers = providers,
                         Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
                     }
                 }
@@ -927,26 +924,103 @@ const SCRIPT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A script that cannot be read -- no Python, a bad exit, a timeout, bad JSON --
 /// is logged and leaves the static rows in place, never emptying the provider.
 /// A scripted id the static rows already name is skipped, the static one kept.
-fn attach_scripted_models(providers: &mut [Provider]) {
-    for provider in providers {
-        let Some(script) = provider.models_script.clone() else {
-            continue;
-        };
-        match run_models_script(&script) {
-            Ok(scripted) => {
-                let fresh: Vec<Model> = scripted
-                    .into_iter()
-                    .filter(|m| !provider.models.iter().any(|known| known.id == m.id))
-                    .collect();
-                provider.models.extend(fresh);
-            }
-            Err(problem) => tracing::warn!(
-                provider = %provider.id,
-                script = %script.display(),
-                "model script failed: {problem}"
-            ),
-        }
+/// The roster in force, read once and re-read when the files change.
+///
+/// # Invariant
+///
+/// A file, not a snapshot: the cached read is stamped, and a script that lands
+/// later replaces this value rather than writing beside it. See [`merge_scripted`].
+static LIVE: OnceLock<std::sync::RwLock<Live>> = OnceLock::new();
+
+/// Where the discovery scripts are, once per process.
+///
+/// # Invariant
+///
+/// A script GETs a relay's own catalogue, and a start that waits on a network is a
+/// window that cannot open. The listing therefore begins as the rows the file
+/// states and gains the scripted ones when they arrive, which the start's own
+/// republisher announces: one roster, learned in two steps.
+static SCRIPTS: std::sync::OnceLock<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> =
+    std::sync::OnceLock::new();
+
+/// Starts the discovery scripts the roster names, once.
+fn spawn_scripts(catalog: &Arc<Catalog>) {
+    let work: Vec<(String, PathBuf)> = catalog
+        .providers()
+        .iter()
+        .filter_map(|p| p.models_script.clone().map(|s| (p.id.clone(), s)))
+        .collect();
+    if work.is_empty() {
+        return;
     }
+    let slot = SCRIPTS.get_or_init(|| std::sync::Mutex::new(None));
+    let Ok(mut slot) = slot.lock() else {
+        return;
+    };
+    if slot.is_some() {
+        return;
+    }
+    *slot = Some(std::thread::spawn(move || {
+        for (provider, script) in work {
+            match run_models_script(&script) {
+                Ok(scripted) => merge_scripted(&provider, scripted),
+                Err(problem) => tracing::warn!(
+                    provider = %provider,
+                    script = %script.display(),
+                    "model script failed: {problem}"
+                ),
+            }
+        }
+    }));
+}
+
+/// Joins what a script found to the roster in force, and says so once.
+///
+/// # Invariant
+///
+/// A generation bump is what makes the server republish, so this is the only door
+/// scripted models come through. A static row naming the same id wins: the file
+/// said it, and a script does not get to restate a row its reader wrote.
+fn merge_scripted(provider: &str, scripted: Vec<Model>) {
+    let Some(live) = LIVE.get() else {
+        return;
+    };
+    let Ok(mut guard) = live.write() else {
+        return;
+    };
+    let mut catalog = (*guard.catalog).clone();
+    let Some(entry) = catalog.providers.iter_mut().find(|p| p.id == provider) else {
+        return;
+    };
+    let fresh: Vec<Model> = scripted
+        .into_iter()
+        .filter(|m| !entry.models.iter().any(|known| known.id == m.id))
+        .collect();
+    if fresh.is_empty() {
+        return;
+    }
+    entry.models.extend(fresh);
+    catalog.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    guard.catalog = Arc::new(catalog);
+    drop(guard);
+    tracing::info!(provider = %provider, "the models a script names are in the roster");
+}
+
+/// The roster with the scripts joined, for a question that cannot wait for them.
+///
+/// # Invariant
+///
+/// Only a model the static rows cannot place is worth this: a home whose default
+/// comes from a rotation would otherwise start on the built-in default and send
+/// every turn to a provider nobody named.
+pub fn settle_scripts() -> Arc<Catalog> {
+    if let Some(slot) = SCRIPTS.get()
+        && let Ok(mut slot) = slot.lock()
+        && let Some(handle) = slot.take()
+    {
+        let _ = handle.join();
+    }
+    roster()
 }
 
 /// Runs one discovery script and parses the `FileModel` array it prints.
@@ -1322,7 +1396,6 @@ pub fn tier_accepts() -> Option<protocol::Accepts> {
 /// leave the retired list in someone's hand. Which read produced a list is
 /// [`Catalog::generation`], and that is what retires a cached client.
 pub fn roster() -> Arc<Catalog> {
-    static LIVE: OnceLock<std::sync::RwLock<Live>> = OnceLock::new();
     let live = LIVE.get_or_init(|| {
         std::sync::RwLock::new(Live {
             read: false,
@@ -1370,5 +1443,6 @@ pub fn roster() -> Arc<Catalog> {
         serving_cached,
         "provider roster read"
     );
+    spawn_scripts(&catalog);
     catalog
 }

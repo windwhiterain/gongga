@@ -6,6 +6,10 @@
 # a kill lost an answer the window had already drawn.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="$root/target/debug"
 work="$root/.dev/selftest"
@@ -91,8 +95,8 @@ start() {
 start "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
-"${cli[@]}" set_session --id writer --model fake/flash-fake --cwd "$work" >/dev/null 2>&1
-"${cli[@]}" send_message --session writer --message "say something long" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"writer","model":"fake/flash-fake","cwd":"'"$(native "$work")"'"}}' >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"writer","message":"say something long"}}' >/dev/null 2>&1
 
 # Both a thought and an answer have to be in flight before the kill: that is what makes
 # each one's survival a separate fact rather than one scenario standing for two.
@@ -184,7 +188,7 @@ INNER
 ok "the half thought is a reasoning row, in a position the provider accepts" $?
 
 # A finished answer leaves no draft behind: the normal path is unchanged.
-"${cli[@]}" send_message --session writer --message "and now a whole one" >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"writer","message":"and now a whole one"}}' >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q "turn end session=writer" "$log" && break; sleep 0.3; done
 python - "$home" <<'INNER'
 import sqlite3, sys

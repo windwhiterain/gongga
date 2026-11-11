@@ -538,11 +538,12 @@ impl Config {
         let model_file = file.model.unwrap_or_default();
         // The roster is the machine's own provider list; using it needs no config.
         let roster = crate::providers::roster();
-        let entry = pick_model(
-            &roster,
-            env_or("GONGGA_PROVIDER").or(model_file.provider.clone()),
-            env_or("GONGGA_MODEL").or(model_file.model_name.clone()),
-        );
+        let provider = env_or("GONGGA_PROVIDER").or(model_file.provider.clone());
+        let model_name = env_or("GONGGA_MODEL").or(model_file.model_name.clone());
+        let entry = pick_model(&roster, provider.clone(), model_name.clone()).or_else(|| {
+            // A script may name the model the file does not: ask it before the default.
+            pick_model(&crate::providers::settle_scripts(), provider, model_name)
+        });
         let api_key_env = env_or("GONGGA_API_KEY_ENV")
             .or_else(|| model_file.api_key_env.clone())
             .or_else(|| entry.as_ref().and_then(|e| e.api_key_env.clone()))

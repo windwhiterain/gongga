@@ -8,6 +8,10 @@
 #   - the row itself never carries the id, so a transcript outlives the provider's file.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="$root/target/debug"
 work="$root/.dev/selftest"
@@ -98,13 +102,13 @@ for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
-created=$("${cli[@]}" set_session --id viewer --model fake/flash-fake --cwd "$work" 2>&1)
+created=$("${cli[@]}" '{"name":"set_session","args":{"id":"viewer","model":"fake/flash-fake","cwd":"'"$(native "$work")"'"}}' 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
 
 posix_png=$(cygpath -m "$png" 2>/dev/null || echo "$png")
 turns=0
 send() {
-  "${cli[@]}" send_message --session viewer --message "$1" >/dev/null 2>&1
+  "${cli[@]}" '{"name":"send_message","args":{"session":"viewer","message":"'"$1"'"}}' >/dev/null 2>&1
   turns=$((turns + 1))
   for _ in $(seq 1 120); do
     [[ $(grep -c 'turn end session=viewer' "$log") -ge $turns ]] && break

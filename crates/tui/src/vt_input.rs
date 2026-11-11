@@ -2,33 +2,46 @@
 //!
 //! # Invariant
 //!
-//! One reader owns the input queue while this runs. Virtual terminal input makes
-//! the console hand out the escape sequences a terminal would, which is the only
-//! way `ESC[200~` reaches this window at all; it also takes the queue away from the
-//! record reader used before. See `docs/notes/tui-paste.md`.
+//! One reader owns the input queue while this runs. On Windows, virtual terminal
+//! input makes the console hand out the escape sequences a terminal would -- the
+//! only way `ESC[200~` reaches this window at all. Elsewhere crossterm's reader
+//! already reports a paste as one string. See `docs/notes/tui-paste.md`.
 
 use crossterm::event::Event;
 
-/// Whether this window reads bytes instead of console records.
-///
-/// Off until a terminal has proved it: the switch exists so a keyboard that stops
-/// working is one restart away from the reader that worked.
-pub fn wanted() -> bool {
-    // On by default: a paste must not need an environment variable to be one. `0`
-    // is the way back, for a terminal this reader mishandles.
-    std::env::var("GONGGA_TUI_VT_INPUT")
-        .map(|value| value != "0")
-        .unwrap_or(true)
+/// The one reader of terminal events this window opens.
+pub struct Input {
+    #[cfg(windows)]
+    reader: tokio::sync::mpsc::UnboundedReceiver<Event>,
+    #[cfg(not(windows))]
+    reader: crossterm::event::EventStream,
 }
 
 #[cfg(windows)]
-pub use platform::spawn;
+impl Input {
+    pub fn open() -> Self {
+        Self {
+            reader: platform::spawn(),
+        }
+    }
 
-/// No byte reader on a terminal that already sends paste as one string.
+    pub async fn next(&mut self) -> Option<std::io::Result<Event>> {
+        self.reader.recv().await.map(Ok)
+    }
+}
+
 #[cfg(not(windows))]
-pub fn spawn() -> tokio::sync::mpsc::UnboundedReceiver<Event> {
-    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    rx
+impl Input {
+    pub fn open() -> Self {
+        Self {
+            reader: crossterm::event::EventStream::new(),
+        }
+    }
+
+    pub async fn next(&mut self) -> Option<std::io::Result<Event>> {
+        use futures_util::StreamExt;
+        self.reader.next().await
+    }
 }
 
 #[cfg(windows)]

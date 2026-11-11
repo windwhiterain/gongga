@@ -1,113 +1,76 @@
-# tui/lib.rs — a paste that arrives as keystrokes
+# tui/lib.rs — a paste arrives whole
 
-## A pasted newline is not a plain Enter
+## The console says when it is a paste
 
-The timing rule above guesses a paste from how fast keys arrive. It cannot be the
-whole answer, because what a terminal sends for a newline inside a pasted block is
-not the key a hand presses: **Windows delivers it as `Enter` with `CONTROL`**, read
-off this window's own console rather than guessed.
+`EnableBracketedPaste` asks the terminal to wrap a pasted block in
+`ESC[200~ … ESC[201~`. On Windows, crossterm 0.29 parses that sequence only in
+its unix reader: its console reader walks `ReadConsoleInput` records
+(`KeyEventRecord`) and has no paste variant at all, so the sequence asked for
+would reach nothing that understands it.
 
-Two failures follow from treating that as a bare Enter:
+`vt_input::Input` opens the one reader this window uses for its whole life. On
+Windows it sets `ENABLE_VIRTUAL_TERMINAL_INPUT` and parses the console's byte
+stream into `crossterm` events; a bracketed block becomes one
+`Event::Paste(text)`. Elsewhere crossterm's own `EventStream` already reports
+the same event. Neither reader replays a paste as keystrokes, so a line break
+inside a pasted block is text, never an `Enter`.
 
-- a rule that only accepts the unmodified key drops the break, and the block arrives
-  as one run-on line;
-- a rule that treats any Enter inside a run as a send posts the block a line at a
-  time -- the report this was fixed for.
+`Tui::paste` inserts the string whole through `Screen::insert_paste`: the
+completion popup closes first, because it was about the token before the paste.
+A plain `Enter` is the only key that submits; `Shift+Enter` and `Alt+Enter` are
+the operator's own line breaks. Nothing between a key arriving and what it
+means is guessed from timing.
 
-`is_paste_newline` therefore accepts an Enter carrying neither `SHIFT` nor `ALT`, and
-`glue_break` treats a `CONTROL`-carrying Enter as settled on its own: a hand does not
-produce that key to send, and the timing rule cannot see it anyway -- ConPTY hands
-pasted keys over one at a time, slower than `PASTE_GAP`, so a run of them never
-accumulates. The timing rule stays for terminals that replay a paste as fast
-keystrokes.
+## Why the key-stream rules were removed (2026-11-11)
 
-## The problem
+Before the byte reader, a paste arrived as ordinary keys and the window had to
+guess which `Enter` was a pasted line break. The guesses accumulated:
 
-`EnableBracketedPaste` is written to the terminal, and `Event::Paste` is handled
-when it comes back. On Windows it never comes back: crossterm 0.29 parses
-`ESC[200~ … ESC[201~` only in `src/event/sys/unix/parse.rs`. The Windows reader
-walks `ReadConsoleInput` records (`KeyEventRecord`) and has no paste variant at
-all, so `EnableBracketedPaste` there writes a sequence nothing will ever read.
+- a run of keys held in `Tui::pending` until a `PASTE_GAP` quiet gap;
+- `MACHINE_RUN`, `GLUE_GAP`, `PASTE_BURST` and `BURST_GAP`, which glued a lone
+  `Enter` to a recent machine-fast run;
+- `PasteMarkers`, which rebuilt the bracketed markers out of six ordinary keys;
+- `is_paste_newline`, which accepted an `Enter` carrying `CONTROL` as a paste's
+  break rather than a send.
 
-What the terminal does send is the pasted text key by key. Every `\r` in it is
-an `Enter`, and `Enter` is the key that sends, so pasting a block posted its
-first line and pushed the rest into the conversation one turn at a time. That is
-worse than not supporting paste: it looks like the harness repeating itself.
+They were kept when the byte reader became the default, so both answers were in
+force at once. The reported symptom: typing a few characters and pressing
+`Enter` quickly was judged a paste's newline, so the message was not sent. The
+rules only ever guessed, and the reader now knows. All of them were removed,
+together with the `GONGGA_TUI_VT_INPUT=0` switch back to the console-record
+reader: keeping that switch would have left a mode in which a pasted newline
+submits a line at a time.
 
-## The fix: a run of keys
+`QuickEdit` stays. It is not a heuristic: with the console's QuickEdit on, a
+right-click puts the clipboard into the console's input stream behind this
+window's back, and a line break in it would arrive as an `Enter`. Turning the
+mode off stops the console delivering that gesture at all.
 
-Keys stop being acted on immediately. One is held in `Tui::pending`, and the loop
-waits up to `PASTE_GAP` (10 ms) for the next:
+Two things had to survive the removal, because the old `flush` did both:
 
-- **Another text key** joins the run, and the wait starts again from there.
-- **A pause, a `Paste`, a mouse move, a resize, a binding key** ends it.
+- `next_event` sets `self.dirty = true` for every key. `draw` skips a frame
+  nothing changed for, and without it the line a submitted `Enter` cleared
+  would stay on screen.
+- `completer.wants()` still produces `UiEvent::Recomplete` after a key, so a
+  completion that needs the loop to reach the connection is not lost.
 
-Then `pasted` decides what the run was:
+## A sequence may arrive in pieces
 
-- **One key** is a keyboard. `Enter` alone still submits; typing is unchanged.
-- **A run carrying an `Enter`** is a paste: it is inserted as text, each `Enter`
-  becoming `'\n'`, and nothing is sent.
-- **A run without an `Enter`** is fast typing. The keys are replayed through
-  `handle_key` exactly as before, so a quick `/se` still opens the completion
-  popup. Only sending had to be prevented, not typing.
+The console writes one gesture in more than one `read`: `ESC` alone, then
+`[<64;50;24M`. Reading the first batch as a key turned a wheel turn into an Esc
+and then the twelve bytes of the sequence typed into the prompt. The parser now
+holds a trailing escape and waits 50 ms for the rest; only that silence makes
+it the Esc key, and what is left of an unfinished sequence is dropped rather
+than typed. The same buffer already waited for a half-arrived paste, so this is
+that rule applied to the other sequences too. `GONGGA_TUI_RAW_KEYS` names the
+file the raw bytes and parsed events go to, made fresh each run.
 
-The window is a cadence, not a budget, and it sits below what a keyboard can do:
-key travel plus release is well over 20 ms even when two keys roll into each
-other, while a paste is one write from the terminal and arrives with no gap.
+## What a paste still cannot survive
 
-## Why the run lives in `self`
-
-`next_event` is one branch of a `select!` in `run.rs`, so it is *cancelled* every
-time the wire wins. Collecting keys in a local `Vec` inside the future would drop
-them on exactly the wrong occasions -- a burst is most likely while a response is
-streaming, which is when the wire wins most often.
-
-So `pending` is a field: a cancelled wait resumes the run next round with the
-keys it already had. The event read itself is cancel-safe (`EventStream::next` is
-a channel receive), so nothing is lost either way.
-
-## The repaint flag
-
-The first version of this lost `self.dirty = true`, which used to live in the
-key branch of `next_event`. A held key is only turned into an edit inside
-`flush`, so without the flag nothing marked the frame dirty -- and `draw` skips a
-frame nothing changed for. The characters were in the input line the whole time;
-the screen simply never showed them, which reads as "the keyboard stopped
-working" rather than as a rendering bug.
-
-`flush` now sets it unconditionally, and the `repaint` module holds that line by
-reading the syntax of `flush` rather than by driving a terminal: this is exactly
-the class of bug a headless test cannot see, and the one that must not come back
-silently.
-
-## The break that arrives alone
-
-Reported in use: pasting a five-line block sent five messages, one per line.
-The transcript showed five `user` rows inside the same second, each equal to one
-line of the block -- so every break had been taken for a submit.
-
-A terminal that pauses at each break delivers `line`, `Enter`, `line` as three
-runs, not one: the run of line characters closes on the timeout, and the `Enter`
-then arrives as a run of exactly one key, which is what a break typed by hand
-looks like. Widening `PASTE_GAP` alone would not be safe -- it is also what
-decides whether a human's fast typing is taken for a paste.
-
-What separates the two is not the gap but **who could have produced the run**:
-`MACHINE_RUN` (3) text keys inside `PASTE_GAP` (10 ms) is faster than a keyboard
-and slower than nothing. So a bare `Enter` arriving within `GLUE_GAP` (150 ms) of
-such a run is that paste's own break, and becomes `'\n'` in the prompt instead of
-a submit.
-
-The residual risk is a human who rolls three keys together and then hits Enter
-within 150 ms. It costs them one extra Enter, and it is the safe direction: the
-alternative is one message per pasted line.
-
-That rule needs the run to accumulate, and in this harness's own console it does not:
-ConPTY delivers a pasted block one key at a time, slower than `PASTE_GAP`, so the
-run is always one key long and the timing test never fires. What does reach the
-window is the *modifier*: a pasted newline arrives as `Enter` with `CONTROL`, which
-is the subject of the first section. Both rules are kept, because the terminals
-differ: one for a paste replayed as fast keystrokes, one for a paste that says so.
+A terminal that answers `EnableBracketedPaste` by replaying the text as plain
+keys, without the markers. Nothing separates those keystrokes from typing, and
+this window says so rather than pretend: the first `Enter` sends. `Alt+V` reads
+the clipboard for an operator in such a terminal.
 
 ## Alt+V, for the terminals that forward it
 
@@ -262,47 +225,3 @@ own words. An empty clipboard is otherwise silence — nothing to paste has no
 words to say — but a refusal is a fact, and a fact the operator can act on.
 `image_failure_of` holds that rule, and `a_refused_image_read_is_reported`
 pins it.
-
-## What the run holds back
-
-Whatever ended a run is returned as `Tui::stashed` and read at the top of the
-next round: a `Paste`, a mouse event or a resize that arrived behind a burst is
-delayed, never dropped. That is the one bug this shape could cause, and the
-reason it is a stored value rather than a `continue`.
-
-Modifier keys break a run rather than joining one: `Alt+Enter` and `Shift+Enter`
-are the line break, `Alt+K` kills to end of line, and Ctrl+letter is swallowed on
-purpose. `only_text_joins_a_run` holds that line.
-
-## The markers, read out of the key stream
-
-## A sequence may arrive in pieces
-
-The console writes one gesture in more than one `read`: `ESC` alone, then
-`[<64;50;24M`. Reading the first batch as a key turned a wheel turn into an Esc and
-then the twelve bytes of the sequence typed into the prompt. The parser now holds a
-trailing escape and waits 50 ms for the rest; only that silence makes it the Esc
-key, and what is left of an unfinished sequence is dropped rather than typed. The
-same buffer already waited for a half-arrived paste, so this is that rule applied to
-the other sequences too.
-
-`ESC[200~` is the exact answer: inside it every break is text, and no rule has to
-guess. crossterm 0.29 enables it (`EnableBracketedPaste`) but never turns it back into
-`Event::Paste` on Windows -- its console parser has no arm for the sequence -- so the
-marker arrives as six ordinary keys.
-
-`PasteMarkers` reads that sequence from the key stream. While the markers are open,
-every key is text, breaks included, and nothing is held except the six keys that might
-be the end marker. A key that turns out not to be a marker is handed back to the
-operator in order, and a stream that stops mid-marker releases what it held at the
-quiet gap, so a lone `Esc` is never swallowed.
-
-This is exact where the terminal sends the markers (VS Code, Windows Terminal, kitty,
-wezterm -- all of them do when the app asks). Where it does not, the burst rule and the
-clipboard comparison above still stand, and QuickEdit is off so a console cannot paste
-behind the app's back.
-
-## What a paste still cannot survive
-
-A terminal that neither sends the markers nor replays faster than a hand. Nothing can
-separate those keystrokes from typing, and the rules here say so rather than pretend.

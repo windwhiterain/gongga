@@ -37,6 +37,11 @@ The trigger is `sessions.status = 'error'`, read from the database:
 status = 'error' AND monitor_seq < the session's newest message seq
 ```
 
+A stop is not a failure. `interrupt_session` fires the request's cancel token, and every
+cancel arm in `llm.rs` ends the step `Stopped`: the turn is `Cancelled`, the row's status
+is `Idle`, and nothing here is woken. The arm that waits for response headers used to send
+its cancel as `LlmEvent::Failed` instead, which put a pressed stop in `error` and handed
+the monitor a report about a provider that had not been given the chance to answer.
 A subscription to the bus would have been more immediate and less correct: a
 broadcast subscriber is told it `Lagged`, and a turn that ended while this process
 was not running published nothing at all. The status column survives both, and it

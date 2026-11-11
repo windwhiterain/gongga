@@ -11,7 +11,7 @@ metadata:
 改完服务端代码，跑着的进程还是旧的二进制。这个 skill 把它换成新的，而且让**当前回合不死**。
 
 ```bash
-SKILL_DIR=<本 SKILL.md 所在目录>      # `@skill(evolve)` 展开里的 `SKILL.md: <path>` 的父目录；gongga 里也可以是 `gongga-cli skill evolve`
+SKILL_DIR=<本 SKILL.md 所在目录>      # `@skill(evolve)` 展开里的 `SKILL.md: <path>` 的父目录；gongga 里也可以是 `gongga-cli '{"name":"skill","args":{"name":"evolve","args":[…]}}'`
 S="$SKILL_DIR/evolve.sh"
 
 $S stage              # 编译检查 + 构建 + 暂存 + 生成 launcher（会先报磁盘余量）

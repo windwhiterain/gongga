@@ -219,24 +219,24 @@ server_pid=$(child_pid)
 cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
 
 # `local` is not a remote name: naming it is refused, and the refusal says `none`.
-refused=$("${cli[@]}" set_session --id probe --model fake/flash-fake --remote local 2>&1)
+refused=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","remote":"local"}}' 2>&1)
 [[ "$refused" == *"no remote called \`local\`"* && "$refused" == *"none"* ]]
 ok "naming \`local\` is refused, and the answer names \`none\`" $?
 
-created=$("${cli[@]}" set_session --id probe --model fake/flash-fake --remote "$peer_name" 2>&1)
+created=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","remote":"'"$peer_name"'"}}' 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created on $peer_name" $?
 
 # The boundary: a remote left in the home's `config.toml` is refused, not honoured --
 # it is the merged file, and a host name in it would be published by a pin move.
-probe=$("${cli[@]}" set_session --id probe --model fake/flash-fake --remote ghost 2>&1)
+probe=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","remote":"ghost"}}' 2>&1)
 # The answer is compact JSON, so the name's own quotes arrive escaped.
 [[ "$probe" == *'no remote named \"ghost\"'* ]]
 ok "a remote named only in config.toml does not exist" $?
 grep -q 'these remotes are in config.toml' "$log"
 ok "and startup says so, with the migrator that moves them" $?
 
-"${cli[@]}" send_message --message "@skill(self-control) make the scratch" --session probe >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"@skill(self-control) make the scratch","session":"probe"}}' >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 # The peer's own path, in the spelling its own shell gave, and the file it wrote.
@@ -257,7 +257,7 @@ peer_home=$(sed -n 2p <<<"$printed_paths")
 ok "exec made the peer's scratch and named it in Windows spelling ($peer_scratch)" $?
 
 # The session moves to that directory: what its references are read against.
-moved=$("${cli[@]}" set_session --id probe --cwd "$peer_scratch" 2>&1)
+moved=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","cwd":"'"$peer_scratch"'"}}' 2>&1)
 [[ "$moved" == *'"ok":true'* ]]
 ok "the session moves to $peer_scratch" $?
 
@@ -266,14 +266,14 @@ ok "the session moves to $peer_scratch" $?
 # through `exec` on its channel, which `channel_remote_selftest.sh` covers.
 
 fake_up "" "{}"
-"${cli[@]}" send_message --message "now say which machine you are on" --session probe >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"now say which machine you are on","session":"probe"}}' >/dev/null 2>&1
 wait_turn probe; say_turn probe
 
 # A session placed where the rules file already is: its first prompt carries it.
-created2=$("${cli[@]}" set_session --id probe2 --model fake/flash-fake --remote "$peer_name" --cwd "$peer_scratch" 2>&1)
+created2=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe2","model":"fake/flash-fake","remote":"'"$peer_name"'","cwd":"'"$peer_scratch"'"}}' 2>&1)
 [[ "$created2" == *'"ok":true'* ]]
 ok "a second session is placed on the peer" $?
-"${cli[@]}" send_message --message "hello" --session probe2 >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"hello","session":"probe2"}}' >/dev/null 2>&1
 wait_turn probe2
 python - "$home" "$marker" <<'INNER'
 import json, sqlite3, sys
@@ -301,12 +301,12 @@ ok "a session with a remote is offered SPEC's tools" $?
 
 # Out of the scratch before it goes: a move ends every shell, so nothing on the peer
 # is standing in the directory the next command removes.
-back=$("${cli[@]}" set_session --id probe --cwd "$peer_home" 2>&1)
+back=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","cwd":"'"$peer_home"'"}}' 2>&1)
 [[ "$back" == *'"ok":true'* ]]
 ok "the session moves out of its scratch" $?
 
 fake_up exec "{\"bin\":\"bash\",\"args\":[\"-lc\",\"rm -rf \\\"\$HOME/$tag\\\" && echo peer-clean\"],\"name\":\"cleanup\",\"task\":\"remove the peer scratch\"}"
-"${cli[@]}" send_message --message "clean up the peer" --session probe >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"clean up the peer","session":"probe"}}' >/dev/null 2>&1
 wait_turn probe; say_turn probe
 python - "$home" <<'INNER'
 import json, sqlite3, sys
@@ -319,10 +319,7 @@ INNER
 ok "the peer's scratch is removed" $?
 
 # A remote session comes home by naming `none`: no shells remain on the peer at all.
-# The sticky `cwd` is this machine's argument, not the peer's, so a come-home move
-# must not inherit it.
-"${cli[@]}" del_sticky cwd >/dev/null 2>&1
-back=$("${cli[@]}" set_session --id probe --remote none 2>&1)
+back=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","remote":"none"}}' 2>&1)
 [[ "$back" == *'"ok":true'* ]]
 ok "a session comes home by naming \`none\`" $?
 python - "$home" <<'INNER'

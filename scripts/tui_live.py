@@ -1532,11 +1532,6 @@ class Driver:
             self.wait_ms(40)
         elif command == "send-message":
             self.type_text(decode_text(argument), 2)
-            # The window glues an `Enter` to a machine-fast run of text: that
-            # break is a paste's newline, not the operator sending, and the line
-            # keeps the words. Waiting out that glue is what makes this Enter the
-            # operator's. See `docs/notes/tui-paste.md`.
-            self.wait_ms(200)
             self.send(b"\r")
         elif command == "resize":
             parts = argument.split()

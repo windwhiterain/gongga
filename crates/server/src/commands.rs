@@ -2974,7 +2974,7 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
 enum Stop {
     /// `cancel`: queue the notices, and let a restart continue this turn.
     Cancel,
-    /// `interrupt_session`: end the wait and the loop, and keep nothing for a restart.
+    /// `interrupt_session`: end the wait and the loop; the turn is owed nothing, the inbox stays.
     Interrupt,
     /// `del_session`: the rows are going away.
     Delete,
@@ -2987,6 +2987,9 @@ enum Stop {
 /// SPEC gives the canceled flag to `cancel` alone, and `cancel` writes it itself; this
 /// fires the token and records which verb fired it, so the turn's own rows and the
 /// session's status can say whether a restart continues it.
+///
+/// The inbox survives every stop but a delete: a queued message is received input,
+/// and everything received must be saved to context.
 fn interrupt(d: &Dispatch, name: &str, why: Stop) -> (bool, usize) {
     let Some(session) = d.sessions.peek(name) else {
         return (false, 0);
@@ -3003,13 +3006,19 @@ fn interrupt(d: &Dispatch, name: &str, why: Stop) -> (bool, usize) {
         }
     }
     session.cancel();
-    // Aborting is deliberate, so the work is not left behind unless it is kept.
-    let dropped = if keeps && was_busy {
-        d.store
-            .clear_pending_tasks_except(name, "turn")
-            .unwrap_or(0)
-    } else {
-        d.store.clear_pending_tasks(name).unwrap_or(0)
+    // The inbox survives every stop but a delete; only a turn's owed row is ever dropped here.
+    let dropped = match why {
+        Stop::Delete => d.store.clear_pending_tasks(name).unwrap_or(0),
+        _ if was_busy => 0,
+        _ => {
+            // An idle interrupt has no turn to fold the inbox in; save it to context here.
+            if why == Stop::Interrupt {
+                d.agent.deliver_inbox(session.id(), name);
+            }
+            d.store
+                .clear_pending_tasks_except(name, "inject")
+                .unwrap_or(0)
+        }
     };
     (was_busy, dropped)
 }

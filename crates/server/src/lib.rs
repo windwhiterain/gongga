@@ -148,6 +148,26 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     result
 }
 
+/// Where a start's seconds go, one line each.
+///
+/// # Invariant
+///
+/// Debug only: a start is read for its steps when a start is questioned, and
+/// a step that waits on the world outside the home is a window that cannot open.
+struct Clock(std::time::Instant);
+
+impl Clock {
+    fn new() -> Self {
+        Self(std::time::Instant::now())
+    }
+
+    /// Says what the step that just ended cost, and starts the next one.
+    fn step(&mut self, step: &str) {
+        tracing::debug!(step, ms = self.0.elapsed().as_millis() as u64, "start step");
+        self.0 = std::time::Instant::now();
+    }
+}
+
 pub async fn run(args: Args) -> anyhow::Result<()> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&args.log));
     match args.log_format {
@@ -179,18 +199,23 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // Before anything is spawned: what the supervisor said about this process
     // must not travel into what it starts.
     supervise::remember();
+    let mut clock = Clock::new();
     let cfg = config_from(&args)?;
+    clock.step("config");
     // Claim the home before opening the database: one server per home.
     let _instance = home_lock::HomeLock::acquire(&cfg.home, "server.lock", "gongga server")?;
     instance::record_dir(&cfg.home);
+    clock.step("home lock");
     // Off this thread before anything reads a roster: no start waits for a
     // network. See `docs/notes/server-agents.md`.
     agents::start();
+    clock.step("agents");
     // Before anything resolves: the lookup is memoized, one content per server.
     ship::remember_url(cfg.ship_url.clone());
     // Before anything reads this home: the content this start installs and the
     // migrator, resolved once so they agree.
     ship::prepare(&cfg.home);
+    clock.step("ship prepare");
     let migrated = migrate::bring_forward(&cfg.home, &cfg.db_path)?;
     if !migrated.steps.is_empty() {
         tracing::info!(
@@ -200,9 +225,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             "home migrated"
         );
     }
+    clock.step("migrate");
 
     // Installed before anything reads it: a config already here is the reader's.
     let installed = ship::install(&cfg.home)?;
+    clock.step("ship install");
     tracing::info!(
         content = %installed.pin.get(..10).unwrap_or(installed.pin.as_str()),
         written = installed.written,
@@ -233,9 +260,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         overridden = ?overridden,
         "prompt templates: the shipped defaults, plus what this home overrode"
     );
+    clock.step("prompts");
 
     let store = store::Store::open(&cfg.db_path)?;
     store.set_live_compact_enabled(cfg.agent.live_compact_enabled);
+    clock.step("store");
     // Read after every tool call, before a full disk takes the room to report it.
     disk::install(cfg.disk_low, cfg.home.clone());
     if cfg.disk_low == 0 {
@@ -252,6 +281,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // A script drives this server by the name a shell types: `gongga`. The
     // command has to be there before any shell exists.
     let command = shell_command::ensure_pair(&cfg.home);
+    clock.step("shell command");
     if command.is_none() {
         tracing::warn!(home = %cfg.home.display(), "no bin/ in this home: a shell cannot find gongga-cli");
     }
@@ -324,6 +354,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     for problem in scripts.problems().await {
         tracing::warn!(problem = %problem, "a script could not be read");
     }
+    clock.step("scripts");
 
     // The channels `exec` speaks to: a table of programs, not processes.
     let channels = Arc::new(crate::tools::channel::Channels::for_home(
@@ -403,6 +434,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         output_dir: output_dir.clone(),
         jobs: crate::tools::tunnel::JobRegistry::new(),
     });
+    clock.step("tools");
 
     // Turns in flight and subscription actions: a stop waits for both.
     let active = Arc::new(AtomicUsize::new(0));
@@ -410,6 +442,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // actions it runs take the agent's tools.
     let subscriptions =
         crate::subscriptions::Subscriptions::load(store.clone(), bus.clone(), active.clone());
+    clock.step("subscriptions");
 
     let dispatch = Arc::new(Dispatch {
         agent,
@@ -425,6 +458,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         // Nothing has been announced yet: the first publish states every row.
         published: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     });
+    clock.step("dispatch");
 
     // Before any turn: a run that died inside a tool leaves a call no request
     // can carry, and the answer is a row.
@@ -437,8 +471,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if settled > 0 {
         tracing::info!(settled, "half-answers kept before serving");
     }
+    clock.step("repair");
     // What a greeting hands every client: the picture a change is diffed against.
     commands::prime_sessions(&dispatch);
+    clock.step("prime");
     // SPEC: this start adopts the channels the last one kept; a dead one is told.
     // Off this thread: a remote channel's adoption asks a peer over ssh, and a start
     // that waits for it is a start that cannot serve until the peer answers.
@@ -456,19 +492,23 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     }
     // Whatever was in flight when the server last stopped is owed work.
     let resumed = commands::resume_pending(&dispatch).await;
+    clock.step("resume");
     if resumed > 0 {
         tracing::info!(resumed, "resuming turns left pending by the last run");
     }
     // Failures the last run left behind, before a client can ask about them.
     monitor::sweep(&dispatch, &cfg.home).await;
+    clock.step("sweep");
     // What the last run left running is adopted, or said to be gone.
     let owed = tools::tunnel::announce_owed(&store, &cfg, &output_dir).await;
+    clock.step("owed");
     if owed > 0 {
         tracing::info!(owed, "reported jobs a stopped server left owed");
     }
     // Whatever the last run detached is still out there; adopt its pids now.
     let adoption_started = std::time::Instant::now();
     let adopted = detached.adopt().await;
+    clock.step("detached");
     // Adoption finishes before the port binds, so the duration is always logged.
     tracing::info!(
         adopted,

@@ -5,6 +5,10 @@
 # One line of verdict at the end; `-v` prints every answer.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="${GONGGA_BIN:-$root/target/debug}"
 work="$root/.dev/selftest"
@@ -139,17 +143,17 @@ for line in text.splitlines():
 sys.stdout.write(str(value))' "$1" "$2"
 }
 
-"${cli[@]}" set_session --id main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"main","model":"fake/flash-fake","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 
 # 1. A program started as a channel, and the name it answers by.
-started=$("${cli[@]}" exec --session main --bin bash 2>&1)
+started=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash"}}' 2>&1)
 say "$started"
 shell_id=$(field "$started" id)
 ok "exec bash opens a channel" "$([[ -n "$shell_id" ]] && echo 0 || echo 1)"
 say "id=$shell_id"
 
 # 2. One command, framed by `[channel.bash]`: output and status, marker gone.
-one=$("${cli[@]}" exec --session main --id "$shell_id" --input 'echo one' --wait 5000 2>&1)
+one=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","input":"echo one","wait":5000}}' 2>&1)
 say "$one"
 say "parsed: matched=[$(field "$one" matched)] exit=[$(field "$one" exit)] output=[$(field "$one" output)]"
 ok "exec --input frames the reply" "$([[ "$(field "$one" matched)" == True && "$(field "$one" output | tr -d '\n')" == one ]] && echo 0 || echo 1)"
@@ -157,36 +161,36 @@ ok "the sentinel's tail is the status" "$([[ "$(field "$one" exit)" == 0 ]] && e
 ok "the marker is not in the window" "$(has "$one" '__gongga' && echo 1 || echo 0)"
 
 # 3. A failing command says so, and the channel is not ended by it.
-bad=$("${cli[@]}" exec --session main --id "$shell_id" --input 'nosuchcommand-here' --wait 5000 2>&1)
+bad=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","input":"nosuchcommand-here","wait":5000}}' 2>&1)
 say "$bad"
 ok "a failing command answers 127" "$([[ "$(field "$bad" exit)" == 127 ]] && echo 0 || echo 1)"
-third=$("${cli[@]}" exec --session main --id "$shell_id" --input 'echo three' --wait 5000 2>&1)
+third=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","input":"echo three","wait":5000}}' 2>&1)
 ok "the channel still answers after a failure" "$([[ "$(field "$third" output | tr -d '\n')" == three ]] && echo 0 || echo 1)"
 
 # 3b. A command that takes longer than the client's own patience. The server retires
 #     a frame only when the peer acknowledges it, and gives up on a connection that
 #     never does -- so this is the one scenario where a silent client loses its answer.
-slow=$("${cli[@]}" exec --session main --id "$shell_id" --input 'sleep 2; echo slow-said' --wait 15000 2>&1)
+slow=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","input":"sleep 2; echo slow-said","wait":15000}}' 2>&1)
 say "$slow"
 ok "a command slower than a second still answers" \
   "$([[ "$(field "$slow" output | tr -d '\n')" == slow-said ]] && echo 0 || echo 1)"
 
 # 3c. `time` is what this call cost: from its own write, not from when the channel
 #     was opened. The channel has been alive for a while by now.
-aged=$("${cli[@]}" exec --session main --id "$shell_id" --input 'echo aged' --wait 5000 2>&1)
+aged=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","input":"echo aged","wait":5000}}' 2>&1)
 say "aged: time=$(field "$aged" time)"
 ok "time is measured from this call's input"   "$(python -c 'import sys
 raw = sys.argv[1].rstrip("s")
 print(0 if 0 < float(raw) < 3 else 1)' "$(field "$aged" time)" 2>/dev/null || echo 1)"
 
 # 4. The window moves: what one call took, the next does not see.
-empty=$("${cli[@]}" exec --session main --id "$shell_id" --wait 0 2>&1)
+empty=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","wait":0}}' 2>&1)
 say "$empty"
 say "parsed: output=[$(field "$empty" output)]"
 ok "exec --wait 0 reads an empty window" "$([[ -z "$(field "$empty" output | tr -d '\n')" ]] && echo 0 || echo 1)"
 
 # 5. A one-shot program: it ends, and `exit` is its own.
-once=$("${cli[@]}" exec --session main --bin bash --id "$shell_id-oneshot" --args '["-lc", "echo done; exit 3"]' --wait 8000 2>&1)
+once=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$shell_id-oneshot"'","args":["-lc","echo done; exit 3"],"wait":8000}}' 2>&1)
 say "$once"
 say "parsed: exit=[$(field "$once" exit)] output=[$(field "$once" output)]"
 oneshot_exit=$(field "$once" exit)
@@ -197,40 +201,38 @@ ok "a one-shot channel reports its own exit" "$([[ "$oneshot_exit" == 3 && "$one
 # 6. The machine and the directory are the call's, not the session's.
 elsewhere=$(mktemp -d 2>/dev/null || echo "$work/elsewhere")
 mkdir -p "$elsewhere"
-in_dir=$("${cli[@]}" exec --session main --bin bash --id "$shell_id-dir" --cwd "$elsewhere" --args '["-lc", "pwd"]' --wait 8000 2>&1)
+in_dir=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$shell_id-dir"'","cwd":"'"$(native "$elsewhere")"'","args":["-lc","pwd"],"wait":8000}}' 2>&1)
 say "$in_dir"
 ok "exec --cwd starts the program there" "$([[ "$(field "$in_dir" output)" == *"$(basename "$elsewhere")"* ]] && echo 0 || echo 1)"
 rmdir "$elsewhere" 2>/dev/null
-refused=$("${cli[@]}" exec --session main --bin bash --id "$shell_id-nowhere" --remote nowhere-named 2>&1)
+refused=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$shell_id-nowhere"'","remote":"nowhere-named"}}' 2>&1)
 say "$refused"
 ok "a machine that cannot be reached is refused, not run here" "$([[ "$(field "$refused" id)" == "" ]] && has "$refused" 'no remote named' && echo 0 || echo 1)"
 
 # 7. A command is reached by a tool call, not by a channel: SPEC's `fn <tool>(**args)`.
-cloned=$("${cli[@]}" clone_session --id main --new_id copy 2>&1)
+cloned=$("${cli[@]}" '{"name":"clone_session","args":{"id":"main","new_id":"copy"}}' 2>&1)
 say "$cloned"
 ok "a command runs as itself" "$(has "$cloned" '"ok":true' && echo 0 || echo 1)"
-copied=$("${cli[@]}" get_messages --session copy 2>&1)
+copied=$("${cli[@]}" '{"name":"get_messages","args":{"session":"copy"}}' 2>&1)
 ok "the cmd really ran" "$(has "$copied" 'last_seq' && echo 0 || echo 1)"
 
 # 7. ls_channel lists what the session has, and del_channel ends one.
-listed=$("${cli[@]}" ls_channel --session main --path "" 2>&1)
+listed=$("${cli[@]}" '{"name":"ls_channel","args":{"session":"main","path":""}}' 2>&1)
 say "$listed"
 ok "ls_channel lists the channels" "$(has "$listed" "$shell_id" && echo 0 || echo 1)"
-ended=$("${cli[@]}" del_channel --session main --id "$shell_id" 2>&1)
+ended=$("${cli[@]}" '{"name":"del_channel","args":{"session":"main","id":"'"$shell_id"'"}}' 2>&1)
 ok "del_channel ends a channel" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
 
 # 8. A subscription runs one command per match: the log row is what a match leaves.
-armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe --pattern '^channel_selftest$' \
-  --cmd '{"name": "trigger_event", "args": {"event": "sub_ran"}}' --id watcher \
-  --persistant true 2>&1)
+armed=$("${cli[@]}" '{"name":"subscribe","args":{"pattern":"^channel_selftest$","cmd":{"name":"trigger_event","args":{"event":"sub_ran"}},"session":"main","id":"watcher","persistant":true}}' 2>&1)
 say "$armed"
 ok "a subscription carries the command it runs" \
   "$(has "$armed" '"ok":true' && echo 0 || echo 1)"
-"${cli[@]}" trigger_event --event channel_selftest >/dev/null 2>&1
+"${cli[@]}" '{"name":"trigger_event","args":{"event":"channel_selftest"}}' >/dev/null 2>&1
 sleep 1
-"${cli[@]}" trigger_event --event channel_selftest >/dev/null 2>&1
+"${cli[@]}" '{"name":"trigger_event","args":{"event":"channel_selftest"}}' >/dev/null 2>&1
 sleep 2
-ran=$("${cli[@]}" events --kind subscription --session main 2>&1)
+ran=$("${cli[@]}" '{"name":"events","args":{"kind":"subscription","session":"main"}}' 2>&1)
 twice=$(printf '%s' "$ran" | grep -c 'sub_ran')
 ok "both matches ran the command it carries" \
   "$([[ "$twice" == 2 ]] && echo 0 || echo 1)"

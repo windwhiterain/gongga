@@ -65,6 +65,8 @@ struct PipeFrontend {
     roster: Roster,
     server: Option<Server>,
     sticky: Option<String>,
+    /// The cap and margin last put on the wire, so a repeat costs no frame.
+    render: Option<(usize, usize)>,
     draft: bool,
     layout: Option<Layout>,
     status: Option<String>,
@@ -84,6 +86,7 @@ impl PipeFrontend {
             roster,
             server: None,
             sticky: None,
+            render: None,
             draft: false,
             layout: None,
             status: None,
@@ -168,6 +171,14 @@ impl WindowView for PipeFrontend {
         if name != self.sticky {
             self.sticky = name.clone();
             self.send(RenderMessage::StickySession { name });
+        }
+        let render = (state.block_size().0, state.box_edge().0);
+        if self.render != Some(render) {
+            self.render = Some(render);
+            self.send(RenderMessage::Render {
+                block_size: render.0,
+                box_edge: render.1,
+            });
         }
     }
     // A popup is the UI's own; only a vocabulary change crosses the pipe.

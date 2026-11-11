@@ -8,6 +8,10 @@
 # One line of verdict at the end; `-v` keeps the scratch and prints each turn.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="${GONGGA_BIN:-$root/target/debug}"
 # A run's own scratch: two of these on one machine must not share a home, or one
@@ -170,8 +174,8 @@ for (display,) in c.execute(
 INNER
 }
 
-"${cli[@]}" set_session --id main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
-"${cli[@]}" send_message --message "hello" --session main >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"main","model":"fake/flash-fake","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"hello","session":"main"}}' >/dev/null 2>&1
 wait_turn main
 fake_up "" "{}"
 
@@ -195,7 +199,7 @@ ok "the old shell tools are not offered to the model" \
 #    Persistent on purpose -- the next scenario has to talk to it -- and `wait 0`,
 #    because a shell that has just been opened has said nothing yet.
 fake_up exec '{"bin":"bash","wait":0}' || exit 1
-"${cli[@]}" send_message --message "start a channel" --session main >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"start a channel","session":"main"}}' >/dev/null 2>&1
 wait_turn main
 started=$(last_tool main)
 say "exec answered: $(printf '%s' "$started" | head -c 200)"
@@ -226,7 +230,7 @@ INNER
 say "channel: $channel"
 fake_up exec "$(python -c 'import json,sys
 print(json.dumps({"id": sys.argv[1], "input": "echo second", "wait": 15000}))' "$channel")" || exit 1
-"${cli[@]}" send_message --message "say second in it" --session main >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"say second in it","session":"main"}}' >/dev/null 2>&1
 wait_turn main
 second=$(last_tool main)
 say "exec answered: $(printf '%s' "$second" | head -c 200)"
@@ -234,14 +238,12 @@ ok "the second exec spoke to the channel the first opened" "$(has "$second" 'sec
 
 # 4. The round trip the whole row exists for: arm a subscription, then `wait` -- the
 #    news it sends cuts the wait, and arrives as the next turn's message.
-armed=$(GONGGA_SESSION=main "${cli[@]}" subscribe --pattern "^$marker\$" \
-  --cmd '{"name": "send_message", "args": {"message": "news-from-sub", "session": "main"}}' \
-  --id "$marker" --persistant true 2>&1)
+armed=$("${cli[@]}" '{"name":"subscribe","args":{"pattern":"^'"$marker"'$","cmd":{"name":"send_message","args":{"message":"news-from-sub","session":"main"}},"session":"main","id":"'"$marker"'","persistant":true}}' 2>&1)
 say "$armed"
 fake_up wait '{"time":30000}' || exit 1
-"${cli[@]}" send_message --message "wait for the news" --session main >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"wait for the news","session":"main"}}' >/dev/null 2>&1
 sleep 2
-"${cli[@]}" trigger_event --event "$marker" >/dev/null 2>&1
+"${cli[@]}" '{"name":"trigger_event","args":{"event":"'"$marker"'"}}' >/dev/null 2>&1
 wait_turn main
 waited=$(last_tool main)
 say "wait answered: $(printf '%s' "$waited" | head -c 200)"
@@ -250,14 +252,14 @@ say "wait answered: $(printf '%s' "$waited" | head -c 200)"
 waited_s=$(printf '%s' "$waited" | head -1 | sed -n 's/^\([0-9][0-9]*\)\.[0-9]*s$/\1/p')
 ok "wait ended on the news a subscription sent"   "$([[ -n "$waited_s" && $waited_s -lt 30 ]] && echo 0 || echo 1)"
 # The news itself is a message, which is what makes the wait worth anything.
-"${cli[@]}" get_messages --session main 2>/dev/null | grep -q 'news-from-sub'
+"${cli[@]}" '{"name":"get_messages","args":{"session":"main"}}' 2>/dev/null | grep -q 'news-from-sub'
 ok "the news reached the session as a message" "$?"
 
 # 5. A call's own clock. `wait` is the one tool whose wait is its work, so the
 #    `time` a call names is the ceiling it gets -- the row's default is what a
 #    call that names none gets. Measured before this test: 5 s asked, 120 s waited.
 fake_up wait '{"time":2500}' || exit 1
-"${cli[@]}" send_message --message "wait a moment" --session main >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"wait a moment","session":"main"}}' >/dev/null 2>&1
 wait_turn main
 short=$(last_tool main)
 say "short wait answered: $(printf '%s' "$short" | head -c 120)"

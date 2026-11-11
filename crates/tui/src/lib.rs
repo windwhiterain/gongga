@@ -26,21 +26,19 @@ mod vt_input;
 use std::collections::HashSet;
 use std::io::{self, Stdout, Write, stdout};
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::Context;
 use client::render_wire::UiIntent;
 use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as TermEvent, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
-    MouseEvent, MouseEventKind,
+    Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::ClearType;
 use ratatui::backend::CrosstermBackend;
@@ -79,33 +77,6 @@ pub use client::{
     Candidate, Completer, Completion, Layout, LineKind, Listed, QuotaRow, SharedCompleter,
     token_bounds,
 };
-
-/// How long a keystroke waits to see whether the next one is part of a paste.
-///
-/// # Invariant
-///
-/// The wait only ever joins keys, never sends: one `Enter` alone still submits.
-/// See `docs/notes/tui-paste.md`.
-const PASTE_GAP: Duration = Duration::from_millis(10);
-
-/// How soon after a machine-fast run an `Enter` still belongs to that paste.
-///
-/// # Invariant
-///
-/// A run of [`MACHINE_RUN`] text keys inside [`PASTE_GAP`] is delivery, not a
-/// keyboard, so the break that follows it is the paste's, not a submit.
-/// See `docs/notes/tui-paste.md`.
-const GLUE_GAP: Duration = Duration::from_millis(150);
-
-/// Text keys inside one [`PASTE_GAP`] that a keyboard cannot produce.
-const MACHINE_RUN: usize = 3;
-
-/// Text keys back to back a hand cannot produce, so the `Enter` after them is the
-/// paste's. See `docs/notes/tui-paste.md`.
-const PASTE_BURST: usize = 20;
-
-/// The gap two keys of a burst may have and still be one. See `docs/notes/tui-paste.md`.
-const BURST_GAP: Duration = Duration::from_millis(40);
 
 /// What Ctrl+C does to the terminal rather than to the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -485,18 +456,12 @@ pub struct Tui {
     completer: SharedCompleter,
     history: Vec<String>,
     history_pos: Option<usize>,
-    /// The console-record reader, opened only when the byte reader is off.
-    events: Option<EventStream>,
-    /// The byte reader, when this window reads the console as a stream.
-    vt: Option<tokio::sync::mpsc::UnboundedReceiver<TermEvent>>,
+    /// The one reader of terminal events, opened for this platform.
+    input: vt_input::Input,
     /// Whether mouse capture is on, so the toggle knows what to flip.
     restored: bool,
     /// Whether anything changed since the last frame. Every mutation sets it.
     dirty: bool,
-    /// Keys seen so far that may be one paste. See `docs/notes/tui-paste.md`.
-    pending: Vec<KeyEvent>,
-    /// When the last run ended, and how many text keys it carried.
-    settled: Option<(std::time::Instant, usize)>,
     /// The console's own paste gesture, off for this window's life. Held, never
     /// read: dropping it is what puts the mode back.
     #[allow(dead_code)]
@@ -505,17 +470,9 @@ pub struct Tui {
     ///
     /// # Invariant
     ///
-    /// A diagnostic, not a feature: off unless the variable is set, and it writes what
-    /// arrived rather than what this window made of it -- the only way to tell a
-    /// terminal that sends bracketed paste from one replaying keystrokes.
+    /// A diagnostic, not a feature: off unless the variable is set, and it writes
+    /// what arrived rather than what this window made of it.
     key_log: Option<std::fs::File>,
-    /// Bracketed paste's markers, while a paste is open or a marker is half read.
-    markers: PasteMarkers,
-    /// Text keys that arrived back to back, and when the newest one did.
-    fast: usize,
-    fast_at: Option<std::time::Instant>,
-    /// An event read while deciding whether a keystroke began a paste.
-    stashed: Option<std::io::Result<TermEvent>>,
     /// The input as the last frame saw it: typing may have put console ink on
     /// the row.
     input_seen: Option<(usize, usize)>,
@@ -543,12 +500,6 @@ pub struct Tui {
     /// asks its client for candidates and never answers itself. A window that
     /// answers itself — a test — leaves it false and keeps the local completer.
     asks_client: bool,
-    /// When the run of keys being collected has been quiet long enough to be
-    /// somebody typing rather than a paste. Held in `self`, not in the wait: a
-    /// frame arriving cancels the wait, and a deadline that restarted with it
-    /// would never be reached while the answer is streaming. See
-    /// `docs/notes/tui-paste.md`.
-    quiet_at: Option<tokio::time::Instant>,
     /// The panes that have already asked for the row above them.
     ///
     /// # Invariant
@@ -702,127 +653,14 @@ fn cell_shaped(size: FontSize) -> bool {
     (1..=32).contains(&size.width) && (1..=64).contains(&size.height) && size.height >= size.width
 }
 
-/// Bracketed paste's markers, recognised in the stream of ordinary keys.
-///
-/// # Invariant
-///
-/// `ESC[200~` is what makes a paste exact -- every break between the markers is text.
-/// Windows never turns it into `Event::Paste` (crossterm's console parser has no such
-/// arm), so the marker arrives as six ordinary keys. Recognising that sequence is not
-/// a guess: a hand does not type it, and while the markers are open nothing is sent.
-/// See `docs/notes/tui-paste.md`.
-const MARKER_START: [char; 6] = ['\x1b', '[', '2', '0', '0', '~'];
-const MARKER_END: [char; 6] = ['\x1b', '[', '2', '0', '1', '~'];
-
-/// What one key did to the marker recogniser.
-enum Marker {
-    /// Not a marker: these keys are the operator's, in order. Empty when the key was
-    /// part of a marker or was taken as paste text.
-    Keys(Vec<KeyEvent>),
-    /// The end marker arrived: this is the whole paste.
-    Pasted(String),
-}
-
-#[derive(Default)]
-struct PasteMarkers {
-    /// The keys that may be the start marker so far.
-    probe: Vec<KeyEvent>,
-    /// The keys that may be the end marker so far.
-    tail: Vec<KeyEvent>,
-    inside: bool,
-    text: String,
-}
-
-impl PasteMarkers {
-    fn feed(&mut self, key: KeyEvent) -> Marker {
-        self.feed_all(vec![key])
-    }
-
-    fn feed_all(&mut self, keys: Vec<KeyEvent>) -> Marker {
-        let mut queue: Vec<KeyEvent> = keys.into_iter().rev().collect();
-        while let Some(key) = queue.pop() {
-            if !self.inside {
-                if token(&key).is_none() {
-                    let mut out = std::mem::take(&mut self.probe);
-                    out.push(key);
-                    out.extend(queue.into_iter().rev());
-                    return Marker::Keys(out);
-                }
-                self.probe.push(key);
-                let seen: Vec<char> = self.probe.iter().filter_map(token).collect();
-                if !MARKER_START.starts_with(&seen[..]) {
-                    return Marker::Keys(std::mem::take(&mut self.probe));
-                }
-                if seen.len() == MARKER_START.len() {
-                    self.probe.clear();
-                    self.inside = true;
-                    self.text.clear();
-                    self.tail.clear();
-                }
-                continue;
-            }
-            self.tail.push(key);
-            let seen: Vec<char> = self.tail.iter().filter_map(token).collect();
-            if MARKER_END.starts_with(&seen[..]) {
-                if seen.len() == MARKER_END.len() {
-                    self.tail.clear();
-                    self.inside = false;
-                    return Marker::Pasted(std::mem::take(&mut self.text));
-                }
-                continue;
-            }
-            // Not the end marker after all: its first key was text.
-            let mut rest = std::mem::take(&mut self.tail);
-            let first = rest.remove(0);
-            self.take(first);
-            for key in rest.into_iter().rev() {
-                queue.push(key);
-            }
-        }
-        Marker::Keys(Vec::new())
-    }
-
-    /// The keys held as a possible marker, for a stream that stopped mid-way.
-    ///
-    /// # Invariant
-    ///
-    /// A lone `Esc` is the operator's: nothing is held past the quiet gap that ends a
-    /// run, so a key that turned out not to be a marker is never lost behind one.
-    fn take_probe(&mut self) -> Vec<KeyEvent> {
-        std::mem::take(&mut self.probe)
-    }
-
-    /// One key as paste text: a break is a break, never a submit.
-    fn take(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char(c) => self.text.push(c),
-            KeyCode::Enter => self.text.push('\n'),
-            KeyCode::Tab => self.text.push('\t'),
-            KeyCode::Backspace => {
-                self.text.pop();
-            }
-            _ => {}
-        }
-    }
-}
-
-/// One key as the character it would be inside a marker.
-fn token(key: &KeyEvent) -> Option<char> {
-    match key.code {
-        KeyCode::Esc => Some('\x1b'),
-        KeyCode::Char(c) if key.modifiers.is_empty() => Some(c),
-        _ => None,
-    }
-}
-
 /// The console's own QuickEdit, off for as long as this window is up.
 ///
 /// # Invariant
 ///
-/// With QuickEdit on, a right-click pastes the clipboard into the prompt as
-/// keystrokes, and a pasted line break arrives as the operator's `Enter` -- the one
-/// thing a paste rule cannot tell apart. Turning the mode off is not a heuristic: the
-/// console stops delivering that gesture at all. See `docs/notes/tui-paste.md`.
+/// With QuickEdit on, a right-click puts the clipboard into the console's input
+/// stream, where a line break arrives as the operator's `Enter`. Turning the mode
+/// off is not a heuristic: the console stops delivering that gesture at all. See
+/// `docs/notes/tui-paste.md`.
 #[cfg(windows)]
 struct QuickEdit(Option<u32>);
 
@@ -944,19 +782,14 @@ impl Tui {
             dragging: None,
             note_window: client::COMMAND_WINDOW.to_string(),
             asks_client: false,
-            quiet_at: None,
             wished: HashSet::new(),
             asked: (String::new(), 0),
             tab_asked: false,
             rooms: Vec::new(),
-            events: (!vt_input::wanted()).then(EventStream::new),
-            vt: vt_input::wanted().then(vt_input::spawn),
+            input: vt_input::Input::open(),
             restored: false,
             // The first frame has to happen even though nothing has changed.
             dirty: true,
-            pending: Vec::new(),
-            settled: None,
-            markers: PasteMarkers::default(),
             key_log: std::env::var("GONGGA_TUI_DEBUG_KEYS")
                 .ok()
                 .and_then(|path| {
@@ -967,9 +800,6 @@ impl Tui {
                         .ok()
                 }),
             quick_edit,
-            fast: 0,
-            fast_at: None,
-            stashed: None,
         };
         // Said once: a window that cannot hear the console closing leaves
         // it in raw mode when it goes.
@@ -1061,6 +891,14 @@ impl Tui {
             self.note_window = layout.command.clone();
         }
         self.screen.panes.layout(layout);
+        self.dirty = true;
+    }
+
+    /// The cap and margin the command layer last set: a block stops growing at
+    /// `block_size` rows (0 caps nothing), and a box gives `box_edge` columns back.
+    pub fn set_render(&mut self, block_size: usize, box_edge: usize) {
+        self.screen.panes.set_block_size(block_size);
+        self.screen.panes.set_box_edge(box_edge);
         self.dirty = true;
     }
 
@@ -1320,51 +1158,7 @@ impl Tui {
                 self.wished.extend(owed.iter().cloned());
                 return Some(UiEvent::Intent(UiIntent::Older { windows: owed }));
             }
-            // A run in progress is finished first: it lives in `self`, so a
-            // cancelled wait resumes it instead of losing the keys.
-            if !self.pending.is_empty() {
-                let quiet = *self
-                    .quiet_at
-                    .get_or_insert_with(|| tokio::time::Instant::now() + PASTE_GAP);
-                match tokio::time::timeout_at(quiet, self.next_term()).await {
-                    // Quiet: the run is over, and a key held as a marker was not one.
-                    Err(_) => {
-                        self.quiet_at = None;
-                        for key in self.markers.take_probe() {
-                            self.pending.push(key);
-                        }
-                    }
-                    Ok(None) => return self.flush(),
-                    Ok(Some(Err(e))) => self.stashed = Some(Err(e)),
-                    Ok(Some(Ok(TermEvent::Key(key))))
-                        if Self::actionable(&key) && Self::paste_key(&key) =>
-                    {
-                        self.quiet_at = Some(tokio::time::Instant::now() + PASTE_GAP);
-                        match self.markers.feed(key) {
-                            Marker::Keys(keys) => {
-                                for key in keys {
-                                    self.hold(key);
-                                }
-                                continue;
-                            }
-                            Marker::Pasted(text) => {
-                                self.paste(&text);
-                                continue;
-                            }
-                        }
-                    }
-                    // Anything else is not part of a paste, and is kept for later.
-                    Ok(Some(Ok(other))) => self.stashed = Some(Ok(other)),
-                }
-                if let Some(action) = self.flush() {
-                    return Some(action);
-                }
-                continue;
-            }
-            let next = match self.stashed.take() {
-                Some(held) => held,
-                None => self.next_term().await?,
-            };
+            let next = self.next_term().await?;
             if let (Some(log), Ok(event)) = (self.key_log.as_mut(), &next) {
                 use std::io::Write as _;
                 let _ = writeln!(log, "{:?}", event);
@@ -1385,14 +1179,14 @@ impl Tui {
                         }
                         continue;
                     }
-                    // Held until the pause that says whether this was a paste.
-                    match self.markers.feed(key) {
-                        Marker::Keys(keys) => {
-                            for key in keys {
-                                self.hold(key);
-                            }
-                        }
-                        Marker::Pasted(text) => self.paste(&text),
+                    // Every key marks a frame: `draw` skips one nothing changed for.
+                    // See `docs/notes/tui-paste.md`.
+                    self.dirty = true;
+                    let action = self
+                        .handle_key(key)
+                        .or_else(|| self.completer.wants().then_some(UiEvent::Recomplete));
+                    if let Some(action) = action {
+                        return Some(action);
                     }
                 }
                 Ok(TermEvent::Mouse(mouse)) => {
@@ -1414,106 +1208,14 @@ impl Tui {
         }
     }
 
-    /// Holds one key the loop may find to be part of a paste, counting a burst.
-    ///
-    /// # Invariant
-    ///
-    /// [`Self::fast`] counts text keys that arrived within [`PASTE_GAP`] of the one
-    /// before, and goes back to zero at the first gap a hand could have made. It is
-    /// what [`Self::burst_break`] reads, and it survives a flush: a slow replay is
-    /// many runs of one key, and only the count across them says "this was a paste".
-    fn hold(&mut self, key: KeyEvent) {
-        let now = std::time::Instant::now();
-        let fast = self
-            .fast_at
-            .is_some_and(|at| now.duration_since(at) <= BURST_GAP);
-        self.fast = if fast { self.fast + 1 } else { 0 };
-        self.fast_at = Some(now);
-        self.pending.push(key);
-    }
-
-    /// Whether this lone break ends a burst no hand typed.
-    ///
-    /// # Invariant
-    ///
-    /// The count is spent when it answers, so one paste's break cannot excuse the
-    /// `Enter` a person presses after it. See `docs/notes/tui-paste.md`.
-    fn burst_break(&mut self, keys: &[KeyEvent]) -> bool {
-        let lone = keys.len() == 1 && is_paste_newline(&keys[0]);
-        let recent = self.fast_at.is_some_and(|at| at.elapsed() <= GLUE_GAP);
-        let pasted = lone && recent && self.fast >= PASTE_BURST;
-        if pasted {
-            self.fast = 0;
-        }
-        pasted
-    }
-
-    /// The next terminal event, from whichever reader this window opened.
+    /// The next terminal event, from the reader this window opened.
     async fn next_term(&mut self) -> Option<std::io::Result<TermEvent>> {
-        match &mut self.vt {
-            Some(vt) => vt.recv().await.map(Ok),
-            None => match &mut self.events {
-                Some(events) => events.next().await,
-                None => None,
-            },
-        }
+        self.input.next().await
     }
 
     /// Whether a key event drives the UI: presses and repeats, never releases.
     fn actionable(key: &KeyEvent) -> bool {
         !matches!(key.kind, KeyEventKind::Release)
-    }
-
-    /// Whether a key is one a paste arrives as, when the terminal cannot say so.
-    fn paste_key(key: &KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Char(_) => !key
-                .modifiers
-                .intersects(KeyModifiers::ALT | KeyModifiers::CONTROL),
-            KeyCode::Enter => is_paste_newline(key),
-            _ => false,
-        }
-    }
-
-    /// Ends a run: a paste is inserted, typing is replayed key by key.
-    ///
-    /// # Invariant
-    ///
-    /// A run that changed the prompt marks the frame dirty. `draw` skips a frame
-    /// nothing changed for, so a missed flag is a keypress that looks ignored.
-    fn flush(&mut self) -> Option<UiEvent> {
-        let keys = std::mem::take(&mut self.pending);
-        // A break right after a machine-fast run is that paste's own newline.
-        let run = self
-            .settled
-            .filter(|(at, _)| at.elapsed() <= GLUE_GAP)
-            .map(|(_, chars)| chars);
-        let action = match pasted(&keys) {
-            Some(text) => {
-                self.paste(&text);
-                self.settled = None;
-                None
-            }
-            None if glue_break(&keys, run) || self.burst_break(&keys) => {
-                self.paste("\n");
-                // The paste may continue after this break, so the run stays open.
-                self.settled = Some((std::time::Instant::now(), MACHINE_RUN));
-                None
-            }
-            None => {
-                let run = keys.iter().filter(|k| k.code != KeyCode::Enter).count();
-                if run >= MACHINE_RUN {
-                    self.settled = Some((std::time::Instant::now(), run));
-                } else {
-                    self.settled = None;
-                }
-                keys.into_iter().find_map(|key| self.handle_key(key))
-            }
-        };
-        self.dirty = true;
-        // A completion that asked for a peer's directory has to reach the loop,
-        // which owns the connection.
-        action.or_else(|| self.completer.wants().then_some(UiEvent::Recomplete))
     }
 
     /// The one key that is not editing: leaving, on Ctrl+Q. See `docs/notes/tui-lib.md`.
@@ -2357,48 +2059,6 @@ fn image_failure_of(image: &clipboard::ImageClipboard) -> Option<String> {
         clipboard::ImageClipboard::Failed(why) => Some(why.clone()),
         _ => None,
     }
-}
-
-/// Whether this run is one bare `Enter` that a recent paste delivered.
-fn glue_break(keys: &[KeyEvent], pasted_run: Option<usize>) -> bool {
-    let lone_break = keys.len() == 1 && is_paste_newline(&keys[0]);
-    // A modified Enter settles it alone: no hand sends with it, and the timing
-    // rule cannot see a ConPTY paste.
-    let modified = keys.len() == 1 && keys[0].modifiers.contains(KeyModifiers::CONTROL);
-    lone_break && (modified || pasted_run.is_some_and(|chars| chars >= MACHINE_RUN))
-}
-
-/// Whether this Enter is a paste's line break rather than the operator sending.
-///
-/// # Invariant
-///
-/// A paste's newline is not a plain Enter. Windows delivers it as `Enter` with
-/// `CONTROL` -- seen in a real terminal, not guessed -- so a rule that accepts only
-/// the bare key loses every line break in a pasted block, and one that sends on it
-/// posts the block a line at a time. Shift and Alt are the operator's own breaks
-/// and are excluded. See `docs/notes/tui-paste.md`.
-fn is_paste_newline(key: &KeyEvent) -> bool {
-    key.code == KeyCode::Enter
-        && !key
-            .modifiers
-            .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
-}
-
-fn pasted(keys: &[KeyEvent]) -> Option<String> {
-    // A lone key is what a keyboard sends; a paste is a break among other keys.
-    if keys.len() < 2 || !keys.iter().any(|k| k.code == KeyCode::Enter) {
-        return None;
-    }
-    let mut text = String::new();
-    for key in keys {
-        match key.code {
-            KeyCode::Enter if is_paste_newline(key) => text.push('\n'),
-            KeyCode::Char(c) => text.push(c),
-            // Anything else means this was not one pasted block after all.
-            _ => return None,
-        }
-    }
-    Some(text)
 }
 
 #[cfg(test)]

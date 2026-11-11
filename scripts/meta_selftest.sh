@@ -9,6 +9,10 @@
 # One line of verdict at the end; `-v` prints the rows it read.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="${META_SELFTEST_BIN:-$root/target/debug}"
 work="$root/.dev/selftest"
@@ -122,7 +126,7 @@ server_pid=$(child_pid)
 # The client is the home's shim, written by the server it talks to (`docs/notes/cli-bin-gongga.md`).
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
-created=$("${cli[@]}" set_session --id reader --model fake/flash-fake --cwd "$root" 2>&1)
+created=$("${cli[@]}" '{"name":"set_session","args":{"id":"reader","model":"fake/flash-fake","cwd":"'"$(native "$root")"'"}}' 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created in the repository" $?
 
@@ -138,7 +142,7 @@ spaced=$(cygpath -w "$spacey")
 nested=$(cygpath -w "$nested")
 message="看下@file(docs/notes/tui-main.md)这个文件，还有@skill(self-control)是做什么的，以及@file($spaced)这个、@file($nested)那个"
 say "message: $message"
-sent=$("${cli[@]}" send_message --session reader --message "$message" 2>&1)
+sent=$("${cli[@]}" '{"name":"send_message","args":{"session":"reader","message":"'"$message"'"}}' 2>&1)
 say "sent: $sent"
 [[ "$sent" == *'"ok":true'* ]]
 ok "its turn is accepted" $?

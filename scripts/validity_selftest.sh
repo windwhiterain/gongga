@@ -7,6 +7,10 @@
 # same answer for every request, rather than something a request invents each time.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="$root/target/debug"
 work="$root/.dev/selftest"
@@ -90,8 +94,8 @@ start() { # logfile-to-append-to
 start "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
-"${cli[@]}" set_session --id v --model fake/flash-fake --cwd "$work" >/dev/null 2>&1
-"${cli[@]}" send_message --session v --message "run it" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"v","model":"fake/flash-fake","cwd":"'"$(native "$work")"'"}}' >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"v","message":"run it"}}' >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q "tool start session=v" "$log" && break; sleep 0.2; done
 grep -q "tool start session=v" "$log" || { echo "FAIL · the turn never started a tool"; exit 1; }
 

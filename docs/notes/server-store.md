@@ -213,6 +213,36 @@ mentor and compared the copy row for row.
 Production code always has a lower bound, and a method nobody calls is a second way
 to ask the same question.
 
+## turn and step, as columns
+
+A row states which turn wrote it and which step inside that turn. Both were only
+inside `display`; as columns they answer "what did the last step leave open" without
+walking the transcript, and `messages_by_step` makes that a range read.
+`append_message` fills them from the payload, the way it already reads `call_id`, so
+a caller states the pair where it knows it and stays silent where it does not: the
+prompt in force, a notice, and the user's own line -- which opens a turn before the
+turn has a number -- carry neither.
+
+`backfill_steps` gives the rows written before these were columns the pair their
+payload already names, once, on the open that adds them. A payload naming neither
+stays NULL, which is how "stands in no step" is spelled, and a payload that is not
+JSON is skipped rather than failing a whole home's migration.
+
+`seal_calls` is the one way a row written before the columns gets an answer. It runs
+on the open that adds them, *before* the ALTER: from that moment the question is
+asked of a row's own pair, so a call written before them has to be answered while the
+transcript can still be asked about it. Its own insert is deliberate -- `append_message`
+writes the columns it is making room for. A crash in the middle leaves the columns
+absent, so the next start asks again; asking twice answers nothing, because what it
+writes is a result the next question sees.
+
+`open_calls` then reads one thing: the newest `(turn, step)` in the session, and every
+call in it that no result names. A turn answers its calls before it ends, so that is
+the only place a half-written step can be. A resumed turn reuses its numbers, so an
+older row sharing the pair is read too -- its answered calls filter themselves out by
+`call_id`, never by position. `answer_open_calls` copies the call's own pair onto the
+answer it appends, so the repaired row lands in the step it belongs to.
+
 ## pictures in a row
 
 A tool result, and a message written with `@image(...)`, carry the text they always

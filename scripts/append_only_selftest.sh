@@ -7,6 +7,10 @@
 # system prompt and was re-rendered at every step.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="$root/target/debug"
 work="$root/.dev/selftest"
@@ -90,16 +94,16 @@ for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
-created=$("${cli[@]}" set_session --id reader --model fake/flash-fake --cwd "$root" 2>&1)
+created=$("${cli[@]}" '{"name":"set_session","args":{"id":"reader","model":"fake/flash-fake","cwd":"'"$(native "$root")"'"}}' 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
-"${cli[@]}" send_message --session reader --message "read @file(docs/notes/tui-main.md) then answer" >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"reader","message":"read @file(docs/notes/tui-main.md) then answer"}}' >/dev/null 2>&1
 for _ in $(seq 1 120); do grep -q 'turn end session=reader' "$log" && break; sleep 0.5; done
 first=$(grep -c 'turn end session=reader' "$log")
 
 # The reference the index carries changes, and is *named again* so a fresh plan sees it.
 printf '\n- a line added while the session is running\n' >> "$root/AGENTS.md"
 restore=$?
-"${cli[@]}" send_message --session reader --message "and again @file(docs/notes/tui-main.md)" >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"reader","message":"and again @file(docs/notes/tui-main.md)"}}' >/dev/null 2>&1
 for _ in $(seq 1 120); do [[ $(grep -c 'turn end session=reader' "$log") -gt $first ]] && break; sleep 0.5; done
 git -C "$root" checkout -- AGENTS.md
 

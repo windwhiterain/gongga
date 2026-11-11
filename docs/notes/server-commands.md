@@ -447,8 +447,10 @@ how long the turn takes. So delete interrupts first and only then waits, which i
 a wait measured in milliseconds.
 
 The token, not a boundary flag: a call stuck in a shell write has no boundary to
-reach, and clearing the rows is what keeps the next start from owing work nobody
-asked to have back.
+reach. What a stop clears is only what the session no longer owes -- an idle
+session's leftover `turn` row -- and never the inbox: a queued message is received
+input, and everything received must be saved to context. A busy turn's own row
+stays for `finish_turn`, which keeps it for a cancel and drops it for an interrupt.
 
 ## interrupt_session
 
@@ -470,6 +472,15 @@ pending row instead of leaving it) and `mark_interrupted` (so a window is told
 `interrupted` rather than `cancelled`). The call itself needs nothing from here: its
 token ends, it returns what it has, and the sentence is its own -- see
 `docs/notes/server-tools-mod.md`.
+
+The inbox is not the turn's to take: a message queued while the turn ran is folded
+into the transcript as the interrupted turn ends -- `turn_inner` delivers it while the
+gate is still held, after the interrupted answer's row. So it is saved to context and
+`nudge_inboxes` finds nothing to wake a fresh turn for: an interrupt stops the loop, it
+does not owe a new one. (A turn that *ends normally* with a message still pending is the
+other case: there `nudge_inboxes` does start a turn.) A queued message is received input,
+and everything received must be saved to context, so no stop but a delete may drop it.
+A `cancel` owes the turn to the next start, so it leaves the inbox pending instead.
 
 ## cancel
 

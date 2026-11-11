@@ -535,7 +535,7 @@ fn disk_report(home: &Path, payload: &str) -> String {
     let read_back = if session.is_empty() {
         String::new()
     } else {
-        format!("\nRead it back with:\n\n    gongga-cli get_messages --session {session} -40:-1\n")
+        format!("\nRead it back with:\n\n    gongga-cli '{{\"name\":\"get_messages\",\"args\":{{\"session\":\"{session}\",\"range\":\"-40:-1\"}}}}'\n")
     };
     let reach = if elsewhere {
         format!(
