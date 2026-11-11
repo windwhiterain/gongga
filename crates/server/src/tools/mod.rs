@@ -666,14 +666,9 @@ impl ToolRegistry {
                     max_output_chars: settings.max_output_chars,
                 })
             }
-            // SPEC's `fn <tool>(**args)`: a row an operator reaches by name may be a
-            // command this build has no type for. One the model is offered may not --
-            // a tool nobody implements is not a tool SPEC has. See `server-tools-mod`.
-            other if row.offered => {
-                return Err(format!(
-                    "`{other}` is offered to the model, and this build implements no such tool"
-                ));
-            }
+            // SPEC's `fn <tool>(**args)`: a row this build has no type for is a command
+            // the command layer runs, whether the model is offered it or not. A name the
+            // catalog does not know is refused when it is called, in the command's words.
             other => Box::new(Forward {
                 name: other.to_string(),
             }),
