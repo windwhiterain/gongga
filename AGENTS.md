@@ -219,7 +219,7 @@ bundle 的 retire 会让旧 build 的服务端 `cancel`（除非那个程序自�
 不重新编译。
 
 ```bash
-scripts/ship.sh -m "heir: 把 mentor 写进指引"   # 提交 local → rebase 到 main → push 到 main
+scripts/ship.sh -m "heir: 把 mentor 写进指引"   # 提交 → rebase 到 main → push 到 main（站在 main 或 local 上都行）
 scripts/ship.sh --check                          # 两端 protocol 一致吗 + 推上去了吗
 scripts/ship.sh --check --local                  # 同上，不问网络（pre-commit 用这个）
 scripts/ship.sh --dry-run -m "..."               # 会做什么（不写不推）

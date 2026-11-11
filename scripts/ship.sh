@@ -9,8 +9,11 @@
 # The content is its own repository, kept the way the community roster is
 # (`fork`): `main` is official, `local` is this machine's own commits, and a
 # refresh is a fast-forward of `main` followed by a rebase of `local` onto it.
-# Publishing therefore pushes `local` to `main` -- after rebasing it, so the
-# published history stays a straight line on top of what is already there.
+# This checkout may stand on either: on `local` a commit is personal and is
+# rebased onto `main` before it goes out; on `main` a commit is already where it
+# belongs. Both push `HEAD:main`, so the published history stays a straight line,
+# and neither ever puts `local` on the remote -- a machine's own branch is not
+# something to publish.
 #
 # Nothing is written into this repository. The pin is gone: a server asks the
 # content's `main` for the newest commit that speaks the protocol it was built to
@@ -96,7 +99,7 @@ dirty=$(git -C "$ship" status --porcelain)
 
 say "ship HEAD   $local_sha (${current:-detached})"
 say "protocol    content ${content_protocol:-<none>}, this build ${local_protocol:-<none>}"
-say "branches    official $official, personal $personal, publishing ${personal} -> ${official}"
+say "branches    official $official, personal $personal, publishing ${current:-<detached>} -> ${official}"
 [[ -n "$dirty" ]] && { say "uncommitted in ship/:"; printf '%s\n' "$dirty" | sed 's/^/      /'; }
 
 # Whether the content is published is a question for the remote, and a remote that
@@ -128,7 +131,7 @@ verify() { # 0 agree, 1 disagree, 3 remote silent
     disagree "UNVERIFIED $remote did not answer for $official: cannot tell whether the content is published"
     reachable=0; agree=1
   else
-    # What would be published is the personal branch, rebased: `official` here is
+    # What would be published is this checkout's HEAD, rebased: `official` here is
     # its base, and the remote has to already have that base.
     if [[ -n "$official_here" ]] && ! git -C "$ship" merge-base --is-ancestor "$official_here" "$remote_sha" 2>/dev/null; then
       if git -C "$ship" merge-base --is-ancestor "$remote_sha" "$official_here" 2>/dev/null; then
@@ -160,9 +163,9 @@ if [[ $mode == dry ]]; then
   if [[ -n "$dirty" && -z "$message" ]]; then
     say "(no -m: nothing would be committed)"
   elif [[ -n "$dirty" ]]; then
-    say "would commit those changes on $personal, rebase it onto $official, push it to $remote/$official"
+    say "would commit those changes on ${current:-$personal}, rebase onto $official, push to $remote/$official"
   else
-    say "nothing to commit; the push would publish ${personal}'s commits on top of $official"
+    say "nothing to commit; the push would publish ${current:-$personal} on top of $official"
   fi
   exit 0
 fi
@@ -172,8 +175,9 @@ fi
 if [[ -z "$current" ]]; then
   say "ship/ is detached; working on a new $personal"
   git -C "$ship" checkout -B "$personal" >/dev/null
-elif [[ "$current" != "$personal" ]]; then
-  echo "  ship/ is on '$current', not '$personal'; switch first -- this script does not guess which branch carries this machine's commits" >&2
+elif [[ "$current" != "$personal" && "$current" != "$official" ]]; then
+  echo "  ship/ is on '$current': publish from '$official' (a commit that belongs to everyone)" >&2
+  echo "  or from '$personal' (this machine's own, rebased onto '$official' first); switch first" >&2
   exit 1
 fi
 
@@ -208,7 +212,7 @@ if [[ -n "$remote_sha" ]]; then
     echo "  resolve it by hand, then run this again" >&2
     exit 1
   fi
-  echo "  rebased $personal onto $remote/$official ($(git -C "$ship" rev-parse --short "$remote/$official"))"
+  echo "  rebased $current onto $remote/$official ($(git -C "$ship" rev-parse --short "$remote/$official"))"
 fi
 
 local_sha=$(git -C "$ship" rev-parse HEAD)
