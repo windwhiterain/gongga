@@ -44,6 +44,19 @@ impl Input {
     }
 }
 
+/// A Windows console's mode: elsewhere a key arrives with its modifiers.
+#[cfg(not(windows))]
+pub fn request_win32_input(_out: &mut impl std::io::Write) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn release_win32_input(_out: &mut impl std::io::Write) -> std::io::Result<()> {
+    Ok(())
+}
+#[cfg(windows)]
+pub use platform::{release_win32_input, request_win32_input};
+
 #[cfg(windows)]
 mod platform {
     use super::*;
@@ -59,6 +72,20 @@ mod platform {
     const VT_INPUT: u32 = 0x0200;
     /// What closes a pasted block. Eight bytes, so the search is a slice compare.
     const PASTE_END: &[u8] = b"\x1b[201~";
+    /// `DECSET 9001`: one record per key event, modifiers included.
+    ///
+    /// # Invariant
+    ///
+    /// The console's VT translation has no shape for a modified `Enter`: it
+    /// writes a plain `CR`, so `Shift+Enter` would submit what the operator
+    /// meant to break. This mode is the console's own answer about the key --
+    /// `Vk;Sc;Uc;Kd;Cs;Rc` between `[` and `_` -- and a terminal that does not
+    /// know it ignores it, leaving the bytes the parser already reads.
+    /// See `docs/notes/tui-paste.md`.
+    const WIN32_INPUT_ON: &[u8] = b"\x1b[?9001h";
+    /// The same mode off, so the shell this window returns to reads its keys.
+
+    const WIN32_INPUT_OFF: &[u8] = b"\x1b[?9001l";
     /// How long an escape waits for the rest of its sequence before it is a key.
     ///
     /// # Invariant
@@ -93,6 +120,8 @@ mod platform {
             });
             let mut log = log_file();
             let mut buffer: Vec<u8> = Vec::new();
+            // The other half of a character outside the BMP, if one is held.
+            let mut pending: Option<u16> = None;
             loop {
                 // Only a batch that left bytes behind has a reason to time out.
                 let batch = if buffer.is_empty() {
@@ -113,8 +142,14 @@ mod platform {
                     continue;
                 };
                 log_raw(&mut log, &batch);
+                let held = buffer.len();
                 buffer.extend_from_slice(&batch);
-                for event in parse(&mut buffer) {
+                // A record is whole: it never finishes an escape an earlier batch
+                // left open. See `docs/notes/tui-paste.md`.
+                if held > 0 && starts_a_record(&buffer[held..]) {
+                    buffer.drain(..held);
+                }
+                for event in parse(&mut buffer, &mut pending) {
                     log_event(&mut log, &event);
                     if tx.send(event).is_err() {
                         return;
@@ -141,6 +176,18 @@ mod platform {
             .collect()
     }
 
+    /// Asks the terminal for Win32 input mode.
+    pub fn request_win32_input(out: &mut impl Write) -> std::io::Result<()> {
+        out.write_all(WIN32_INPUT_ON)?;
+        out.flush()
+    }
+
+    /// Gives the mode back.
+    pub fn release_win32_input(out: &mut impl Write) -> std::io::Result<()> {
+        out.write_all(WIN32_INPUT_OFF)?;
+        out.flush()
+    }
+
     fn enable() -> bool {
         unsafe {
             let handle = GetStdHandle(STD_INPUT_HANDLE);
@@ -153,7 +200,7 @@ mod platform {
     }
 
     /// Every event the bytes already hold, leaving an unfinished tail in `buffer`.
-    fn parse(buffer: &mut Vec<u8>) -> Vec<Event> {
+    fn parse(buffer: &mut Vec<u8>, pending: &mut Option<u16>) -> Vec<Event> {
         let mut events = Vec::new();
         let mut at = 0;
         while at < buffer.len() {
@@ -164,6 +211,29 @@ mod platform {
                     // silence says the escape was the key. See `flush`.
                     break;
                 };
+                if let Some((after, decoded)) = record_at(buffer, at, pending) {
+                    match decoded {
+                        Decoded::Key(event) => events.push(event),
+                        Decoded::Nothing => {}
+                        // A run of byte-carrying records is the stream a program
+                        // wrote, put back where it was. See `docs/notes/tui-paste.md`.
+                        Decoded::Byte(unit) => {
+                            let mut written = Vec::new();
+                            push_utf8(&mut written, unit);
+                            let mut next = after;
+                            while let Some((then, Decoded::Byte(unit))) =
+                                record_at(buffer, next, pending)
+                            {
+                                push_utf8(&mut written, unit);
+                                next = then;
+                            }
+                            buffer.splice(at..next, written);
+                            continue;
+                        }
+                    }
+                    at = after;
+                    continue;
+                }
                 if next == b'[' {
                     let Some(end) = csi_end(buffer, at + 2) else {
                         break;
@@ -309,7 +379,9 @@ mod platform {
         let button = *numbers.first()?;
         let column = u16::try_from(*numbers.get(1)?).ok()?.saturating_sub(1);
         let row = u16::try_from(*numbers.get(2)?).ok()?.saturating_sub(1);
-        let modifiers = modifiers_of(Some((button & !0b11000011) >> 2));
+        // The button word keeps its modifiers one code below the parameter
+        // `modifiers_of` reads.
+        let modifiers = modifiers_of(Some(((button & 0b0001_1100) >> 2) + 1));
         // Bit 5 is motion, so a drag and a click differ by that bit alone: a
         // handler that only knows clicks loses the gesture that selects text.
         let held = button & 0b11;
@@ -338,6 +410,160 @@ mod platform {
         }))
     }
 
+    /// `dwControlKeyState` bits of a Win32 key event: which modifiers are held.
+    const SHIFT_HELD: u32 = 0x0010;
+    const LEFT_ALT: u32 = 0x0002;
+    const RIGHT_ALT: u32 = 0x0001;
+    const LEFT_CTRL: u32 = 0x0008;
+    const RIGHT_CTRL: u32 = 0x0004;
+
+    /// What one `Vk;Sc;Uc;Kd;Cs;Rc` record says.
+    enum Decoded {
+        /// A key: named by its virtual-key code, or a character carrying modifiers.
+        Key(Event),
+        /// A character a program wrote to the console rather than a key a person
+        /// pressed: the byte it is, not the key it is not.
+        Byte(u32),
+        /// Neither: a release, a modifier on its own, or half a character.
+        Nothing,
+    }
+
+    /// One record: the key it names, on its way down only.
+    ///
+    /// # Invariant
+    ///
+    /// The modifiers are read from the record and never guessed from the
+    /// character, because the key this exists for has no character at all. A
+    /// release is not a key this window acts on, a modifier on its own is no
+    /// key, and a key that is neither in the table nor carrying a character is
+    /// no event rather than a guess. See `docs/notes/tui-paste.md`.
+    fn record(body: &[u8], pending: &mut Option<u16>) -> Decoded {
+        // Positional, not `numbers_of`: field four is where the state is.
+        let fields: Vec<u32> = body
+            .split(|byte| *byte == b';')
+            .map(|part| {
+                std::str::from_utf8(part)
+                    .ok()
+                    .and_then(|text| text.parse().ok())
+                    .unwrap_or(0)
+            })
+            .collect();
+        if fields.get(3).copied().unwrap_or(1) == 0 {
+            return Decoded::Nothing;
+        }
+        let modifiers = held(fields.get(4).copied().unwrap_or(0));
+        let vk = fields.first().copied().unwrap_or(0);
+        if let Some(code) = name(vk) {
+            return Decoded::Key(key(code, modifiers));
+        }
+        let Some(character) = character(fields.get(2).copied().unwrap_or(0), pending, modifiers)
+        else {
+            return Decoded::Nothing;
+        };
+        // No virtual-key code: nothing was pressed, bytes were written.
+        if vk == 0 {
+            return Decoded::Byte(u32::from(character));
+        }
+        Decoded::Key(key(KeyCode::Char(character), modifiers))
+    }
+
+    fn held(state: u32) -> KeyModifiers {
+        let mut modifiers = KeyModifiers::NONE;
+        if state & SHIFT_HELD != 0 {
+            modifiers |= KeyModifiers::SHIFT;
+        }
+        if state & (LEFT_ALT | RIGHT_ALT) != 0 {
+            modifiers |= KeyModifiers::ALT;
+        }
+        if state & (LEFT_CTRL | RIGHT_CTRL) != 0 {
+            modifiers |= KeyModifiers::CONTROL;
+        }
+        modifiers
+    }
+
+    /// The key a virtual-key code names, for the codes whose character says nothing.
+    fn name(vk: u32) -> Option<KeyCode> {
+        let code = match vk {
+            0x0D => KeyCode::Enter,
+            0x1B => KeyCode::Esc,
+            0x09 => KeyCode::Tab,
+            0x08 => KeyCode::Backspace,
+            0x2D => KeyCode::Insert,
+            0x2E => KeyCode::Delete,
+            0x25 => KeyCode::Left,
+            0x26 => KeyCode::Up,
+            0x27 => KeyCode::Right,
+            0x28 => KeyCode::Down,
+            0x24 => KeyCode::Home,
+            0x23 => KeyCode::End,
+            0x21 => KeyCode::PageUp,
+            0x22 => KeyCode::PageDown,
+            0x70..=0x73 => KeyCode::F((vk - 0x6F) as u8),
+            _ => return None,
+        };
+        Some(code)
+    }
+
+    /// The character a record carries, if it carries one.
+    ///
+    /// # Invariant
+    ///
+    /// A unit of zero is no character at all -- a modifier on its own, or a key
+    /// whose name the table holds. A control byte is the letter the console
+    /// means rather than the byte, and a character outside the BMP comes as two
+    /// records: the first half is held until its other half arrives, so one key
+    /// is one character and never two.
+    fn character(unit: u32, pending: &mut Option<u16>, modifiers: KeyModifiers) -> Option<char> {
+        let unit = u16::try_from(unit).ok()?;
+        if unit == 0 {
+            return None;
+        }
+        if (0xD800..=0xDBFF).contains(&unit) {
+            *pending = Some(unit);
+            return None;
+        }
+        let half = pending.take();
+        if let (0xDC00..=0xDFFF, Some(high)) = (unit, half) {
+            let value = 0x10000 + (u32::from(high) - 0xD800) * 0x400 + (u32::from(unit) - 0xDC00);
+            return char::from_u32(value);
+        }
+        if (1..=0x1A).contains(&unit) && modifiers.contains(KeyModifiers::CONTROL) {
+            return Some(char::from(b'a' + (unit as u8) - 1));
+        }
+        char::from_u32(u32::from(unit))
+    }
+
+    /// Whether the bytes start with a whole record: `ESC [ Vk ; ... _`.
+    fn starts_a_record(buffer: &[u8]) -> bool {
+        if buffer.first() != Some(&0x1b) || buffer.get(1) != Some(&b'[') {
+            return false;
+        }
+        match csi_end(buffer, 2) {
+            Some(end) => buffer.get(end) == Some(&b'_'),
+            None => false,
+        }
+    }
+
+    /// The record starting at `at`, if the bytes there are one.
+    fn record_at(buffer: &[u8], at: usize, pending: &mut Option<u16>) -> Option<(usize, Decoded)> {
+        if buffer.get(at) != Some(&0x1b) || buffer.get(at + 1) != Some(&b'[') {
+            return None;
+        }
+        let end = csi_end(buffer, at + 2)?;
+        if buffer.get(end) != Some(&b'_') {
+            return None;
+        }
+        Some((end + 1, record(&buffer[at + 2..end], pending)))
+    }
+
+    /// The bytes of a character, so a record can be put back into the stream.
+    fn push_utf8(out: &mut Vec<u8>, unit: u32) {
+        let mut buffer = [0u8; 4];
+        if let Some(text) = char::from_u32(unit).map(|character| character.encode_utf8(&mut buffer))
+        {
+            out.extend_from_slice(text.as_bytes());
+        }
+    }
     fn modifiers_of(parameter: Option<u32>) -> KeyModifiers {
         match parameter.unwrap_or(1).saturating_sub(1) {
             0 => KeyModifiers::NONE,
@@ -394,7 +620,8 @@ mod platform {
 
         fn events(bytes: &[u8]) -> Vec<Event> {
             let mut buffer = bytes.to_vec();
-            parse(&mut buffer)
+            let mut pending = None;
+            parse(&mut buffer, &mut pending)
         }
 
         #[test]

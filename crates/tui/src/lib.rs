@@ -745,6 +745,8 @@ impl Tui {
                 EnableBracketedPaste
             )
             .context("entering alternate screen")?;
+            // Keys from here on carry their modifiers. See `docs/notes/tui-paste.md`.
+            vt_input::request_win32_input(&mut out)?;
             let mut terminal = Terminal::new(CrosstermBackend::new(out))?;
             // A blank cell is never written to, so a dead process's last frame stays.
             terminal.clear().context("clearing the alternate screen")?;
@@ -1905,6 +1907,8 @@ fn frame_failed(payload: &(dyn std::any::Any + Send)) -> String {
 fn restore_terminal(out: &mut impl Write) -> io::Result<()> {
     // Evaluate every step even when an earlier one fails; each execute! flushes separately.
     restore_steps([
+        // The shell this returns to reads its own keys, not this window's records.
+        vt_input::release_win32_input(out),
         disable_raw_mode(),
         execute!(out, LeaveAlternateScreen),
         execute!(out, DisableBracketedPaste),

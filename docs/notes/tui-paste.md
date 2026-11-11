@@ -21,6 +21,42 @@ A plain `Enter` is the only key that submits; `Shift+Enter` and `Alt+Enter` are
 the operator's own line breaks. Nothing between a key arriving and what it
 means is guessed from timing.
 
+## Win32 input mode: the one key the console cannot spell
+
+The console's VT translation writes a modified `Enter` as a plain `CR`. SPEC's
+`Shift+Enter` is a line break, so in the byte stream it was indistinguishable
+from the key that submits, and the break never happened. No parser can recover
+what the console did not write, so the window asks for a mode that spells it:
+`DECSET 9001`, Win32 input mode, one record per key event --
+`Vk ; Sc ; Uc ; Kd ; Cs ; Rc` between `[` and `_`. `Shift+Enter` is
+`13;28;13;1;16;1_` and nothing else.
+
+Both consoles on Windows implement it: the console host and Windows Terminal
+answered the request with records in a run measured on 2026-11-11. `vt_input`
+asks for the mode before the first frame and gives it back on the way out, so
+the shell this window returns to reads its own keys.
+
+A record is read as what it says, and nothing is guessed:
+
+- the key its virtual-key code names, with the modifiers `dwControlKeyState`
+  reports -- `Shift+Enter`, `Alt+Enter`, `Shift+Delete`, `Shift+Up`;
+- else the character it carries, with those modifiers -- a control byte is the
+  letter the console means, and a character outside the BMP is two records, the
+  first half held until the other arrives;
+- else nothing: a release, a modifier on its own, a key with no name.
+
+A record with no virtual-key code is not a key at all: a program wrote bytes to
+this console. A run of those records is put back into the byte stream where
+they were, so `ESC[D` written that way is still one arrow rather than an `Esc`
+and two characters. For the same reason a record never finishes an escape an
+earlier batch left open -- a record is whole, so the unfinished escape goes.
+
+What the mode costs: with it in force the console host unwraps a terminal's own
+bracketed paste into plain keys, so that paste arrives as typed text and a line
+break inside it submits. SPEC's paste is `Ctrl+V`, which is this window reading
+the clipboard (`Ctrl+V` arrives as the key it is), and it is unaffected. A
+terminal that replays a paste as keys already had this failure mode, below.
+
 ## Why the key-stream rules were removed (2026-11-11)
 
 Before the byte reader, a paste arrived as ordinary keys and the window had to
