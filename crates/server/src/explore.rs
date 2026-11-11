@@ -78,9 +78,22 @@ pub struct Watch {
     state: Mutex<State>,
 }
 
+/// One path as a look saw it: the status line, and a fingerprint of the contents.
+///
+/// # Invariant
+///
+/// A dirty path keeps printing the same line however often its file changes, so the line
+/// alone cannot show a second edit. The fingerprint can, and neither half works without
+/// the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Looked {
+    line: String,
+    fingerprint: String,
+}
+
 #[derive(Debug, Default)]
 struct State {
-    seen: Option<BTreeMap<String, ()>>,
+    seen: Option<BTreeMap<String, Looked>>,
     blind: bool,
 }
 
@@ -103,28 +116,30 @@ impl Watch {
         if self.state.lock().map(|state| state.blind).unwrap_or(true) {
             return Look::Blind;
         }
-        let Some(lines) = probe(cwd).await else {
+        let Some(now) = probe(cwd).await else {
             if let Ok(mut state) = self.state.lock() {
                 state.blind = true;
             }
             return Look::Blind;
         };
-        let mut now = BTreeMap::new();
-        for line in lines {
-            now.insert(line, ());
-        }
         let Ok(mut state) = self.state.lock() else {
             return Look::Blind;
         };
         let look = match state.seen.take() {
             None => Look::First,
             Some(before) => {
-                let changed: Vec<String> = now
-                    .keys()
-                    .filter(|line| !before.contains_key(*line))
-                    .chain(before.keys().filter(|line| !now.contains_key(*line)))
-                    .cloned()
-                    .collect();
+                let mut changed: Vec<String> = Vec::new();
+                for (path, holds) in &now {
+                    match before.get(path) {
+                        Some(was) if was.fingerprint == holds.fingerprint => {}
+                        _ => changed.push(holds.line.clone()),
+                    }
+                }
+                for (path, was) in &before {
+                    if !now.contains_key(path) {
+                        changed.push(was.line.clone());
+                    }
+                }
                 if changed.is_empty() {
                     Look::Same
                 } else {
@@ -137,16 +152,19 @@ impl Watch {
     }
 }
 
-/// The lines `git status --porcelain` prints for `cwd`; `None` when unanswerable.
+/// Every dirty path `git status --porcelain` reports, with its line and a content
+/// fingerprint; `None` when unanswerable.
 ///
 /// # Invariant
 ///
-/// `GIT_OPTIONAL_LOCKS=0`, because the probe must not write: `git status` refreshes
-/// `.git/index` when it may, and a watcher that writes the workspace it watches finds
-/// its own aftermath on the next look.
-async fn probe(cwd: &Path) -> Option<Vec<String>> {
+/// `GIT_OPTIONAL_LOCKS=0`: `git status` refreshes `.git/index` when it may, and a watcher
+/// that writes what it watches finds its own aftermath.
+///
+/// The fingerprints are one `git hash-object --stdin-paths`, so a look costs two processes
+/// and a file rewritten twice is two fingerprints, not one unchanged line.
+async fn probe(cwd: &Path) -> Option<BTreeMap<String, Looked>> {
     let git = which::which("git").ok()?;
-    let output = tokio::process::Command::new(git)
+    let output = tokio::process::Command::new(&git)
         .arg("-C")
         .arg(cwd)
         .args(["status", "--porcelain"])
@@ -160,12 +178,78 @@ async fn probe(cwd: &Path) -> Option<Vec<String>> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    Some(
-        text.lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| line.to_string())
-            .collect(),
-    )
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let Some(path) = status_path(line) else {
+            continue;
+        };
+        rows.push((path, line.to_string()));
+    }
+    let present: Vec<&str> = rows
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .filter(|path| cwd.join(path).exists())
+        .collect();
+    let fingerprints = hash_paths(&git, cwd, &present).await;
+
+    let mut seen = BTreeMap::new();
+    for (path, line) in rows {
+        let fingerprint = fingerprints
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| "absent".to_string());
+        seen.insert(path, Looked { line, fingerprint });
+    }
+    Some(seen)
+}
+
+/// The path a `git status --porcelain` line names, with a rename's old name dropped.
+fn status_path(line: &str) -> Option<String> {
+    let rest = line.get(3..)?;
+    let path = match rest.split_once(" -> ") {
+        Some((_, new)) => new,
+        None => rest,
+    };
+    Some(path.trim_matches('"').to_string())
+}
+
+/// One hash per existing path, keyed by path; a path `git` cannot hash stays `absent`.
+async fn hash_paths(git: &Path, cwd: &Path, paths: &[&str]) -> BTreeMap<String, String> {
+    let mut hashes = BTreeMap::new();
+    if paths.is_empty() {
+        return hashes;
+    }
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let Ok(mut child) = tokio::process::Command::new(git)
+        .arg("-C")
+        .arg(cwd)
+        .args(["hash-object", "--stdin-paths"])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return hashes;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let mut body = String::new();
+        for path in paths {
+            body.push_str(path);
+            body.push('\n');
+        }
+        let _ = stdin.write_all(body.as_bytes()).await;
+        drop(stdin);
+    }
+    let Ok(output) = child.wait_with_output().await else {
+        return hashes;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    for (path, hash) in paths.iter().zip(text.lines()) {
+        hashes.insert((*path).to_string(), hash.to_string());
+    }
+    hashes
 }
 
 /// Takes the baseline a session's first look is measured against.
@@ -184,17 +268,6 @@ pub fn prime(watch: Option<Arc<Watch>>, cwd: std::path::PathBuf) {
     handle.spawn(async move {
         let _ = watch.look(&cwd).await;
     });
-}
-
-/// Whether this tool runs a program of the operator's choosing, so only its effects can
-/// say what it did.
-///
-/// # Invariant
-///
-/// A tool that is named here is checked; a tool that writes through its own arguments
-/// (`write_file`, `replace`) is refused instead, since its identity is the write.
-fn is_program(name: &str) -> bool {
-    matches!(name, "bash" | "exec" | "python" | "skill") || name.starts_with("remote_")
 }
 
 /// What to tell a session whose program changed the workspace it was only reading.
@@ -250,10 +323,16 @@ pub fn refusal(tool: &str) -> String {
 /// finds is news for the next step boundary, and `store::add_pending_task` orders it.
 pub fn after_job(ctx: &ToolContext, tool: &str) {
     let Some(watch) = ctx.explore.clone() else {
+        tracing::info!(tool, "explore: no watch on this call");
         return;
     };
     // A peer's workspace is not here: a look would read a same-named directory.
-    if ctx.remote.is_some() || !is_program(tool) {
+    if ctx.remote.is_some() {
+        tracing::info!(
+            tool,
+            remote = ctx.remote.is_some(),
+            "explore: skipped, the look is not owed"
+        );
         return;
     }
     let cwd = ctx.cwd.clone();
@@ -269,7 +348,9 @@ pub fn after_job(ctx: &ToolContext, tool: &str) {
                         "could not report a change to a workspace being read");
                 }
             }
-            Look::Blind | Look::First | Look::Same => {}
+            other => {
+                tracing::info!(tool, look = ?other, cwd = %cwd.display(), "explore: nothing to report")
+            }
         }
     });
 }

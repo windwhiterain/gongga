@@ -13,6 +13,7 @@
 
 pub mod base64;
 pub mod detect;
+#[cfg(windows)]
 pub mod job;
 pub mod relay;
 

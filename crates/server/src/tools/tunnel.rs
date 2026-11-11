@@ -507,7 +507,7 @@ fn adopted(
         home: cfg.home.clone(),
         output_dir: output_dir.to_path_buf(),
         workspace: Arc::new(std::sync::Mutex::new(crate::session::Workspace::empty(
-            cfg.bash.program.clone().unwrap_or_default(),
+            crate::config::detect_git_bash().unwrap_or_default(),
         ))),
         reader: None,
         machine: crate::session::Machine::Local,

@@ -1342,11 +1342,8 @@ impl SessionManager {
 
     fn local_endpoint(&self) -> anyhow::Result<Endpoint> {
         let current = self.config.now();
-        let program = current
-            .bash
-            .program
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("no bash available; set [tools.bash] program"))?;
+        let program = crate::config::detect_git_bash()
+            .ok_or_else(|| anyhow::anyhow!("no bash on this machine"))?;
         Ok(Endpoint::local(program))
     }
 

@@ -280,7 +280,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     shell_env.push(("PATH".to_string(), shell_command::path(&cfg.home)));
     let detached = DetachedRegistry::new(
         store.clone(),
-        cfg.bash.program.clone(),
+        crate::config::detect_git_bash(),
         cfg.home.join("detached"),
         shell_env.clone(),
     );
@@ -574,7 +574,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         model = %cfg.model.model_name,
         base_url = %cfg.model.base_url,
         context = ?cfg.model.context,
-        bash = ?cfg.bash.program,
+        bash = ?crate::config::detect_git_bash(),
         proxy = ?std::env::var("HTTPS_PROXY")
             .or_else(|_| std::env::var("https_proxy"))
             .or_else(|_| std::env::var("HTTP_PROXY"))

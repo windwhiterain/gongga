@@ -339,6 +339,7 @@ impl Channels {
         })?;
         // In this server's tree, so a server that is killed takes the channel with it:
         // a `cancel` is what lets them go, and it is the only thing that does.
+        #[cfg(windows)]
         crate::tools::job::arm(relay.pid);
         let place = Where::Here(dir);
         let pid = self
