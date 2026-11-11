@@ -2774,9 +2774,9 @@ impl Store {
     ///
     /// # Invariant
     ///
-    /// A cancel that found the turn waiting keeps exactly its `turn` row: that row
-    /// is what the next start resumes, and everything else the session queued is
-    /// still dropped.
+    /// The inbox (`inject`) is received input and survives every stop: what a stop
+    /// clears is what the session no longer owes, an idle session's leftover `turn`
+    /// row. Only a delete, which takes the whole session, clears without an exception.
     pub fn clear_pending_tasks_except(&self, session: &str, kind: &str) -> anyhow::Result<usize> {
         Ok(self.lock().execute(
             "DELETE FROM pending_tasks WHERE session = ?1 AND kind <> ?2",
