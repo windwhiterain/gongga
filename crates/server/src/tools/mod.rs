@@ -702,39 +702,26 @@ impl ToolRegistry {
     /// The only renderer of a schema, called only from a stored change -- never
     /// while a request is built. See `docs/notes/server-tools.md`.
     ///
-    /// A tool that drives a machine this session does not have is not in the set at
-    /// all, and neither is an argument that names one: a model can call what it is
-    /// offered, so what it is offered has to be able to answer.
-    pub fn stamp(
-        &self,
-        has_remote: bool,
-        with_live_compact: bool,
-    ) -> Vec<crate::llm::ToolDefinition> {
+    /// Every session is offered the same set, `remote` included: a call may name
+    /// any machine, and one the server does not know is refused when it runs.
+    pub fn stamp(&self, with_live_compact: bool) -> Vec<crate::llm::ToolDefinition> {
         let mut definitions: Vec<crate::llm::ToolDefinition> = self
             .tools
             .iter()
             .filter(|t| t.offered())
             .filter(|t| t.name() != live_compact::LIVE_COMPACT_TOOL)
-            .filter(|t| has_remote || !t.is_remote())
-            .map(|t| Self::definition_of(t, has_remote))
+            .map(|t| Self::definition_of(t))
             .collect();
         // Once a lineage has a compaction origin the schema stays for its life, so
         // the head stops moving twice per cycle.
         if with_live_compact && let Some(tool) = self.get(live_compact::LIVE_COMPACT_TOOL) {
-            definitions.push(Self::definition_of(&tool, has_remote));
+            definitions.push(Self::definition_of(&tool));
         }
         definitions
     }
 
-    fn definition_of(tool: &Arc<dyn Tool>, has_remote: bool) -> crate::llm::ToolDefinition {
-        let mut parameters = general_parameters(tool.as_ref());
-        if !has_remote
-            && let Some(properties) = parameters
-                .get_mut("properties")
-                .and_then(Value::as_object_mut)
-        {
-            properties.remove("remote");
-        }
+    fn definition_of(tool: &Arc<dyn Tool>) -> crate::llm::ToolDefinition {
+        let parameters = general_parameters(tool.as_ref());
         crate::llm::ToolDefinition {
             name: tool.name().to_string(),
             description: tool.spec().summary.clone().unwrap_or_default(),

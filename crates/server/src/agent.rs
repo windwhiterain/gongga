@@ -659,7 +659,7 @@ impl Agent {
             Some(_) => "origin",
         };
         let tool_set = crate::store::ToolSet {
-            tools: llm.wire_tools(&self.tools.stamp(session.on_remote(), has_origin)),
+            tools: llm.wire_tools(&self.tools.stamp(has_origin)),
             model: Some(model.to_string()),
             remote,
             has_origin,
