@@ -351,8 +351,8 @@ pub(crate) async fn report(
     );
     let notice =
         speaking.then(|| json!({"session": ctx.session, "message": message, "notice": "job"}));
-    // A job that ran asynchronously ended here, so its writes are seen too.
-    crate::explore::after_job(ctx, name);
+    // A job in a process of its own is a program: the look is owed here.
+    crate::explore::after_job(ctx, name, true);
     let collected = false;
     if let Err(e) = ctx
         .store
@@ -507,7 +507,7 @@ fn adopted(
         home: cfg.home.clone(),
         output_dir: output_dir.to_path_buf(),
         workspace: Arc::new(std::sync::Mutex::new(crate::session::Workspace::empty(
-            cfg.bash.program.clone().unwrap_or_default(),
+            std::path::PathBuf::from("bash"),
         ))),
         reader: None,
         machine: crate::session::Machine::Local,

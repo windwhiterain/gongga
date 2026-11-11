@@ -20,9 +20,6 @@ struct Command {
     /// Model name. Overrides `[provider] model`.
     #[arg(long)]
     model: Option<String>,
-    /// Path to bash. Overrides `[tools.bash] program`.
-    #[arg(long)]
-    bash: Option<PathBuf>,
     /// Home for the database, config, logs, jobs and lock; beats `[server] home`.
     #[arg(long, value_name = "DIR")]
     home: Option<PathBuf>,
@@ -53,7 +50,6 @@ impl From<Command> for Args {
             config: c.config,
             bind: c.bind,
             model: c.model,
-            bash: c.bash,
             home: c.home,
             log: c.log,
             log_format: c.log_format,

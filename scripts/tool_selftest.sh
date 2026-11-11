@@ -262,6 +262,71 @@ say "short wait answered: $(printf '%s' "$short" | head -c 120)"
 ok "wait honours the clock its call names" \
   "$(has "$short" 'within 2.5s' && echo 0 || echo 1)"
 
+# 6. explore: a program edits a file that was already dirty when the session started.
+#    The status line said ` M f.txt` before the edit and says it after, so a snapshot of
+#    lines alone calls the workspace `Same` and the session never hears about the write.
+ws="$work/ws"
+rm -rf "$ws"; mkdir -p "$ws"
+git -C "$ws" init --quiet
+printf 'a\n' > "$ws/f.txt"
+git -C "$ws" add f.txt
+git -C "$ws" -c user.email=selftest@example -c user.name=selftest commit --quiet -m base
+printf 'a\nb\n' > "$ws/f.txt"
+say "dirty before the session: $(git -C "$ws" status --porcelain | tr -d '\r')"
+
+mode_of() {
+  python - "$home" "$1" <<'INNER'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+row = c.execute("select mode from sessions where name=?", (sys.argv[2],)).fetchone()
+print(row[0] if row else "none")
+INNER
+}
+injects() {
+  python - "$home" "$1" <<'INNER'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+row = c.execute("select id from sessions where name=?", (sys.argv[2],)).fetchone()
+if row is None:
+    sys.exit(0)
+for (text,) in c.execute(
+        "select content from messages where session_id=? and kind='inject' order by seq",
+        (row[0],)):
+    print(text or "")
+INNER
+}
+# JSON by python: a shell command inside a JSON string inside a shell quote is where a
+# test quietly stops testing.
+edit_json() {
+  python - "$1" <<'INNER'
+import json, sys
+esc = chr(92)
+print(json.dumps({"name": "bash",
+                  "args": ["-lc", "printf 'a" + esc + "n%s" + esc + "n' > f.txt" % sys.argv[1]],
+                  "wait": 0}))
+INNER
+}
+
+"${cli[@]}" set_session --name explore6 --model fake/flash-fake --cwd "$ws" --mode explore >/dev/null 2>&1
+ok "the session starts in explore" "$([[ "$(mode_of explore6)" == explore ]] && echo 0 || echo 1)"
+ok "the session is told it explores" "$(injects explore6 | grep -q 'This session explores' && echo 0 || echo 1)"
+
+fake_up new "$(edit_json c)" || exit 1
+"${cli[@]}" send_message --message "edit f.txt" --name explore6 >/dev/null 2>&1
+wait_turn explore6
+ok "a second edit to an already-dirty file is reported" \
+  "$(injects explore6 | grep -q 'changed the workspace' && echo 0 || echo 1)"
+
+"${cli[@]}" set_session --name explore6 --mode work >/dev/null 2>&1
+ok "the mode switches to work" "$([[ "$(mode_of explore6)" == work ]] && echo 0 || echo 1)"
+ok "the session is told it works" "$(injects explore6 | grep -q 'This session works' && echo 0 || echo 1)"
+reported_before=$(injects explore6 | grep -c 'changed the workspace')
+fake_up new "$(edit_json d)" || exit 1
+"${cli[@]}" send_message --message "edit f.txt again" --name explore6 >/dev/null 2>&1
+wait_turn explore6
+reported_after=$(injects explore6 | grep -c 'changed the workspace')
+ok "work does not report changes" "$([[ "$reported_before" == "$reported_after" ]] && echo 0 || echo 1)"
+
 took=$(( $(date +%s) - began ))
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then

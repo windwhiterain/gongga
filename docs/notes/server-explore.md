@@ -20,8 +20,9 @@ the mode. The two questions are asked where an answer exists instead:
   the arguments are a path and its new contents. There is no text to classify, so the
   refusal cannot be wrong.
 - *what did the workspace do?* The effect layer: after a program call ends, one
-  `git status --porcelain` says which paths differ from the last look. A program cannot
-  write without the filesystem recording it, so this needs no opinion about the command.
+  `git status --porcelain` names the dirty paths and one `git hash-object --stdin-paths`
+  gives each a fingerprint of what it holds. A program cannot write without the
+  filesystem recording it, so this needs no opinion about the command.
 
 ## Mode
 
@@ -44,6 +45,13 @@ this repository (a `.dev` directory of 3.3 GB and a build `target/`), while
 list of tracked paths is nearly free and the process is the entire cost. A directory
 that is not a repository has no probe: the exit status says so, the look is `Blind`, and
 the chain ends. It never falls back to the walk.
+
+A look is two processes, not one. The status line says a path is dirty and never says what
+it holds, so a file a program rewrites twice prints the same line both times and the look
+calls it `Same` -- an edit nobody hears about. `git hash-object` reads only those files;
+it measured about 52 ms beside `git status --porcelain` here, so the cost is the second
+spawn and not the hashing. Both are off the turn: `after_job` spawns the look, and what
+it finds is news for the next step boundary.
 
 `GIT_OPTIONAL_LOCKS=0` is not tuning. `git status` takes the index lock unless it is
 told not to, which refreshes `.git/index` as a side effect of reading -- the next look

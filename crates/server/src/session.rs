@@ -1274,12 +1274,8 @@ impl SessionManager {
     }
 
     fn local_endpoint(&self) -> anyhow::Result<Endpoint> {
-        let program = self
-            .bash
-            .program
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("no bash available; set [tools.bash] program"))?;
-        Ok(Endpoint::local(program))
+        // The shell is the program's name: what a channel is called is what runs.
+        Ok(Endpoint::local(std::path::PathBuf::from("bash")))
     }
 
     /// Puts an existing session's workspace on `remote`, in `cwd`.

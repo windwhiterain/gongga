@@ -151,7 +151,7 @@ fn words_of(args: &Value) -> Result<Vec<String>, String> {
 /// What this server can start an entry with, from the configuration it resolved.
 pub fn programs(cfg: &crate::config::Config) -> ::skill::Programs {
     ::skill::Programs {
-        bash: cfg.bash.program.clone(),
+        bash: Some(std::path::PathBuf::from("bash")),
         python: cfg
             .python
             .program

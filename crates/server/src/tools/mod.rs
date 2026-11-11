@@ -238,6 +238,18 @@ pub trait Tool: Send + Sync {
     /// look its call takes when it ends. See `docs/notes/server-explore.md`.
     fn writes(&self) -> bool;
 
+    /// Whether a call of this tool runs a program of the caller's choosing.
+    ///
+    /// # Invariant
+    ///
+    /// Said beside [`Tool::writes`], by the tool that knows, never inferred from a name
+    /// held elsewhere: a rename then leaves one row answering `false` where the compiler
+    /// can see it, rather than a list that silently stops matching. See
+    /// `docs/notes/server-explore.md`.
+    fn program(&self) -> bool {
+        false
+    }
+
     /// Whether `background` is this tool's own work rather than the tunnel's.
     ///
     /// # Invariant
@@ -415,11 +427,18 @@ pub struct Specd {
     spec: spec::ToolSpec,
     /// The command the row names, which does the work.
     work: Box<dyn Cmd>,
+    /// Whether a call runs a program whose effects only a look can report.
+    program: bool,
 }
 
 impl Specd {
-    pub fn new(name: String, spec: spec::ToolSpec, work: Box<dyn Cmd>) -> Self {
-        Self { name, spec, work }
+    pub fn new(name: String, spec: spec::ToolSpec, work: Box<dyn Cmd>, program: bool) -> Self {
+        Self {
+            name,
+            spec,
+            work,
+            program,
+        }
     }
 }
 
@@ -460,6 +479,10 @@ impl Tool for Specd {
 
     fn writes(&self) -> bool {
         self.spec.writes
+    }
+
+    fn program(&self) -> bool {
+        self.program
     }
 
     fn handles_background(&self) -> bool {
@@ -636,9 +659,19 @@ impl ToolRegistry {
             // The tunnel's own arguments, in the words it words them once.
             let row = &with_tunnel_arguments(row, tunnel);
             match self.command(row) {
-                Ok(work) => self
-                    .tools
-                    .push(Arc::new(Specd::new(name.clone(), row.clone(), work))),
+                Ok(work) => {
+                    // A program row: a channel's shell, its interpreter, a skill's entry.
+                    let program = matches!(
+                        row.cmd.as_str(),
+                        "new" | "check" | "bash" | "remote_bash" | "skill"
+                    );
+                    self.tools.push(Arc::new(Specd::new(
+                        name.clone(),
+                        row.clone(),
+                        work,
+                        program,
+                    )))
+                }
                 Err(why) => tracing::warn!(
                     row = %name,
                     "`[tool.{name}]` is not carried: {why}"
@@ -860,9 +893,11 @@ impl ToolRegistry {
                 tunnel::Carried::Here => {}
             }
         }
+        // Asked before the call takes the tool: the answer is what the look needs.
+        let program = tool.program();
         let outcome = invoke(name, tool, args, ctx).await;
         // The call ended; the look is a task of its own, so nothing waits on it.
-        crate::explore::after_job(ctx, name);
+        crate::explore::after_job(ctx, name, program);
         outcome
     }
 

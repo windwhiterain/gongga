@@ -74,8 +74,6 @@ pub struct Args {
     pub bind: Option<String>,
     /// Model name. Overrides `[provider] model`.
     pub model: Option<String>,
-    /// Path to bash. Overrides `[tools.bash] program`.
-    pub bash: Option<PathBuf>,
     /// Home for the database, config, logs, jobs and lock; beats `[server] home`.
     pub home: Option<PathBuf>,
     /// Log filter, e.g. `gongga_server=debug`.
@@ -95,7 +93,6 @@ impl Default for Args {
             config: None,
             bind: None,
             model: None,
-            bash: None,
             home: None,
             log: "info".to_string(),
             log_format: LogFormat::Text,
@@ -165,9 +162,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         }
         if let Some(model) = &args.model {
             std::env::set_var("GONGGA_MODEL", model);
-        }
-        if let Some(bash) = &args.bash {
-            std::env::set_var("GONGGA_BASH", bash);
         }
     }
 
@@ -272,7 +266,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     shell_env.push(("PATH".to_string(), shell_command::path(&cfg.home)));
     let detached = DetachedRegistry::new(
         store.clone(),
-        cfg.bash.program.clone(),
+        None,
         cfg.home.join("detached"),
         shell_env.clone(),
     );
@@ -559,7 +553,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         model = %cfg.model.model_name,
         base_url = %cfg.model.base_url,
         context = ?cfg.model.context,
-        bash = ?cfg.bash.program,
         proxy = ?std::env::var("HTTPS_PROXY")
             .or_else(|_| std::env::var("https_proxy"))
             .or_else(|_| std::env::var("HTTP_PROXY"))
