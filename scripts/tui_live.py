@@ -684,6 +684,47 @@ def _child_environment(extra):
     return env
 
 
+def fake_roster(port, model):
+    """A roster whose providers all point at the stand-in, so both names place.
+
+    # Invariant
+
+    Every model this run can name is in the roster it hands the server: the one
+    the harness passes, and the one a session created without a model takes. A
+    server that cannot place a name warns and falls back to the machine's
+    default, and then the run bills a real provider and every `hi-from-fake` a
+    script waits for can never appear. See `docs/notes/server-config.md`.
+    """
+    provider, _, name = model.partition("/")
+
+    def block(provider_id, model_id):
+        return (
+            '[[provider]]\n'
+            'id = "%s"\n'
+            'name = "Stand-in"\n'
+            'key_env = "GONGGA_API_KEY"\n'
+            "\n"
+            "  [[provider.endpoint]]\n"
+            '  id = "openai"\n'
+            '  api = "openai-responses"\n'
+            '  base_url = "http://127.0.0.1:%d/v1"\n'
+            "\n"
+            "  [[provider.model]]\n"
+            '  id = "%s"\n'
+            '  name = "Stand-in"\n'
+            '  tier = "flash"\n'
+            "  context = 100000\n"
+            '  modalities = ["text"]\n'
+        ) % (provider_id, port, model_id)
+
+    blocks = [block(provider or "fake", name or "stream-model")]
+    # The default a session takes when the run names none: without it, creating
+    # one is refused before the stand-in is ever asked.
+    if (provider or "fake") != "deepseek-official":
+        blocks.append(block("deepseek-official", "deepseek-flash"))
+    return "\n".join(blocks)
+
+
 # ---------------------------------------------------------------------------
 # terminal grid
 # ---------------------------------------------------------------------------
@@ -1963,11 +2004,15 @@ class Stack:
         os.makedirs(self.options.home, exist_ok=True)
         self.report("content checkout: %s" % seed_ship_checkout(self.options.home))
         port = self.options.server_port or free_port("udp")
+        roster = os.path.join(self.run_dir, "roster.toml")
+        with open(roster, "w", encoding="utf-8") as handle:
+            handle.write(fake_roster(fake_port, self.options.model))
         environment = _child_environment(
             {
                 "GONGGA_BASE_URL": "http://127.0.0.1:%d/v1" % fake_port,
                 "GONGGA_MODEL": self.options.model,
                 "GONGGA_API_KEY": "fake-key-for-the-stand-in",
+                "GONGGA_PROVIDERS_CATALOG": roster,
             }
         )
         argv = [
