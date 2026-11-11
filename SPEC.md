@@ -7,13 +7,20 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - [server]: binary, define the cmd schema.
 - rpc: sending server cmd checked under schema.
   - [cli]: python.
-- [client]: binary, receive delta from server, validate at reconnect, update self state and render.
+- [client]: binary.
   - [tui]: binary.
 - [bundle]: binary, bundle server/cli/tui's binary, route the cmd.
   - `tui [--client_only]`: `bundle server` and connected to it, kill/exit will cancel the server it spawn.
     - `--client_only`: suppress auto spawn server.
   - `server (route to server: [--home <path>])`: extract server/cli into `<home>/bin/`, if previous binary exists and are running and version does not match, cancel server, skill cli, then replace.
 - [...]: more crates may be added, with the same naming and layout.
+
+## Client
+save a copy of the server states.
+- server send delta, client update.
+- validate against server, delete invalid states.
+- request only what is missing and need rendering.
+- granularity must be the finest.
 
 ## Server Client Connection
 - UDP.

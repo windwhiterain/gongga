@@ -97,6 +97,9 @@ fn built() -> Vec<(&'static str, PathBuf)> {
             "gongga-tui",
             "-p",
             "gongga-client",
+            // A channel's relay is its own package now, so the payload has to ask for it.
+            "-p",
+            "gongga-relay",
         ])
         .current_dir(Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../.."))
         .env("CARGO_TARGET_DIR", &target)
