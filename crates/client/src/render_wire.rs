@@ -33,6 +33,17 @@ pub enum RenderMessage {
     Layout {
         layout: Layout,
     },
+    /// The window's own cap and margin: why a block stops growing, and how much of
+    /// its width a box gives back.
+    ///
+    /// # Invariant
+    ///
+    /// Sent when it changes, and on the first sync after a front-end attaches: the
+    /// setting lives in the client, and the process that draws is another one.
+    Render {
+        block_size: usize,
+        box_edge: usize,
+    },
     Rewrite {
         window: String,
         key: String,

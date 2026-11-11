@@ -894,6 +894,14 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// The cap and margin the command layer last set: a block stops growing at
+    /// `block_size` rows (0 caps nothing), and a box gives `box_edge` columns back.
+    pub fn set_render(&mut self, block_size: usize, box_edge: usize) {
+        self.screen.panes.set_block_size(block_size);
+        self.screen.panes.set_box_edge(box_edge);
+        self.dirty = true;
+    }
+
     /// A session stopped: its turn ended, and the window says so.
     ///
     /// # Invariant
