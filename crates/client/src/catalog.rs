@@ -8,7 +8,11 @@ use std::sync::{Arc, RwLock};
 
 use crate::commands::installed_skills;
 use crate::complete::{Candidate, Completer, Offered, token_bounds};
-use protocol::{ArgSpec, Args, CommandSpec, CompletionSource, ModelInfo, Reference, SessionInfo};
+use crate::json_value::{self, Read};
+use protocol::{
+    ArgSpec, Args, CommandSpec, CompletionSource, ModelInfo, Reference, SessionInfo, StructField,
+    StructSchema,
+};
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
@@ -437,11 +441,7 @@ impl Completer for Catalog {
         // See `docs/notes/cli-catalog.md`.
         let brief = !line.trim_start().starts_with('/');
         // A message is prose, and `--session` inside prose is a word of it.
-        let words: Vec<String> = if brief {
-            Vec::new()
-        } else {
-            shell_words::split(line).unwrap_or_default()
-        };
+        let words: Vec<String> = if brief { Vec::new() } else { words_of(line) };
         let snapshot = self.snapshot(&words);
         let all = &snapshot.all;
         let ctx = snapshot.ctx(self);
@@ -499,6 +499,11 @@ impl Completer for Catalog {
         let Some(spec) = cmd.and_then(|c| all.iter().find(|s| s.name == c)) else {
             return Offered::default();
         };
+        // A structured value completes by its own rules, not the ones below.
+        // See `docs/notes/client-complete.md`.
+        if let Some(offered) = structured(&ctx, spec, line, cursor, &words) {
+            return offered;
+        }
         // A word completes the flag's value or guesses the next parameter.
         // See `docs/notes/cli-catalog.md`.
         let flag_index = if token.is_empty() {
@@ -698,12 +703,42 @@ fn resolve(
     words: &[String],
     depth: u8,
 ) -> Vec<Candidate> {
-    if let Some(accepts) = &arg.accepts {
-        let values = accepted_values(accepts, model_named(ctx, words).as_deref());
-        let label = arg.value_hint.as_deref().unwrap_or("value");
+    let model = model_named(ctx, words);
+    published(
+        &arg.completions,
+        arg.accepts.as_ref(),
+        arg.value_hint.as_deref().unwrap_or("value"),
+        token,
+        ctx,
+        words,
+        model.as_deref(),
+        depth,
+    )
+}
+
+/// One value's completion, from what the catalog publishes about it.
+///
+/// # Invariant
+///
+/// An argument and a field of a structured value answer the one question, so
+/// they read one list: the model is a parameter because the caller knows which
+/// one the value belongs to, and a field's model is the one the object being
+/// typed names. See `docs/notes/client-complete.md`.
+fn published(
+    completions: &CompletionSource,
+    accepts: Option<&protocol::Accepts>,
+    label: &str,
+    token: &str,
+    ctx: &Ctx,
+    words: &[String],
+    model: Option<&str>,
+    depth: u8,
+) -> Vec<Candidate> {
+    if let Some(accepts) = accepts {
+        let values = accepted_values(accepts, model);
         return pick(values.iter().map(String::as_str), token, label);
     }
-    match &arg.completions {
+    match completions {
         CompletionSource::None => Vec::new(),
         CompletionSource::Sessions => pick(
             ctx.sessions.iter().map(|s| s.name.as_str()),
@@ -777,7 +812,16 @@ fn resolve(
                 .find(|a| a.required)
                 .or_else(|| shaped.first())
             {
-                Some(arg) => resolve(arg, token, ctx, words, depth + 1),
+                Some(arg) => published(
+                    &arg.completions,
+                    arg.accepts.as_ref(),
+                    arg.value_hint.as_deref().unwrap_or("value"),
+                    token,
+                    ctx,
+                    words,
+                    model,
+                    depth + 1,
+                ),
                 None => Vec::new(),
             }
         }
@@ -1076,4 +1120,347 @@ fn directory(base: &Path, typed: &str) -> PathBuf {
     } else {
         base.join(path)
     }
+}
+
+/// The line's words as the shell splits them, with a quote still open closed
+/// first.
+///
+/// # Invariant
+///
+/// A value being typed is unfinished by definition -- that is what the popup is
+/// for -- and an unclosed quote makes the whole line unsplittable. What the rest
+/// of the completion needs from the words is which command, session and machine
+/// the line names, and those are behind the quote, not inside it.
+fn words_of(line: &str) -> Vec<String> {
+    if let Ok(words) = shell_words::split(line) {
+        return words;
+    }
+    let Some(quote) = open_quote(line) else {
+        return Vec::new();
+    };
+    let mut closed = line.to_string();
+    closed.push(quote);
+    shell_words::split(&closed).unwrap_or_default()
+}
+
+/// The quote the line leaves open, if any.
+///
+/// # Invariant
+///
+/// The shell's own two kinds, and an escape read the way it reads one: a value
+/// still being typed is not a licence to guess which quote was meant.
+fn open_quote(line: &str) -> Option<char> {
+    let mut open = None;
+    let mut escaped = false;
+    for c in line.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match (open, c) {
+            (None, '\\') | (Some('"'), '\\') => escaped = true,
+            (None, '\'') => open = Some('\''),
+            (None, '"') => open = Some('"'),
+            (Some('\''), '\'') | (Some('"'), '"') => open = None,
+            _ => {}
+        }
+    }
+    open
+}
+
+/// The structured argument whose value the cursor is inside, and the span of the
+/// text that value carries.
+///
+/// # Invariant
+///
+/// The value is the text between the quote that makes it one shell word and the
+/// closing one: an unquoted JSON object reaches the server as prose, since the
+/// shell split strips its quotes, so a value this can read is a quoted one. A
+/// `--` that names no argument of this command is not a flag, so a quoted value
+/// may spell one.
+fn structured_value<'a>(
+    spec: &'a CommandSpec,
+    line: &str,
+    cursor: usize,
+) -> Option<(&'a ArgSpec, usize, usize)> {
+    let mut found = None;
+    let mut from = 0;
+    while let Some(open) = line[from..].find("--") {
+        let start = from + open;
+        from = start + 2;
+        // A flag starts a word: `a--b` is a value, not one.
+        if !line[..start]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace)
+        {
+            continue;
+        }
+        let name_end = line[start + 2..]
+            .find(|c: char| c.is_whitespace() || c == '=')
+            .map(|at| start + 2 + at)
+            .unwrap_or(line.len());
+        let name = &line[start + 2..name_end];
+        let Some(arg) = spec
+            .args
+            .iter()
+            .find(|arg| arg.name == name && arg.structure.is_some())
+        else {
+            continue;
+        };
+        let mut value = name_end;
+        if line[value..].starts_with('=') {
+            value += 1;
+        }
+        while let Some(next) = line[value..].chars().next().filter(|c| c.is_whitespace()) {
+            value += next.len_utf8();
+        }
+        if !line[value..].starts_with('\'') {
+            continue;
+        }
+        let text = value + 1;
+        let end = line[text..]
+            .find('\'')
+            .map(|at| text + at)
+            .unwrap_or(line.len());
+        if cursor < text || cursor > end {
+            continue;
+        }
+        found = Some((arg, text, end));
+    }
+    found
+}
+
+/// Completes inside an argument that publishes a structure: a JSON object's
+/// field names, and the values they take.
+///
+/// # Invariant
+///
+/// A candidate replaces the JSON token under the cursor and nothing else, and it
+/// replaces all of it -- from the opening quote to the closing one -- so what it
+/// inserts is a whole token and the rest of the object is left as it was. See
+/// `docs/notes/client-complete.md`.
+fn structured(
+    ctx: &Ctx,
+    spec: &CommandSpec,
+    line: &str,
+    cursor: usize,
+    words: &[String],
+) -> Option<Offered> {
+    let (arg, from, to) = structured_value(spec, line, cursor)?;
+    let schema = arg.structure.as_ref()?;
+    let text = &line[from..to];
+    let at = cursor.saturating_sub(from).min(text.len());
+    // An unopened object: its names are offered with the brace that starts it.
+    if text.trim().is_empty() {
+        return Some(Offered {
+            subject: Some(format!("--{}", arg.name)),
+            candidates: keys(schema, "", "{", &[]),
+            start: Some(cursor),
+            end: Some(cursor),
+            ..Offered::default()
+        });
+    }
+    let spot = json_value::spot(text, at)?;
+    let token = (from + spot.start)..(from + spot.end);
+    match spot.typing {
+        json_value::Typing::Key => {
+            let object = schema_at(schema, &spot.path)?;
+            Some(Offered {
+                subject: Some(dotted(&arg.name, &spot.path)),
+                candidates: keys(object, &spot.fragment, "", &spot.fields),
+                start: Some(token.start),
+                end: Some(token.end),
+                ..Offered::default()
+            })
+        }
+        json_value::Typing::Value => {
+            let (name, parent) = spot.path.split_last()?;
+            let object = schema_at(schema, parent)?;
+            let field = object.fields.iter().find(|field| &field.name == name)?;
+            // An object field is entered by its name, which wrote the brace.
+            if field.object.is_some() {
+                return None;
+            }
+            Some(Offered {
+                subject: Some(dotted(&arg.name, &spot.path)),
+                candidates: values(field, &spot, ctx, words),
+                start: Some(token.start),
+                end: Some(token.end),
+                ..Offered::default()
+            })
+        }
+    }
+}
+
+/// The object schema at a path of field names, or `None` when the path leaves
+/// the shape the catalog published.
+fn schema_at<'a>(schema: &'a StructSchema, path: &[String]) -> Option<&'a StructSchema> {
+    let mut at = schema;
+    for name in path {
+        at = at
+            .fields
+            .iter()
+            .find(|field| &field.name == name)?
+            .object
+            .as_deref()?;
+    }
+    Some(at)
+}
+
+/// What the popup asks for: the argument, then the fields down to the token.
+fn dotted(arg: &str, path: &[String]) -> String {
+    let mut out = format!("--{arg}");
+    for name in path {
+        out.push('.');
+        out.push_str(name);
+    }
+    out
+}
+
+/// One object's field names, as the popup offers them.
+///
+/// # Invariant
+///
+/// A name is inserted with the colon that ends it, and with the brace that opens
+/// its place when the field holds an object -- what follows a field name is not
+/// in doubt, and a name alone is not JSON. A field the object already states is
+/// not offered again: a repeated key is not a second value, and listing it hides
+/// the names still missing.
+fn keys(
+    object: &StructSchema,
+    fragment: &str,
+    prefix: &str,
+    written: &[(String, Read)],
+) -> Vec<Candidate> {
+    let mut fields: Vec<&StructField> = object
+        .fields
+        .iter()
+        .filter(|field| field.name.contains(fragment))
+        .filter(|field| !written.iter().any(|(name, _)| name == &field.name))
+        .collect();
+    // A prefix match is what the operator is most likely typing; stable, so the
+    // schema's order decides between equals.
+    fields.sort_by_key(|field| !field.name.starts_with(fragment));
+    fields
+        .into_iter()
+        .map(|field| Candidate {
+            insert: format!(
+                "{prefix}\"{}\":{}",
+                field.name,
+                if field.object.is_some() { "{" } else { "" }
+            ),
+            detail: field.description.clone(),
+            space: false,
+        })
+        .collect()
+}
+
+/// The values one leaf field of a structured object offers.
+///
+/// # Invariant
+///
+/// A model is read from the object being typed before the line is asked, because
+/// that is the model this config really names: `accepts` is keyed by model, and
+/// another model's levels are a list the server would refuse.
+fn values(
+    field: &StructField,
+    spot: &json_value::Spot,
+    ctx: &Ctx,
+    words: &[String],
+) -> Vec<Candidate> {
+    let model = named_model(&spot.fields).or_else(|| model_named(ctx, words));
+    let hint = field.value_hint.as_deref().unwrap_or("value");
+    let offered = published(
+        &field.source,
+        field.accepts.as_ref(),
+        hint,
+        &spot.fragment,
+        ctx,
+        words,
+        model.as_deref(),
+        0,
+    );
+    offered
+        .into_iter()
+        .filter_map(|candidate| {
+            let insert = match field.model_ref {
+                true => model_value(&candidate.insert)?,
+                false => json_token(&candidate.insert),
+            };
+            Some(Candidate {
+                insert,
+                detail: candidate.detail,
+                space: false,
+            })
+        })
+        .collect()
+}
+
+/// The model a partly typed config names, as the roster spells it.
+fn named_model(fields: &[(String, Read)]) -> Option<String> {
+    fields
+        .iter()
+        .find(|(name, _)| name == "model")
+        .and_then(|(_, read)| spelled(read))
+}
+
+/// What a model field reads as: the roster's `<provider>/<model>`, or the two
+/// halves SPEC gives it.
+fn spelled(read: &Read) -> Option<String> {
+    let half = |name: &str| match fields_of(read).iter().find(|(field, _)| field == name) {
+        Some((_, Read::Text(text))) if !text.is_empty() => Some(text.clone()),
+        _ => None,
+    };
+    match read {
+        Read::Text(text) => (!text.is_empty()).then(|| text.clone()),
+        Read::Object(_) => match (half("provider"), half("model")) {
+            (Some(provider), Some(model)) => Some(format!("{provider}/{model}")),
+            (None, Some(model)) => Some(model),
+            _ => None,
+        },
+    }
+}
+
+/// The fields of a read object; empty for a leaf.
+fn fields_of(read: &Read) -> &[(String, Read)] {
+    match read {
+        Read::Object(fields) => fields,
+        Read::Text(_) => &[],
+    }
+}
+
+/// A model as the object SPEC spells `Model := {provider, model}`.
+fn model_value(spelled: &str) -> Option<String> {
+    if spelled.is_empty() {
+        return None;
+    }
+    let value = match spelled.split_once('/') {
+        Some((provider, model)) => serde_json::json!({ "provider": provider, "model": model }),
+        None => serde_json::json!({ "model": spelled }),
+    };
+    Some(value.to_string())
+}
+
+/// The text as a JSON value: a literal or a number stands as itself, and
+/// anything else is a string.
+///
+/// # Invariant
+///
+/// What a candidate carries is the value, not the spelling of it, so quoting is
+/// this function's decision and not the publisher's: `keep_alive` takes `true`
+/// and `ctx_limit` takes `"70%"`, from one list of texts.
+fn json_token(text: &str) -> String {
+    if is_json_literal(text) {
+        return text.to_string();
+    }
+    serde_json::Value::String(text.to_string()).to_string()
+}
+
+/// Whether the text reads back as itself without quotes.
+fn is_json_literal(text: &str) -> bool {
+    matches!(
+        serde_json::from_str::<serde_json::Value>(text),
+        Ok(serde_json::Value::Bool(_) | serde_json::Value::Null | serde_json::Value::Number(_))
+    )
 }

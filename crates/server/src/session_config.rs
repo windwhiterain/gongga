@@ -145,22 +145,34 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
     };
     let thinking = StructField {
         accepts: crate::providers::level_accepts(),
-        ..leaf("thinking", "How hard the model thinks.", CompletionSource::None, "level")
+        ..leaf(
+            "thinking",
+            "How hard the model thinks.",
+            CompletionSource::None,
+            "level",
+        )
     };
     let ctx_limit = leaf(
         "ctx_limit",
         "The context level for a Context notice.",
         CompletionSource::Static(
-            ["0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            [
+                "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         ),
         "n%",
     );
     let cache_tier = StructField {
         accepts: crate::providers::tier_accepts(),
-        ..leaf("cache_tier", "The cache tier every request sends.", CompletionSource::None, "name")
+        ..leaf(
+            "cache_tier",
+            "The cache tier every request sends.",
+            CompletionSource::None,
+            "name",
+        )
     };
     let remote = leaf(
         "remote",
@@ -168,7 +180,12 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         CompletionSource::Static(remote_values),
         "name",
     );
-    let cwd = leaf("cwd", "The session's directory.", CompletionSource::Paths, "path");
+    let cwd = leaf(
+        "cwd",
+        "The session's directory.",
+        CompletionSource::Paths,
+        "path",
+    );
     let keep_alive = leaf(
         "keep_alive",
         "Whether a periodic notice keeps the prefix warm.",

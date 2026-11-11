@@ -41,6 +41,9 @@ pub struct Offered {
     /// Where the range begins, when it is not the token's start: a reference sits
     /// inside a word (`看下@file(x)`).
     pub start: Option<usize>,
+    /// Where the range ends, when not the token's end: a JSON value ends at its
+    /// own quotes.
+    pub end: Option<usize>,
 }
 
 /// The open completion popup: which token is replaced, and the options.

@@ -5,6 +5,7 @@
 pub mod catalog;
 pub mod commands;
 pub mod complete;
+pub mod json_value;
 pub mod render_wire;
 pub mod runtime;
 pub mod server;

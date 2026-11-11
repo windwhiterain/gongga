@@ -1966,7 +1966,8 @@ fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Com
     Some(Completion {
         // A reference is replaced from its own `@`, which may sit inside the word.
         start: offered.start.unwrap_or(start),
-        end,
+        // A JSON value ends at its own token, not at the whitespace around it.
+        end: offered.end.unwrap_or(end),
         subject: offered.subject,
         candidates,
         selected: 0,
