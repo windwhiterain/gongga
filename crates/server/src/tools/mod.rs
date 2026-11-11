@@ -657,7 +657,10 @@ impl ToolRegistry {
             // into the command layer, which would only meet this same row again.
             "skill" => {
                 let Some(settings) = self.settings.skill.as_ref() else {
-                    return Err("`skill` is not carried: this build was given no skill settings".to_string());
+                    return Err(
+                        "`skill` is not carried: this build was given no skill settings"
+                            .to_string(),
+                    );
                 };
                 Box::new(skill::SkillTool {
                     programs: settings.programs.clone(),

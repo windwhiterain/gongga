@@ -377,7 +377,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             description: "Create a session under a name nobody holds, and refuse the call \
                       when one already does: the verb a caller uses to start its own."
                 .into(),
-            args: session_config_args(remotes)
+            args: session_config_args()
                 .into_iter()
                 .filter(|argument| argument.name != "must_create")
                 .collect(),
@@ -389,7 +389,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 "Create the session if it does not exist, and apply the given settings to \
                       it. Settings omitted now are left as they are."
                     .into(),
-            args: session_config_args(remotes),
+            args: session_config_args(),
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -1054,10 +1054,9 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
 ///
 /// One list, because `new_session` and `set_session` differ in one thing only -- whether
 /// a name already taken is refused or joined.
-fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
+fn session_config_args() -> Vec<protocol::ArgSpec> {
     vec![
-        // SPEC: `--id <session>(sticky)`. A sticky entry keys on the
-        // kind `session`, wherever the argument appears.
+        // SPEC: `--id <session>(sticky)`. A sticky entry keys on the kind `session`.
         sticky_arg(
             kind_arg(
                 "id",
@@ -1069,135 +1068,25 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
             ),
             true,
         ),
-        // SPEC: `[--model <model>](initial: none)` -- omitted keeps
-        // the session's model; a new one takes the configured default.
-        kind_arg(
-            "model",
-            "The model to run this session's turns on, as <provider>/<model \
-                 name>. Omit to keep the session's model, or to take the \
-                 configured default on a new one.",
+        // SPEC: `config: SessionConfig` -- the nested settings, one JSON object.
+        arg(
+            "config",
+            "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (remote, cwd), and keep_alive. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. remote and cache_tier take none to clear.",
             false,
-            "model",
-            Some("model"),
-            // The greeting's model table, which is the same list with the
-            // levels each model takes.
-            CompletionSource::Models,
-        ),
-        kind_arg(
-            "thinking",
-            "How hard the model should think, in the roster's spelling (`low`, \
-                 `high`, `max`, ...): what completes is exactly what the model this \
-                 session runs on takes. `default` names the level a model that is \
-                 told nothing uses, clearing one set earlier.",
-            false,
-            "thinking",
-            Some("level"),
-            // Nothing to offer through a source: the values are what the
-            // roster lets through, published as `accepts` below.
+            Some("json"),
             CompletionSource::None,
-        )
-        .accepting_when(crate::providers::level_accepts)
-        .following("model"),
-        kind_arg(
-            "ctx_limit",
-            "The context level at which this session gets a `Context notice`, \
-                 e.g. `30%`. 0 never notices. Initial: a 70% share of the \
-                 model's context window, or the server's token budget when the \
-                 window is unknown.",
-            false,
-            "ctx_limit",
-            Some("n%"),
-            // Any 0-100 is accepted; the list is the points worth
-            // offering, not the ones allowed.
-            CompletionSource::Static(
-                [
-                    "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
-                ]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            ),
-        )
-        .following("model"),
-        kind_arg(
-            "cache_tier",
-            "The cache tier every request of this session sends, in the model's \
-                 roster spelling. Omit to keep what the session has; name `none` to \
-                 send no tier at all, which is the only way to say so on a model that \
-                 declares none. A session that never named one sends the shortest tier \
-                 its model declares.",
-            false,
-            "cache_tier",
-            Some("name"),
-            CompletionSource::None,
-        )
-        .accepting_when(crate::providers::tier_accepts)
-        .following("model"),
-        kind_arg(
-            "keep_alive",
-            "Whether a periodic `(time notice: ...)` message keeps this \
-                 session's prefix warm after every turn. `false` by default; \
-                 `true` keeps sending one per tier window with no last one.",
-            false,
-            "cache_keepalive",
-            Some("true|false"),
-            CompletionSource::Static(vec!["true".into(), "false".into()]),
         ),
         kind_arg(
             "mode",
-            "What this session may do to the workspace. `work` (the default)                      writes as it likes; `explore` refuses `write_file` and `replace`                      outright and tells the session which paths a `bash`, `exec`,                      `python` or `skill` call changed when it ended. Not a jail: a                      program that writes is told, not stopped, so read the changed                      paths and put them back before answering.",
+            "What this session may do to the workspace. work (the default) writes as it likes; explore refuses write_file and replace outright and tells the session which paths a bash, exec, python or skill call changed when it ended. Not a jail: a program that writes is told, not stopped, so read the changed paths and put them back before answering.",
             false,
             "mode",
             Some("work|explore"),
             CompletionSource::Static(vec!["work".into(), "explore".into()]),
         ),
-        // SPEC: `[--remote <remote>](initial: none)`.
-        kind_arg(
-            "remote",
-            "Which machine this session's shells run on, named by a `[remotes.<name>]` \
-                 table in this machine's `~/.agents/remotes.toml`. Omit for this \
-                 machine, and name `none` to move a session back here. Naming a \
-                 different one moves an existing session: every shell on the old \
-                 machine is ended first, and a move asked for during a turn waits for \
-                 that turn to end. A session with shells somewhere else reads its \
-                 paths and skills there, so what completes for it is what it can \
-                 open.",
-            false,
-            "remote",
-            Some("name"),
-            // Exactly the tables this server was started with: `local` is
-            // what omitting the flag means, and naming it is refused.
-            CompletionSource::Static({
-                // `none` first: it is the value that comes home, and the only one
-                // that is not a table in the config.
-                let mut names = vec!["none".to_string()];
-                names.extend(remotes.to_vec());
-                names
-            }),
-        ),
-        // SPEC: `[--cwd <cwd>](initial: ".")` -- a session that names
-        // none stands where the server stands.
-        kind_arg(
-            "cwd",
-            "Working directory for the session: where a new one is created, and \
-                 where an existing one is moved to. It must be a directory that \
-                 exists on the machine it names -- this one, or the remote's -- or \
-                 the command is refused; completion reads that machine's \
-                 directories. Omit for the server's own directory.",
-            false,
-            "cwd",
-            Some("path"),
-            // The client lists the filesystem it sits on, which is a hint only.
-            CompletionSource::Paths,
-        )
-        // SPEC: `--cwd` is `sticky to remote` -- a directory belongs to the
-        // machine it exists on.
-        .following("remote"),
         arg(
             "must_create",
-            "`true` refuses the command unless the session does not exist yet, so a \
-                 caller that means to start its own session cannot join another one's \
-                 transcript by picking a name that was already taken.",
+            "true refuses the command unless the session does not exist yet, so a caller that means to start its own session cannot join another one's transcript by picking a name that was already taken.",
             false,
             Some("true|false"),
             CompletionSource::Static(
@@ -1258,6 +1147,12 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
     match name {
         "send_message" => send_message(d, args).await,
         "set_session" => set_session(d, args).await,
+        // SPEC `new_session` is `set_session` that refuses a name already taken.
+        "new_session" => {
+            let mut owned = args.clone();
+            owned.insert("must_create".to_string(), "true".to_string());
+            set_session(d, &owned).await
+        }
         "del_session" => del_session(d, args).await,
         "list_paths" => list_paths(d, args).await,
         "interrupt_session" => interrupt_session(d, args).await,
@@ -1485,6 +1380,15 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
 }
 
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
+    // SPEC's nested `config` flattens into the settings the flat flags name, so
+    // one body applies them either way.
+    let mut owned = args.clone();
+    if let Some(raw) = owned.get("config").cloned() {
+        if let Err(refusal) = crate::session_config::flatten(&raw, &mut owned) {
+            return Outcome::err(refusal);
+        }
+    }
+    let args = &owned;
     let name = args["id"].clone();
     // A leading `@` is the harness's own namespace: a name a person could take
     // is a name the harness cannot trust.

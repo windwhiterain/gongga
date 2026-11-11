@@ -602,7 +602,10 @@ impl Agent {
         ));
         // Where the conversation's references stand now, planned once, for the one
         // request that carries it.
-        let (index, rooted) = match self.index_of(id, name, model, &here, &home, source, remote).await {
+        let (index, rooted) = match self
+            .index_of(id, name, model, &here, &home, source, remote)
+            .await
+        {
             Some((index, rooted)) => (Some(index), rooted),
             None => (None, Vec::new()),
         };
@@ -856,8 +859,11 @@ impl Agent {
             .entries
             .iter()
             .map(|(spelling, text)| {
-                format!("{spelling} ({})
-{text}", crate::meta::machine_note(spelling, source, remote))
+                format!(
+                    "{spelling} ({})
+{text}",
+                    crate::meta::machine_note(spelling, source, remote)
+                )
             })
             .collect::<Vec<_>>()
             .join("\n\n");

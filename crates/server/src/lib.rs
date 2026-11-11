@@ -37,6 +37,7 @@ pub mod remote;
 pub mod remotes;
 mod script;
 mod session;
+mod session_config;
 mod shell_command;
 mod ship;
 mod signal;
