@@ -1,12 +1,13 @@
-"""The command line, in Python: one Cmd per process.
+"""The command line, in Python: one server Cmd per process.
 
     gongga_cli.py '{"name":"<cmd>","args":{...}}'
 
-SPEC's `Cmd := {name: str, args: dict[str, any]}`: the CLI sends one Cmd to the
-server, checked under its schema, and prints what came back. There is no
-command-line flag parsing: the command and its arguments are the JSON object. The
-server is the environment's (`GONGGA_HOME` / `GONGGA_SERVER` / `GONGGA_KEY`), or the
-global `--home` / `--server` / `--key` flags ahead of the JSON.
+SPEC's `Cmd := {name: str, args: dict[str, any]}`: the rpc layer sends one server
+Cmd, checked under the server's schema, and prints what came back. There is no
+command-line flag parsing and no client command here: `set_sticky`, `set_render`,
+`connect_server`, `serve` are the client's own (SPEC `## Client Cmd`), not a server's
+answer. The server is the environment's (`GONGGA_HOME` / `GONGGA_SERVER` /
+`GONGGA_KEY`), or the global `--home` / `--server` / `--key` flags ahead of the JSON.
 
 Events go out one per line as JSON, in the order the server sent them. The exit
 status is the command's: 0 ran, 1 the server refused, 2 the line itself was wrong,
@@ -17,7 +18,6 @@ status is the command's: 0 ran, 1 the server refused, 2 the line itself was wron
 import json
 import os
 import re
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -68,27 +68,6 @@ def globals_of(words):
     return settings, words[i:]
 
 
-def home_of():
-    """This home, as the words and the environment spell it."""
-    return native(os.environ.get("GONGGA_HOME") or os.path.join(os.path.expanduser("~"), ".gongga"))
-
-
-def serve(args):
-    """SPEC's `serve`: hand the process to the server. args: {port, home?}."""
-    port = args.get("port")
-    if port is None:
-        print("gongga-cli: serve needs a port", file=sys.stderr)
-        return 2
-    if args.get("home"):
-        os.environ["GONGGA_HOME"] = native(str(args["home"]))
-    home = home_of()
-    program = os.path.join(home, "bin", "gongga-server" + (".exe" if os.name == "nt" else ""))
-    if not os.path.isfile(program):
-        print(f"gongga-cli: no server at {program}", file=sys.stderr)
-        return 3
-    return subprocess.run([program, "--home", home, "--bind", f"127.0.0.1:{port}"]).returncode
-
-
 def dial():
     """The connection, or the reason there is none, said as this program's own words."""
     try:
@@ -124,8 +103,6 @@ def main(argv):
     if not isinstance(args, dict):
         print('gongga-cli: "args" must be an object', file=sys.stderr)
         return 2
-    if name == "serve":
-        return serve(args)
     client = dial()
     if client is None:
         return 3
