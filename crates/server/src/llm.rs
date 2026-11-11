@@ -1108,16 +1108,12 @@ async fn read_stream_inner(
     let request = request.body(reqwest::Body::wrap_stream(body));
 
     let response = match tokio::select! {
-        // Nothing else listens to the token, so a stop waited out the silence instead.
+        // Nothing else listens to the token: a stop
+        // is `interrupt_session`, not a refusal. See docs/notes/server-monitor.md.
         _ = cancel.cancelled() => {
             probe.outcome("cancelled");
             tracing::info!(elapsed = ?started.elapsed(), "model request: cancelled before headers");
-            let _ = tx
-                .send(LlmEvent::Failed {
-                    message: "the server stopped waiting for this answer".to_string(),
-                    retryable: false,
-                })
-                .await;
+            let _ = tx.send(LlmEvent::Cancelled).await;
             return;
         }
         sent = tokio::time::timeout(headers_timeout, request.send()) => sent,
