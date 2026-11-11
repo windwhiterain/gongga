@@ -473,10 +473,14 @@ pending row instead of leaving it) and `mark_interrupted` (so a window is told
 token ends, it returns what it has, and the sentence is its own -- see
 `docs/notes/server-tools-mod.md`.
 
-The inbox is not the turn's to take: a message queued while the turn ran survives
-the interrupt, and `nudge_inboxes` starts a turn for it -- the same path a turn that
-ends first takes. A queued message is received input, and everything received must
-be saved to context, so no stop but a delete may drop it.
+The inbox is not the turn's to take: a message queued while the turn ran is folded
+into the transcript as the interrupted turn ends -- `turn_inner` delivers it while the
+gate is still held, after the interrupted answer's row. So it is saved to context and
+`nudge_inboxes` finds nothing to wake a fresh turn for: an interrupt stops the loop, it
+does not owe a new one. (A turn that *ends normally* with a message still pending is the
+other case: there `nudge_inboxes` does start a turn.) A queued message is received input,
+and everything received must be saved to context, so no stop but a delete may drop it.
+A `cancel` owes the turn to the next start, so it leaves the inbox pending instead.
 
 ## cancel
 

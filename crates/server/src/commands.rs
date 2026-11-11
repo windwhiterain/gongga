@@ -3010,10 +3010,15 @@ fn interrupt(d: &Dispatch, name: &str, why: Stop) -> (bool, usize) {
     let dropped = match why {
         Stop::Delete => d.store.clear_pending_tasks(name).unwrap_or(0),
         _ if was_busy => 0,
-        _ => d
-            .store
-            .clear_pending_tasks_except(name, "inject")
-            .unwrap_or(0),
+        _ => {
+            // An idle interrupt has no turn to fold the inbox in; save it to context here.
+            if why == Stop::Interrupt {
+                d.agent.deliver_inbox(session.id(), name);
+            }
+            d.store
+                .clear_pending_tasks_except(name, "inject")
+                .unwrap_or(0)
+        }
     };
     (was_busy, dropped)
 }

@@ -328,6 +328,10 @@ impl Agent {
             step = step.wrapping_add(1);
         };
 
+        // Interrupt: fold the inbox into context while the gate is held, so nudge finds nothing to wake.
+        if matches!(outcome.0, TurnOutcome::Cancelled) && session.interrupted() {
+            self.deliver_inbox(id, &name);
+        }
         tracing::info!(session = %name, outcome = ?outcome.0, elapsed = ?started.elapsed(), "turn end");
         outcome
     }
@@ -422,7 +426,7 @@ impl Agent {
     }
 
     /// Moves the session's inbox into the transcript in one durable transaction.
-    fn deliver_inbox(&self, id: i64, name: &str) -> usize {
+    pub(crate) fn deliver_inbox(&self, id: i64, name: &str) -> usize {
         match self.store.deliver_pending(id, name) {
             // `waited` is the "no answer yet" number: a message written mid-step lands
             // only here.
