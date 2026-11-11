@@ -254,6 +254,19 @@ pub fn spelling(mention: &Mention) -> String {
     format!("@{}({})", mention.kind.name(), mention.value)
 }
 
+/// The machine a reference's content stands on, said beside its spelling in the
+/// index. A skill is always the server's own; a file or picture is read where the
+/// message was written, so a remote session's are the peer's.
+pub fn machine_note(spelling: &str, source: Source<'_>, remote: Option<&str>) -> String {
+    let server = matches!(Reference::of_prefix(spelling), Some(Reference::Skill))
+        || source.machine() == crate::session::Machine::Local;
+    if server {
+        "on the server".to_string()
+    } else {
+        format!("on remote {}", remote.unwrap_or("the peer"))
+    }
+}
+
 /// What one spelling stands for, or nothing when this build cannot read it.
 ///
 /// # Invariant

@@ -602,7 +602,7 @@ impl Agent {
         ));
         // Where the conversation's references stand now, planned once, for the one
         // request that carries it.
-        let (index, rooted) = match self.index_of(id, name, model, &here, &home, source).await {
+        let (index, rooted) = match self.index_of(id, name, model, &here, &home, source, remote).await {
             Some((index, rooted)) => (Some(index), rooted),
             None => (None, Vec::new()),
         };
@@ -824,6 +824,7 @@ impl Agent {
         owner: &str,
         home: &std::path::Path,
         source: crate::meta::Source<'_>,
+        remote: Option<&str>,
     ) -> Option<(String, Vec<String>)> {
         // The queue as well as the transcript: an early message left its `@file(...)`
         // mentions for this row to index.
@@ -854,7 +855,10 @@ impl Agent {
         let body = planned
             .entries
             .iter()
-            .map(|(spelling, text)| format!("{spelling}\n{text}"))
+            .map(|(spelling, text)| {
+                format!("{spelling} ({})
+{text}", crate::meta::machine_note(spelling, source, remote))
+            })
             .collect::<Vec<_>>()
             .join("\n\n");
         let prompts = crate::prompts::shared();
