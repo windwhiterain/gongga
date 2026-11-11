@@ -14,6 +14,17 @@ pub struct Candidate {
     /// Whether a space follows the insertion; false for a directory, so Tab
     /// descends into it.
     pub space: bool,
+    /// Where the caret lands, in bytes from the insertion's start; `None` is its
+    /// end.
+    ///
+    /// # Invariant
+    ///
+    /// A candidate that opens something closes it too, and the caret goes
+    /// *inside* what it opened: `{"model_config":{}` leaves the caret between
+    /// the braces, so the next completion fills the object instead of trailing
+    /// after it.
+    #[serde(default)]
+    pub cursor: Option<usize>,
 }
 
 impl Candidate {
@@ -23,6 +34,7 @@ impl Candidate {
             insert: insert.into(),
             detail: detail.into(),
             space: true,
+            cursor: None,
         }
     }
 }

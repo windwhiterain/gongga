@@ -47,6 +47,16 @@ pub struct Spot {
     /// The fields of the enclosing object that are already written, for the
     /// values that depend on a sibling.
     pub fields: Vec<(String, Read)>,
+    /// How many objects enclose the token.
+    pub open: usize,
+    /// How many closers already stand after it, so what a candidate owes is
+    /// `open - after`. See `Candidate::cursor`.
+    ///
+    /// # Invariant
+    ///
+    /// Counted from the token's end, outside strings only: an operator may have
+    /// written the braces already, and writing them twice is not balanced.
+    pub after: usize,
 }
 
 /// One object being read.
@@ -271,6 +281,49 @@ fn place(
     value_string: bool,
     quote_at: usize,
 ) -> Option<Spot> {
+    let mut spot = place_token(text, cursor, opens, path, in_string, value_string, quote_at)?;
+    // A key's own object is open too; a value's path ends with its field.
+    spot.open = spot.path.len() + usize::from(spot.typing == Typing::Key);
+    spot.after = closers(text, spot.end).min(spot.open);
+    Some(spot)
+}
+
+/// How many `}` stand from `from` on, outside strings.
+fn closers(text: &str, from: usize) -> usize {
+    let from = floor(text, from);
+    let mut count = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    for c in text[from..].chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '}' => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
+/// The token's place, before the two counts [`place`] adds.
+fn place_token(
+    text: &str,
+    cursor: usize,
+    opens: &[Open],
+    path: &[String],
+    in_string: bool,
+    value_string: bool,
+    quote_at: usize,
+) -> Option<Spot> {
     let open = opens.last()?;
     let fields = open.fields.clone();
     if in_string {
@@ -289,6 +342,8 @@ fn place(
             },
             fragment: between(text, quote_at + 1, cursor).to_string(),
             fields,
+            open: 0,
+            after: 0,
         });
     }
     match open.state {
@@ -301,6 +356,8 @@ fn place(
                 typing: Typing::Key,
                 fragment: between(text, start, cursor).to_string(),
                 fields,
+                open: 0,
+                after: 0,
             })
         }
         // The name is read and its quote is closed: accepting it writes the
@@ -319,6 +376,8 @@ fn place(
                 typing: Typing::Key,
                 fragment,
                 fields,
+                open: 0,
+                after: 0,
             })
         }
         State::Value => {
@@ -330,6 +389,8 @@ fn place(
                 typing: Typing::Value,
                 fragment: between(text, start, cursor).to_string(),
                 fields,
+                open: 0,
+                after: 0,
             })
         }
         State::Comma => None,

@@ -13,6 +13,16 @@ completion.
 False for a directory, so that Tab again descends into it instead of starting a
 new word: the insertion does not end the token, it stays inside it.
 
+## Candidate::cursor
+
+Where the caret lands after an insertion, in bytes from its start; `None` is its
+end. A candidate that opens something closes it in the same insertion and puts
+the caret *inside*: `"model_config":{}` leaves the caret between the braces, so
+the next completion fills the object rather than trailing after it. That is one
+field rather than a second kind of candidate, so a front-end that applies an
+insertion needs no new case: `tui/input.rs` places the caret there, and a
+`Candidate::word` leaves it at the end as before.
+
 ## Completion
 
 The `selected` index lives here rather than in the front-end because it is part
@@ -132,9 +142,9 @@ leaves the rest of the line as it was.
 **What it inserts.** A whole token, so that what the popup leaves behind is JSON
 the server could read if the object were closed:
 
-- a field name is `"name":`, plus the `{` that opens its place when the field
-  holds an object -- what follows a name is not in doubt, and a name alone is not
-  JSON. A field the object already states is not offered again.
+- a field name is `"name":`, plus `{}` when the field holds an object -- what
+  follows a name is not in doubt, and a name alone is not JSON. A field the object
+  already states is not offered again.
 - a leaf value is JSON-quoted when it is not a literal, decided from the text the
   candidate carries: `keep_alive` takes `true` and `ctx_limit` takes `"70%"` from
   one list of texts, because quoting is this layer's decision and not the
@@ -144,9 +154,19 @@ the server could read if the object were closed:
 - an empty value gets the brace that starts the object, because a name outside an
   object is not JSON.
 
-The closing braces are the operator's: a candidate ends where its own token ends.
-Nothing is offered where an object field's value goes (its name wrote the brace),
-in a list, or after the object has closed.
+**Every brace a candidate opens, it closes.** A key that opens an object also
+writes that object's `}`; and each candidate appends what the *value* still owes:
+the objects the cursor stands in, less the `}` the operator already wrote after
+it (`json_value::Spot::open` and `after`). The caret goes before those closers
+(`Candidate::cursor`), so a chain of acceptances leaves balanced JSON and can go
+on: `Tab` on the first word yields `{"model_config":{}}`, `Tab` inside it yields
+`"model":`, and the model object fills the last hole. A comma typed at the caret
+still starts the next sibling, because the caret sits before the closers rather
+than past them.
+
+What a candidate still does not do: it writes no comma for you, nothing is
+offered where an object field's value goes (its name wrote the brace), in a list,
+or after the object has closed.
 
 **Which model a value belongs to.** `accepts` is keyed by model, and a config
 states its own: a value inside `model_config` reads the `model` its enclosing

@@ -207,6 +207,7 @@ impl Catalog {
                         insert: format!("{typed}{name}/"),
                         detail: "dir".into(),
                         space: false,
+                        cursor: None,
                     }
                 } else {
                     Candidate::word(format!("{typed}{name}"), "file")
@@ -639,6 +640,7 @@ fn prefix_candidate(kind: Reference) -> Candidate {
         insert: kind.prefix().to_string(),
         detail: reference_detail(kind).to_string(),
         space: false,
+        cursor: None,
     }
 }
 
@@ -1071,6 +1073,7 @@ fn paths(base: &Path, token: &str) -> Vec<Candidate> {
                     insert: format!("{typed_dir}{name}/"),
                     detail: "dir".into(),
                     space: false,
+                    cursor: None,
                 })
             } else {
                 Some(Candidate::word(format!("{typed_dir}{name}"), "file"))
@@ -1255,7 +1258,7 @@ fn structured(
     if text.trim().is_empty() {
         return Some(Offered {
             subject: Some(format!("--{}", arg.name)),
-            candidates: keys(schema, "", "{", &[]),
+            candidates: keys(schema, "", "{", &[], 1),
             start: Some(cursor),
             end: Some(cursor),
             ..Offered::default()
@@ -1263,12 +1266,14 @@ fn structured(
     }
     let spot = json_value::spot(text, at)?;
     let token = (from + spot.start)..(from + spot.end);
+    // The braces still owed: the objects it stands in, less those already closed.
+    let owed = spot.open.saturating_sub(spot.after);
     match spot.typing {
         json_value::Typing::Key => {
             let object = schema_at(schema, &spot.path)?;
             Some(Offered {
                 subject: Some(dotted(&arg.name, &spot.path)),
-                candidates: keys(object, &spot.fragment, "", &spot.fields),
+                candidates: keys(object, &spot.fragment, "", &spot.fields, owed),
                 start: Some(token.start),
                 end: Some(token.end),
                 ..Offered::default()
@@ -1284,7 +1289,7 @@ fn structured(
             }
             Some(Offered {
                 subject: Some(dotted(&arg.name, &spot.path)),
-                candidates: values(field, &spot, ctx, words),
+                candidates: values(field, &spot, ctx, words, owed),
                 start: Some(token.start),
                 end: Some(token.end),
                 ..Offered::default()
@@ -1322,16 +1327,17 @@ fn dotted(arg: &str, path: &[String]) -> String {
 ///
 /// # Invariant
 ///
-/// A name is inserted with the colon that ends it, and with the brace that opens
-/// its place when the field holds an object -- what follows a field name is not
-/// in doubt, and a name alone is not JSON. A field the object already states is
-/// not offered again: a repeated key is not a second value, and listing it hides
-/// the names still missing.
+/// A name is inserted with the colon that ends it, with the brace that opens its
+/// place when the field holds an object, and with every brace the value still
+/// owes (`closers`): accepting one leaves the text as balanced as it can be, and
+/// the caret inside the braces, so the next completion fills what was opened. A
+/// field the object already states is not offered again.
 fn keys(
     object: &StructSchema,
     fragment: &str,
     prefix: &str,
     written: &[(String, Read)],
+    closers: usize,
 ) -> Vec<Candidate> {
     let mut fields: Vec<&StructField> = object
         .fields
@@ -1344,14 +1350,25 @@ fn keys(
     fields.sort_by_key(|field| !field.name.starts_with(fragment));
     fields
         .into_iter()
-        .map(|field| Candidate {
-            insert: format!(
-                "{prefix}\"{}\":{}",
-                field.name,
-                if field.object.is_some() { "{" } else { "" }
-            ),
-            detail: field.description.clone(),
-            space: false,
+        .map(|field| {
+            let mut insert = format!("{prefix}\"{}\":", field.name);
+            let mut tail = String::new();
+            if field.object.is_some() {
+                insert.push('{');
+                tail.push('}');
+            }
+            for _ in 0..closers {
+                tail.push('}');
+            }
+            let caret = insert.len();
+            let closed = !tail.is_empty();
+            insert.push_str(&tail);
+            Candidate {
+                insert,
+                detail: field.description.clone(),
+                space: false,
+                cursor: closed.then_some(caret),
+            }
         })
         .collect()
 }
@@ -1368,6 +1385,7 @@ fn values(
     spot: &json_value::Spot,
     ctx: &Ctx,
     words: &[String],
+    closers: usize,
 ) -> Vec<Candidate> {
     let model = named_model(&spot.fields).or_else(|| model_named(ctx, words));
     let hint = field.value_hint.as_deref().unwrap_or("value");
@@ -1384,14 +1402,19 @@ fn values(
     offered
         .into_iter()
         .filter_map(|candidate| {
-            let insert = match field.model_ref {
+            let mut insert = match field.model_ref {
                 true => model_value(&candidate.insert)?,
                 false => json_token(&candidate.insert),
             };
+            let caret = insert.len();
+            for _ in 0..closers {
+                insert.push('}');
+            }
             Some(Candidate {
                 insert,
                 detail: candidate.detail,
                 space: false,
+                cursor: (caret < caret + closers).then_some(caret),
             })
         })
         .collect()

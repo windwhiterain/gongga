@@ -242,11 +242,14 @@ pub fn apply_completion(line: &mut InputLine, completion: &Completion) {
     }
     line.text
         .replace_range(completion.start..completion.end, &candidate.insert);
-    line.cursor = completion.start + candidate.insert.len();
+    // Inside what the candidate opened, when it says so. See `Candidate::cursor`.
+    let at = candidate.cursor.unwrap_or(candidate.insert.len());
+    line.cursor = completion.start + at.min(candidate.insert.len());
+    let ended = at >= candidate.insert.len();
     // The completion is the text now: what was selected is gone with it.
     line.anchor = None;
     // Flags need a space before their value; command names before their flags.
-    if candidate.space && !line.text[line.cursor..].starts_with(' ') {
+    if ended && candidate.space && !line.text[line.cursor..].starts_with(' ') {
         line.insert(' ');
     }
 }
