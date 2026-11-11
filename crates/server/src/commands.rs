@@ -377,7 +377,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             description: "Create a session under a name nobody holds, and refuse the call \
                       when one already does: the verb a caller uses to start its own."
                 .into(),
-            args: session_config_args()
+            args: session_config_args(remotes)
                 .into_iter()
                 .filter(|argument| argument.name != "must_create")
                 .collect(),
@@ -389,7 +389,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 "Create the session if it does not exist, and apply the given settings to \
                       it. Settings omitted now are left as they are."
                     .into(),
-            args: session_config_args(),
+            args: session_config_args(remotes),
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -1039,6 +1039,7 @@ fn arg_spec(
         accepts: None,
         sticky_to: None,
         sticky: false,
+        structure: None,
     }
 }
 
@@ -1054,7 +1055,7 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
 ///
 /// One list, because `new_session` and `set_session` differ in one thing only -- whether
 /// a name already taken is refused or joined.
-fn session_config_args() -> Vec<protocol::ArgSpec> {
+fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
     vec![
         // SPEC: `--id <session>(sticky)`. A sticky entry keys on the kind `session`.
         sticky_arg(
@@ -1075,7 +1076,8 @@ fn session_config_args() -> Vec<protocol::ArgSpec> {
             false,
             Some("json"),
             CompletionSource::None,
-        ),
+        )
+        .with_structure(crate::session_config::schema(remotes)),
         kind_arg(
             "mode",
             "What this session may do to the workspace. work (the default) writes as it likes; explore refuses write_file and replace outright and tells the session which paths a bash, exec, python or skill call changed when it ended. Not a jail: a program that writes is told, not stopped, so read the changed paths and put them back before answering.",

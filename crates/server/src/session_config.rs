@@ -109,3 +109,81 @@ pub fn flatten(raw: &str, args: &mut Args) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// The `SessionConfig` shape a client completes inside `--config`: the field
+/// names at each level and what each leaf accepts. Mirrors [`SessionConfig`].
+pub fn schema(remotes: &[String]) -> protocol::StructSchema {
+    use protocol::{CompletionSource, StructField, StructSchema};
+    let leaf = |name: &str, description: &str, source: CompletionSource, hint: &str| StructField {
+        name: name.to_string(),
+        description: description.to_string(),
+        object: None,
+        source,
+        accepts: None,
+        value_hint: Some(hint.to_string()),
+        model_ref: false,
+    };
+    let object = |name: &str, description: &str, fields: Vec<StructField>| StructField {
+        name: name.to_string(),
+        description: description.to_string(),
+        object: Some(Box::new(StructSchema { fields })),
+        source: CompletionSource::None,
+        accepts: None,
+        value_hint: None,
+        model_ref: false,
+    };
+    let mut remote_values = vec![protocol::NONE_VALUE.to_string()];
+    remote_values.extend(remotes.iter().cloned());
+    let model = StructField {
+        model_ref: true,
+        ..leaf(
+            "model",
+            "The model this session runs on.",
+            CompletionSource::Models,
+            "provider/model",
+        )
+    };
+    let thinking = StructField {
+        accepts: crate::providers::level_accepts(),
+        ..leaf("thinking", "How hard the model thinks.", CompletionSource::None, "level")
+    };
+    let ctx_limit = leaf(
+        "ctx_limit",
+        "The context level for a Context notice.",
+        CompletionSource::Static(
+            ["0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        ),
+        "n%",
+    );
+    let cache_tier = StructField {
+        accepts: crate::providers::tier_accepts(),
+        ..leaf("cache_tier", "The cache tier every request sends.", CompletionSource::None, "name")
+    };
+    let remote = leaf(
+        "remote",
+        "The machine this session's shells run on; none is this machine.",
+        CompletionSource::Static(remote_values),
+        "name",
+    );
+    let cwd = leaf("cwd", "The session's directory.", CompletionSource::Paths, "path");
+    let keep_alive = leaf(
+        "keep_alive",
+        "Whether a periodic notice keeps the prefix warm.",
+        CompletionSource::Static(vec!["true".to_string(), "false".to_string()]),
+        "true|false",
+    );
+    StructSchema {
+        fields: vec![
+            object(
+                "model_config",
+                "The model and how it is asked.",
+                vec![model, thinking, ctx_limit, cache_tier],
+            ),
+            object("workspace", "Where the session works.", vec![remote, cwd]),
+            keep_alive,
+        ],
+    }
+}

@@ -1064,6 +1064,7 @@ fn spec_arg(
         accepts: None,
         sticky_to: None,
         sticky: false,
+        structure: None,
     }
 }
 
@@ -1146,10 +1147,20 @@ pub struct ArgSpec {
     /// different command.
     #[serde(default)]
     pub sticky: bool,
+    /// The shape of a structured (JSON object) value, when this argument takes
+    /// one: a client completes field names and leaf values inside it.
+    #[serde(default)]
+    pub structure: Option<StructSchema>,
 }
 
 impl ArgSpec {
     /// Names the entry this one follows: SPEC's `(sticky to <kind>)`.
+    /// Names the structured (JSON object) shape this argument's value takes.
+    pub fn with_structure(mut self, schema: StructSchema) -> Self {
+        self.structure = Some(schema);
+        self
+    }
+
     pub fn following(mut self, kind: &str) -> Self {
         self.sticky_to = Some(kind.to_string());
         self
@@ -1184,6 +1195,37 @@ impl ArgSpec {
         }
         self
     }
+}
+
+/// The shape of a structured (JSON object) argument value, so a client can
+/// complete inside it: the field names at each level, and what a leaf accepts.
+/// See `SPEC.md` (`SessionConfig`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StructSchema {
+    pub fields: Vec<StructField>,
+}
+
+/// One field of a [`StructSchema`]: either a nested object or a leaf value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructField {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Present when this field's value is itself an object.
+    #[serde(default)]
+    pub object: Option<Box<StructSchema>>,
+    /// A leaf value's completion source, when `object` is none.
+    #[serde(default)]
+    pub source: CompletionSource,
+    /// A leaf's closed value set, resolved against the model like `ArgSpec::accepts`.
+    #[serde(default)]
+    pub accepts: Option<Accepts>,
+    #[serde(default)]
+    pub value_hint: Option<String>,
+    /// A model-reference leaf: the chosen `<provider>/<model>` is inserted as
+    /// `{"provider":...,"model":...}` rather than as a bare string.
+    #[serde(default)]
+    pub model_ref: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
