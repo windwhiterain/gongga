@@ -1628,19 +1628,22 @@ impl Store {
         Ok(settled)
     }
 
-    /// Every call in `session` whose answer a request would look for and not find.
+    /// The calls `session` ends inside: the ones a run died before answering.
     ///
     /// # Invariant
     ///
-    /// Read from the rows themselves, by `call_id`, because that is what a provider
-    /// pairs on. A call with no result is a transcript a provider rejects, and it is
-    /// only ever left by a run that died inside a tool: a turn writes its own answer
-    /// before it ends. See `docs/notes/server-store.md`.
+    /// Only the last step is read. A turn writes an answer before it ends, so a
+    /// call left open can only be in the step the transcript stops in -- the rows
+    /// after the last one that is neither half of a call. Repair answers before
+    /// anything appends, so nothing this start writes can move that boundary.
     pub fn open_calls(&self, session_id: i64) -> anyhow::Result<Vec<(String, String, u32)>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT c.call_id, c.display FROM messages c
               WHERE c.session_id = ?1 AND c.kind = 'tool_call' AND c.call_id IS NOT NULL
+                AND c.seq > COALESCE((
+                    SELECT MAX(seq) FROM messages
+                     WHERE session_id = ?1 AND kind NOT IN ('tool_call', 'tool_result')), 0)
                 AND NOT EXISTS (
                     SELECT 1 FROM messages r
                      WHERE r.session_id = c.session_id AND r.kind = 'tool_result'

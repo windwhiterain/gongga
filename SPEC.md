@@ -35,7 +35,8 @@ save a copy of the server states.
 
 ## LLM API
 standard OpenAI Response API/Anthropic API.
-- images: File API, gated by - auto recover invalid transcript (only append, no drop).
+- images: File API.
+- auto validate and fix the latest saved step that counld be a half step that been interrupted.
 
 **Invariant: everything must store and send**
 

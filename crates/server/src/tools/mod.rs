@@ -308,47 +308,61 @@ impl Cmd for Forward {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let Some(layer) = crate::commands::layer() else {
-                return ToolOutcome::err(format!(
-                    "{} is a command, and this process has no command layer: it runs one \
-                     call and answers with a file",
-                    self.name
-                ));
-            };
             let words = match args.as_object() {
                 Some(table) => named_words(table),
                 None => protocol::Args::new(),
             };
-            let began = std::time::Instant::now();
-            // SPEC: a waiting call returns early; a command that said nothing has nothing.
-            let outcome = tokio::select! {
-                outcome = layer.run(&ctx.session, &self.name, words) => Some(outcome),
-                _ = ctx.cancel.cancelled() => None,
-            };
-            let ended = match &outcome {
-                Some(done) => json!({
-                    "id": Value::Null,
-                    "output": done.message,
-                    "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
-                    "matched": false,
-                    "exit": if done.ok { 0 } else { 1 },
-                    "data": done.data,
-                }),
-                None => json!({
-                    "id": Value::Null,
-                    "output": "",
-                    "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
-                    "matched": false,
-                    "exit": Value::Null,
-                }),
-            };
-            // Ended early is not a failure: the command said nothing, because it was not
-            // given the time to.
-            match outcome {
-                Some(done) if !done.ok => ToolOutcome::err(ended.to_string()),
-                _ => ToolOutcome::ok(ended.to_string()),
-            }
+            run_command(&ctx.session, &self.name, words, &ctx.cancel).await
         })
+    }
+}
+
+/// Runs one server cmd in the caller's session and answers with SPEC's `Result`.
+///
+/// # Invariant
+///
+/// SPEC's `fn <tool>(**args)`: the command layer is the whole door, so a name it does
+/// not know is refused there in the command's own words, and the caller's session
+/// rides along. A waiting call returns early when the turn is cancelled; a command
+/// that said nothing has nothing to answer.
+pub(crate) async fn run_command(
+    session: &str,
+    name: &str,
+    words: protocol::Args,
+    cancel: &CancellationToken,
+) -> ToolOutcome {
+    let Some(layer) = crate::commands::layer() else {
+        return ToolOutcome::err(format!(
+            "{name} is a command, and this process has no command layer: it runs one call and answers with a file"
+        ));
+    };
+    let began = std::time::Instant::now();
+    let outcome = tokio::select! {
+        outcome = layer.run(session, name, words) => Some(outcome),
+        _ = cancel.cancelled() => None,
+    };
+    let ended = match &outcome {
+        Some(done) => json!({
+            "id": Value::Null,
+            "output": done.message,
+            "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
+            "matched": false,
+            "exit": if done.ok { 0 } else { 1 },
+            "data": done.data,
+        }),
+        None => json!({
+            "id": Value::Null,
+            "output": "",
+            "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
+            "matched": false,
+            "exit": Value::Null,
+        }),
+    };
+    // Ended early is not a failure: the command said nothing, because it was not
+    // given the time to.
+    match outcome {
+        Some(done) if !done.ok => ToolOutcome::err(ended.to_string()),
+        _ => ToolOutcome::ok(ended.to_string()),
     }
 }
 
@@ -359,7 +373,7 @@ impl Cmd for Forward {
 /// A string is itself and anything else is its JSON, because a command's arguments are
 /// words: `cmd` is the one key this drops, since it names the command rather than one of
 /// its arguments. See `docs/notes/server-tools-mod.md`.
-fn named_words(table: &serde_json::Map<String, Value>) -> protocol::Args {
+pub(crate) fn named_words(table: &serde_json::Map<String, Value>) -> protocol::Args {
     let mut words = protocol::Args::new();
     for (key, value) in table {
         if key == "cmd" {
