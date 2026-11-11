@@ -1480,9 +1480,7 @@ impl Client {
             self.handle_answer(event, sink);
             return;
         };
-        // A refill's rows carry the store's numbers, which are older than the
-        // stream's cursor and say nothing about what the stream skipped: buffered
-        // before the bookkeeping, so an answer is never read as a hole.
+        // A refill's rows are buffered before the bookkeeping: an answer is never a hole.
         if let Some(session) = event.session()
             && let Some(sync) = self.sync.get_mut(session)
             && let Some(fill) = sync.fill.as_mut()
@@ -1495,10 +1493,7 @@ impl Client {
         if skipped {
             self.holed = true;
         }
-        // A stored row the window already draws, sent again -- `get_messages` asks
-        // for rows that exist -- is the same words twice, so it is not drawn. A
-        // `Transcript` is not a row: it says where a session stands, and dropping
-        // one would leave the window's stamp behind.
+        // A row already drawn is not drawn twice; a `Transcript` is never dropped.
         if let Some(session) = event.session() {
             let stored = row_of(&event);
             if stored && self.sync.get(session).is_some_and(|sync| sync.holds(seq)) {
@@ -1552,8 +1547,7 @@ impl Client {
             .map(|(name, _)| name.clone())
             .collect();
         for name in owed {
-            // The borrow ends before the page is drawn: `handle_event` writes this
-            // client, and a row that cannot land goes back where it came from.
+            // The borrow ends before the page is drawn: an unlanded row goes back.
             let (past, created, drawn) = {
                 let Some(sync) = self.sync.get_mut(&name) else {
                     continue;
@@ -1571,9 +1565,7 @@ impl Client {
                     Drawn::At { created, seq } if touches => Some((created, seq)),
                     _ => None,
                 };
-                // A row that cannot land yet stays the copy's: it is not drawn, and
-                // dropping it here would leave a number `holds` answers "duplicate"
-                // for -- one row the window can never reach again.
+                // Not drawn, and dropped, a row's number answers "duplicate" for ever.
                 let Some((created, drawn)) = drawn else {
                     sync.past = past;
                     continue;
