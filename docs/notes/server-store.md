@@ -213,6 +213,30 @@ mentor and compared the copy row for row.
 Production code always has a lower bound, and a method nobody calls is a second way
 to ask the same question.
 
+## turn and step, as columns
+
+A row states which turn wrote it and which step inside that turn. Both were only
+inside `display`; as columns they answer "what did the last step leave open" without
+walking the transcript, and `messages_by_step` makes that a range read.
+`append_message` fills them from the payload, the way it already reads `call_id`, so
+a caller states the pair where it knows it and stays silent where it does not: the
+prompt in force, a notice, and the user's own line -- which opens a turn before the
+turn has a number -- carry neither.
+
+`backfill_steps` gives the rows written before these were columns the pair their
+payload already names, once, on the open that adds them. A payload naming neither
+stays NULL, which is how "stands in no step" is spelled, and a payload that is not
+JSON is skipped rather than failing a whole home's migration.
+
+`open_calls` asks two questions and takes the union: the newest `(turn, step)` in
+the session, and the trailing run of tool rows -- the shape a row written before the
+columns can still be found by. Both are filtered by `call_id`, so the union costs a
+few rows and can never call an answered call open. The boundary is the last row that
+is neither half of a call and not the last result: a step writes all its calls before
+it runs the first, so `a, b, result a` is a real crash shape and `b` sits below the
+newest result. `answer_open_calls` copies the call's own pair onto the answer it
+appends, so the repaired row lands in the step it belongs to.
+
 ## pictures in a row
 
 A tool result, and a message written with `@image(...)`, carry the text they always

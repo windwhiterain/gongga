@@ -198,6 +198,11 @@ CREATE TABLE IF NOT EXISTS messages (
     -- The tool this row calls or answers, so a request can pair them without
     -- opening the item's bytes. NULL for every other kind of row.
     call_id    TEXT,
+    -- Which turn and step wrote this row, so a step is a range and not a walk.
+    -- NULL for a row that stands in no step: the prompt in force, a notice, and
+    -- the user's line, which opens a turn before the turn has a number.
+    turn       INTEGER,
+    step       INTEGER,
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, seq);
@@ -599,6 +604,15 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "call_id",
         "ALTER TABLE messages ADD COLUMN call_id TEXT",
     )?;
+    // A row's step was only in its payload; as columns it is a range read.
+    if !has_column(conn, "messages", "step") {
+        conn.execute("ALTER TABLE messages ADD COLUMN turn INTEGER", [])?;
+        conn.execute("ALTER TABLE messages ADD COLUMN step INTEGER", [])?;
+        backfill_steps(conn)?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS messages_by_step ON messages(session_id, turn, step)",
+    )?;
     add_column_if_missing(
         conn,
         "channels",
@@ -677,6 +691,27 @@ fn settle_handover(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     }
     tx.execute("ALTER TABLE sessions DROP COLUMN handover", [])?;
     tx.commit()
+}
+
+/// Gives the rows written before turn and step were columns the ones their payload
+/// already names.
+///
+/// # Invariant
+///
+/// Reads the payload, never guesses: a row that names neither stays NULL, which is
+/// how "belongs to no step" is spelled. A payload that is not JSON is skipped
+/// rather than failing the migration of a whole home.
+fn backfill_steps(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE messages
+            SET turn = json_extract(display, '$.turn'),
+                step = json_extract(display, '$.step')
+          WHERE json_valid(display)
+            AND (json_extract(display, '$.turn') IS NOT NULL
+                 OR json_extract(display, '$.step') IS NOT NULL)",
+        [],
+    )?;
+    Ok(())
 }
 
 /// Gives the rows a version-1 home wrote the item their requests will send.
@@ -1270,7 +1305,8 @@ impl Store {
         content: &serde_json::Value,
     ) -> anyhow::Result<i64> {
         let seq: i64 = conn.query_row(
-            "INSERT INTO messages (session_id, seq, kind, content, display, call_id, created_at)
+            "INSERT INTO messages
+                 (session_id, seq, kind, content, display, call_id, turn, step, created_at)
              VALUES (
                 ?1,
                 (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1),
@@ -1278,7 +1314,9 @@ impl Store {
                 ?3,
                 ?4,
                 ?5,
-                ?6
+                ?6,
+                ?7,
+                ?8
              )
              RETURNING seq",
             params![
@@ -1287,6 +1325,14 @@ impl Store {
                 wire_item(kind, content).map(|item| item.to_string()),
                 serde_json::to_string(content)?,
                 content.get("call_id").and_then(|v| v.as_str()),
+                content
+                    .get("turn")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as i64),
+                content
+                    .get("step")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as i64),
                 now_millis()
             ],
             |r| r.get(0),
@@ -1632,18 +1678,22 @@ impl Store {
     ///
     /// # Invariant
     ///
-    /// Only the last step is read. A turn writes an answer before it ends, so a
-    /// call left open can only be in the step the transcript stops in -- the rows
-    /// after the last one that is neither half of a call. Repair answers before
-    /// anything appends, so nothing this start writes can move that boundary.
-    pub fn open_calls(&self, session_id: i64) -> anyhow::Result<Vec<(String, String, u32)>> {
+    /// Two shapes, one answer: the newest `(turn, step)` in the session, and the
+    /// trailing run of tool rows -- the shape a row written before these columns
+    /// can still be found by. Both filtered by `call_id`, never by position alone.
+    /// See `docs/notes/server-store.md`.
+    pub fn open_calls(&self, session_id: i64) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT c.call_id, c.display FROM messages c
               WHERE c.session_id = ?1 AND c.kind = 'tool_call' AND c.call_id IS NOT NULL
-                AND c.seq > COALESCE((
-                    SELECT MAX(seq) FROM messages
-                     WHERE session_id = ?1 AND kind NOT IN ('tool_call', 'tool_result')), 0)
+                AND ( c.seq > COALESCE((
+                        SELECT MAX(seq) FROM messages
+                         WHERE session_id = ?1 AND kind NOT IN ('tool_call', 'tool_result')), 0)
+                      OR (c.turn, c.step) = (
+                        SELECT turn, step FROM messages
+                         WHERE session_id = ?1 AND turn IS NOT NULL AND step IS NOT NULL
+                         ORDER BY turn DESC, step DESC LIMIT 1) )
                 AND NOT EXISTS (
                     SELECT 1 FROM messages r
                      WHERE r.session_id = c.session_id AND r.kind = 'tool_result'
@@ -1656,17 +1706,7 @@ impl Store {
         let mut out = Vec::new();
         for row in rows {
             let (call_id, display) = row?;
-            let value: serde_json::Value = serde_json::from_str(&display).unwrap_or_default();
-            let name = value
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-            let step = value
-                .get("step")
-                .and_then(|v| v.as_u64())
-                .unwrap_or_default() as u32;
-            out.push((call_id, name, step));
+            out.push((call_id, serde_json::from_str(&display).unwrap_or_default()));
         }
         Ok(out)
     }
@@ -1680,20 +1720,21 @@ impl Store {
     /// start rather than only after a crash the last run knew about.
     pub fn answer_open_calls(&self, session_id: i64) -> anyhow::Result<usize> {
         let open = self.open_calls(session_id)?;
-        for (call_id, name, step) in &open {
-            self.append_message(
-                session_id,
-                Kind::ToolResult,
-                &json!({
-                    "call_id": call_id,
-                    "output": interrupted_call(),
-                    "images": [],
-                    "step": step,
-                    "ok": false,
-                    "elapsed_ms": 0,
-                    "tool": name,
-                }),
-            )?;
+        for (call_id, call) in &open {
+            let mut payload = json!({
+                "call_id": call_id,
+                "output": interrupted_call(),
+                "images": [],
+                "step": call.get("step").cloned().unwrap_or_default(),
+                "ok": false,
+                "elapsed_ms": 0,
+                "tool": call.get("name").and_then(|v| v.as_str()).unwrap_or_default(),
+            });
+            // The answer belongs to the step the call is in, not to one of its own.
+            if let Some(turn) = call.get("turn") {
+                payload["turn"] = turn.clone();
+            }
+            self.append_message(session_id, Kind::ToolResult, &payload)?;
             self.finish_tool_call(session_id, call_id, &interrupted_call(), "cancelled")?;
         }
         Ok(open.len())
