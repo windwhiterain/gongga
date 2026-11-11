@@ -181,6 +181,7 @@ impl Cmd for ExecTool {
                     wait_of(&args, self.wait.default),
                     args.get("until").and_then(Value::as_str),
                     Some(&ctx.cancel),
+                    Some(&ctx.inbox),
                 )
                 .await;
             answer(outcome)

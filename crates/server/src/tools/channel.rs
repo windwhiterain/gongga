@@ -833,6 +833,7 @@ impl Channels {
         wait: Duration,
         until: Option<&str>,
         cancel: Option<&CancellationToken>,
+        inbox: Option<&crate::session::InboxSignal>,
     ) -> Result<Outcome, String> {
         let mut row = self.row_of(session, id)?;
         // Whoever is inside the channel is the one that tells the session: the watcher
@@ -922,25 +923,55 @@ impl Channels {
                 _ => None,
             },
         };
+        // The flag says a caller waits here, for what. It outlives this call only if
+        // the call gives up first.
+        self.store
+            .set_channel_wait(session, id, marker.as_deref().unwrap_or(""))
+            .map_err(quiet)?;
+        let upto = row.upto;
         loop {
-            // What the peer says is inside the call's clock; see `server-remote.md`.
-            let fresh = if wait.is_zero() {
-                place.read_from("out", row.upto).await?
-            } else {
-                let left = deadline.saturating_duration_since(Instant::now());
-                match tokio::time::timeout(left, place.read_from("out", row.upto)).await {
-                    Ok(read) => read?,
-                    Err(_) => Vec::new(),
-                }
+            // # Invariant
+            //
+            // The peer reads race the stop, the clock and a message: a peer that never
+            // answers must not hold the call past its wait, an interrupt, or a message.
+            // The check cannot sit after the read -- a wedged read never reaches it.
+            let read = async {
+                let fresh = if wait.is_zero() {
+                    place.read_from("out", upto).await?
+                } else {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    match tokio::time::timeout(left, place.read_from("out", upto)).await {
+                        Ok(read) => read?,
+                        Err(_) => Vec::new(),
+                    }
+                };
+                let looked = look(&fresh, upto, marker.as_deref(), &grammar);
+                let ended = if wait.is_zero() {
+                    place.status().await.and_then(|status| status.exit)
+                } else {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    match tokio::time::timeout(left, place.status()).await {
+                        Ok(status) => status.and_then(|status| status.exit),
+                        Err(_) => None,
+                    }
+                };
+                Ok::<_, String>((looked, ended))
             };
-            let looked = look(&fresh, row.upto, marker.as_deref(), &grammar);
-            let ended = if wait.is_zero() {
-                place.status().await.and_then(|status| status.exit)
+            tokio::pin!(read);
+            let (looked, ended) = if wait.is_zero() {
+                read.await?
             } else {
-                let left = deadline.saturating_duration_since(Instant::now());
-                match tokio::time::timeout(left, place.status()).await {
-                    Ok(status) => status.and_then(|status| status.exit),
-                    Err(_) => None,
+                tokio::select! {
+                    read = &mut read => read?,
+                    _ = cancel_fired(cancel) => {
+                        return self.answer(row, String::new(), false, upto, None, None, since);
+                    }
+                    _ = tokio::time::sleep(deadline.saturating_duration_since(Instant::now())) => {
+                        return self.answer(row, String::new(), false, upto, None, None, since);
+                    }
+                    _ = inbox_arrived(inbox) => {
+                        return self.answer(row, String::new(), false, upto, None, None, since);
+                    }
                 }
             };
             if looked.matched || ended.is_some() || wait.is_zero() {
@@ -954,18 +985,6 @@ impl Channels {
                     ended,
                     since,
                 );
-            }
-            if Instant::now() >= deadline {
-                // SPEC: a wait that ran out leaves the flag set, so the end lands once.
-                self.store
-                    .set_channel_wait(session, id, marker.as_deref().unwrap_or(""))
-                    .map_err(quiet)?;
-                // Nothing arrived: what is there is the answer, and the cursor moves.
-                return self.answer(row, looked.window, false, looked.upto, None, ended, since);
-            }
-            // SPEC: a waiting call returns early; the window now is its answer.
-            if cancel.is_some_and(CancellationToken::is_cancelled) {
-                return self.answer(row, looked.window, false, looked.upto, None, ended, since);
             }
             tokio::time::sleep(LOOK).await;
         }
@@ -1773,6 +1792,28 @@ impl Where {
                     .map_err(|e| e.to_string())
             }
         }
+    }
+}
+
+/// A stop that may never come: `None` is a wait no interrupt ends.
+async fn cancel_fired(cancel: Option<&CancellationToken>) {
+    match cancel {
+        Some(token) => token.cancelled().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// A message for the session, polled on the channel's own clock: the signal is a
+/// count, so arriving is one load, and the gap between loads is the channel's look.
+async fn inbox_arrived(inbox: Option<&crate::session::InboxSignal>) {
+    match inbox {
+        Some(signal) => loop {
+            if signal.arrived() {
+                return;
+            }
+            tokio::time::sleep(LOOK).await;
+        },
+        None => std::future::pending::<()>().await,
     }
 }
 
