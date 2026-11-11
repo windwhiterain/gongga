@@ -657,7 +657,10 @@ impl ToolRegistry {
             // into the command layer, which would only meet this same row again.
             "skill" => {
                 let Some(settings) = self.settings.skill.as_ref() else {
-                    return Err("`skill` is not carried: this build was given no skill settings".to_string());
+                    return Err(
+                        "`skill` is not carried: this build was given no skill settings"
+                            .to_string(),
+                    );
                 };
                 Box::new(skill::SkillTool {
                     programs: settings.programs.clone(),
@@ -769,7 +772,7 @@ impl ToolRegistry {
         // Before the arguments are read: a refused call must not reach the tool at all,
         // so nothing is spawned for it.
         if tool.writes() && ctx.explore.is_some() {
-            return ToolOutcome::err(crate::explore::refusal(name));
+            return ToolOutcome::err(crate::explore::refusal(crate::prompts::shared(), name));
         }
         if let Some(message) = argument_error(tool.as_ref(), &args) {
             return ToolOutcome::err(message);

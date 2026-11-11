@@ -338,16 +338,18 @@ pub(crate) async fn report(
     spent: &str,
 ) {
     let status = if ok { "ok" } else { "error" };
-    let what = match ok {
-        true => "finished successfully",
-        false => "finished with an error",
+    // Two endings, two templates: the prose is the config's, the choice is here.
+    let report = match ok {
+        true => crate::prompts::JOB_REPORT_FINISHED,
+        false => crate::prompts::JOB_REPORT_FAILED,
     };
     // A deleted session owes nothing, and a job the exit ended did not finish.
     let speaking = !matches!(ctx.store.get_session(&ctx.session), Ok(None))
         && !ctx.closing.load(std::sync::atomic::Ordering::SeqCst);
-    let message = format!(
-        "Job {id} on `{name}` has {what} after {spent}. `check_job` with \
-         `job_id: {id}` collects what it printed."
+    let job = id.to_string();
+    let message = crate::prompts::shared().render(
+        report,
+        &[("job", job.as_str()), ("tool", name), ("spent", spent)],
     );
     let notice =
         speaking.then(|| json!({"session": ctx.session, "message": message, "notice": "job"}));
@@ -443,11 +445,15 @@ pub async fn announce_owed(
                 u64::try_from((crate::store::now_millis() - row.started_at).max(0))
                     .unwrap_or(u64::MAX),
             );
-            let message = format!(
-                "Job {} (`{}`{named}) never reported: the server stopped before it finished, \
-                 and nothing that outlived it is left to ask. It was started {waited} before \
-                 this server was. Run it again if it mattered.",
-                row.id, row.tool
+            let job = row.id.to_string();
+            let message = crate::prompts::shared().render(
+                crate::prompts::JOB_LOST,
+                &[
+                    ("job", job.as_str()),
+                    ("tool", row.tool.as_str()),
+                    ("named", named.as_str()),
+                    ("waited", waited.as_str()),
+                ],
             );
             if let Err(e) = store.add_pending_task(
                 &row.session,
@@ -461,10 +467,14 @@ pub async fn announce_owed(
             told += 1;
             continue;
         }
-        let message = format!(
-            "Job {} (`{}`{named}) ended before the server stopped and its answer was never \
-             collected. `check_job` with `job_id: {}` still reads it.",
-            row.id, row.tool, row.id
+        let job = row.id.to_string();
+        let message = crate::prompts::shared().render(
+            crate::prompts::JOB_LEFT_OWED,
+            &[
+                ("job", job.as_str()),
+                ("tool", row.tool.as_str()),
+                ("named", named.as_str()),
+            ],
         );
         if let Err(e) = store.add_pending_task(
             &row.session,

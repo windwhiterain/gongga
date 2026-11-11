@@ -271,44 +271,31 @@ pub fn prime(watch: Option<Arc<Watch>>, cwd: std::path::PathBuf) {
 }
 
 /// What to tell a session whose program changed the workspace it was only reading.
-pub fn changed_notice(tool: &str, changed: &[String]) -> String {
+pub fn changed_notice(prompts: &crate::prompts::Prompts, tool: &str, changed: &[String]) -> String {
     let mut lines = String::new();
     for line in changed {
         lines.push_str("  ");
         lines.push_str(line);
         lines.push('\n');
     }
-    format!(
-        "This session explores: the `{tool}` call that just ended changed the workspace.\n\n\
-         {lines}\n\
-         Nothing was undone. Read those paths again before saying what they hold, and if a \
-         change was not yours to make, put it back (`git checkout -- <path>`, or `git stash` \
-         what you did not write) and say that you did."
+    prompts.render(
+        crate::prompts::EXPLORE_CHANGED,
+        &[("tool", tool), ("changed", lines.as_str())],
     )
 }
 
 /// What to tell a session when the mode changes under it.
-pub fn mode_notice(mode: Mode) -> String {
+pub fn mode_notice(prompts: &crate::prompts::Prompts, mode: Mode) -> String {
     match mode {
-        Mode::Work => "This session works: it may write, and a program's changes are not \
-                       reported."
-            .to_string(),
-        Mode::Explore => "This session explores: `write_file` and `replace` are refused, and \
-                          a program that changes the workspace is reported at the end of the \
-                          job that changed it. This is not a jail -- a shell can still write -- \
-                          so read before you change, and say what you changed."
-            .to_string(),
+        Mode::Work => prompts.render(crate::prompts::WORK_NOTICE, &[]),
+        Mode::Explore => prompts.render(crate::prompts::EXPLORE_NOTICE, &[]),
     }
 }
 
 /// The reminder for a refused write, so a caller learns the rule and the way around it
 /// that is allowed.
-pub fn refusal(tool: &str) -> String {
-    format!(
-        "This session explores, so `{tool}` is refused: it changes the workspace, and the \
-         command that made this session asked for a read. Read with `read_file`, and say what \
-         would have to change rather than changing it."
-    )
+pub fn refusal(prompts: &crate::prompts::Prompts, tool: &str) -> String {
+    prompts.render(crate::prompts::EXPLORE_REFUSAL, &[("tool", tool)])
 }
 
 /// Looks at the workspace after a piece of work ended, and tells the session what changed.
@@ -342,7 +329,7 @@ pub fn after_job(ctx: &ToolContext, tool: &str) {
     tokio::spawn(async move {
         match watch.look(&cwd).await {
             Look::Changed(changed) => {
-                let message = changed_notice(&tool, &changed);
+                let message = changed_notice(crate::prompts::shared(), &tool, &changed);
                 if let Err(e) = tell(&store, &session, &message) {
                     tracing::warn!(session = %session, tool = %tool, error = %e,
                         "could not report a change to a workspace being read");

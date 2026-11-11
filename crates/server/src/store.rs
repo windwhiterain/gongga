@@ -82,13 +82,6 @@ pub struct ToolSet {
     pub event: String,
 }
 
-/// The row that closes a turn: see `docs/notes/server-store.md`.
-///
-/// # Invariant
-///
-/// Fixed text, because every later request of the session carries it.
-pub const THINKING_MARK: &str = "(thinking enabled)";
-
 /// What the model is told about a call that never returned: the
 /// `interrupted_call` template.
 pub fn interrupted_call() -> String {

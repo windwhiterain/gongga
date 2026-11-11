@@ -59,6 +59,61 @@ pub const MONITOR_PROVIDERS_AGAIN: &str = "monitor_error_again";
 /// What a cleaner session is handed when a disk is under this machine's floor.
 pub const MONITOR_DISK: &str = "monitor_disk";
 
+/// What a session is told when its mode becomes explore: a reminder, not a jail.
+pub const EXPLORE_NOTICE: &str = "explore_notice";
+
+/// The same when the mode becomes work: it may write, and nothing is reported.
+pub const WORK_NOTICE: &str = "work_notice";
+
+/// What a workspace a program's call changed is reported with.
+///
+/// Placeholders: `{{tool}}` and `{{changed}}`.
+pub const EXPLORE_CHANGED: &str = "explore_changed";
+
+/// Why a write-shaped call was refused while the session explores. `{{tool}}`.
+pub const EXPLORE_REFUSAL: &str = "explore_refusal";
+
+/// How a finished job is announced. Placeholders: `{{job}}`, `{{tool}}`, `{{spent}}`.
+pub const JOB_REPORT_FINISHED: &str = "job_report_finished";
+
+/// The same announcement for a job that ended with an error.
+pub const JOB_REPORT_FAILED: &str = "job_report_failed";
+
+/// A job the stopped server never reported. `{{job}}`, `{{tool}}`, `{{waited}}`.
+pub const JOB_LOST: &str = "job_lost";
+
+/// A job that ended before the stop, with nobody having collected it.
+pub const JOB_LEFT_OWED: &str = "job_left_owed";
+
+/// How a detached bash's end is announced. `{{name}}`, `{{pid}}`, `{{how}}`, `{{log}}`.
+pub const DETACHED_ENDED: &str = "detached_ended";
+
+/// The `how` of [`DETACHED_ENDED`] when the exit status is known. `{{code}}`.
+pub const DETACHED_EXIT: &str = "detached_exit";
+
+/// The same when it ended with no status anyone can read.
+pub const DETACHED_NO_EXIT: &str = "detached_no_exit";
+
+/// The same for one adopted across a restart: the pid is all that survived.
+pub const DETACHED_ADOPTED: &str = "detached_adopted";
+
+/// How a detached bash that is gone is reported.
+///
+/// Placeholders: `{{name}}`, `{{pid}}`, `{{why}}`, `{{command}}`, `{{log}}`.
+pub const DETACHED_GONE: &str = "detached_gone";
+
+/// The command a gone bash was running, or empty. `{{command}}`.
+pub const DETACHED_RUNNING: &str = "detached_running";
+
+/// What a session is told about notices the stopped server took with it. `{{notices}}`.
+pub const LOST_NOTICES: &str = "lost_notices";
+
+/// What asks a session to fold its context: the live compaction interval.
+pub const LIVE_COMPACT_NOTICE: &str = "live_compact_notice";
+
+/// The text a turn boundary is written with when the provider refused the transcript.
+pub const THINKING_MARK: &str = "thinking_mark";
+
 /// Every template the code asks for by name.
 ///
 /// # Invariant
@@ -84,6 +139,23 @@ pub const REQUIRED: &[&str] = &[
     MONITOR_PROVIDERS,
     MONITOR_PROVIDERS_AGAIN,
     MONITOR_DISK,
+    EXPLORE_NOTICE,
+    WORK_NOTICE,
+    EXPLORE_CHANGED,
+    EXPLORE_REFUSAL,
+    JOB_REPORT_FINISHED,
+    JOB_REPORT_FAILED,
+    JOB_LOST,
+    JOB_LEFT_OWED,
+    DETACHED_ENDED,
+    DETACHED_EXIT,
+    DETACHED_NO_EXIT,
+    DETACHED_ADOPTED,
+    DETACHED_GONE,
+    DETACHED_RUNNING,
+    LOST_NOTICES,
+    LIVE_COMPACT_NOTICE,
+    THINKING_MARK,
 ];
 
 /// The one file section this module reads.

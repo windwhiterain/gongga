@@ -117,6 +117,18 @@ real message that owes a turn, because a job the stopped server never reported i
 an `explore` row that a restart replays is a reminder about a workspace the restart did
 not touch, and it keeps its own kind so the pass leaves it alone.
 
+## the four sentences are templates
+
+None of what this module says is written here any more. The mode change is
+`explore_notice` or `work_notice` -- two templates rather than one with a conditional,
+because a session keeps the bytes it already sent and a prompt with two shapes is two
+templates -- the late report is `explore_changed` (`{{tool}}` and `{{changed}}`), and the
+refusal is `explore_refusal` (`{{tool}}`). They live in the home's `config.toml` over the
+pinned content, they are all in `prompts::REQUIRED`, and each function takes the
+`&Prompts` its caller holds, so a missing template is a refusal to start rather than an
+empty sentence. What the code still builds is the indentation of the changed paths: two
+spaces and a line break, which is layout, not prose.
+
 ## What is not covered
 
 Said once here so that nothing else has to repeat it: `subscribe --bash --cmd` and

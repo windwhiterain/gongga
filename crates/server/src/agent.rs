@@ -1840,7 +1840,7 @@ impl Agent {
         match self.store.append_message(
             id,
             Kind::ThinkingMark,
-            &json!({"text": crate::store::THINKING_MARK}),
+            &json!({"text": crate::prompts::shared().render(crate::prompts::THINKING_MARK, &[])}),
         ) {
             Ok(seq) => {
                 self.announce_row(session, Ok(seq));
@@ -1987,16 +1987,7 @@ fn context_notice(
 /// the answer stays short -- every word here is paid again on every later request,
 /// because a summary is never a cache hit. See `docs/notes/server-live-compact.md`.
 fn live_compact_notice() -> String {
-    "The live-compaction interval has elapsed. Call `live_compact` with a summary of \
-what a later turn cannot recover from the transcript: the decisions taken, the paths \
-and identifiers the next step needs, the open question, and the facts it depends on. \
-The server keeps the latest complete tool-call round and every earlier summary \
-verbatim, so do not restate them. The summary may also cite a file as \
-`@file(<path>)`: the citation embeds that file whole into the summary, so a later \
-turn reads the content without opening it again -- at the cost of carrying it in \
-every later request. Keep it short. Do not use heir and do not delete transcript \
-rows."
-        .to_string()
+    crate::prompts::shared().render(crate::prompts::LIVE_COMPACT_NOTICE, &[])
 }
 
 /// The notice threshold in input tokens, or 0 for "off".

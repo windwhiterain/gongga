@@ -1769,7 +1769,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "inject",
             &json!({
                 "session": name,
-                "message": crate::explore::mode_notice(mode),
+                "message": crate::explore::mode_notice(crate::prompts::shared(), mode),
                 "notice": "explore",
             }),
         ) {
@@ -3384,17 +3384,16 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         }
         // Said as a message, not a notice: this one has to wake the session.
         if !lost.is_empty() {
-            let mut message = String::from(
-                "Work you were told would report did not outlive the server that was running \
-                 it, so what it printed went with that process and there is nothing left to \
-                 read. These are the notices you can no longer act on:\n\n",
-            );
+            let mut notices = String::new();
             for said in &lost {
-                message.push_str("-- ");
-                message.push_str(said);
-                message.push_str("\n\n");
+                notices.push_str("-- ");
+                notices.push_str(said);
+                notices.push_str("\n\n");
             }
-            message.push_str("Run them again if it mattered.");
+            let message = crate::prompts::shared().render(
+                crate::prompts::LOST_NOTICES,
+                &[("notices", notices.as_str())],
+            );
             let payload = json!({"session": name, "message": message});
             match d.store.add_pending_task(&name, "inject", &payload) {
                 // In `kept`: what owes a turn has to be a task this pass knows about.
