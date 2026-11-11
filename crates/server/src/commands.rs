@@ -103,7 +103,7 @@ pub enum Origin {
     },
     /// No client asked: a signal reached this process, or the process it follows ended.
     Signal { reason: String },
-    /// A tool ran it: `exec` on a name the config calls a cmd (`GONGGA_CLI`).
+    /// A tool ran it, through the command layer.
     ///
     /// # Invariant
     ///
