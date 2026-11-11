@@ -653,6 +653,19 @@ impl ToolRegistry {
                 })
             }
             "live_compact" => Box::new(live_compact::LiveCompactTool),
+            // SPEC's `## Skill`: the row runs the entry itself, not a forward back
+            // into the command layer, which would only meet this same row again.
+            "skill" => {
+                let Some(settings) = self.settings.skill.as_ref() else {
+                    return Err("`skill` is not carried: this build was given no skill settings".to_string());
+                };
+                Box::new(skill::SkillTool {
+                    programs: settings.programs.clone(),
+                    lib: settings.lib.clone(),
+                    timeout: settings.timeout,
+                    max_output_chars: settings.max_output_chars,
+                })
+            }
             // SPEC's `fn <tool>(**args)`: a row an operator reaches by name may be a
             // command this build has no type for. One the model is offered may not --
             // a tool nobody implements is not a tool SPEC has. See `server-tools-mod`.

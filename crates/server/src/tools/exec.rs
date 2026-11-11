@@ -81,7 +81,7 @@ impl Cmd for ExecTool {
                      to start, and this call speaks to one that did"
                 ));
             }
-            // A list is argv; an object is a cmd's named arguments.
+            // A list is argv; an object is named arguments, each spoken as `--key value`.
             let words = match args.get("args") {
                 None | Some(Value::Null) => Vec::new(),
                 Some(Value::Array(words)) => {
@@ -99,11 +99,23 @@ impl Cmd for ExecTool {
                     }
                     out
                 }
-                Some(Value::Object(_)) => {
-                    return ToolOutcome::err(
-                        "`exec` runs programs as channels and takes a list of words; a server cmd is called by its own name as a tool, its schema in a skill"
-                            .to_string(),
-                    );
+                Some(Value::Object(named)) => {
+                    let mut out = Vec::with_capacity(named.len() * 2);
+                    for (key, value) in named {
+                        match value.as_str() {
+                            Some(value) => {
+                                out.push(format!("--{key}"));
+                                out.push(value.to_string());
+                            }
+                            None => {
+                                return ToolOutcome::err(format!(
+                                    "`args` named arguments take string values, and {key:?} is {}",
+                                    crate::tools::json_type(value)
+                                ));
+                            }
+                        }
+                    }
+                    out
                 }
                 Some(other) => {
                     return ToolOutcome::err(format!(
