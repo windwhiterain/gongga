@@ -132,38 +132,22 @@ pub struct Channels {
     attached: std::sync::Mutex<HashSet<i64>>,
 }
 
-/// The program a channel's relay is started as: `gongga-relay`, beside this build or in
-/// the home that installed it.
+/// The program a channel's relay is started as.
 ///
 /// # Invariant
 ///
-/// Never this executable. A server that started itself under a flag put a build tree's
-/// path into every `exec`: a `clean` removed `target/`, and every local channel answered
-/// `os error 3` -- a missing program reported as if the caller's arguments were wrong.
-/// The relay is its own program now, so the only path it needs is its own.
+/// One resolver, not three. `shell_command::relay_source` is the same answer
+/// `ensure_pair` installs from, so what a channel runs and what the home was given
+/// cannot be two opinions: `GONGGA_RELAY_BIN`, then the program beside this server (a
+/// build tree and an install both keep the pair together), then the home's own copy --
+/// which `ensure_pair` has just written when it had a source at all.
 fn relay_program(home: &Path) -> PathBuf {
     let name = if cfg!(windows) {
         "gongga-relay.exe"
     } else {
         "gongga-relay"
     };
-    if let Some(named) = std::env::var_os("GONGGA_RELAY_BIN") {
-        let named = PathBuf::from(named);
-        if named.is_file() {
-            return named;
-        }
-    }
-    if let Ok(me) = std::env::current_exe()
-        && let Some(dir) = me.parent()
-    {
-        let beside = dir.join(name);
-        if beside.is_file() {
-            return beside;
-        }
-    }
-    // A home keeps the program beside its cli. Answering with the path even when it is
-    // missing is deliberate: the spawn's message then names what was looked for.
-    home.join("bin").join(name)
+    crate::shell_command::relay_source().unwrap_or_else(|| home.join("bin").join(name))
 }
 
 impl Channels {
