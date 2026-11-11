@@ -299,8 +299,9 @@ impl Bridge {
         sink: &protocol::ChannelSink,
         out: &Arc<dyn Outbox>,
     ) -> anyhow::Result<()> {
-        let ServerMessage::Event { event, .. } = message else {
-            return Ok(());
+        let event = match message {
+            ServerMessage::Event { event, .. } | ServerMessage::Row { event, .. } => event,
+            _ => return Ok(()),
         };
         match event {
             Event::Response(event) if event.turn == protocol::REPLAY_TURN => {

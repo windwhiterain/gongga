@@ -408,6 +408,8 @@ def _event(message):
     payload = message.get("v", message)
     if message.get("t") == "event":
         return payload.get("event", {}), payload.get("seq")
+    if message.get("t") == "row":
+        return payload.get("event", {}), None
     return payload, None
 
 

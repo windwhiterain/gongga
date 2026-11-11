@@ -84,34 +84,48 @@ async fn send(input: &mut ChildStdin, intent: &UiIntent) -> anyhow::Result<()> {
 
 /// Runs the window over the two pipes until either end goes away.
 pub async fn run(args: &client::Args) -> anyhow::Result<()> {
+    let program = client_program()?;
+    // A terminal that cannot open must not leave a child or a reader behind.
+    let mut tui = Tui::for_pipe()?;
     let client_home = client::client_home_of(args);
-    let mut child = Command::new(client_program()?)
+    let mut child = Command::new(program)
         .args(client_args(args))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(child_stderr(&client_home))
+        .kill_on_drop(true)
         .spawn()
         .context("starting gongga-client")?;
-    let mut input: ChildStdin = child.stdin.take().context("the client's stdin")?;
-    let output = child.stdout.take().context("the client's stdout")?;
+    let (Some(mut input), Some(output)) = (child.stdin.take(), child.stdout.take()) else {
+        child
+            .kill()
+            .await
+            .context("stopping the client without pipes")?;
+        anyhow::bail!("gongga-client did not provide its pipes");
+    };
 
     // One reader owns stdout; the loop never holds two mutable borrows of the Tui.
-    let (tx, mut rx) = mpsc::unbounded_channel::<RenderMessage>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<anyhow::Result<RenderMessage>>();
     let reader = tokio::spawn(async move {
         let mut lines = BufReader::new(output).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let Ok(frame) = serde_json::from_str::<RenderMessage>(&line) else {
-                continue;
-            };
-            if tx.send(frame).is_err() {
-                break;
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .context("reading the client's stdout")?
+        {
+            // A closed window still drains stdout until the child's writer exits.
+            if !tx.is_closed() {
+                let frame = serde_json::from_str::<RenderMessage>(&line)
+                    .context("decoding a frame from the client's stdout");
+                let _ = tx.send(frame);
             }
         }
+        anyhow::Ok(())
     });
 
-    let mut tui = Tui::for_pipe()?;
-    let result = loop {
+    let result = 'events: loop {
         tokio::select! {
+            biased;
             _ = closing::asked() => break Ok(()),
             event = tui.next_event() => {
                 let Some(event) = event else { break Ok(()); };
@@ -123,10 +137,20 @@ pub async fn run(args: &client::Args) -> anyhow::Result<()> {
             }
             frame = rx.recv() => {
                 let Some(frame) = frame else { break Ok(()); };
-                if let Some(intent) = run::apply_frame(&mut tui, frame)
-                    && send(&mut input, &intent).await.is_err()
-                {
-                    break Ok(());
+                // New arrivals return through the keyboard branch before the next batch.
+                let queued = rx.len();
+                let frames = std::iter::once(frame)
+                    .chain((0..queued).map_while(|_| rx.try_recv().ok()));
+                for frame in frames {
+                    let frame = match frame {
+                        Ok(frame) => frame,
+                        Err(error) => break 'events Err(error),
+                    };
+                    if let Some(intent) = run::apply_frame(&mut tui, frame)
+                        && send(&mut input, &intent).await.is_err()
+                    {
+                        break 'events Ok(());
+                    }
                 }
                 if let Err(e) = tui.draw() {
                     break Err(e);
@@ -134,10 +158,19 @@ pub async fn run(args: &client::Args) -> anyhow::Result<()> {
             }
         }
     };
-    // EOF is the window going away; the child's loop ends on its own.
+    // EOF ends the child's loop, but its writer still needs stdout drained.
     drop(input);
+    drop(rx);
+    let restored = tui.restore();
+    let waited = child.wait().await.context("waiting for gongga-client");
     reader.abort();
-    let _ = child.wait().await;
-    tui.restore()?;
-    result
+    let read = reader.await;
+    result?;
+    restored?;
+    waited?;
+    match read {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }

@@ -466,7 +466,16 @@ async fn run_commands(
         // follows is the sentence about it.
         let mut broken = false;
         for (seq, event) in outcome.events {
-            if send_event(&sink, seq, event).await.is_err() {
+            let sent = send_server(
+                &sink,
+                &ServerMessage::Row {
+                    id: command.id,
+                    seq,
+                    event,
+                },
+            )
+            .await;
+            if sent.is_err() {
                 broken = true;
                 break;
             }

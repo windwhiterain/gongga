@@ -70,19 +70,22 @@ pub async fn answer_completion(
 ///
 /// # Invariant
 ///
-/// Only what is written down: a window the journal says nothing about is left
-/// undeclared, and an undeclared window is never fetched -- a fresh client has
-/// nothing to be behind on. See `docs/notes/tui-run.md`.
-pub fn declare(client: &mut crate::Client, ui: &dyn WindowFacts) {
-    let names: Vec<String> = client.sessions().iter().map(|s| s.name.clone()).collect();
-    for name in names {
-        match ui.stamp_of(&name) {
-            Some((created, drawn)) => {
-                client.declare_drawn(&name, created, drawn, ui.floor_of(&name))
-            }
-            // No journal at all: nothing drawn, so the whole transcript is owed.
-            None => client.declare_empty(&name),
-        }
+/// A cached generation or range the server no longer has must not be rendered.
+pub fn declare(client: &mut crate::Client, ui: &mut dyn crate::runtime::Frontend) {
+    let invalid: Vec<String> = client
+        .sessions()
+        .iter()
+        .filter_map(|session| {
+            ui.stamp_of(&session.name)
+                .filter(|(created, drawn)| {
+                    *created != session.created_at || *drawn > session.transcript
+                })
+                .map(|_| session.name.clone())
+        })
+        .collect();
+    for name in invalid {
+        ui.sink().forget(&name);
+        client.declare_empty(&name);
     }
 }
 
@@ -104,21 +107,29 @@ pub async fn answer_transcripts(
     let Some(open) = link else {
         return;
     };
-    let behind: Vec<String> = client.behind().into_iter().map(|(name, _)| name).collect();
-    for name in behind {
-        if !ui.drawn().iter().any(|drawn| *drawn == name) {
-            continue;
-        }
-        // The copy on disk is what the window shows first: a client that kept the
-        // server's state does not ask for rows it can already draw. Only the rows
-        // it is short of go over the wire.
-        let count = ui.room_of(&name).max(1).saturating_mul(16).clamp(16, 600);
-        let mut held = ui.events(&name, u64::MAX, count);
-        if !held.is_empty() {
+    for name in ui.drawn().to_vec() {
+        if client.needs_restore(&name)
+            && let Some((created, drawn)) = ui.stamp_of(&name)
+            && drawn >= client.visible_floor(&name, ui.room_of(&name))
+        {
+            let first = client.visible_floor(&name, ui.room_of(&name));
+            let mut held = ui.events(
+                &name,
+                (drawn.max(0) as u64).saturating_add(1),
+                ui.room_of(&name).max(1),
+            );
+            held.retain(|(seq, _)| *seq >= first as u64);
             held.reverse();
-            let mut sink = ui.sink();
-            for (_, event) in held {
-                client.handle_event(event, &mut *sink);
+            if let Some((floor, _)) = held.first() {
+                let floor = *floor as i64;
+                {
+                    let mut sink = ui.sink();
+                    sink.clear(&name);
+                    for (_, event) in held {
+                        client.handle_event(event, &mut *sink);
+                    }
+                }
+                client.declare_drawn(&name, created, drawn, Some(floor));
             }
         }
         let Some(message) = client.ask_transcript(&name, ui.room_of(&name)) else {
@@ -149,41 +160,37 @@ pub async fn answer_older(
     let Some(open) = link else {
         return;
     };
-    for name in std::mem::take(owed) {
-        // The transcript's own first row: there is nothing above it to read.
-        if ui.floor_of(&name).is_some_and(|floor| floor <= 1) {
+    let names: std::collections::BTreeSet<String> = std::mem::take(owed).into_iter().collect();
+    for name in names {
+        if client.waiting(&name) {
+            owed.push(name);
             continue;
         }
-        // The local copy first: the rows above the oldest this window holds are in
-        // the journal, numbered. Replayed by the code that drew them the first time,
-        // so a page read from disk is the page the server would have sent.
-        if let Some(floor) = ui.floor_of(&name).map(|floor| floor.max(1) as u64) {
-            let count = ui.room_of(&name).max(1).saturating_mul(16).clamp(16, 600);
-            let mut held = ui.events(&name, floor, count);
-            // Only the run that touches the window: a row behind a gap is the
-            // copy's, not this page's.
-            let mut touch = floor.saturating_sub(1);
-            held.retain(|(seq, _)| {
-                let keep = *seq == touch;
-                if keep {
-                    touch = touch.saturating_sub(1);
-                }
-                keep
-            });
-            if !held.is_empty() {
-                held.reverse();
-                let start = held[0].0;
+        let Some(floor) = client.drawn_floor(&name) else {
+            continue;
+        };
+        if floor <= 1 {
+            continue;
+        }
+        if let Some(((created, through), first)) = ui.stamp_of(&name).zip(ui.floor_of(&name))
+            && through >= floor - 1
+            && first < floor
+        {
+            let held = ui.events(&name, floor as u64, ui.room_of(&name).max(1));
+            let mut held: Vec<_> = held
+                .into_iter()
+                .filter(|(seq, _)| *seq >= first as u64)
+                .collect();
+            held.reverse();
+            if let Some((start, _)) = held.first() {
+                let start = *start as i64;
                 let mut page = crate::Page::default();
                 for (_, event) in held {
                     client.handle_event(event, &mut page);
                 }
-                if !page.rows.is_empty() {
-                    let (created, drawn) = ui.stamp_of(&name).unwrap_or((0, 0));
-                    let mut sink = ui.sink();
-                    sink.older_page(&name, &page.rows);
-                    sink.landed(&name, created, drawn, start as i64);
-                    continue;
-                }
+                ui.sink().older_page(&name, &page.rows);
+                client.extend_drawn(&name, created, start, floor - 1);
+                continue;
             }
         }
         // Anchored at the row the window is short of; the pane's height is only

@@ -85,18 +85,12 @@ stem), and nothing there is about a tool:
 spawn = ["--norc", "--noprofile"]
 write = "{{input}}; echo {{sentinel}}$?\n"
 until = "{{sentinel}}"
-
-[channel.GONGGA_CLI]
-kind = "cmd"
 ```
 
-`kind` is `program` unless it says `cmd`; `spawn` is what the program starts with when
-a call gives no words of its own; `write` and `until` are the framing, and
-`exit_from_marker` says the marker's tail carries the status. The table is named for
-the noun it describes, not for a category of helper: an earlier draft called it `util`,
-which said nothing about what it held, and `[channel.*]` is also what makes a `cmd`
-entry honest -- a `cmd` is a channel this server answers itself, so it belongs beside
-the ones it starts.
+`spawn` is what the program starts with when a call gives no words of its own;
+`write` and `until` are the framing, and `exit_from_marker` says the marker's tail
+carries the status. The table is named for the noun it describes, not for a category
+of helper: an earlier draft called it `util`, which said nothing about what it held.
 
 A name the table does not mention is raw: started with the call's own words, framed by
 whatever `until` the call states, and by no marker when it states none. `bash` is not raw:

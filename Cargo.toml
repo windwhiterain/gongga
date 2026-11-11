@@ -15,7 +15,7 @@ members = [
 # `crates/bundle` is the distribution, not a library anybody links: a plain
 # `cargo build`/`check`/`test` must not compile a second copy of the whole
 # dependency graph into its payload. Named here so `--workspace` still reaches it.
-default-members = ["crates/protocol", "crates/skill", "crates/client", "crates/console", "crates/lock", "crates/server", "crates/tui", "crates/bridge"]
+default-members = ["crates/protocol", "crates/skill", "crates/client", "crates/console", "crates/lock", "crates/server", "crates/tui", "crates/bridge", "crates/relay"]
 
 [workspace.package]
 version = "0.2.0"

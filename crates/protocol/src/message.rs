@@ -112,6 +112,12 @@ pub enum ServerMessage {
         seq: Option<u64>,
         event: Event,
     },
+    /// A command's stored transcript row; its number is never a stream cursor.
+    Row {
+        id: u64,
+        seq: Option<u64>,
+        event: Event,
+    },
     /// An event whose `t` this build does not know, or whose shape it cannot read.
     ///
     /// # Invariant
@@ -122,6 +128,8 @@ pub enum ServerMessage {
     Unknown {
         /// The event exactly as it arrived, so a front-end can pass it on.
         event: serde_json::Value,
+        #[serde(default)]
+        seq: Option<u64>,
         /// Why this build could not read it: what a reader needs to tell a newer
         /// server from a corrupt frame.
         why: String,
@@ -1325,10 +1333,11 @@ fn unrecognised_event(bytes: &[u8]) -> Option<ServerMessage> {
     if value.get("t").and_then(|t| t.as_str()) != Some("event") {
         return None;
     }
-    let event = value.get("v")?.clone();
-    // An event is an object with a tag of its own; anything else is not one.
+    let envelope = value.get("v")?;
+    let event = envelope.get("event")?.clone();
     event.get("t").and_then(|t| t.as_str())?;
     Some(ServerMessage::Unknown {
+        seq: envelope.get("seq").and_then(|seq| seq.as_u64()),
         event,
         why: "this build does not know that kind of event".to_string(),
     })

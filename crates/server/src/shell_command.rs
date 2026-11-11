@@ -11,6 +11,9 @@ const CLI: &str = "gongga-cli";
 /// The server's own name, the program this one is.
 const SERVER: &str = "gongga-server";
 
+/// The name of the program that holds a channel: the third half of the pair.
+const RELAY: &str = "gongga-relay";
+
 /// The POSIX name: bash runs this file by its `#!`, which a `.cmd` cannot be.
 const SH: &str = "#!/bin/sh\n\
 # gongga-cli: the harness's command line, in Python. The server writes this file.\n\
@@ -51,6 +54,11 @@ pub fn ensure_pair(home: &Path) -> Option<PathBuf> {
     if let Some(source) = server_source() {
         place(&bin, SERVER, &source);
     }
+    // Beside the server, never left out: a home whose `bin` holds the server and not
+    // the relay is a pair that looks installed and cannot start a channel.
+    if let Some(source) = relay_source() {
+        place(&bin, RELAY, &source);
+    }
     // The command line is this home's Python: what a shell needs is a name for it.
     for (name, body) in SHIM {
         let _ = write(&bin, name, body);
@@ -61,6 +69,28 @@ pub fn ensure_pair(home: &Path) -> Option<PathBuf> {
 /// The server running now: the program that is asking.
 fn server_source() -> Option<PathBuf> {
     std::env::current_exe().ok().filter(|me| me.is_file())
+}
+
+/// Where the relay this server is paired with lives, before it is placed in `bin`.
+///
+/// # Invariant
+///
+/// The same three answers, in the same order, as the home's own `bin` lookup: an
+/// explicit `GONGGA_RELAY_BIN`, the program beside this one (a build tree and an
+/// install both keep the pair together), then nothing -- a home that has one in `bin`
+/// needs no source. `Channels` asks this function too, so the two cannot disagree
+/// about which relay this server means.
+pub(crate) fn relay_source() -> Option<PathBuf> {
+    if let Some(named) = std::env::var_os("GONGGA_RELAY_BIN") {
+        let named = PathBuf::from(named);
+        if named.is_file() {
+            return Some(named);
+        }
+    }
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|me| me.parent().map(|dir| dir.join(file_name(RELAY))));
+    beside.filter(|path| path.is_file())
 }
 
 /// One shim in `bin`, rewritten only when its bytes differ.

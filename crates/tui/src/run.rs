@@ -162,6 +162,7 @@ fn draw(sink: &mut TuiSink<'_>, frame: RenderMessage) {
         } => sink.relabel(&window, &key, &tag, kind),
         RenderMessage::Forget { window } => sink.forget(&window),
         RenderMessage::Clear { window } => sink.clear(&window),
+        RenderMessage::Rewind { window } => sink.0.rewind(&window),
         RenderMessage::Stopped { session, failed } => sink.stopped(&session, failed),
         // The control frames were answered by `apply_frame`.
         RenderMessage::Draft { .. }

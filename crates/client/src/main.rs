@@ -66,6 +66,8 @@ struct PipeFrontend {
     server: Option<Server>,
     sticky: Option<String>,
     draft: bool,
+    layout: Option<Layout>,
+    status: Option<String>,
 }
 
 impl PipeFrontend {
@@ -83,13 +85,25 @@ impl PipeFrontend {
             server: None,
             sticky: None,
             draft: false,
+            layout: None,
+            status: None,
         }
     }
 
     /// Puts one frame on the pipe. No cap and no `try_send`: dropping a frame
     /// would lose a line the operator is waiting for.
     fn send(&mut self, message: RenderMessage) {
+        if let RenderMessage::Status { text } = &message {
+            if self.status.as_ref() == Some(text) {
+                return;
+            }
+            self.status = Some(text.clone());
+        }
         if let RenderMessage::Layout { layout } = &message {
+            if self.layout.as_ref() == Some(layout) {
+                return;
+            }
+            self.layout = Some(layout.clone());
             self.journal.begin_frame();
             for name in &layout.shown {
                 self.journal.mark_drawn(name);
@@ -100,9 +114,6 @@ impl PipeFrontend {
             }
         }
         if let RenderMessage::Forget { window } = &message {
-            // The window's view starts empty; its journal does not. The copy is the
-            // client's record of what the server said, so a refill drops the facts
-            // and keeps the rows -- they are exactly what the next frame reads back.
             self.journal.forget(window);
         }
         match encode_frame(&message) {
@@ -225,6 +236,8 @@ impl Frontend for PipeFrontend {
     fn repoint(&mut self, client_home: &Path, endpoint: &str) {
         self.journal.repoint(client_home, endpoint);
         self.roster.repoint(client_home, endpoint);
+        self.layout = None;
+        self.status = None;
         self.send(RenderMessage::Repoint {
             endpoint: endpoint.to_string(),
         });

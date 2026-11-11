@@ -103,7 +103,7 @@ pub enum Origin {
     },
     /// No client asked: a signal reached this process, or the process it follows ended.
     Signal { reason: String },
-    /// A tool ran it: `exec` on a name the config calls a cmd (`GONGGA_CLI`).
+    /// A tool ran it, through the command layer.
     ///
     /// # Invariant
     ///
@@ -2243,9 +2243,15 @@ fn replay_transcript(
         let rows = d
             .store
             .messages_between(session.id(), window.first, window.last)?;
-        Ok::<_, anyhow::Error>((rows, session.open_parts(), window.first))
+        let through = window.last.min(last);
+        let open = if through == last {
+            session.open_parts()
+        } else {
+            Vec::new()
+        };
+        Ok::<_, anyhow::Error>((rows, open, window.first, through))
     });
-    let (read, open, first) = match read {
+    let (read, open, first, through) = match read {
         Ok(t) => t,
         Err(e) => return Outcome::err(e.to_string()),
     };
@@ -2284,6 +2290,8 @@ fn replay_transcript(
             "session": name,
             "status": read.status,
             "last_seq": read.last_seq,
+            "first_seq": first,
+            "through_seq": through,
             "as_of": as_of,
             "replayed": true,
         }),

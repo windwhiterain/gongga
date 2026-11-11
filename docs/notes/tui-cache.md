@@ -38,9 +38,9 @@ The pid is in the file name. Consequence: two windows on one machine never appen
 the same file, because they are two pids; and a restart takes over the file the dead
 process left, because `cli::server::alive` says it is dead.
 
-Asking is the expensive half: `alive` starts a process on Windows. `Ask` answers once
-per pid for one walk of the directory, so a claim that finds five files of one dead
-window asks the machine once, not five times.
+On Windows, `alive` uses `OpenProcess` and a nonblocking wait rather than spawning
+`tasklist`. An access error is conservatively treated as alive. `Ask` memoizes each
+pid within one directory walk.
 
 `Cache::claim` runs once, at construction, over the directory: for each window, keep
 the file if it is already mine; otherwise, if the newest file's writer is gone, rename
@@ -100,10 +100,14 @@ because the server is about to send that tail again. The replay honours it on th
 way forward: `Log::cut_tail` keeps the blocks below the stamp and drops the rest,
 including the half-written block that no row accounts for.
 
-Both changed the journal's shape, so `VERSION` is 2: an older build cannot name a
-`Stamp` record and, by the framing's own rule, cannot read past it. Journals from
-before this are therefore not read — a window's scrollback from an older build is
-lost once, and what it draws from then on is stamped.
+`VERSION` is 3. Earlier journals mixed global stream positions with transcript
+row numbers and cannot substantiate cached coverage. An incompatible or torn
+journal is reset as a cache; the server's transcript is untouched.
+
+The current client writes fetched `Event` rows by transcript number. A lazy ordered
+sequence-to-offset index returns rows in transcript order, deduplicates repeated
+writes, and is updated incrementally. Stamp and floor reads stop at invalidation
+boundaries. Record lengths must fit the file before allocation.
 
 ## Record::Note and Record::Clear — what the window said, and where its view starts
 
