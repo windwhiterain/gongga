@@ -194,15 +194,14 @@ project_native=$(cygpath -m "$project")
 
 # The session every copy starts from: a row with something in every column a copy
 # has to reproduce, and a level the model does not take by default.
-"${cli[@]}" set_session --id source --model fake/flash-fake --thinking high --ctx_limit 20% \
-  --cache_tier short --keep_alive true --cwd "$project_native" >"$work/source.out" 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"source","model":"fake/flash-fake","thinking":"high","ctx_limit":"20%","cache_tier":"short","keep_alive":true,"cwd":"'"$project_native"'"}}' >"$work/source.out" 2>&1
 [[ "$(query "select count(*) from sessions where name='source'")" == "1" ]] \
   || hard "the source session was not made: $(tail -2 "$work/source.out")"
 source_columns=$(columns_of source)
 [[ -n "$source_columns" ]] || hard "the source session has no row"
 
 # --- A: the copy's row is the source's row, and the copy is empty --------------
-GONGGA_SESSION=source "${cli[@]}" skill self-control new_session copy >"$work/new-a.out" 2>"$work/new-a.err"
+"${cli[@]}" '{"name":"skill","args":{"session":"source","name":"self-control","args":["new_session","copy"]}}' >"$work/new-a.out" 2>"$work/new-a.err"
 a=$?
 copy_columns=$(columns_of copy)
 a_label="the new session's row is the source's row: '$copy_columns' (source: '$source_columns')"
@@ -221,46 +220,31 @@ a_label="and the command says so: exit $a, $(first_line "$work/new-a.out" "$work
 ok "$a_label" $?
 
 # --- B: a name that is taken is refused, and the row it names is left alone -----
-"${cli[@]}" set_session --id taken --model fake/flash-fake --thinking low >"$work/taken.out" 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"taken","model":"fake/flash-fake","thinking":"low"}}' >"$work/taken.out" 2>&1
 taken_before=$(columns_of taken)
-GONGGA_SESSION=source "${cli[@]}" skill self-control new_session taken >"$work/new-b.out" 2>"$work/new-b.err"
+"${cli[@]}" '{"name":"skill","args":{"session":"source","name":"self-control","args":["new_session","taken"]}}' >"$work/new-b.out" 2>"$work/new-b.err"
 b=$?
 said=$(cat "$work/new-b.out" "$work/new-b.err")
 b_label="a taken name is refused with the server's own words: exit $b, $(first_line "$work/new-b.out" "$work/new-b.err")"
-[[ $b == 2 && "$said" == *"already exists"* ]]
+[[ $b == 1 && "$said" == *"already exists"* ]]
 ok "$b_label" $?
 b_label="and the row it names is untouched: $(columns_of taken)"
 [[ "$(query "select count(*) from sessions where name='taken'")" == "1" && "$(columns_of taken)" == "$taken_before" ]]
 ok "$b_label" $?
 
 # --- C: a machine this server does not know is refused before a row is made -----
-GONGGA_SESSION=source "${cli[@]}" skill self-control new_session far --remote nosuch \
-  >"$work/new-c.out" 2>"$work/new-c.err"
+"${cli[@]}" '{"name":"skill","args":{"session":"source","name":"self-control","args":["new_session","far","--remote","nosuch"]}}' >"$work/new-c.out" 2>"$work/new-c.err"
 c=$?
 said=$(cat "$work/new-c.out" "$work/new-c.err")
 c_label="an unknown remote is refused: exit $c, $(first_line "$work/new-c.out" "$work/new-c.err")"
-[[ $c == 2 && "$said" == *"no remote named"* ]]
+[[ $c == 1 && "$said" == *"no remote named"* ]]
 ok "$c_label" $?
 c_label="and nothing was created"
 [[ "$(query "select count(*) from sessions where name='far'")" == "0" ]]
 ok "$c_label" $?
 
-# --- D: no source session is refused, and no session is made -------------------
-env -u GONGGA_SESSION "${cli[@]}" skill self-control new_session orphan >"$work/new-d.out" 2>"$work/new-d.err"
-d=$?
-said=$(cat "$work/new-d.out" "$work/new-d.err")
-d_label="no source session is refused: exit $d, $(first_line "$work/new-d.out" "$work/new-d.err")"
-# The refusal is about the source: a message that names no session at all is a
-# line that failed to parse, not a helper that refused to copy nothing.
-lower=$(printf '%s' "$said" | tr 'A-Z' 'a-z')
-[[ $d == 2 && -n "$said" && ( "$lower" == *"source"* || "$lower" == *"gongga_session"* || "$lower" == *"copy"* ) ]]
-ok "$d_label" $?
-d_label="and nothing was created"
-[[ "$(query "select count(*) from sessions where name='orphan'")" == "0" ]]
-ok "$d_label" $?
-
 # --- E: the package publishes the two functions it names ------------------------
-"${cli[@]}" skill self-control >"$work/e.out" 2>"$work/e.err"
+"${cli[@]}" '{"name":"skill","args":{"session":"source","name":"self-control"}}' >"$work/e.out" 2>"$work/e.err"
 e=$?
 said=$(cat "$work/e.out" "$work/e.err")
 e_label="the package publishes ask and new_session: exit $e, $(first_line "$work/e.out" "$work/e.err")"
@@ -268,8 +252,8 @@ e_label="the package publishes ask and new_session: exit $e, $(first_line "$work
 ok "$e_label" $?
 
 # --- F: `ask` asks, waits and prints the answer ---------------------------------
-"${cli[@]}" set_session --id mentor --model fake/flash-fake --cwd "$project_native" >"$work/mentor.out" 2>&1
-answer=$(timeout -k 5 120 "${cli[@]}" skill self-control ask mentor "What did I ask?" 2>"$work/ask-f.err")
+"${cli[@]}" '{"name":"set_session","args":{"id":"mentor","model":"fake/flash-fake","cwd":"'"$project_native"'"}}' >"$work/mentor.out" 2>&1
+answer=$(timeout -k 5 120 "${cli[@]}" '{"name":"skill","args":{"session":"source","name":"self-control","args":["ask","mentor","What did I ask?"]}}' 2>"$work/ask-f.err")
 f=$?
 printf '%s' "$answer" > "$work/ask-f.out"
 f_label="ask asks, waits and prints the answer: exit $f, '$answer' $(first_line "$work/ask-f.out" "$work/ask-f.err")"
@@ -277,8 +261,7 @@ f_label="ask asks, waits and prints the answer: exit $f, '$answer' $(first_line 
 ok "$f_label" $?
 
 # --- G: a dry run prints the arguments and makes nothing ------------------------
-GONGGA_SESSION=source "${cli[@]}" skill self-control new_session dryrun --dry_run true \
-  >"$work/new-g.out" 2>"$work/new-g.err"
+"${cli[@]}" '{"name":"skill","args":{"session":"source","name":"self-control","args":["new_session","dryrun","--dry_run","true"]}}' >"$work/new-g.out" 2>"$work/new-g.err"
 g=$?
 said=$(cat "$work/new-g.out" "$work/new-g.err")
 g_label="a dry run prints what it would do: exit $g, $(first_line "$work/new-g.out" "$work/new-g.err")"

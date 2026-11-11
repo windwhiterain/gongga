@@ -143,7 +143,7 @@ def cli(*args):
 def probe(name, tries=25):
     """A third dial answers whether the shared server knows this session."""
     for _ in range(tries):
-        r = cli("get_messages", "--session", name)
+        r = cli(json.dumps({"name": "get_messages", "args": {"session": name}}))
         if r.returncode == 0:
             return True
         time.sleep(0.2)

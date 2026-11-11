@@ -8,6 +8,10 @@
 # One line of verdict at the end; `-v` prints the report the monitor was given.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="$root/target/debug"
 work="$root/.dev/selftest"
@@ -204,12 +208,12 @@ cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
 # Captured, not piped into `grep -q`: grep exits on the match, the command layer
 # takes SIGPIPE writing the rest, and `pipefail` reports that instead.
-refusal=$("${cli[@]}" set_session --id '@mine' --model dead/flash-dead --cwd "$root" 2>&1)
+refusal=$("${cli[@]}" '{"name":"set_session","args":{"id":"@mine","model":"dead/flash-dead","cwd":"'"$(native "$root")"'"}}' 2>&1)
 [[ "$refusal" == *"names beginning with"* ]]
 ok "a person cannot take a name in the harness's namespace" $?
 
-"${cli[@]}" set_session --id broken --model dead/flash-dead --cwd "$root" >/dev/null 2>&1
-"${cli[@]}" send_message --session broken --message "say hello" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"broken","model":"dead/flash-dead","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"broken","message":"say hello"}}' >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q 'turn end session=broken' "$log" && break; sleep 0.5; done
 grep -q 'turn end session=broken outcome=Failed' "$log"
 ok "a session whose model is refused ends in error" $?

@@ -12,6 +12,10 @@
 # One line of verdict at the end.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="${CACHE_SELFTEST_BIN:-$root/target/debug}"
 work="$root/.dev/selftest"
@@ -142,31 +146,31 @@ server_pid=$(child_pid)
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
 # dyn: a script with no static rows makes both printed models selectable.
-"${cli[@]}" set_session --id s1 --model dyn/dyn-a --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"s1","model":"dyn/dyn-a","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 ok "a scripted model is selectable with no static rows" $?
-"${cli[@]}" set_session --id s1b --model dyn/dyn-b --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"s1b","model":"dyn/dyn-b","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 ok "the second scripted model is selectable" $?
-missing=$("${cli[@]}" set_session --id sx --model dyn/nope --cwd "$root" 2>&1)
+missing=$("${cli[@]}" '{"name":"set_session","args":{"id":"sx","model":"dyn/nope","cwd":"'"$(native "$root")"'"}}' 2>&1)
 [[ "$missing" == *"dyn-a"* && "$missing" == *"dyn-b"* ]]
 ok "an unknown id is refused and the known scripted ids are listed" $?
 
 # merge: static rows and scripted rows join; the shared id keeps the static row.
-"${cli[@]}" set_session --id s2 --model merge/static-only --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"s2","model":"merge/static-only","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 ok "a static-only model still resolves beside a script" $?
-"${cli[@]}" set_session --id s3 --model merge/scripted --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"s3","model":"merge/scripted","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 ok "a script-only model resolves alongside static rows" $?
-"${cli[@]}" set_session --id s4 --model merge/shared --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"s4","model":"merge/shared","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 ok "the shared id resolves (static row kept, not duplicated)" $?
 
 # fail: a nonzero exit leaves the static row usable and does not kill the server.
-"${cli[@]}" set_session --id s5 --model fail/keep --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"s5","model":"fail/keep","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 ok "a failed script leaves the static model usable" $?
 grep -q "model script failed" "$log"
 ok "the failed script is logged as a warning" $?
 
 # e2e: a completion on a scripted model reaches the fake endpoint.
-"${cli[@]}" set_session --id e2e --model dyn/dyn-a --cwd "$root" >/dev/null 2>&1
-"${cli[@]}" send_message --session e2e --message "hello dynamic" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"e2e","model":"dyn/dyn-a","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"e2e","message":"hello dynamic"}}' >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q 'turn end session=e2e' "$log" && break; sleep 0.3; done
 grep -q '"model":"dyn-a"' "$FAKE_LLM_DUMP"
 ok "a completion on a scripted model sends to the endpoint" $?

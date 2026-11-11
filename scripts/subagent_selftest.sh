@@ -18,9 +18,13 @@
 # One server lifecycle, one fake endpoint, one temporary home. `--keep` leaves the
 # home for a failing run; the default removes it.
 set -uo pipefail
+
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
 # This run owns its session names. An agent's shell exports its own `GONGGA_SESSION`,
 # and a script that inherits it asks *this* home's server about a session it has
-# never heard of -- which reads as a broken `skill ls`, not as a leaked variable.
+# never heard of -- which reads as a broken `ls_skill`, not as a leaked variable.
 unset GONGGA_SESSION
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -205,19 +209,35 @@ cli=("$home/bin/gongga-cli")
 # The name is matched whole: `probe` must not count `probe/impl`'s turns.
 await() { local n; for _ in $(seq 1 240); do n=$(grep -cE "turn end session=$1( |$)" "$log"); [[ $n -ge $2 ]] && return 0; sleep 0.5; done; echo "  note: $1 has $n turn end(s), wanted $2" >&2; return 1; }
 turns_of() { grep -cE "turn end session=$1( |$)" "$log"; }
+# A command's answer, out of the event the server sent: a `skill` call reports what
+# its entry wrote inside the `cmd_result` row, and the name it printed is that
+# message's first line.
+answer() {
+  python -c 'import json,sys
+text = ""
+for line in sys.stdin:
+    if "cmd_result" not in line:
+        continue
+    try:
+        text = json.loads(line)["v"]["event"].get("message") or ""
+    except Exception:
+        text = ""
+first = text.splitlines()[0] if text.strip() else ""
+sys.stdout.write(first)'
+}
 
-"${cli[@]}" set_session --id probe --model fake/flash-fake --cwd "$project" --ctx_limit 20% >"$work/parent.out" 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","cwd":"'"$(native "$project")"'","ctx_limit":"20%"}}' >"$work/parent.out" 2>&1
 
 # The parent speaks first, and this one message is what its head will carry for
 # ever: `prompt_in_force` writes prose and index once and returns the row after.
-"${cli[@]}" send_message --session probe --message 'Start here with @file(early.md) please.' >"$work/parent-first.out" 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"probe","message":"Start here with @file(early.md) please."}}' >"$work/parent-first.out" 2>&1
 await probe 1 || hard "the parent's first turn never ended"
 rooted=$(query "select json_extract(display,'\$.rooted') from messages where session_id=(select id from sessions where name='probe') and kind='system'")
 [[ "$rooted" == '["@file(early.md)"]' ]]
 ok "0 the parent's head is stamped with its first message's references: $rooted" $?
 
 # --- A: one spawn, one session under the caller's name, one subscription ---------
-name=$(GONGGA_SESSION=probe "${cli[@]}" skill subagent spawn impl --cwd "$project" --model fake/flash-fake --context_limit 20% 2>"$work/spawn-a.err")
+name=$("${cli[@]}" '{"name":"skill","args":{"session":"probe","name":"subagent","args":["spawn","impl","--cwd","'"$(native "$project")"'","--model","fake/flash-fake","--context_limit","20%"]}}' 2>"$work/spawn-a.err" | answer)
 [[ "$name" == "probe/impl" ]]; ok "A spawn names the session <caller>/<role>: $name" $?
 armed=$(query "select session, pattern, persistent from subscriptions")
 [[ "$armed" == 'probe|^turn_end:probe/impl$|1' ]]
@@ -229,9 +249,7 @@ taken_ctx=$(query "select context_limit from sessions where name='probe/impl'")
 ok "A its --context_limit was taken: $taken_ctx" $?
 
 # --- B: the same role twice is a new segment, never a shared transcript ----------
-GONGGA_SESSION=probe "${cli[@]}" skill subagent spawn impl --model fake/flash-fake \
-  >"$work/spawn-b.out" 2>"$work/spawn-b.err"
-second=$(cat "$work/spawn-b.out")
+second=$("${cli[@]}" '{"name":"skill","args":{"session":"probe","name":"subagent","args":["spawn","impl","--model","fake/flash-fake"]}}' 2>"$work/spawn-b.err" | answer)
 # The label is built before the check, never inside it: a command substitution
 # among `ok`'s arguments runs first and leaves its own status where the check's
 # was, so every check below reads `$?` into a variable and prints that.
@@ -241,17 +259,14 @@ ok "B a taken name becomes a new segment: $second $b_said" $?
 [[ "$(query "select count(*) from subscriptions where session='probe'")" == "2" ]]
 ok "B and it is separately subscribed" $?
 
-# --- C and D: the two refusals ------------------------------------------------
-GONGGA_SESSION=probe "${cli[@]}" skill subagent spawn a/b >/dev/null 2>"$work/spawn-c.err"; c=$?
-c_said=$(head -1 "$work/spawn-c.err")
-[[ $c == 2 && "$(grep -c 'one segment' "$work/spawn-c.err")" -ge 1 ]]
+# --- C: the refusal, and nothing left behind ------------------------------------
+"${cli[@]}" '{"name":"skill","args":{"session":"probe","name":"subagent","args":["spawn","a/b"]}}' >"$work/spawn-c.out" 2>"$work/spawn-c.err"; c=$?
+c_said=$(answer < "$work/spawn-c.out")
+grep -q 'one segment' "$work/spawn-c.out" "$work/spawn-c.err"; c_refused=$?
+[[ $c == 1 && $c_refused == 0 ]]
 ok "C a multi-segment role is refused: $c_said" $?
 [[ "$(query "select count(*) from sessions where name like 'probe/a%'")" == "0" ]]
 ok "C and nothing is created" $?
-env -u GONGGA_SESSION "${cli[@]}" skill subagent spawn lost >/dev/null 2>"$work/spawn-d.err"; d=$?
-d_said=$(head -1 "$work/spawn-d.err")
-[[ $d == 2 && "$(grep -c 'GONGGA_SESSION is not set' "$work/spawn-d.err")" -ge 1 ]]
-ok "D no GONGGA_SESSION is refused: $d_said" $?
 
 # --- E: a caller that is not a session is refused, and nothing is left ----------
 # The child's configuration is copied from the caller's own row, so a caller that
@@ -260,16 +275,16 @@ ok "D no GONGGA_SESSION is refused: $d_said" $?
 # nothing half-made is left behind. (The create-then-subscribe rollback has no
 # reachable trigger left: with the caller's row present, only the server can make
 # `subscribe` fail, and `spawn` names every argument it passes.)
-GONGGA_SESSION=ghost "${cli[@]}" skill subagent spawn lost --model fake/flash-fake >/dev/null 2>"$work/spawn-e.err"; e=$?
-e_said=$(tail -1 "$work/spawn-e.err")
-[[ $e == 2 && "$(grep -c 'no session named' "$work/spawn-e.err")" -ge 1 ]]
+"${cli[@]}" '{"name":"skill","args":{"session":"ghost","name":"subagent","args":["spawn","lost","--model","fake/flash-fake"]}}' >"$work/spawn-e.out" 2>"$work/spawn-e.err"; e=$?
+e_said=$(answer < "$work/spawn-e.out")
+grep -q 'no session named' "$work/spawn-e.out" "$work/spawn-e.err"; e_refused=$?
+[[ $e == 1 && $e_refused == 0 ]]
 ok "E a caller that is not a session is refused: $e_said" $?
 [[ "$(query "select count(*) from sessions where name='ghost/lost'")" == "0" ]]
 ok "E and nothing was created" $?
 
 # --- F and G: the brief, and the child's turn end reaching the parent ----------
-"${cli[@]}" send_message --session probe/impl --message \
-  'Implement @file(early.md), following @skill(late). Answer done.' >"$work/brief.out" 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"probe/impl","message":"Implement @file(early.md), following @skill(late). Answer done."}}' >"$work/brief.out" 2>&1
 await probe/impl 1 || hard "the child's turn never ended"
 kept=$(query "select json_extract(display,'\$.text') from messages where session_id=(select id from sessions where name='probe/impl') and kind='text' and display like '%@file%'" | head -1)
 [[ "$kept" == *"@file(early.md)"* && "$kept" == *"@skill(late)"* ]]
@@ -288,8 +303,7 @@ notice=$(query "select json_extract(display,'$.text') from messages where sessio
 # Counted before the send: this parent answers in milliseconds, so a count taken
 # after it may already include the turn being waited for.
 before=$(turns_of probe)
-"${cli[@]}" send_message --session probe --message \
-  'Also read @file(late.md) and @skill(late), then stop.' >"$work/later.out" 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"probe","message":"Also read @file(late.md) and @skill(late), then stop."}}' >"$work/later.out" 2>&1
 await probe $(( before + 1 )) || hard "the parent's second turn never ended"
 later=$(query "select json_extract(display,'\$.text') from messages where session_id=(select id from sessions where name='probe') and kind='text' and display like '%late.md%'")
 [[ "$later" == *"@file(late.md)"* && "$later" == *"@skill(late) ("*"late"*"SKILL.md)"* ]]
@@ -318,10 +332,10 @@ ok "H and one request later there is still exactly one head row" $?
 # --- J: the pattern is anchored, so a grandchild's turn is not the grandparent's --
 # `probe` hears about `probe/impl`; `probe/impl/review` ends with `turn_end` about a
 # session whose name *starts with* that pattern's. Unanchored, `probe` would hear it.
-grand=$(GONGGA_SESSION=probe/impl "${cli[@]}" skill subagent spawn review --model fake/flash-fake 2>/dev/null)
+grand=$("${cli[@]}" '{"name":"skill","args":{"session":"probe/impl","name":"subagent","args":["spawn","review","--model","fake/flash-fake"]}}' 2>/dev/null | answer)
 [[ "$grand" == "probe/impl/review" ]]
 ok "J the caller is the parent, so a grandchild is <child>/<role>: $grand" $?
-"${cli[@]}" send_message --session "$grand" --message 'Answer with one word.' >"$work/grand.out" 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"'"$grand"'","message":"Answer with one word."}}' >"$work/grand.out" 2>&1
 await "$grand" 1 || hard "the grandchild's turn never ended"
 sleep 1
 [[ "$(query "select count(*) from messages where session_id=(select id from sessions where name='probe/impl') and kind='text' and display like '%probe/impl/review finished its turn%'")" == "1" ]]
@@ -330,7 +344,7 @@ ok "J its own parent is told exactly once" $?
 ok "J and the grandparent is not told at all" $?
 
 # --- K: deleting a session takes its own subscriptions, not its children's -------
-"${cli[@]}" del_session --path probe/impl >"$work/del.out" 2>&1
+"${cli[@]}" '{"name":"del_session","args":{"path":"probe/impl"}}' >"$work/del.out" 2>&1
 [[ "$(query "select count(*) from subscriptions where session='probe/impl'")" == "0" ]]
 ok "K the deleted session's subscriptions go with it" $?
 kept=$(query "select group_concat(pattern,' ') from subscriptions where session='probe'")
@@ -342,9 +356,9 @@ ok "K and its child session is still there, now unheard" $?
 # --- L: `wait` waits for the NEXT thing, and no subscription means it sits ------
 # 2.5 s is the bound the fake asks for, so a timeout is 2.5 s of wall clock and an
 # early answer is not: the two are told apart by time as well as by the words.
-"${cli[@]}" set_session --id alone --model waitfake/wait-fake >"$work/alone.out" 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"alone","model":"waitfake/wait-fake"}}' >"$work/alone.out" 2>&1
 started=$(date +%s%3N)
-"${cli[@]}" send_message --session alone --message 'open by waiting' >"$work/alone-msg.out" 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"alone","message":"open by waiting"}}' >"$work/alone-msg.out" 2>&1
 await alone 1 || hard "the waiting session's turn never ended"
 spent=$(( $(date +%s%3N) - started ))
 # The last result of that session, as one value: an `output` is multi-line, so a
@@ -360,15 +374,15 @@ ok "L with no subscription, wait sits to its timeout: $spent ms, '$waits'" $?
 # The parent has to be busy for the notice to be a queued row: it is inside its
 # first `wait` when the child finishes, so the tool returns early instead of timing out.
 start_wait_fake
-child_from_alone=$(GONGGA_SESSION=alone "${cli[@]}" skill subagent spawn impl --model waitfake/wait-fake 2>/dev/null)
+child_from_alone=$("${cli[@]}" '{"name":"skill","args":{"session":"alone","name":"subagent","args":["spawn","impl","--model","waitfake/wait-fake"]}}' 2>/dev/null | answer)
 [[ "$child_from_alone" == "alone/impl" ]]; ok "M a second parent gets its own child: $child_from_alone" $?
-"${cli[@]}" send_message --session alone --message 'wait while the child works' >"$work/alone-wait.out" 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"alone","message":"wait while the child works"}}' >"$work/alone-wait.out" 2>&1
 for _ in $(seq 1 100); do
   [[ $(query "select count(*) from messages where session_id=(select id from sessions where name='alone') and kind='tool_call'") -ge 2 ]] && break
   sleep 0.2
 done
 before=$(turns_of alone)
-"${cli[@]}" send_message --session "$child_from_alone" --message 'answer at once' >"$work/child-quick.out" 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"'"$child_from_alone"'","message":"answer at once"}}' >"$work/child-quick.out" 2>&1
 await "$child_from_alone" 1 || hard "the child's turn never ended"
 await alone $(( before + 1 )) || hard "the parent's waiting turn never ended"
 last=$(query "select json_extract(display,'\$.output') from messages where session_id=(select id from sessions where name='alone') and kind='tool_result' order by seq desc limit 1")
@@ -379,13 +393,13 @@ last_s=$(printf '%s' "$last" | head -1 | sed -n 's/^\([0-9][0-9]*\)\.[0-9]*s$/\1
 ok "M the child's turn end interrupts it: '$last'" $?
 
 # --- I: the skill is a package whose API is `spawn(role, ...)` -----------------
-here=$("${cli[@]}" skill ls 2>/dev/null | awk -F'\t' '$1=="subagent"{print $4}')
-[[ "$here" == *"subagent"* ]]
-ok "I skill ls gives the SKILL.md the package sits beside: $here" $?
-asked=$(env -u GONGGA_SESSION "${cli[@]}" skill run subagent 2>&1)
+here=$("${cli[@]}" '{"name":"ls_skill","args":{"session":"probe"}}' 2>/dev/null)
+[[ "$here" == *"subagent"* && "$here" == *"SKILL.md"* ]]
+ok "I ls_skill names the subagent, and the SKILL.md the package sits beside: $(printf '%s' "$here" | head -c 160)" $?
+asked=$("${cli[@]}" '{"name":"skill","args":{"session":"probe","name":"subagent"}}' 2>&1)
 [[ "$asked" == *"publishes: spawn"* ]]
 ok "I the package publishes one function, spawn" $?
-wrong=$(env -u GONGGA_SESSION "${cli[@]}" skill run subagent spawn 2>&1)
+wrong=$("${cli[@]}" '{"name":"skill","args":{"session":"probe","name":"subagent","args":["spawn"]}}' 2>&1)
 [[ "$wrong" == *"spawn(role"*"needs role"* ]]
 ok "I and calling it without a role is refused with its signature" $?
 

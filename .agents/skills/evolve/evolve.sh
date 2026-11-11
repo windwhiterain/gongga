@@ -770,11 +770,11 @@ a successor started from one with it -- run '$0 launch $stamp' and swap again"
   # answer lost, and a second one can reach the successor that has just bound.
   # So only that refusal is retried, and it is recognised by its own words.
   local out
-  if ! out="$("$CLI" cancel --keep_alive true 2>&1)"; then
+  if ! out="$("$CLI" '{"name":"cancel","args":{"keep_alive":true}}' 2>&1)"; then
     case "$out" in
-    *"has no argument --keep_alive"*)
+    *"keep_alive"*)
       echo "note: this server predates keep_alive; cancelling plainly" >&2
-      "$CLI" cancel
+      "$CLI" '{"name":"cancel","args":{}}'
       ;;
     *) echo "$out" >&2 ;;
     esac

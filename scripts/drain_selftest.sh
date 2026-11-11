@@ -3,6 +3,10 @@
 # not hold the process, and nothing unfinished may be owed to the next start.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="$root/target/debug"
 work="$root/.dev/selftest"
@@ -93,17 +97,17 @@ for _ in $(seq 1 300); do grep -q "listening (UDP) local=127.0.0.1:$port" "$log"
 grep -q "listening (UDP) local=127.0.0.1:$port" "$log" || { echo "FAIL · the server never listened"; exit 1; }
 
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
-created=$("${cli[@]}" set_session --id sleeper --model fake/flash-fake --cwd "$work" 2>&1)
+created=$("${cli[@]}" '{"name":"set_session","args":{"id":"sleeper","model":"fake/flash-fake","cwd":"'"$(native "$work")"'"}}' 2>&1)
 [[ "$created" == *'"ok":true'* ]] || { echo "FAIL · session not created: $created" >&2; exit 1; }
 
 # The payload leads: `--message <text> --name <session>` is the declared order.
-"${cli[@]}" send_message --message "run the slow command" --session sleeper >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"message":"run the slow command","session":"sleeper"}}' >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q "tool start session=sleeper" "$log" && break; sleep 0.2; done
 grep -q "tool start session=sleeper" "$log"
 ok "a turn is inside a 60s bash call" $?
 [[ $fails == 0 ]] || { echo "FAIL · the turn never started"; exit 1; }
 
-cancelled=$("${cli[@]}" cancel 2>&1)
+cancelled=$("${cli[@]}" '{"name":"cancel","args":{}}' 2>&1)
 [[ "$cancelled" == *'"ok":true'* ]]
 ok "cancel is acknowledged" $?
 

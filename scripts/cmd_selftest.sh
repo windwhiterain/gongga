@@ -6,6 +6,10 @@
 # One line of verdict at the end; `-v` prints each check.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # A fresh home installs nothing without a source, and the compiled default is a
 # network URL this machine may not reach: the content under test is this repo's own.
@@ -98,104 +102,90 @@ cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
 # The model never runs: no turn is started, so no provider is needed.
 
 # 1. Positional set_session.
-created=$("${cli[@]}" set_session --id main --model fake/flash-fake --cwd "$root" 2>&1)
+created=$("${cli[@]}" '{"name":"set_session","args":{"id":"main","model":"fake/flash-fake","cwd":"'"$(native "$root")"'"}}' 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "set_session main --model <model> --cwd <path>" $?
 say "$created"
 
 # 2. Sticky session fills the omitted first positional of del_session's sibling.
-sent=$("${cli[@]}" send_message --session main --message "hello there" 2>&1)
+sent=$("${cli[@]}" '{"name":"send_message","args":{"session":"main","message":"hello there"}}' 2>&1)
 [[ "$sent" == *'"ok":true'* ]]
 ok "send_message --session main <message>" $?
 
-# 3. Diagnosis: an unknown flag names the command's syntax.
-bad=$("${cli[@]}" send_message --session main --message hi --mesage x 2>&1)
-[[ "$bad" == *"has no argument --mesage"* && "$bad" == *"--message <text> --session <name>"* ]]
-ok "unknown flag diagnosed with the signature" $?
-say "$bad"
-
-# 4. Diagnosis: an extra word is refused with the signature.
-extra=$("${cli[@]}" del_session --path main stray 2>&1)
-[[ "$extra" == *'takes its arguments by name, and "stray" names none'* && "$extra" == *"--path <name>"* ]]
-ok "extra word diagnosed" $?
-say "$extra"
-
 # 5. get_messages names its session and reads the transcript back.
-got=$("${cli[@]}" get_messages --session main 2>&1)
+got=$("${cli[@]}" '{"name":"get_messages","args":{"session":"main"}}' 2>&1)
 [[ "$got" == *'hello there'* ]]
 ok "get_messages --session main (omitted range is the whole transcript)" $?
 
 # 6. `exec` as a command: a shell channel, named by `id`, started here.
-started=$("${cli[@]}" exec --session main --bin bash --id main/shell --wait 8000 2>&1)
+started=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"main/shell","wait":8000}}' 2>&1)
 [[ "$started" == *'"ok":true'* ]]
 ok "exec main --bin bash (a shell channel)" $?
 
 # 7. That one shell kept the cd between two calls: the file the first wrote is
 #    what the second reads.
-ran=$("${cli[@]}" exec --session main --id main/shell --input 'echo from-cmd > cmd-selftest.txt' --wait 8000 2>&1)
+ran=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"main/shell","input":"echo from-cmd > cmd-selftest.txt","wait":8000}}' 2>&1)
 [[ "$ran" == *'"ok":true'* ]]
 ok "a call writes through the session's shell" $?
 
-listed=$("${cli[@]}" exec --session main --id main/shell --input 'cat cmd-selftest.txt' --wait 8000 2>&1)
+listed=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"main/shell","input":"cat cmd-selftest.txt","wait":8000}}' 2>&1)
 [[ "$listed" == *"from-cmd"* ]]
 ok "the next call reads what that shell kept" $?
-"${cli[@]}" del_channel --session main --id main/shell >/dev/null 2>&1
+"${cli[@]}" '{"name":"del_channel","args":{"session":"main","id":"main/shell"}}' >/dev/null 2>&1
 
 # 8. An interpreter is a channel now: a name and the program, from the environment.
-made=$("${cli[@]}" new_channel --session main --id main/python --name python 2>&1)
+made=$("${cli[@]}" '{"name":"new_channel","args":{"session":"main","id":"main/python","name":"python"}}' 2>&1)
 [[ "$made" == *'"ok":true'* ]]
 ok "new_channel starts a python channel" $?
 # A REPL's read window lags one prompt: the write's answer is what the *next* read
 # sees, so the record is the channel's own log.
-"${cli[@]}" input_channel --session main --id main/python --input 'print(6 * 7)' --wait 8000 >/dev/null 2>&1
-"${cli[@]}" input_channel --session main --id main/python --input 'pass' --wait 8000 >/dev/null 2>&1
+"${cli[@]}" '{"name":"input_channel","args":{"session":"main","id":"main/python","input":"print(6 * 7)","wait":8000}}' >/dev/null 2>&1
+"${cli[@]}" '{"name":"input_channel","args":{"session":"main","id":"main/python","input":"pass","wait":8000}}' >/dev/null 2>&1
 grep -rq 42 "$home/channels" 2>/dev/null; py_rc=$?
 ok "and it answers 42, in its own log" $py_rc
-"${cli[@]}" del_channel --session main --id main/python >/dev/null 2>&1
+"${cli[@]}" '{"name":"del_channel","args":{"session":"main","id":"main/python"}}' >/dev/null 2>&1
 
 # 9. A subscription armed with a command; trigger_event fires it; the command runs
 #     in the session that armed it, and its log row is the record.
-sub=$(GONGGA_SESSION=main "${cli[@]}" subscribe --pattern '^cmd_ping$' \
-  --cmd '{"name": "trigger_event", "args": {"event": "sub_ping"}}' --id watcher \
-  --persistant true 2>&1)
+sub=$("${cli[@]}" '{"name":"subscribe","args":{"pattern":"^cmd_ping$","cmd":{"name":"trigger_event","args":{"event":"sub_ping"}},"session":"main","id":"watcher","persistant":true}}' 2>&1)
 [[ "$sub" == *'"ok":true'* ]]
 ok "subscribe watcher '^cmd_ping$' <cmd>" $?
 say "$sub"
 
-trig=$("${cli[@]}" trigger_event --event cmd_ping 2>&1)
+trig=$("${cli[@]}" '{"name":"trigger_event","args":{"event":"cmd_ping"}}' 2>&1)
 [[ "$trig" == *'"ok":true'* ]]
 ok "trigger_event cmd_ping" $?
 sleep 2
-seen=$("${cli[@]}" events --kind subscription --session main 2>&1)
+seen=$("${cli[@]}" '{"name":"events","args":{"kind":"subscription","session":"main"}}' 2>&1)
 [[ "$seen" == *"sub_ping"* ]]
 ok "the subscription's command ran in the session that armed it" $?
 say "$seen"
 
 # 10. The outcome is a log row the events command reads.
-row=$("${cli[@]}" events --kind subscription --session main 2>&1)
+row=$("${cli[@]}" '{"name":"events","args":{"kind":"subscription","session":"main"}}' 2>&1)
 { [[ "$row" == *"trigger_event"* ]] || [[ "$row" == *subscription* ]]; } && rc=0 || rc=1
 ok "the outcome is a subscription log row" $rc
 say "$row"
 
 # 11. del_subscription drops by name.
-dropped=$(GONGGA_SESSION=main "${cli[@]}" del_subscription --path watcher 2>&1)
+dropped=$(GONGGA_SESSION=main "${cli[@]}" '{"name":"del_subscription","args":{"path":"watcher"}}' 2>&1)
 [[ "$dropped" == *'"ok":true'* ]]
 ok "del_subscription watcher" $?
 
 # 12. A missed subscription name is a refusal.
-missed=$(GONGGA_SESSION=main "${cli[@]}" del_subscription --path watcher 2>&1)
+missed=$(GONGGA_SESSION=main "${cli[@]}" '{"name":"del_subscription","args":{"path":"watcher"}}' 2>&1)
 [[ "$missed" == *"no subscription named"* ]]
 ok "del_subscription refuses an unknown name" $?
 
 # 13. interrupt_session and the rest of the positional family answer.
-inter=$("${cli[@]}" interrupt_session --id main 2>&1)
+inter=$("${cli[@]}" '{"name":"interrupt_session","args":{"id":"main"}}' 2>&1)
 [[ "$inter" == *'"ok":true'* || "$inter" == *"not running"* || "$inter" == *"no turn"* ]]
 ok "interrupt_session main" $?
 say "$inter"
 
 # 14. The operation the window's gestures use crosses the wire: the protocol
 #     carries it beside the commands, and the server answers it like one.
-"${cli[@]}" set_session --id doomed --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"doomed","model":"fake/flash-fake","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$home/server.key")" delete_session --session doomed 2>&1)
 [[ "$probe" == *'"ok":true'* ]]
 ok "the delete_session operation is answered" $?
@@ -225,10 +215,6 @@ description: A body and nothing to run.
 ---
 # body only
 MD
-listed=$("${cli[@]}" 2>&1)
-[[ "$listed" == *"skill -- Run the"* ]]
-ok "the catalog carries skill (a tool registration, not a command of its own)" $?
-
 # A skill may be a Python package: no declared entry, the callable comes from
 # `__all__`, and the same contract is callable in-process.
 mkdir -p "$home/skills/echo-pkg"
@@ -246,18 +232,10 @@ def echo(*words):
 def code(fail: bool = False):
     return 2 if fail else None
 PY
-packed=$("${cli[@]}" skill --session main --name echo-pkg --args '["echo","a b","c"]' 2>&1)
+packed=$("${cli[@]}" '{"name":"skill","args":{"session":"main","name":"echo-pkg","args":["echo","a b","c"]}}' 2>&1)
 [[ "$packed" == *"argv: a b | c"* ]]
 ok "a package skill runs the function its API publishes" $?
 say "$packed"
-
-here=$(env -u GONGGA_SESSION "${cli[@]}" skill run echo-pkg echo x 2>&1)
-[[ "$here" == *"argv: x"* ]]
-ok "and the command layer runs the same package on this disk" $?
-
-refused=$(env -u GONGGA_SESSION "${cli[@]}" skill run echo-pkg nope 2>&1)
-[[ "$refused" == *"publishes: echo, code"* ]]
-ok "a function the package does not publish is refused with the list" $?
 
 inproc=$(python -c "
 import sys
@@ -291,44 +269,34 @@ except gongga.GonggaError as refused:
 ok "import gongga: a command per function, a typo caught here, a refusal raised" $rc
 say "$client"
 
-# `index_skill` is gone: the same table is `skill` with no name, and `skill ls` asks
-# the server for it when the shell names a session.
+# `index_skill` is gone: the same table is `ls_skill` on the server, and `skill` with
+# no name when a session's tool call asks for it.
 [[ "$listed" != *"index_skill"* ]]
 ok "the catalog no longer carries index_skill" $?
 
-verbs=$(GONGGA_SESSION=main "${cli[@]}" skill ls 2>&1)
+verbs=$("${cli[@]}" '{"name":"ls_skill","args":{"session":"main"}}' 2>&1)
 { [[ "$verbs" == *"argv-probe"* ]] && [[ "$verbs" == *"Prints its argv"* ]]; } && rc=0 || rc=1
-ok "skill ls asks the server, and carries the description" $rc
+ok "ls_skill asks the server, and carries the description" $rc
 say "$verbs"
 
-# A skill's own argv never leaves this layer: `--name` is the only word that does.
-local_run=$(env -u GONGGA_SESSION "${cli[@]}" skill run argv-probe "a b" 2>&1)
-[[ "$local_run" == *'[a b]'* && "$local_run" == *'exit status 3'* || "$local_run" == *'[a b]'* ]]
-ok "skill run <name> <args> runs the entry here, argv unread" $?
-
-# Without a session the same verb lists this machine's roots: a shell has no session.
-local_ls=$(env -u GONGGA_SESSION "${cli[@]}" skill ls 2>&1)
-[[ "$local_ls" == *"argv-probe"* ]]
-ok "skill ls without a session lists this machine's roots" $?
-
-probed=$("${cli[@]}" skill --session main --name argv-probe --args '["a b","$HOME","semi;colon"]' 2>&1)
+probed=$("${cli[@]}" '{"name":"skill","args":{"session":"main","name":"argv-probe","args":["a b","$HOME","semi;colon"]}}' 2>&1)
 { [[ "$probed" == *'[a b]'* ]] && [[ "$probed" == *'[$HOME]'* ]] && \
   [[ "$probed" == *'[semi;colon]'* ]] && [[ "$probed" == *'exit status 3'* ]] && \
   [[ "$probed" == *'"ok":false'* ]]; } && rc=0 || rc=1
 ok "skill <name> <args> passes the words unread and keeps the entry's exit code" $rc
 say "$probed"
 
-body=$("${cli[@]}" skill --session main --name body-only 2>&1)
+body=$("${cli[@]}" '{"name":"skill","args":{"session":"main","name":"body-only"}}' 2>&1)
 [[ "$body" == *"is a body and nothing to run"* ]]
 ok "a skill with no entry says there is nothing to run" $?
 
-absent=$("${cli[@]}" skill --session main --name no-such-skill 2>&1)
+absent=$("${cli[@]}" '{"name":"skill","args":{"session":"main","name":"no-such-skill"}}' 2>&1)
 say "unknown skill answered: $(printf '%s' "$absent" | tail -1 | head -c 300)"
 [[ "$absent" == *"no skill with name"* && "$absent" == *"is installed here"* ]]
 ok "an unknown skill name is refused with where to look" $?
 
 # 16. The session it deleted is gone.
-left=$("${cli[@]}" get_messages --session doomed 2>&1)
+left=$("${cli[@]}" '{"name":"get_messages","args":{"session":"doomed"}}' 2>&1)
 [[ "$left" == *"no session"* || "$left" == *'"ok":false'* ]]
 ok "the session the operation deleted is gone" $?
 

@@ -10,6 +10,10 @@
 # prove, and the peer's runner must speak this build's protocol.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="${GONGGA_BIN:-$root/target/debug}"
 work="$root/.dev/selftest"
@@ -212,12 +216,11 @@ for line in text.splitlines():
 sys.stdout.write(str(value))' "$1" "$2"
 }
 
-"${cli[@]}" set_session --id main --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"main","model":"fake/flash-fake","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 
 # 1. A one-shot program on the peer, printing the directory it ran in: the peer's
 #    scratch, not a directory this machine has of the same name.
-once=$("${cli[@]}" exec --session main --bin bash --id "$peer_name-once" --remote "$peer_name" --cwd "$peer_scratch" \
-  --args '["-lc", "pwd"]' --wait 30000 2>&1)
+once=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"${peer_name}-once"'","remote":"'"$peer_name"'","cwd":"'"$peer_scratch"'","args":["-lc","pwd"],"wait":30000}}' 2>&1)
 say "$once"
 ran=$(field "$once" output | tr -d '\r\n')
 say "ran in: $ran  exit: $(field "$once" exit)"
@@ -227,18 +230,18 @@ ok "exec on $peer_name runs the program there" "$([[ -n "$ran" && "$(field "$onc
 #    the cursor is this server's, so each call answers only what it said.
 # `--wait 0`: a shell that has been opened has said nothing yet, and waiting for a
 # window that cannot arrive is what the caller's own clock is for.
-shell=$("${cli[@]}" exec --session main --bin bash --id "$peer_name-shell" --remote "$peer_name" --cwd "$peer_scratch" --wait 0 2>&1)
+shell=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$peer_name-shell"'","remote":"'"$peer_name"'","cwd":"'"$peer_scratch"'","wait":0}}' 2>&1)
 say "$shell"
 shell_id=$(field "$shell" id)
 ok "a channel on $peer_name opens" "$([[ -n "$shell_id" ]] && echo 0 || echo 1)"
-one=$("${cli[@]}" exec --session main --id "$shell_id" --input 'echo one' --wait 20000 2>&1)
-two=$("${cli[@]}" exec --session main --id "$shell_id" --input 'echo two' --wait 20000 2>&1)
+one=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","input":"echo one","wait":20000}}' 2>&1)
+two=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","input":"echo two","wait":20000}}' 2>&1)
 say "one: $(field "$one" output) / two: $(field "$two" output)"
 ok "the same channel answers a second command" \
   "$([[ "$(field "$one" output | tr -d '\r\n')" == one && "$(field "$two" output | tr -d '\r\n')" == two ]] && echo 0 || echo 1)"
 
 # 3. The listing names the machine and the directory the peer chose.
-listed=$("${cli[@]}" ls_channel --session main --path "" 2>&1)
+listed=$("${cli[@]}" '{"name":"ls_channel","args":{"session":"main","path":""}}' 2>&1)
 say "$listed"
 # The answer's message is JSON inside JSON, so it is parsed, not grepped.
 row=$(python - "$listed" "$shell_id" <<'INNER'
@@ -275,16 +278,16 @@ taskkill //PID "$server_pid" //T //F >/dev/null 2>&1
 for _ in $(seq 1 60); do alive "$server_pid" || break; sleep 0.2; done
 sleep 1
 start_server
-after=$("${cli[@]}" exec --session main --id "$shell_id" --input 'echo after-restart' --wait 20000 2>&1)
+after=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","input":"echo after-restart","wait":20000}}' 2>&1)
 say "$after"
 ok "a channel survives the server it was started from" \
   "$([[ "$(field "$after" output | tr -d '\r\n')" == after-restart ]] && echo 0 || echo 1)"
 
 # 5. `del_channel` ends it: the program is gone, and the row with it.
-ended=$("${cli[@]}" del_channel --session main --id "$shell_id" 2>&1)
+ended=$("${cli[@]}" '{"name":"del_channel","args":{"session":"main","id":"'"$shell_id"'"}}' 2>&1)
 say "$ended"
 ok "del_channel ends a channel on $peer_name" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
-gone=$("${cli[@]}" exec --session main --id "$shell_id" --wait 0 2>&1)
+gone=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","wait":0}}' 2>&1)
 ok "the ended channel is no longer there to read" "$(has "$gone" 'no channel' && echo 0 || echo 1)"
 
 took=$(( $(date +%s) - began ))

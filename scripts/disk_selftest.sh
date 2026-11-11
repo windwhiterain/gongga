@@ -12,6 +12,10 @@
 # `disk::tests::a_low_disk_is_reported_once_and_again_after_recovering`.
 set -uo pipefail
 
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
+
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # A fresh home installs nothing without a source, and the compiled default is a
 # network URL this machine may not reach: the content under test is this repo's own.
@@ -179,13 +183,12 @@ echo "--- the threshold is read from the home, and the first call is below it"
 grep -q "threshold=104857600000000" "$log"
 ok "the server read the threshold this home declared" $?
 
-"${cli[@]}" set_session --id spill --model fake/flash-fake --cwd "$root" >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"spill","model":"fake/flash-fake","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 # A tool call that WORKS. A disk on its way out serves ordinary commands happily,
 # so waiting for one of them to fail waits for the first big write -- which on a
 # server that mostly reads may be never. That is the whole reason the reading
 # happens after every call.
-tool_ok=$("${cli[@]}" exec --session spill --bin bash --id spill/once \
-  --args '["-lc", "echo hello"]' --wait 8000 2>&1)
+tool_ok=$("${cli[@]}" '{"name":"exec","args":{"session":"spill","bin":"bash","id":"spill/once","args":["-lc","echo hello"],"wait":8000}}' 2>&1)
 [[ "$tool_ok" == *hello* ]]
 ok "the tool call succeeded" $?
 
@@ -207,10 +210,8 @@ INNER
 ok "the event carries the session, the tool, the threshold and the volumes" $?
 
 # The same low disk on the next call is not news: one call is not an episode.
-"${cli[@]}" exec --session spill --bin bash --id spill/twice \
-  --args '["-lc", "echo again"]' --wait 8000 >/dev/null 2>&1
-"${cli[@]}" exec --session spill --bin bash --id spill/thrice \
-  --args '["-lc", "echo and again"]' --wait 8000 >/dev/null 2>&1
+"${cli[@]}" '{"name":"exec","args":{"session":"spill","bin":"bash","id":"spill/twice","args":["-lc","echo again"],"wait":8000}}' >/dev/null 2>&1
+"${cli[@]}" '{"name":"exec","args":{"session":"spill","bin":"bash","id":"spill/thrice","args":["-lc","echo and again"],"wait":8000}}' >/dev/null 2>&1
 python - "$home" <<'INNER'
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)

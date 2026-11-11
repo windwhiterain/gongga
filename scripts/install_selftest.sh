@@ -126,7 +126,7 @@ start() {
 # One server per scenario, so a stop has to leave none: a home another server still
 # holds refuses to start, and the install it owed lands a scenario later.
 stop() {
-  "$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" cancel >/dev/null 2>&1
+  "$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" '{"name":"cancel","args":{}}' >/dev/null 2>&1
   for _ in $(seq 1 100); do alive "$server_pid" || break; sleep 0.2; done
   for pid in $server_pid $sup $(serving_home); do
     alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1

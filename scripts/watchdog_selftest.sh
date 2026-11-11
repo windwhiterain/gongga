@@ -119,7 +119,7 @@ if netstat -ano 2>/dev/null | grep -q ":$alt_port "; then refused_left=1; else r
 ok "and it left nothing listening" $refused_left
 [[ "$(child_pid)" == "$server_pid" ]]; ok "the running server still serves the home" $?
 
-"$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" cancel >/dev/null 2>&1
+"$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" '{"name":"cancel","args":{}}' >/dev/null 2>&1
 for _ in $(seq 1 100); do alive "$server_pid" || break; sleep 0.2; done
 alive "$server_pid"; [[ $? != 0 ]]; ok "cancel stops the server" $?
 for _ in $(seq 1 100); do alive "$sup" || break; sleep 0.2; done
