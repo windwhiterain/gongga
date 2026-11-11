@@ -201,6 +201,10 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id, seq);
+-- A call and its answer are paired by their number, and a start asks that of every
+-- call in every session: without this the question is a scan of the session per
+-- call, which is minutes of a large home's start. See `docs/notes/server-store.md`.
+CREATE INDEX IF NOT EXISTS messages_by_call ON messages(session_id, call_id, kind);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
     id          INTEGER PRIMARY KEY,
