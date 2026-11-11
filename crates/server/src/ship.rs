@@ -324,9 +324,17 @@ fn resolve(home: &Path) -> anyhow::Result<Content> {
         _ => {
             // Best effort: being offline is not being broken, and a checkout that
             // already holds readable content answers for itself.
-            if let Err(e) = fork.sync() {
-                tracing::warn!(error = %e, "cannot refresh the shipped content; using what is here");
-                reachable = false;
+            match fork.sync() {
+                // A rebase that conflicts does not heal: the checkout is left
+                // where it was, and every later start would redo the same rebase
+                // and lose. Said once, by `sync`, as an error; what is left to do
+                // here is not to call the content current.
+                Ok(Sync::Conflicted) => reachable = false,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "cannot refresh the shipped content; using what is here");
+                    reachable = false;
+                }
             }
         }
     }
