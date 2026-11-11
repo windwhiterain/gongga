@@ -956,10 +956,13 @@ impl Held {
     ///
     /// Only the run that holds `top` answers: a run further down is behind a gap,
     /// and anchoring a page on it would draw the gap's rows as if they were there.
+    /// `top` below every run is no run at all -- the first whose end reaches past
+    /// it is not one that holds it, and answering with its bottom would make every
+    /// row a window has the past of a window that starts above them.
     fn floor(&self, top: i64) -> Option<i64> {
         let at = self.runs.partition_point(|(_, end)| *end < top);
         let (lo, hi) = *self.runs.get(at)?;
-        (top <= hi).then_some(lo)
+        (lo <= top && top <= hi).then_some(lo)
     }
 }
 
@@ -1549,29 +1552,35 @@ impl Client {
             .map(|(name, _)| name.clone())
             .collect();
         for name in owed {
-            let Some(sync) = self.sync.get_mut(&name) else {
-                continue;
+            // The borrow ends before the page is drawn: `handle_event` writes this
+            // client, and a row that cannot land goes back where it came from.
+            let (past, created, drawn) = {
+                let Some(sync) = self.sync.get_mut(&name) else {
+                    continue;
+                };
+                let mut past = std::mem::take(&mut sync.past);
+                past.sort_by_key(|(seq, _)| *seq);
+                past.dedup_by_key(|(seq, _)| *seq);
+                // The page must end just above the window's oldest row: an island is
+                // the copy's, not the screen's.
+                let touches = match (past.last(), sync.floor()) {
+                    (Some((top, _)), Some(floor)) => *top as i64 + 1 == floor,
+                    _ => false,
+                };
+                let drawn = match sync.drawn {
+                    Drawn::At { created, seq } if touches => Some((created, seq)),
+                    _ => None,
+                };
+                // A row that cannot land yet stays the copy's: it is not drawn, and
+                // dropping it here would leave a number `holds` answers "duplicate"
+                // for -- one row the window can never reach again.
+                let Some((created, drawn)) = drawn else {
+                    sync.past = past;
+                    continue;
+                };
+                (past, created, drawn)
             };
-            let mut past = std::mem::take(&mut sync.past);
-            past.sort_by_key(|(seq, _)| *seq);
-            past.dedup_by_key(|(seq, _)| *seq);
-            // The page must end just above the window's oldest row: an island is
-            // the copy's, not the screen's.
-            let touches = match (past.last(), sync.floor()) {
-                (Some((top, _)), Some(floor)) => *top as i64 + 1 == floor,
-                _ => false,
-            };
-            let (Some((start, _)), true) = (past.first(), touches) else {
-                continue;
-            };
-            let start = *start as i64;
-            let Drawn::At {
-                created,
-                seq: drawn,
-            } = sync.drawn
-            else {
-                continue;
-            };
+            let start = past[0].0 as i64;
             let mut page = Page::default();
             for (_, event) in past {
                 self.handle_event(event, &mut page);
