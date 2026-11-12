@@ -105,8 +105,9 @@ async fn relays(endpoint: &Endpoint, words: &str) -> bool {
 ///
 /// The directory is named by the protocol and written once: a peer that holds it is
 /// answered without a transfer, whichever commit put it there, and a program the peer may
-/// be running is never replaced over. The runner and the server go together because a
-/// channel's relay is the server, started beside the runner that asked for it.
+/// be running is never replaced over. The runner, the server and the relay go together
+/// because a channel on a peer runs the same relay as one here, beside the runner that
+/// asked for it.
 async fn place(endpoint: &Endpoint) -> anyhow::Result<String> {
     let home = peer_home(endpoint).await?;
     let suffix = if is_dos(&home) { ".exe" } else { "" };
@@ -115,12 +116,17 @@ async fn place(endpoint: &Endpoint) -> anyhow::Result<String> {
     let there = |name: &str| format!("{directory}/gongga-{name}{suffix}");
     // What `scp` and the peer's own sftp both resolve from the account's home.
     let sent = |name: &str| format!(".gongga/payload/{protocol}/gongga-{name}{suffix}");
-    let test = format!("test -f {} && test -f {}", there("runner"), there("server"));
-    // Presence is the whole answer, because only a whole pair is ever renamed into place.
+    let test = format!(
+        "test -f {r} && test -f {s} && test -f {y}",
+        r = there("runner"),
+        s = there("server"),
+        y = there("relay"),
+    );
+    // Presence is the whole answer, because only a whole triple is ever renamed into place.
     if run(endpoint, &test).await.is_some() {
         return Ok(there("runner"));
     }
-    let (runner, server) = local_payload()?;
+    let (runner, server, relay) = local_payload()?;
     run(endpoint, &format!("mkdir -p {directory}"))
         .await
         .ok_or_else(|| anyhow::anyhow!("the peer could not make {directory}"))?;
@@ -132,18 +138,21 @@ async fn place(endpoint: &Endpoint) -> anyhow::Result<String> {
     let staging = |name: &str| format!("{}.{stamp}.new", sent(name));
     copy(endpoint, &runner, &staging("runner")).await?;
     copy(endpoint, &server, &staging("server")).await?;
+    copy(endpoint, &relay, &staging("relay")).await?;
     let moved = run(
         endpoint,
         &format!(
-            "mv -f {r_new} {r} && mv -f {s_new} {s} && chmod +x {r} {s}",
+            "mv -f {r_new} {r} && mv -f {s_new} {s} && mv -f {y_new} {y} && chmod +x {r} {s} {y}",
             r_new = staging("runner"),
             r = there("runner"),
             s_new = staging("server"),
             s = there("server"),
+            y_new = staging("relay"),
+            y = there("relay"),
         ),
     )
     .await;
-    // A refused rename is not yet a failure: look for a pair another client placed.
+    // A refused rename is not yet a failure: look for a triple another client placed.
     if moved.is_none() && run(endpoint, &test).await.is_none() {
         return Err(anyhow::anyhow!(
             "the peer took this build's payload but could not put it in place: {} is still absent",
@@ -155,8 +164,9 @@ async fn place(endpoint: &Endpoint) -> anyhow::Result<String> {
     Ok(there("runner"))
 }
 
-/// This build's own two programs: the runner, and the server a relay runs.
-fn local_payload() -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
+/// This build's own three programs: the runner, the server, and the relay a
+/// channel runs beside them.
+fn local_payload() -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)> {
     let me = std::env::current_exe().map_err(|e| anyhow::anyhow!("this program's path: {e}"))?;
     let directory = me
         .parent()
@@ -165,7 +175,8 @@ fn local_payload() -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
         |name: &str| directory.join(format!("gongga-{name}{}", std::env::consts::EXE_SUFFIX));
     let runner = beside("runner");
     let server = beside("server");
-    for path in [&runner, &server] {
+    let relay = beside("relay");
+    for path in [&runner, &server, &relay] {
         if !path.is_file() {
             anyhow::bail!(
                 "this build cannot place itself on a peer: {} is not beside it",
@@ -173,7 +184,7 @@ fn local_payload() -> anyhow::Result<(std::path::PathBuf, std::path::PathBuf)> {
             );
         }
     }
-    Ok((runner, server))
+    Ok((runner, server, relay))
 }
 
 /// Where the peer's own home is, in a spelling its shell can use again.

@@ -93,6 +93,27 @@ pub(crate) fn relay_source() -> Option<PathBuf> {
     beside.filter(|path| path.is_file())
 }
 
+/// The relay a channel runs: the copy this server installed at startup.
+///
+/// # Invariant
+///
+/// A build tree is rebuilt under a server that is still running. The installed
+/// copy is the pair this process started with, so a later `cargo build` cannot
+/// change the program that holds its channels.
+pub(crate) fn relay_for_channel(home: &Path) -> PathBuf {
+    if let Some(named) = std::env::var_os("GONGGA_RELAY_BIN") {
+        let named = PathBuf::from(named);
+        if named.is_file() {
+            return named;
+        }
+    }
+    let installed = home.join("bin").join(file_name(RELAY));
+    if installed.is_file() {
+        return installed;
+    }
+    relay_source().unwrap_or(installed)
+}
+
 /// One shim in `bin`, rewritten only when its bytes differ.
 ///
 /// # Invariant

@@ -1,16 +1,18 @@
 # bundle/main.rs
 
-## One file, four programs
+## One file, five programs
 
 `crates/bundle` is not a fourth thing to install: it is the head of a
 distribution. `scripts/bundle.sh` builds the programs, appends them to this stub,
 and the result is one file a person can copy, name `gongga`, and run.
 
-    gongga = head (no dependencies) + gongga-server + gongga-tui + gongga-client + gongga-runner
+    gongga = head (no dependencies) + gongga-server + gongga-tui + gongga-client
+             + gongga-runner + gongga-relay
 
 `gongga-client` is the child a window starts over pipes, so it rides with the
-window that speaks the protocol and never becomes a fifth thing to install or a
-name a person has to type. See `DESIGN.md` §1, shape 2.
+window that speaks the protocol and never becomes a separate thing to install or a
+name a person has to type. The relay is the third program a channel starts beside
+the server. See `DESIGN.md` §1, shape 2.
 
 The command line is not one of them any more: it is `python/gongga_cli.py`, which
 a server writes into `<home>/lib` and names in `<home>/bin` (`server-shell-command.md`).

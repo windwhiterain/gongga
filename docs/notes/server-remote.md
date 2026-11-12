@@ -141,8 +141,9 @@ operator's problem: a path says where a program is, never what it says, and two 
 one protocol would each have been copied to a peer that could have served both.
 
 So the payload is named by what it promises: `<peer home>/.gongga/payload/<protocol>/`
-holds this protocol's `gongga-runner` and the `gongga-server` a channel's relay needs
-beside it. Three rules follow, and each is a consequence of the first.
+holds this protocol's `gongga-runner`, the `gongga-server`, and the `gongga-relay` a
+channel starts beside them -- the same relay a channel here runs, not the server in
+another mode. Three rules follow, and each is a consequence of the first.
 
 1. **A `runner` key in the remote's table is a preference.** It is greeted first, and kept
    only if it greets this protocol; anything else about it is reported and run past.
@@ -155,8 +156,8 @@ beside it. Three rules follow, and each is a consequence of the first.
    cannot be overwritten while it runs, so asking for that is the failure this rule
    removes: each copy goes to a staging name of its own and is renamed into place whole,
    which makes "present" mean "whole", and two clients placing at the same moment do not
-   share a staging file. A pair that is present and does not answer is reported, never
-   replaced -- replacing it is a decision for a human.
+   share a staging file. A payload that is present and does not answer is reported,
+   never replaced -- replacing it is a decision for a human.
 
 A copy goes through `scp`, not through the shell: `ssh … bash -lc 'cat > file'` was
 measured to deliver 947256 bytes of a 1048576-byte file, and an executable that arrived

@@ -138,18 +138,12 @@ pub struct Channels {
 ///
 /// # Invariant
 ///
-/// One resolver, not three. `shell_command::relay_source` is the same answer
-/// `ensure_pair` installs from, so what a channel runs and what the home was given
-/// cannot be two opinions: `GONGGA_RELAY_BIN`, then the program beside this server (a
-/// build tree and an install both keep the pair together), then the home's own copy --
-/// which `ensure_pair` has just written when it had a source at all.
+/// One resolver, not three. `shell_command` names both the source `ensure_pair`
+/// installs from and the installed copy a channel runs, so the two cannot be two
+/// opinions. A build tree is rebuilt under a running server: the channel holds the
+/// copy, not the source a later build is free to replace.
 fn relay_program(home: &Path) -> PathBuf {
-    let name = if cfg!(windows) {
-        "gongga-relay.exe"
-    } else {
-        "gongga-relay"
-    };
-    crate::shell_command::relay_source().unwrap_or_else(|| home.join("bin").join(name))
+    crate::shell_command::relay_for_channel(home)
 }
 
 impl Channels {

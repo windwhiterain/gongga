@@ -654,7 +654,7 @@ fn relay(cwd: Option<&str>, words: &str) -> Result<Value, String> {
     // and looks at `in` from its first pass.
     std::fs::write(dir.join("cmd"), &words).map_err(|e| format!("{}: {e}", dir.display()))?;
     std::fs::write(dir.join("in"), b"").map_err(|e| format!("{}: {e}", dir.display()))?;
-    let server = beside("server")?;
+    let relay = beside("relay")?;
     let log = dir.join("relay.log");
     let out = std::fs::OpenOptions::new()
         .create(true)
@@ -662,7 +662,7 @@ fn relay(cwd: Option<&str>, words: &str) -> Result<Value, String> {
         .open(&log)
         .map_err(|e| format!("{}: {e}", log.display()))?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
-    let mut command = Command::new(&server);
+    let mut command = Command::new(&relay);
     command
         .arg("--relay")
         .arg(&dir)

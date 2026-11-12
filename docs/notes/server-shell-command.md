@@ -124,6 +124,13 @@ Not finding one is a warning, not a refusal. Serving without a command still
 serves; a server that refused to start would turn a missing file into an outage.
 The warning names every place it looked, so the fix is in the message.
 
+A channel runs the installed copy, not the source. `relay_for_channel` answers this
+home's `bin`, which `ensure_pair` filled before any channel existed: a `cargo build`
+under a server that is still running replaces the sibling in the build tree, and a
+relay of that later build refuses the `--build` of the server that asked. Holding the
+installed copy makes a rebuild after startup unable to change what holds this
+server's channels. An explicit `GONGGA_RELAY_BIN` still wins.
+
 ## GONGGA_CLI
 
 Exported to every shell and script when the command was placed, as an absolute
