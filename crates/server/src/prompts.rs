@@ -158,6 +158,11 @@ pub const REQUIRED: &[&str] = &[
     THINKING_MARK,
 ];
 
+/// Wraps a harness-injected prompt so the model can tell it from the operator's words.
+pub fn harness_wrap(text: String) -> String {
+    format!("<harness>{text}</harness>")
+}
+
 /// The one file section this module reads.
 const TABLE: &str = "prompts";
 

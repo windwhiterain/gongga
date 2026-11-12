@@ -166,14 +166,14 @@ sed 's/\x1b\[[0-9;]*m//g' ~/.gongga/detached/<最新>.log | grep -E "replaying a
 ## 不要写恢复笔记
 
 resume 是把**完整 transcript** 原样重放（消息、reasoning、每个工具调用和结果），外加
-`handover`（如果培养过继承人）。"我打算干什么"已经在里面了，写一份笔记不会多提供任何信息。
+`handover`（如果做过交接）。"我打算干什么"已经在里面了，写一份笔记不会多提供任何信息。
 
 而且它在两种真故障下毫无用处：
 
 | 故障 | 笔记有用吗 |
 |---|---|
 | pending 行没留下 | **没用**——根本没人被唤醒，没人会读 |
-| 已经培养过继承人 | 没用——该用 `heir` skill 的 `read` 去读 mentor 会话（原文只在 mentor 会话里，当前会话只有继承人的第一课） |
+| 已经做过交接 | 没用——该用 `handoff` skill 的 `read` 去读 mentor 会话（原文只在 mentor 会话里，当前会话只有交接笔记） |
 
 resume 之后要做的是**重新测量外部状态**，因为那部分 transcript 里没有、而且已经变了：
 

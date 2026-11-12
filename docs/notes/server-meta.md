@@ -124,7 +124,7 @@ body, and a body does not say where the file is.
 
 `spelling` is one function because it must be one spelling. The index carries it and
 `expand` writes it back into every `@skill(...)` mention, so a message naming a skill a
-second time keys the entry already there. `@skill(heir)` and `@skill(heir)` are one
+second time keys the entry already there. `@skill(handoff)` and `@skill(handoff)` are one
 reference, and the canonical form is the one with no space.
 
 ## the queue, and why the index is not only the transcript

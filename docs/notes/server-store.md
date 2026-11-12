@@ -111,7 +111,7 @@ database itself consistent, so recovering the guard is safe.
 ## Store::orphaned_blobs
 
 A generated picture is a file, and files outlive rows unless somebody asks.
-`heir` copies a transcript into a mentor session, so one file can be named by two
+`handoff` copies a transcript into a mentor session, so one file can be named by two
 sessions; the answer has to be a query over every row, and it has to happen before
 the delete. `DISTINCT` is not decoration: a session that re-sent the same item
 would otherwise report it twice and `drop` would log a miss for the second.
@@ -207,7 +207,7 @@ fact that no writer exists). The surviving statements:
 
 What a handover leaves is the rows that came after it -- nothing stands in for the
 part that is gone, because it is not gone from the mentor. The server never deletes
-a row: only the `heir` skill does, and only after it has copied every row into a
+a row: only the `handoff` skill does, and only after it has copied every row into a
 mentor and compared the copy row for row.
 
 Production code always has a lower bound, and a method nobody calls is a second way

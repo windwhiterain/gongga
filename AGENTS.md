@@ -10,6 +10,7 @@
 - server home for tests should be local to each worktree: a shared home makes worktrees lock each other, and someone else's home is not yours to write in -- the program you run may stop the server on it.
 - pointing at a home in use is not a read-only act: `GONGGA_HOME` on a live home makes the bundle place its payload there and retire the build it replaces, and that asks the home's server to `cancel` -- every turn it is running dies with the ask, unless the program starts no server of its own (as `--client_only` says). See `docs/notes/bundle-main.md`, "There is no read-only run".
 - track your WIP under (notes)[.agents/notes/].
+- 主仓上游是 `gongga.git`，**绝不是**内容仓 `gongga-ship`：`.gitmodules`/`crates/server/ship.toml` 里的 ship URL 只属于 `ship` 子模块。树里没有记录主仓自己的 URL，别拿唯一可见的 ship URL 去设主仓 origin（这是反复发生的错误，worktree 共享主仓 config，一处设错处处错）。设错就 `git remote set-url origin https://github.com/windwhiterain/gongga.git`；pre-commit 会拦 origin 指向 `gongga-ship` 的提交。
 
 ## Disk low：立刻跑脚本，一刻都不耽搁
 
@@ -134,7 +135,7 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
 
 ### L3 写成脚本，别每次手写 heredoc
 
-参考 `scripts/heir_selftest.sh`、`scripts/ship_selftest.sh`、`scripts/watchdog_selftest.sh`、
+参考 `scripts/handoff_selftest.sh`、`scripts/ship_selftest.sh`、`scripts/watchdog_selftest.sh`、
 `scripts/monitor_selftest.sh`、`scripts/prompt_selftest.sh`：它们自带临时 home、自己收尾、
 一行 verdict。硬性几条：
 
@@ -219,7 +220,7 @@ bundle 的 retire 会让旧 build 的服务端 `cancel`（除非那个程序自�
 不重新编译。
 
 ```bash
-scripts/ship.sh -m "heir: 把 mentor 写进指引"   # 提交 → rebase 到 main → push 到 main（站在 main 或 local 上都行）
+scripts/ship.sh -m "handoff: 把 mentor 写进指引"   # 提交 → rebase 到 main → push 到 main（站在 main 或 local 上都行）
 scripts/ship.sh --check                          # 两端 protocol 一致吗 + 推上去了吗
 scripts/ship.sh --check --local                  # 同上，不问网络（pre-commit 用这个）
 scripts/ship.sh --dry-run -m "..."               # 会做什么（不写不推）
@@ -295,7 +296,7 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 副本**：那份副本会随源码一起变旧，而且它自己 `cd` 到 home 之后往上找不到 `Cargo.toml`，一行
 都跑不通——但 `skill` 会把两个同名 `evolve` 都列出来，读的人先撞上坏的那个。
 
-其余（`heir` / `image` / `self-control` / `subagent` + 默认 config）在内容仓库里，是这个仓库的
+其余（`handoff` / `image` / `self-control` / `subagent` + 默认 config）在内容仓库里，是这个仓库的
 **submodule**（`ship/`）。改 skill 就是**在 `ship/` 里改然后发布**（`scripts/ship.sh -m`），
 不产生本仓库的提交：内容仓的 commit 与本 build 无关（`ignore = all`），服务端按 protocol
 自己取最新的那个。`ship/skills/<name>` 就是一层，没有 `harness/` 那一层——它原样映射成
@@ -329,12 +330,12 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
   base64 落盘执行、输出按 base64 分帧——所以引号、GBK、退出码这三个坑不存在。会话复用一条
   ssh（~390ms vs 一次性 ~800ms）；带 `--runner`（如 Windows 上跑 Git Bash）的目标没有会话，
   自动走一次性。传文件用 `put`/`get`，默认读回大小核对——sftp 会报告成功而文件没到。
-- `heir`：把上下文交接出去。收到 `Context notice` 就是**要求尽快交棒**，不是询问——但也不是立刻
-  砍断：先提交、把只存在脑子里的状态写下来、把 git 状态整理好，再交棒；不要再开新活。用
-  `gongga-cli skill heir read`（脚本，不是服务端工具）——服务端只测量和要求。
-  `heir` 先把整份 transcript 拷进一个 mentor 会话、逐行校验副本，然后**删空自己**——只留在
+- `handoff`：把上下文交接出去。收到 `Context notice` 就是**要求尽快交接**，不是询问——但也不是立刻
+  砍断：先提交、把只存在脑子里的状态写下来、把文档和引用整理好，再交接；不要再开新活。用
+  `gongga-cli skill handoff read`（脚本，不是服务端工具）——服务端只测量和要求。
+  `handoff` 先把整份 transcript 拷进一个 mentor 会话、逐行校验副本，然后**删空自己**——只留在
   飞的那个 tool call（服务端一收到 call 就执行，所以它总在最后一行）；指引写在它的结果里，
-  第一课则由脚本用一次 `send_message` 发出，在下一个 step 边界落成一条普通 user 消息（所以它的
+  交接笔记则由脚本用一次 `send_message` 发出，在下一个 step 边界落成一条普通 user 消息（所以它的
   `@file(...)`/`@skill(...)` 会进 index，和空会话的首轮一样）；mentor 那边会补一条 tool_result 告它
   自己成了 mentor，只答被问的。
   之后卡住了用 `get_messages` 读 mentor、用 `send_message` 问 mentor。

@@ -22,6 +22,18 @@ set -uo pipefail
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0
+# The harness repo's upstream is gongga, never the content repo. The ship URL in
+# .gitmodules belongs to the submodule alone; pointing the main origin at it is a
+# recurring mistake (the tree records no URL for the main repo itself). See AGENTS.md.
+origin_url=$(git config --get remote.origin.url || true)
+case "$origin_url" in
+*gongga-ship*)
+  printf 'pre-commit: the main repo origin points at the content repo: %s\n' "$origin_url" >&2
+  printf '  The harness upstream is gongga.git; the .gitmodules ship URL belongs to the submodule.\n' >&2
+  printf '  Fix: git remote set-url origin https://github.com/windwhiterain/gongga.git\n' >&2
+  exit 1
+  ;;
+esac
 # A clone without its submodules has no content to disagree with yet.
 [[ -d ship/.git || -f ship/.git ]] || exit 0
 [[ -f scripts/ship.sh ]] || exit 0

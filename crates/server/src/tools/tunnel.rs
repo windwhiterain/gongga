@@ -347,10 +347,10 @@ pub(crate) async fn report(
     let speaking = !matches!(ctx.store.get_session(&ctx.session), Ok(None))
         && !ctx.closing.load(std::sync::atomic::Ordering::SeqCst);
     let job = id.to_string();
-    let message = crate::prompts::shared().render(
+    let message = crate::prompts::harness_wrap(crate::prompts::shared().render(
         report,
         &[("job", job.as_str()), ("tool", name), ("spent", spent)],
-    );
+    ));
     let notice =
         speaking.then(|| json!({"session": ctx.session, "message": message, "notice": "job"}));
     // A job that ran asynchronously ended here, so its writes are seen too.
@@ -446,7 +446,7 @@ pub async fn announce_owed(
                     .unwrap_or(u64::MAX),
             );
             let job = row.id.to_string();
-            let message = crate::prompts::shared().render(
+            let message = crate::prompts::harness_wrap(crate::prompts::shared().render(
                 crate::prompts::JOB_LOST,
                 &[
                     ("job", job.as_str()),
@@ -454,7 +454,7 @@ pub async fn announce_owed(
                     ("named", named.as_str()),
                     ("waited", waited.as_str()),
                 ],
-            );
+            ));
             if let Err(e) = store.add_pending_task(
                 &row.session,
                 "inject",
@@ -468,14 +468,14 @@ pub async fn announce_owed(
             continue;
         }
         let job = row.id.to_string();
-        let message = crate::prompts::shared().render(
+        let message = crate::prompts::harness_wrap(crate::prompts::shared().render(
             crate::prompts::JOB_LEFT_OWED,
             &[
                 ("job", job.as_str()),
                 ("tool", row.tool.as_str()),
                 ("named", named.as_str()),
             ],
-        );
+        ));
         if let Err(e) = store.add_pending_task(
             &row.session,
             "inject",

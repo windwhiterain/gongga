@@ -54,7 +54,7 @@ answered where a package is understood.
 ## launch
 
 The child inherits this process's three streams, and its exit code is this process's exit
-code. A skill's answer *is* its output: `web-search` prints results, `heir` prints the
+code. A skill's answer *is* its output: `web-search` prints results, `handoff` prints the
 first lesson it could not deliver, `remote` prints one JSON line. Re-encoding any of that
 -- into a row, an event, a JSON wrapper -- would be a second copy of a contract the script
 already keeps, and `jq`-ability is the reason those scripts print what they print.

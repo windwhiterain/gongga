@@ -303,7 +303,7 @@ and stops instead of writing into the void.
 
 Then the files. A generated picture is not a row: it is a file beside the home that a
 row names, so the delete asks the database which names belong to this session alone and
-unlinks those -- and only those, because an `heir` copy leaves a mentor session naming
+unlinks those -- and only those, because a `handoff` copy leaves a mentor session naming
 the same bytes. The order is not arbitrary. Asking first is the only way to know, and
 dropping after means a failure in between leaves files whose rows still exist, which is
 recoverable, rather than rows whose files are gone, which is not.

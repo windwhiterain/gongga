@@ -954,7 +954,7 @@ fn with_size_hint(prompts: &crate::prompts::Prompts, message: String) -> String 
     }
     // One line, so the hint reads as a sentence rather than as a wrapped
     // fragment of the provider's message.
-    prompts.render("size_hint", &[("message", message.as_str())])
+    crate::prompts::harness_wrap(prompts.render("size_hint", &[("message", message.as_str())]))
 }
 
 /// What the previous attempt did, in the words the operator needs to read.

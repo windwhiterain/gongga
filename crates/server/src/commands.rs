@@ -1299,7 +1299,7 @@ async fn expand_message(
         (_, crate::session::Machine::Local) => crate::meta::Source::Local,
     };
     let llm = d.agent.route(session.name(), &session.tuning()).ok();
-    let llm = llm.as_ref().map(|(client, _)| client.as_ref());
+    let llm = llm.as_ref().map(|(client, _, _)| client.as_ref());
     let home = session.cwd();
     Ok(crate::meta::expand(&d.store, source, &home, &message, llm).await)
 }
@@ -3282,10 +3282,10 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
                 notices.push_str(said);
                 notices.push_str("\n\n");
             }
-            let message = crate::prompts::shared().render(
+            let message = crate::prompts::harness_wrap(crate::prompts::shared().render(
                 crate::prompts::LOST_NOTICES,
                 &[("notices", notices.as_str())],
-            );
+            ));
             let payload = json!({"session": name, "message": message});
             match d.store.add_pending_task(&name, "inject", &payload) {
                 // In `kept`: what owes a turn has to be a task this pass knows about.

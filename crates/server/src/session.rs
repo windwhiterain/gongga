@@ -495,15 +495,20 @@ impl SessionHandle {
     ///
     /// # Invariant
     ///
-    /// True only once per `upto`: the agent is told when the threshold is crossed,
-    /// not on every step that stays above it, and it is told again only after it
-    /// has folded something -- the point at which the advice changed.
-    pub fn note_context_asked(&self, tokens: u64, budget: u64) -> bool {
-        // A quarter of the budget is the granule: told again before it doubles, not every
-        // step.
-        let granule = (budget / 4).max(1);
+    /// True only once per crossing: the agent is told when the threshold is
+    /// crossed, not on every step that stays above it. The first notice is at the
+    /// threshold; each later one waits for a granule of growth that shrinks as the
+    /// context nears the model's real window, so the advice comes faster the less
+    /// room is left. A handover empties the session and re-arms the notice.
+    pub fn note_context_asked(&self, tokens: u64, budget: u64, window: Option<u64>) -> bool {
         let mut current = self.inner.context_asked.load(Ordering::SeqCst);
         loop {
+            // A quarter of the room left to the window: sparse far off, dense near it.
+            // No window: a quarter of the budget.
+            let granule = match window {
+                Some(w) => (w.saturating_sub(current) / 4).max(1),
+                None => (budget / 4).max(1),
+            };
             // Never told, or told at a size this has since fallen well below:
             // a handover empties the session and re-arms the notice.
             let fresh = current == 0 || tokens.saturating_add(granule) < current;

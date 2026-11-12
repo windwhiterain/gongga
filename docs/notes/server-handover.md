@@ -3,8 +3,8 @@
 There is no compaction code in this server: no fold, no boundary column, nothing
 that slices a transcript. `Agent::maybe_notify_context` measures
 the context the provider reported, and when it crosses the threshold it queues one
-message saying so. Everything else lives in the `heir` skill, installed at
-`$GONGGA_HOME/skills/heir/`.
+message saying so. Everything else lives in the `handoff` skill, installed at
+`$GONGGA_HOME/skills/handoff/`.
 
 ## Why it left the loop
 
@@ -36,9 +36,9 @@ Measured, for the record: 100 external writes against the live server, 0
 `SQLITE_BUSY`. The script sets `busy_timeout` anyway, because the one write that
 must not fail is the fold.
 
-## the lesson is a message, not a column
+## the note is a message, not a column
 
-The first lesson used to be a column. `sessions.handover` held it, the server
+The first note used to be a column. `sessions.handover` held it, the server
 rendered it through a `handover_preamble` template, and `llm::build_head` put it in
 front of the transcript as an item that belonged to no row. Three consequences, all
 of them the same consequence:
@@ -46,7 +46,7 @@ of them the same consequence:
 - It was a concept outside SPEC: a note the server knew about and no message was.
 - Its `@` references were neither indexed nor expanded. SPEC's prefix-cache
   optimization starts from the prompt, walks what it names, and appends that to the
-  instructions -- and a column is not something the walk looks at. A lesson that said
+  instructions -- and a column is not something the walk looks at. A note that said
   `@file(docs/notes/plan.md)` cost a turn to re-read a file the index could have
   carried once.
 - The prose had to be taught to each new reader: which template, which lifetime,
@@ -56,18 +56,18 @@ It is one `send_message` now, from the script, to the session it just emptied --
 same command an operator would type. Everything the server already does for a
 message then applies: `expand_message` decides what stays literal, the row is
 appended at the next step boundary, and the *next* `prompt_in_force` finds the
-lesson's references with `meta::roots` and puts them in the index. The heir's first
+note's references with `meta::roots` and puts them in the index. The continuation's first
 request is an empty session's first request, which is the case SPEC's `.agents`
 optimization is written for.
 
-`heir` sends it rather than inserting the row itself, and the reason is ordering: it
+`handoff` sends it rather than inserting the row itself, and the reason is ordering: it
 runs *inside* the call it must keep, so a row inserted here would sit between that
 call and its result, which is a transcript no provider accepts. `send_message` from a
 shell whose turn is busy is queued as an `inject` row and delivered by
 `Store::deliver_pending` at the boundary where the row is allowed -- and it is
 `deliver_pending`'s own rule, not a second one.
 
-If the send fails the lesson is printed instead, and the command exits non-zero: the
+If the send fails the note is printed instead, and the command exits non-zero: the
 transcript is already empty, so that result is the only copy left. Losing it silently
 is the one unrecoverable failure this command has.
 
@@ -96,8 +96,8 @@ never ends a running command's wait the way an operator's message does. A
 structured marker records its context generation and token limit. Usage writes
 are conditional on the request's generation, and delivery drops a marked notice
 when the generation changed or the current context is below that limit. The
-response that streamed the heir tool therefore cannot restore its old measurement
-or notices. Ordinary user and background-job messages remain owed to the heir.
+response that streamed the handoff tool therefore cannot restore its old measurement
+or notices. Ordinary user and background-job messages remain owed to the continuation.
 
 ## notice_budget
 
@@ -118,7 +118,7 @@ spending the context the tool exists to protect.
 
 Forty messages with their whole text is about 3k tokens, so the body is returned in
 full and there is no preview by default — this is the conversation, and it is what
-the heir's first lesson has to be written from.
+the continuation's first note has to be written from.
 
 ## Why there is no partial fold
 
@@ -138,9 +138,9 @@ mentor. The measurement is still reset by the handover (`context_tokens = 0`),
 because it counted a transcript that no longer exists; leaving it would make the
 next notice fire immediately on every step.
 
-## heir: the copy is the archive, and emptying is the point
+## handoff: the copy is the archive, and emptying is the point
 
-`collapse` changes what a session *sends*. `heir` changes what a session *has*: it
+`collapse` changes what a session *sends*. `handoff` changes what a session *has*: it
 copies every row into another session, verifies the copy, and deletes its own rows --
 all but the one this command is running on. The rows are gone from SQLite.
 
@@ -162,7 +162,7 @@ Four things make that acceptable rather than dangerous:
   an output whose call is absent -- the whole transcript would fail to send, forever.
   So the call stays, the archive gets the result that closes it, and the instruction
   the emptied session needs comes with that result: the text this command prints. The
-  lesson itself is a message of its own, sent from here, so it is a row the server
+  note itself is a message of its own, sent from here, so it is a row the server
   delivers rather than a second kind of prose.
 - **The mentor is answered too.** The archive holds the learner's `tool_call`, so the
   script appends the `tool_result` that closes it, and that row is what tells the
@@ -170,14 +170,14 @@ Four things make that acceptable rather than dangerous:
   own -- the notice template repeats the same branch, because a mentor can hit a
   threshold too.
 - **Seq restarts when nothing is kept.** `seq` is `max(seq)+1` over the rows that
-  exist. When `heir` runs from outside a turn there is no call in flight, every row
-  goes, and the next one -- the lesson -- is seq 1. Nothing records where a note
+  exist. When `handoff` runs from outside a turn there is no call in flight, every row
+  goes, and the next one -- the note -- is seq 1. Nothing records where a note
   ends, because there is no note: what is here is what is sent.
 
 ## the handover is also a row
 
 The script writes one `events` row per handover -- mechanism, mentor, rows moved,
-the seq it covers, the call left in flight, the lesson's size, and the size the
+the seq it covers, the call left in flight, the note's size, and the size the
 context was measured at -- in the same transaction as the action. Nothing reads it
 to decide what to send: it exists so "how many times did this session compact" is
 a count instead of an inference from two columns and a mentor's name, and so a
@@ -192,13 +192,13 @@ writer for a handover at all. What was wrong was reading it as *nothing may ever
 a row*.
 
 The difference is who acts and when. A config reload rewrites the past without being
-asked, mid-conversation, invisibly. `heir` is asked, by the agent that owns the context,
-in one step where it writes the lesson the next step will run on, and it names the
+asked, mid-conversation, invisibly. `handoff` is asked, by the agent that owns the context,
+in one step where it writes the note the next step will run on, and it names the
 archive it just made. The server's hands stay off the transcript either way -- which is
 why this is a script and not a tool: the tool surface is what the server will do to you,
 and the shell is what you chose to do.
 
-## transcript.py — the heir refusals
+## transcript.py — the handoff refusals
 
 | Refusal | What it prevents |
 |---|---|
@@ -214,7 +214,7 @@ row is what tells them apart.
 ## What the server still owns
 
 Nothing here. There is no note to read, no preamble to render and no item to put in
-front of the transcript: a lesson is a message, and a message is a row. The server's
+front of the transcript: a note is a message, and a message is a row. The server's
 whole share is the threshold above -- `Agent::maybe_notify_context` -- plus the
 `deliver_pending` rule that decides when a queued message may be appended. Writing
 one has no method at all: a handover is the skill issuing its own

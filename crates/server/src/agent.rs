@@ -258,7 +258,7 @@ impl Agent {
             self.deliver_inbox(id, &name);
             // Read here every step: a `set_session` landing mid-turn is meant for the
             // next request.
-            let (llm, effort, budget) = match self.settings(&name, session) {
+            let (llm, effort, budget, window) = match self.settings(&name, session) {
                 Ok(settings) => settings,
                 Err(e) => {
                     // A model that is not in the roster or has no key is the roster's
@@ -277,7 +277,7 @@ impl Agent {
                 );
             }
             // Ask before the request is built, so this is the step that hears it.
-            self.maybe_notify_context(session, id, &name, budget);
+            self.maybe_notify_context(session, id, &name, budget, window);
             self.maybe_request_live_compact(id, &name);
             let cwd = session.cwd();
             tracing::info!(
@@ -342,10 +342,10 @@ impl Agent {
         &self,
         name: &str,
         session: &SessionHandle,
-    ) -> anyhow::Result<(Arc<LlmClient>, Option<String>, u64)> {
+    ) -> anyhow::Result<(Arc<LlmClient>, Option<String>, u64, Option<u64>)> {
         let tuning = session.tuning();
-        let (llm, budget) = self.route(name, &tuning)?;
-        Ok((llm, tuning.thinking_effort, budget))
+        let (llm, budget, window) = self.route(name, &tuning)?;
+        Ok((llm, tuning.thinking_effort, budget, window))
     }
 
     /// Where this turn sends, and how many input tokens it may carry before it is worth a notice.
@@ -358,7 +358,7 @@ impl Agent {
         &self,
         name: &str,
         tuning: &crate::session::Tuning,
-    ) -> anyhow::Result<(Arc<LlmClient>, u64)> {
+    ) -> anyhow::Result<(Arc<LlmClient>, u64, Option<u64>)> {
         let (llm, context) = match &tuning.model {
             // The config's `[model]` is the server's own, never a session's.
             None => anyhow::bail!("{name} states no model: set_session <session> <model>"),
@@ -373,7 +373,7 @@ impl Agent {
             }
         };
         let budget = self.budget(name, context, tuning.context_limit);
-        Ok((llm, budget))
+        Ok((llm, budget, context))
     }
 
     /// The notice threshold in input tokens; zero means off without exception.
@@ -460,8 +460,15 @@ impl Agent {
     /// The loop never folds the transcript itself. Folding is a judgement about
     /// work only the agent has seen, so the server measures and asks: the agent
     /// decides what the next stretch of context should contain. See the
-    /// `heir` skill and `docs/notes/server-agent.md`.
-    fn maybe_notify_context(&self, session: &SessionHandle, id: i64, name: &str, budget: u64) {
+    /// `handoff` skill and `docs/notes/server-agent.md`.
+    fn maybe_notify_context(
+        &self,
+        session: &SessionHandle,
+        id: i64,
+        name: &str,
+        budget: u64,
+        window: Option<u64>,
+    ) {
         if budget == 0 {
             return;
         }
@@ -474,10 +481,10 @@ impl Agent {
         }
         // Once per crossing: nagging every step teaches nothing, and a context
         // that was cut back is a new crossing.
-        if !session.note_context_asked(tokens, budget) {
+        if !session.note_context_asked(tokens, budget, window) {
             return;
         }
-        let message = context_notice(crate::prompts::shared(), name, tokens, budget);
+        let message = context_notice(crate::prompts::shared(), name, tokens, budget, window);
         if let Err(e) = self.store.add_pending_task(
             name,
             "inject",
@@ -1838,7 +1845,7 @@ impl Agent {
         match self.store.append_message(
             id,
             Kind::ThinkingMark,
-            &json!({"text": crate::prompts::shared().render(crate::prompts::THINKING_MARK, &[])}),
+            &json!({"text": crate::prompts::harness_wrap(crate::prompts::shared().render(crate::prompts::THINKING_MARK, &[]))}),
         ) {
             Ok(seq) => {
                 self.announce_row(session, Ok(seq));
@@ -1959,21 +1966,24 @@ fn failed_warning(
 ///
 /// It names the numbers it is talking about and the two tools that act on them:
 /// a notice that says only "you are near the limit" leaves the reader to guess
-/// what is possible. See the `heir` skill.
+/// what is possible. See the `handoff` skill.
 fn context_notice(
     prompts: &crate::prompts::Prompts,
     session: &str,
     tokens: u64,
     budget: u64,
+    window: Option<u64>,
 ) -> String {
-    prompts.render(
+    let total = window.unwrap_or(budget);
+    crate::prompts::harness_wrap(prompts.render(
         "context_notice",
         &[
             ("session", session),
             ("tokens", &tokens.to_string()),
             ("budget", &budget.to_string()),
+            ("window", &total.to_string()),
         ],
-    )
+    ))
 }
 
 /// What the server asks for when the interval elapses.
@@ -1985,7 +1995,9 @@ fn context_notice(
 /// the answer stays short -- every word here is paid again on every later request,
 /// because a summary is never a cache hit. See `docs/notes/server-live-compact.md`.
 fn live_compact_notice() -> String {
-    crate::prompts::shared().render(crate::prompts::LIVE_COMPACT_NOTICE, &[])
+    crate::prompts::harness_wrap(
+        crate::prompts::shared().render(crate::prompts::LIVE_COMPACT_NOTICE, &[]),
+    )
 }
 
 /// The notice threshold in input tokens, or 0 for "off".
@@ -2041,11 +2053,18 @@ mod tests {
     /// config's, the numbers are this function's.
     #[test]
     fn the_context_notice_says_what_to_do() {
-        let notice = context_notice(&notice_prompts(), "main", 700_000, 700_000);
-        assert!(notice.contains("700000 input tokens"), "{notice}");
-        assert!(notice.contains("--session main"), "{notice}");
-        assert!(notice.contains("transcript.py read"), "{notice}");
-        assert!(notice.contains("transcript.py heir"), "{notice}");
+        let notice = context_notice(&notice_prompts(), "main", 700_000, 700_000, Some(1_000_000));
+        assert!(
+            notice.contains("700000 input tokens of 1000000 total"),
+            "{notice}"
+        );
+        assert!(notice.contains("for `main`"), "{notice}");
+        assert!(notice.contains("transcript handoff"), "{notice}");
+        assert!(notice.contains("Hand off soon"), "{notice}");
+        assert!(
+            notice.starts_with("<harness>") && notice.ends_with("</harness>"),
+            "{notice}"
+        );
         assert!(
             !notice.contains("{{"),
             "a placeholder nobody filled: {notice}"
@@ -2108,7 +2127,7 @@ mod tests {
     fn notice_prompts() -> crate::prompts::Prompts {
         crate::prompts::Prompts::of(&[(
             "context_notice",
-            "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}.              Read `transcript.py read --session {{session}}`, hand over with              `transcript.py heir --session {{session}} --mentor <name> --note <text>`.",
+            "Context notice for `{{session}}`: {{tokens}} input tokens of {{window}} total (handoff threshold {{budget}}). Hand off soon; first put the handoff materials in order. Run `<handoff>/transcript handoff --note <text>` for `{{session}}`.",
         )])
     }
 
@@ -2134,8 +2153,9 @@ mod tests {
     /// The notice names the two numbers it can know: the measured size and the budget.
     #[test]
     fn the_notice_names_the_size_and_the_budget() {
-        let notice = context_notice(&notice_prompts(), "main", 10, 20);
-        assert!(notice.contains("10 input tokens of 20"), "{notice}");
+        let notice = context_notice(&notice_prompts(), "main", 10, 20, Some(100));
+        assert!(notice.contains("10 input tokens of 100 total"), "{notice}");
+        assert!(notice.contains("handoff threshold 20"), "{notice}");
         assert!(!notice.contains("{{"), "{notice}");
     }
 }

@@ -64,7 +64,7 @@ harness = "skills"
 TOML
   cp "$from/config/config.toml" "$content/config/config.toml"
   for n in 1 2 3 4; do
-    version alpha "v$n heir" "body $n" > "$content/skills/alpha/SKILL.md"
+    version alpha "v$n handoff" "body $n" > "$content/skills/alpha/SKILL.md"
     version beta "v$n remote" "body $n" > "$content/skills/beta/SKILL.md"
     eval "c$n=$(commit 'content v$n')"
   done
@@ -148,7 +148,7 @@ rm -rf "$home"; mkdir -p "$home"
 
 say "== an install of another version replaces what it wrote"
 start
-grep -q 'v1 heir' "$home/skills/alpha/SKILL.md"
+grep -q 'v1 handoff' "$home/skills/alpha/SKILL.md"
 ok "the first install is the version it was pointed at" $?
 stop
 git -C "$content" reset --hard -q "$c3"

@@ -278,24 +278,28 @@ pub fn changed_notice(prompts: &crate::prompts::Prompts, tool: &str, changed: &[
         lines.push_str(line);
         lines.push('\n');
     }
-    prompts.render(
+    crate::prompts::harness_wrap(prompts.render(
         crate::prompts::EXPLORE_CHANGED,
         &[("tool", tool), ("changed", lines.as_str())],
-    )
+    ))
 }
 
 /// What to tell a session when the mode changes under it.
 pub fn mode_notice(prompts: &crate::prompts::Prompts, mode: Mode) -> String {
     match mode {
-        Mode::Work => prompts.render(crate::prompts::WORK_NOTICE, &[]),
-        Mode::Explore => prompts.render(crate::prompts::EXPLORE_NOTICE, &[]),
+        Mode::Work => {
+            crate::prompts::harness_wrap(prompts.render(crate::prompts::WORK_NOTICE, &[]))
+        }
+        Mode::Explore => {
+            crate::prompts::harness_wrap(prompts.render(crate::prompts::EXPLORE_NOTICE, &[]))
+        }
     }
 }
 
 /// The reminder for a refused write, so a caller learns the rule and the way around it
 /// that is allowed.
 pub fn refusal(prompts: &crate::prompts::Prompts, tool: &str) -> String {
-    prompts.render(crate::prompts::EXPLORE_REFUSAL, &[("tool", tool)])
+    crate::prompts::harness_wrap(prompts.render(crate::prompts::EXPLORE_REFUSAL, &[("tool", tool)]))
 }
 
 /// Looks at the workspace after a piece of work ended, and tells the session what changed.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publish the shipped content: personal commits rebased onto the official branch.
 #
-#   scripts/ship.sh -m "heir: name the mentor in the guide"   # commit, rebase, push
+#   scripts/ship.sh -m "handoff: name the mentor in the guide"   # commit, rebase, push
 #   scripts/ship.sh --check                                   # would this build read it?
 #   scripts/ship.sh --dry-run -m "..."                        # what would happen
 #   scripts/ship.sh --check --local                           # the same, minus the remote

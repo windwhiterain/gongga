@@ -655,11 +655,12 @@ mod platform {
 
         #[test]
         fn half_a_sequence_waits_for_the_rest() {
+            let mut pending = None;
             let mut buffer = b"\x1b[20".to_vec();
-            assert!(parse(&mut buffer).is_empty(), "{buffer:?}");
+            assert!(parse(&mut buffer, &mut pending).is_empty(), "{buffer:?}");
             assert_eq!(&buffer[..], b"\x1b[20");
             buffer.extend_from_slice(b"0~pasted\x1b[201~");
-            let got = parse(&mut buffer);
+            let got = parse(&mut buffer, &mut pending);
             assert!(
                 matches!(&got[0], Event::Paste(text) if text == "pasted"),
                 "{got:?}"
@@ -683,9 +684,10 @@ mod platform {
 
         #[test]
         fn a_lone_escape_is_the_key() {
+            let mut pending = None;
             let mut buffer = b"\x1b".to_vec();
             assert!(
-                parse(&mut buffer).is_empty(),
+                parse(&mut buffer, &mut pending).is_empty(),
                 "an escape waits for its rest"
             );
             let got = flush(&mut buffer);
@@ -698,10 +700,11 @@ mod platform {
 
         #[test]
         fn a_wheel_turn_split_across_batches_is_still_a_wheel() {
+            let mut pending = None;
             let mut buffer = b"\x1b".to_vec();
-            assert!(parse(&mut buffer).is_empty(), "{buffer:?}");
+            assert!(parse(&mut buffer, &mut pending).is_empty(), "{buffer:?}");
             buffer.extend_from_slice(b"[<64;50;24M");
-            let got = parse(&mut buffer);
+            let got = parse(&mut buffer, &mut pending);
             assert!(
                 matches!(&got[0], Event::Mouse(mouse) if mouse.kind == MouseEventKind::ScrollUp),
                 "{got:?}"
@@ -711,8 +714,9 @@ mod platform {
 
         #[test]
         fn an_unfinished_sequence_never_becomes_text() {
+            let mut pending = None;
             let mut buffer = b"\x1b[<64".to_vec();
-            assert!(parse(&mut buffer).is_empty(), "{buffer:?}");
+            assert!(parse(&mut buffer, &mut pending).is_empty(), "{buffer:?}");
             let got = flush(&mut buffer);
             assert_eq!(got.len(), 1, "{got:?}");
             assert!(

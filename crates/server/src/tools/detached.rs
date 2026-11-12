@@ -818,7 +818,7 @@ async fn notice_one_end(
     };
     let pid = pid.to_string();
     let log = log.display().to_string();
-    let message = crate::prompts::shared().render(
+    let message = crate::prompts::harness_wrap(crate::prompts::shared().render(
         crate::prompts::DETACHED_ENDED,
         &[
             ("name", name),
@@ -826,7 +826,7 @@ async fn notice_one_end(
             ("how", how.as_str()),
             ("log", log.as_str()),
         ],
-    );
+    ));
     if let Err(e) = store.add_pending_task(
         session,
         "inject",
@@ -851,7 +851,7 @@ async fn notice_gone(store: &Store, row: &DetachedRow, why: &str) {
     };
     let pid = row.pid.to_string();
     let log = row.log.clone();
-    let message = crate::prompts::shared().render(
+    let message = crate::prompts::harness_wrap(crate::prompts::shared().render(
         crate::prompts::DETACHED_GONE,
         &[
             ("name", row.name.as_str()),
@@ -860,7 +860,7 @@ async fn notice_gone(store: &Store, row: &DetachedRow, why: &str) {
             ("command", command.as_str()),
             ("log", log.as_str()),
         ],
-    );
+    ));
     if let Err(e) = store.add_pending_task(
         &row.session,
         "inject",
