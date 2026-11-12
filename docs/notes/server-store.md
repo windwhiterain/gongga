@@ -26,6 +26,33 @@ reports one directory under several spellings and a spelling is not prose -- and
 about the rest, because "the text differs" and "a new row is cheap" cannot both hold
 when the text is the front of everything the model has read
 
+## The transcript is append-only, and the database says so
+
+SPEC's rule -- `context is append only, context that has been sent must not be
+change` -- is enforced by the schema, not by the callers. Two triggers on
+`messages`, created after the migrations run:
+
+- `context_no_update` -- `BEFORE UPDATE` raises, so a row that was written cannot be
+  rewritten. There is no API that edits a past row.
+- `context_cut_tail_only` -- `BEFORE DELETE` raises unless the row is the current
+  tail of its session. A cut removes a suffix, one row at a time from the end; a
+  delete that reaches into the middle is refused. Deleting a whole session is the
+  exception: the cascade runs after the `sessions` row is gone, and that is removal
+  of the session, not an edit of its context.
+
+So the transcript has exactly two writes: append a row, and cut the tail
+(`Store::truncate_after`). The migrations are the only `UPDATE`s, and they run once
+at open, before the triggers exist. A convention can be forgotten by the next
+caller; a trigger cannot.
+
+## Store::write_head_once
+
+The tool head is context too, and it is written once. `write_head_once` appends the
+`tools` row only if the session has none, and refuses otherwise -- so "append another
+schema" is not an operation the store has. `Agent::tool_set_in_force` reads the
+stored head and returns it; only a session with no head stamps one. See
+`docs/notes/server-tools.md`.
+
 ## interrupted_call
 
 Written as an observation rather than an error: the command may well have run to

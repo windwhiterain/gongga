@@ -29,10 +29,12 @@ moved, and the agent must know.
 
 A compaction origin opens at one place: plan finish, the explore -> work
 transition, which is the agent's own act inside its turn. A session created
-directly in work never opens one, so it has no baseline, is never asked for a
-summary, and never carries the `live_compact` schema, whatever it does. An origin
-opened on the first operator row instead would give such a session a baseline
-taken from inside turn one, which is not the boundary clause 2 names.
+directly in work never opens one, so it has no baseline and is never asked for a
+summary. It still carries the `live_compact` schema when compaction is enabled --
+the schema is offered for the session's life, not gated on the origin -- but with
+no origin there is nothing to compact. An origin opened on the first operator row
+instead would give such a session a baseline taken from inside turn one, which is
+not the boundary clause 2 names.
 
 ## A summary may cite a file
 
@@ -44,8 +46,10 @@ embedded file travels in every later request, and a summary is never a cache hit
 
 ## The schema is stored, not offered per request
 
-See `docs/notes/server-tools.md`: the tool list is a stored row, so the
-`live_compact` schema enters when the session's compaction origin opens and stays
-for its life. It is not added while a request is outstanding and withdrawn after
-its commit -- that entry and exit sat inside the cached prefix and invalidated the
-whole conversation at every checkpoint.
+See `docs/notes/server-tools.md`: the tool list is a stored row written once, so
+the `live_compact` schema is offered from the first stamp for as long as compaction
+is enabled, and stays for the session's life. It is not gated on the origin opening,
+and it is not added while a request is outstanding and withdrawn after its commit --
+that entry and exit sat inside the cached prefix and invalidated the whole
+conversation at every checkpoint. Even waiting for the origin to enter was one such
+move; the head is now written once and never re-stamped.
