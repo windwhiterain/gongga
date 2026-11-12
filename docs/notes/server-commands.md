@@ -379,7 +379,7 @@ it used to do.
 
 A session written into the database behind the server's back is a session no window
 ever lists: the tree is drawn from the `sessions` event, and a script's `insert` sends
-none. The heir copied its transcript that way, which is what this command exists to
+none. The handoff copied its transcript that way, which is what this command exists to
 replace -- the copy is the server's act, so the server can say it happened.
 
 Two refusals, both structural. The source must exist, and the target name must be free
@@ -680,14 +680,14 @@ one at a time rather than batched.
 ## ls_skill
 
 SPEC's `## Python Cmd` gives skills a namespace, so a skill has a path and the path
-is `<bucket>/<name>`: `project/evolve` for the checkout's own, `harness/heir` for the
+is `<bucket>/<name>`: `project/evolve` for the checkout's own, `harness/handoff` for the
 home's, `general/polity` for the machine's. `skill::Skill::id` is that spelling and
 nothing else, which is what lets a row this lists be pasted into `run_skill`.
 
 The walk is the one `run_skill` and `@skill(...)` already make (`tools::skill::installed_for`):
 the project layer needs the session *on this machine*, so a session whose directory is
 on a peer is handed the home's and the machine's rows instead. `path` is filtered with
-`commands::under`, so `harness` is every skill the home installed, `harness/heir` is
+`commands::under`, so `harness` is every skill the home installed, `harness/handoff` is
 one, and `har` is nothing -- a component, never a string prefix. A row is
 `tools::skill::row`, so the listing and the call never disagree about an `id`.
 

@@ -460,7 +460,7 @@ impl Agent {
     /// The loop never folds the transcript itself. Folding is a judgement about
     /// work only the agent has seen, so the server measures and asks: the agent
     /// decides what the next stretch of context should contain. See the
-    /// `heir` skill and `docs/notes/server-agent.md`.
+    /// `handoff` skill and `docs/notes/server-agent.md`.
     fn maybe_notify_context(&self, session: &SessionHandle, id: i64, name: &str, budget: u64) {
         if budget == 0 {
             return;
@@ -1971,7 +1971,7 @@ fn failed_warning(
 ///
 /// It names the numbers it is talking about and the two tools that act on them:
 /// a notice that says only "you are near the limit" leaves the reader to guess
-/// what is possible. See the `heir` skill.
+/// what is possible. See the `handoff` skill.
 fn context_notice(
     prompts: &crate::prompts::Prompts,
     session: &str,
@@ -2004,7 +2004,7 @@ The server keeps the latest complete tool-call round and every earlier summary \
 verbatim, so do not restate them. The summary may also cite a file as \
 `@file(<path>)`: the citation embeds that file whole into the summary, so a later \
 turn reads the content without opening it again -- at the cost of carrying it in \
-every later request. Keep it short. Do not use heir and do not delete transcript \
+every later request. Keep it short. Do not use handoff and do not delete transcript \
 rows."
         .to_string()
 }
@@ -2064,9 +2064,9 @@ mod tests {
     fn the_context_notice_says_what_to_do() {
         let notice = context_notice(&notice_prompts(), "main", 700_000, 700_000);
         assert!(notice.contains("700000 input tokens"), "{notice}");
-        assert!(notice.contains("--session main"), "{notice}");
-        assert!(notice.contains("transcript.py read"), "{notice}");
-        assert!(notice.contains("transcript.py heir"), "{notice}");
+        assert!(notice.contains("for `main`"), "{notice}");
+        assert!(notice.contains("transcript handoff"), "{notice}");
+        assert!(notice.contains("Hand off soon"), "{notice}");
         assert!(
             !notice.contains("{{"),
             "a placeholder nobody filled: {notice}"
@@ -2129,7 +2129,7 @@ mod tests {
     fn notice_prompts() -> crate::prompts::Prompts {
         crate::prompts::Prompts::of(&[(
             "context_notice",
-            "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}.              Read `transcript.py read --session {{session}}`, hand over with              `transcript.py heir --session {{session}} --mentor <name> --note <text>`.",
+            "Context notice for `{{session}}`: {{tokens}} input tokens of {{budget}}. Hand off soon; first put the handoff materials in order. Run `<handoff>/transcript handoff --note <text>` for `{{session}}`.",
         )])
     }
 

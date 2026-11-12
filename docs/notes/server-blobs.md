@@ -51,7 +51,7 @@ out identical, and the reassembled item is byte-equal to the one that arrived.
 
 The database decides reachability (`Store::orphaned_blobs`), this module only touches
 files. That split is the whole design: a blob can be named by more than one session --
-an `heir` copy put the rows in a mentor session, and both transcripts now point at the
+a `handoff` copy put the rows in a mentor session, and both transcripts now point at the
 same bytes -- and only a query over every row can tell an orphan from a shared file.
 Asking before the rows are deleted is not a style preference: after them there is
 nothing left to ask about.
@@ -59,6 +59,6 @@ nothing left to ask about.
 ## Cross-home caveat
 
 A `result_blob` is an id, and the bytes live in the home that generated them. Copying a
-row between homes -- an export, a `heir` into another server -- leaves the reference
+row between homes -- an export, a `handoff` into another server -- leaves the reference
 pointing at a file that is not there, and the item then refuses to send with a warning
 naming it. That is the correct failure; inventing a payload would not be.

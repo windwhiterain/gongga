@@ -58,7 +58,7 @@ that shows up as "some sessions read the new skill and some the old".
 
 Two roots, because the two kinds of content have different lifetimes. What this
 repository owns -- the config, and the skills that describe *this server*
-(`heir`, `image`, `self-control`, `subagent`) -- belongs beside the database and
+(`handoff`, `image`, `self-control`, `subagent`) -- belongs beside the database and
 follows the home. The machine's skills -- `proxy`, `remote`, `computer_use`,
 `web-search`, `latency` -- are the community clone's, which `agents::link_skills`
 puts in `~/.agents/skills` beside `providers.toml`. This repository does not ship

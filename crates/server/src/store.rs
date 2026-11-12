@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
 -- A session's rows can still be deleted -- by the agent, from a shell, through the
--- `heir` skill, and only after the whole transcript has been copied into a mentor
+-- `handoff` skill, and only after the whole transcript has been copied into a mentor
 -- session and the copy checked row for row. The server's own hands stay off the
 -- transcript.
 CREATE TABLE IF NOT EXISTS messages (
@@ -1038,7 +1038,7 @@ impl Store {
     /// # Invariant
     ///
     /// Reachability is decided here, in SQL, over every row: a file another session
-    /// still names -- an `heir` copy, a second session that asked for the same item --
+    /// still names -- a `handoff` copy, a second session that asked for the same item --
     /// has to stay. Ask before the rows go, because after them there is nothing left
     /// to ask about.
     pub fn orphaned_blobs(&self, name: &str) -> anyhow::Result<Vec<String>> {
@@ -2410,7 +2410,7 @@ impl Store {
             |row| row.get::<_, bool>(0),
         )?;
         if no_text {
-            // No text row survives: whatever stood before (heir keeps only an
+            // No text row survives: whatever stood before (handoff keeps only an
             // in-flight pair) is not this lineage's history.
             tx.execute(
                 "DELETE FROM live_compact_artifacts WHERE session_id = ?1",

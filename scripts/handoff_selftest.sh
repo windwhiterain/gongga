@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the heir script against the schema this checkout's server actually writes.
+# Run the handoff script against the schema this checkout's server actually writes.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -10,9 +10,9 @@ elif python3 -c 'import sys' >/dev/null 2>&1; then
 else
   python=python
 fi
-tmp="$root/target/heir-selftest"
+tmp="$root/target/handoff-selftest"
 mkdir -p "$tmp"
 
 TMPDIR="$tmp" TMP="$tmp" TEMP="$tmp" \
-  "$python" "$root/ship/skills/heir/test_heir.py" \
+  "$python" "$root/ship/skills/handoff/test_handoff.py" \
   --schema-source "$root/crates/server/src/store.rs"

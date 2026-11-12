@@ -283,8 +283,8 @@ write the full joined data as JSON.
 
 The loop measures and asks; it never folds. Folding is a judgement about work
 only the agent has seen -- which failure was decisive, which output is still
-needed -- so the agent acts with `$GONGGA_HOME/skills/heir/transcript`:
-`collapse` folds a stretch out of the request, `heir` copies the whole transcript
+needed -- so the agent acts with `$GONGGA_HOME/skills/handoff/transcript`:
+`collapse` folds a stretch out of the request, `handoff` copies the whole transcript
 into a mentor session and empties this one (see `server-handover.md`).
 
 How full the context is, as the provider last measured it. Not an estimate and
@@ -308,7 +308,7 @@ generation read in one statement. A handover's token
 reset advances that generation through a database trigger, and usage writes are
 conditional on the generation their request started with. `deliver_pending` drops
 a marked notice when its generation is old or the current context is below its
-limit, so a response that streamed its heir tool cannot restore the old context
+limit, so a response that streamed its handoff tool cannot restore the old context
 or revive its notices. Ordinary injected messages have no such validity condition
 and are always delivered.
 

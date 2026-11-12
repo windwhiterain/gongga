@@ -104,8 +104,8 @@ def main():
         command("send_message", "--name", "audit", "--message", "第二回合，散文已改，本会话不变")
         time.sleep(8)
 
-        # New content entering the store mid-conversation, the way an heir's first
-        # lesson does: a message that names a reference of its own.
+        # New content entering the store mid-conversation, the way a handoff's
+        # note does: a message that names a reference of its own.
         command("send_message", "--name", "audit", "--message", "第三回合，带一个 @file(Cargo.toml) 的引用")
         time.sleep(8)
 
