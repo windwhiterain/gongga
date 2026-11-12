@@ -61,7 +61,7 @@ fn exec(
 ):
   # create a channel running the binary at `bin` if `id` does not exists.
   # if `id` exists and `bin` arg doesn't match the channel's `bin`, report error.
-  # when waiting end without util macthed, set the channel's wait flag.
+  # when waiting timeout without util macthed, set the channel's wait flag.
   # when channel matched the util or finished, if there is wait flag, reset it and notice the session with `Result`.
 fn wait(
   time: time, #summary
