@@ -41,9 +41,14 @@ change` -- is enforced by the schema, not by the callers. Two triggers on
   of the session, not an edit of its context.
 
 So the transcript has exactly two writes: append a row, and cut the tail
-(`Store::truncate_after`). The migrations are the only `UPDATE`s, and they run once
-at open, before the triggers exist. A convention can be forgotten by the next
-caller; a trigger cannot.
+(`Store::truncate_after`). The migrations are the only `UPDATE`s, and the triggers are
+created at the end of the same pass, so the open that creates them is unharmed -- but a
+later open runs the migrations again with the triggers already there. Each one has to be
+a no-op on a home that has been through it, and one that is not is a home that cannot be
+started twice: `backfill_wire_items` read `content IS NULL` as "written before the
+split", which is also how a `system` or `tools` row is spelled, so a second start tried
+to rewrite the head it had already written and died on `context_no_update`. A convention
+can be forgotten by the next caller; a trigger cannot.
 
 ## Store::write_head_once
 

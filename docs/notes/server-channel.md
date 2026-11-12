@@ -144,9 +144,11 @@ somebody is waiting on. `exec` sets the channel's wait flag -- the marker the ca
 has to see, `""` for the end alone -- and the watcher looks at nothing else. Two things
 answer it: the program ending, or the marker appearing in what it printed. The flag is
 the claim: whoever clears it is the one that tells. A call clears it when its own answer
-is what delivered the event, the watcher skips a channel a call is inside, and a call
-that gives up waiting (a `wait` that ran out, `wait: 0`, an `interrupt`) leaves it set,
-so the answer still reaches the session once, after the call is gone.
+is what delivered the event, and the watcher skips a channel a call is inside. SPEC gives
+the flag to the call that *ran out* of waiting and to no other: `exec` resets it on the
+way in, so `wait: 0`, an `interrupt` and a call its own answer satisfied all leave it
+clear. Each of those has already said what it saw, and a flag one of them left behind
+would be the same window told twice, a turn after the session stopped listening.
 
 That is also the end of a double notice: one end told twice, once as a result and once
 as a notice. Measured on this machine before the change -- four calls in a row returned
@@ -155,10 +157,18 @@ was meant to arbitrate (`WHERE ended_at IS NULL`), but it answered `Ok(())` whet
 not it had moved the row, so the `is_err()` guarding the notice never fired.
 
 It is a task on the server's shutdown token, so a `cancel` announces nothing it just
-ended; each pass reads `status` and the new bytes of every channel carrying a flag, and
+ended: each pass reads `status` and the new bytes of every channel carrying a flag, and
 queues an `inject` row marked `notice: "channel"` -- the same door a finished background
-job uses, and marked so it cannot wake an idle session. The flag lives in the channel's
-row (`wait_marker`), so an offer to notice survives a restart.
+job uses. The flag lives in the channel's row (`wait_marker`), so an offer to notice
+survives a restart, and it is also what the row means: this session asked to be told,
+so the end is news it owes a turn for.
+
+An end nobody waited for is the other row. SPEC still wants it stored ("killing channel /
+failed to adopt channel will produce channel end notice"), and the row carries `queued`,
+which `owes_a_turn` reads as "the next turn that runs, never a reason to start one".
+Without it, closing a server ends every channel a session's last turn left behind, and
+the next start wakes that session for each one -- turns nobody asked for, about work
+that had already been read.
 
 The notice **is** the answer: the same `Result` an `exec` returns, built by
 `Outcome::result` with the same cap, and it takes the window with it -- a notice that
@@ -211,7 +221,7 @@ What stays: `read_file`, `write_file`, `replace` (a model has no other door to a
 `Shells::names`, `ToolContext::peek` and the job view are used by live paths today; the
 slice that removes their last caller removes them.
 
-## Adopting what a stop kept (`Channels::adopt`, `Channels::kill_all`)
+## Adopting what a stop kept (`Channels::adopt`, `Channels::stop_every`)
 
 `cancel --keep_alive` leaves every channel detached and says the next start adopts
 them. A channel is not a process the server owns -- it is a program a relay keeps,
@@ -222,8 +232,14 @@ that has already ended is finished and told to its session as a channel end noti
 with what it printed and the exit it ended with. The notice goes before the turns that
 would read it, which is why `run` adopts before it resumes anything.
 
-`kill_all` is the same debt on the way out. A default `cancel` ends every channel, and
+`stop_every` is the same debt on the way out. A default `cancel` ends every channel, and
 with its row gone the relay's watcher can never see it end -- so the kill is the only
 voice left, and it has to say so: the end notice carries what the channel had printed
 until then. SPEC names this pair as one rule ("killing channel / failed to adopt
 channel will produce channel end notice"); the two functions are where it lands.
+
+Both functions take the row's wait flag before they speak, and hand it on as
+`ChannelEnd::waited`. That is the whole difference between the two rows: a call was
+waiting for this end, so it owes the session a turn, or nobody was, so the notice is
+queued. Neither is ever dropped -- the bytes and the exit are the last thing that
+channel will say, and a session that reads them a turn later has lost nothing.

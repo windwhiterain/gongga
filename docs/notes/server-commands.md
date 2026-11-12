@@ -492,15 +492,23 @@ continues it; one inside `wait` gets the clock that wait was due to end at
 is lost and the wait itself is finished later rather than skipped.
 
 That clock is a ceiling, not a schedule. A `wait` ends on what arrives, and a `cancel`
-ends every channel -- each one's end notice is a `channel` inject row -- so a session
-whose inbox already holds rows has what it was waiting for: the next start clears the
-flag and starts it at once. Only a session with nothing to read sits out the time that
-was left. Without that, a stop that ended the very channel a session was waiting on
-would leave it asleep for the whole remainder, with the answer already in the queue. An idle session
-gets neither -- it has nothing to continue. The listen loop breaks as soon as
+ends every channel, so a session whose inbox holds a row it owes a turn for has what it
+was waiting for: the next start clears the flag and starts it at once. Only a session
+with nothing to read sits out the time that was left. Without that, a stop that ended
+the very channel a session was waiting on would leave it asleep for the whole remainder,
+with the answer already in the queue. An idle session gets neither -- it has nothing to
+continue.
+
+The listen loop breaks as soon as
 `shutdown` is pulled, without waiting for `active` to drain -- a call stuck in a
 shell write or a model stream has no step boundary to reach, and a flag it may
 never read is not worth holding the port for.
+
+Which rows those are is the channel's wait flag, not the row kind: an end something was
+waiting for owes a turn, and one a `cancel` leaves behind only because it ended the
+channel carries `queued` and waits for the next turn (`owes_a_turn`). That is the
+difference between a stop that answers a `wait` and a stop that wakes a session which
+finished hours ago to read about channels it had already forgotten.
 
 Background jobs are the exception, and only for this one ask: they were started
 precisely so that a `cancel` would let them go. Killing them here would make

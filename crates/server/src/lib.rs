@@ -380,16 +380,16 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     exit: end.exit,
                 };
                 let message = outcome.result(capped_at, &spill_dir).to_string();
-                // Marked: the server talking, so it must not wake an idle session.
-                if let Err(e) = store.add_pending_task(
-                    &end.session,
-                    "inject",
-                    &serde_json::json!({
-                        "session": end.session,
-                        "message": message,
-                        "notice": "channel",
-                    }),
-                ) {
+                // SPEC: `cancel` queues what it leaves; a queued row starts no turn.
+                let mut payload = serde_json::json!({
+                    "session": end.session.clone(),
+                    "message": message,
+                    "notice": "channel",
+                });
+                if !end.waited {
+                    payload["queued"] = serde_json::json!(true);
+                }
+                if let Err(e) = store.add_pending_task(&end.session, "inject", &payload) {
                     tracing::warn!(
                         session = %end.session, channel = %end.id,
                         error = %e, "could not notice a finished channel"

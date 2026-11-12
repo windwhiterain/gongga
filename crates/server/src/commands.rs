@@ -3074,33 +3074,34 @@ fn recovery_groups(
     groups
 }
 
-/// Whether this row is the server speaking rather than a person waiting.
+/// Whether the rows this session holds are news it owes a *turn* for.
 ///
 /// # Invariant
 ///
-/// The rows a session owes a *turn* for.
-///
-/// # Invariant
-///
-/// News this session is owed -- a message, or a notice about work that ended -- owes a
-/// turn, so an idle session is woken for it. That is what a `wait` survives a stop by:
-/// SPEC leaves the news it was waiting for to the next start, and the next start has to
-/// deliver it to a session that is doing nothing. Only a reminder for the turn already
-/// running owes nothing.
+/// News a session is owed -- a message, or a notice about work something was waiting
+/// for -- owes a turn, so an idle session is woken for it. That is what a `wait` survives
+/// a stop by: SPEC leaves the news it waited for to the next start, and the next start
+/// delivers it to a session that is doing nothing.
 fn owes_a_turn(tasks: &[PendingTask]) -> bool {
-    tasks.iter().any(|task| {
-        task.kind == "turn" || (task.kind == "inject" && !is_running_turns_reminder(task))
-    })
+    tasks
+        .iter()
+        .any(|task| task.kind == "turn" || (task.kind == "inject" && !reads_at_its_own_turn(task)))
 }
 
-/// A notice the turn that is running reads at its next step, and nobody else.
+/// A row the session reads at its next turn, and never a reason to start one.
 ///
 /// # Invariant
 ///
-/// `explore` is about the turn's own conduct, not about work that ended: an idle
-/// session woken for it would be woken to read advice about a turn it is not in.
-fn is_running_turns_reminder(task: &PendingTask) -> bool {
-    task.payload.get("notice").and_then(|kind| kind.as_str()) == Some("explore")
+/// Two rows are the server talking about news no turn is owed for: `explore` is advice
+/// about the turn already running, and SPEC's `cancel` queues what it leaves behind -- a
+/// channel that ended while nothing waited on it. An idle session woken by either would
+/// be the turn nobody asked for.
+fn reads_at_its_own_turn(task: &PendingTask) -> bool {
+    task.payload
+        .get("queued")
+        .and_then(|queued| queued.as_bool())
+        == Some(true)
+        || task.payload.get("notice").and_then(|kind| kind.as_str()) == Some("explore")
 }
 
 /// Wakes each session with stranded work at most once.

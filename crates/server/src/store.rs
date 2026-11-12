@@ -809,8 +809,8 @@ fn backfill_steps(conn: &Connection) -> rusqlite::Result<()> {
 ///
 /// The split itself is the version step, which renames the column before the database
 /// opens; this applies the writer's own rule to the rows that predate it, so what a row
-/// sends has one spelling. A row with no `content` was never split, which makes this a
-/// no-op on a home that has been through it.
+/// sends has one spelling. A row with no `content` and a wire form of its own was never
+/// split, which makes this a no-op on a home that has been through it.
 fn backfill_wire_items(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     if !has_column(conn, "messages", "content") || !has_column(conn, "messages", "display") {
         return Ok(());
@@ -826,12 +826,14 @@ fn backfill_wire_items(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
             |r| r.get(0),
         )?;
         let value = serde_json::from_str(&display).unwrap_or(serde_json::Value::Null);
+        // No wire form is no split: a `system` or `tools` row keeps `content` empty.
+        let Some(content) = Kind::parse(&kind).and_then(|kind| wire_item(kind, &value)) else {
+            continue;
+        };
         conn.execute(
             "UPDATE messages SET content = ?1, call_id = ?2 WHERE id = ?3",
             params![
-                Kind::parse(&kind)
-                    .and_then(|kind| wire_item(kind, &value))
-                    .map(|item| item.to_string()),
+                content.to_string(),
                 value.get("call_id").and_then(|v| v.as_str()),
                 id
             ],

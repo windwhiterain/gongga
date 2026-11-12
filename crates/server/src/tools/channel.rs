@@ -84,6 +84,8 @@ pub struct ChannelEnd {
     pub exit: Option<i32>,
     /// Whether the marker a call asked for is what brought this on.
     pub matched: bool,
+    /// Whether a call had given up waiting: only then does this end owe a turn.
+    pub waited: bool,
 }
 
 /// How a finished channel reaches its session: an inbox row, built by the caller.
@@ -460,6 +462,8 @@ impl Channels {
         // Whoever is inside the channel is the one that tells the session: the watcher
         // skips what a call holds.
         let _held = self.attach(row.id);
+        // SPEC: every `exec` resets the flag; only a call that ran out leaves it set.
+        self.store.take_channel_wait(row.id).map_err(quiet)?;
         let place = self.place_of(&row).await?;
         let grammar = self.grammar_of(&row.program);
         // `time` is what this call cost: from its own write, or from the last one.
@@ -508,11 +512,6 @@ impl Channels {
                 _ => None,
             },
         };
-        // The flag says a caller waits here, for what. It outlives this call only if
-        // the call gives up first.
-        self.store
-            .set_channel_wait(session, id, marker.as_deref().unwrap_or(""))
-            .map_err(quiet)?;
         let deadline = Instant::now() + wait;
         loop {
             let fresh = place.read_from("out", row.upto).await?;
@@ -531,6 +530,10 @@ impl Channels {
                 );
             }
             if Instant::now() >= deadline {
+                // SPEC: a wait that ran out leaves the flag set, so the end lands once.
+                self.store
+                    .set_channel_wait(session, id, marker.as_deref().unwrap_or(""))
+                    .map_err(quiet)?;
                 // Nothing arrived: what is there is the answer, and the cursor moves.
                 return self.answer(row, looked.window, false, looked.upto, None, ended, since);
             }
@@ -716,6 +719,9 @@ impl Channels {
                     if place.append("in", "kill\n").await.is_ok() {
                         ended += 1;
                     }
+                    // Read before the row goes: only a call that gave up waiting is
+                    // this end news for; the rest is queued for the next turn.
+                    let waited = self.store.take_channel_wait(row.id).unwrap_or(false);
                     let _ = self.store.delete_channel(&row.session, &row.path);
                     // SPEC: killing a channel produces its end notice; the row is gone.
                     (self.notify)(ChannelEnd {
@@ -735,6 +741,7 @@ impl Channels {
                         ),
                         exit: None,
                         matched: false,
+                        waited,
                     });
                 }
                 Err(e) => tracing::warn!(channel = %row.path, "{e}"),
@@ -771,7 +778,7 @@ impl Channels {
             };
             let printed = place.read_from("out", row.upto).await.unwrap_or_default();
             // The claim, not the flag: whoever takes it is the one that speaks.
-            let _ = self.store.take_channel_wait(row.id);
+            let waited = self.store.take_channel_wait(row.id).unwrap_or(false);
             if !self.store.finish_channel(row.id, exit).unwrap_or(false) {
                 continue;
             }
@@ -792,6 +799,7 @@ impl Channels {
                 ),
                 exit: Some(exit),
                 matched: false,
+                waited,
             });
         }
         if gone > 0 {
@@ -923,6 +931,7 @@ impl Channels {
                         ),
                         exit: ended,
                         matched: looked.matched,
+                        waited: true,
                     });
                 }
             }
