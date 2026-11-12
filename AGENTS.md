@@ -10,6 +10,7 @@
 - server home for tests should be local to each worktree: a shared home makes worktrees lock each other, and someone else's home is not yours to write in -- the program you run may stop the server on it.
 - pointing at a home in use is not a read-only act: `GONGGA_HOME` on a live home makes the bundle place its payload there and retire the build it replaces, and that asks the home's server to `cancel` -- every turn it is running dies with the ask, unless the program starts no server of its own (as `--client_only` says). See `docs/notes/bundle-main.md`, "There is no read-only run".
 - track your WIP under (notes)[.agents/notes/].
+- 主仓上游是 `gongga.git`，**绝不是**内容仓 `gongga-ship`：`.gitmodules`/`crates/server/ship.toml` 里的 ship URL 只属于 `ship` 子模块。树里没有记录主仓自己的 URL，别拿唯一可见的 ship URL 去设主仓 origin（这是反复发生的错误，worktree 共享主仓 config，一处设错处处错）。设错就 `git remote set-url origin https://github.com/windwhiterain/gongga.git`；pre-commit 会拦 origin 指向 `gongga-ship` 的提交。
 
 ## Disk low：立刻跑脚本，一刻都不耽搁
 
