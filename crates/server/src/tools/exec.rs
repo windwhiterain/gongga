@@ -55,7 +55,7 @@ impl Cmd for ExecTool {
                 Ok(running) => running,
                 Err(why) => return ToolOutcome::err(why),
             };
-            // SPEC: a channel is its program, so a name whose program ended is free.
+            // A channel is its program, so a name whose program ended is free.
             if args.get("args").is_some_and(|a| !a.is_null())
                 && let Some(row) = running.as_ref()
                 && ctx.channels.reap(row).await.is_some()
