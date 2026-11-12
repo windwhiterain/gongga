@@ -61,7 +61,8 @@ fn exec(
 ):
   # create a channel running the binary at `bin` if `id` does not exists.
   # if `id` exists and `bin` arg doesn't match the channel's `bin`, report error.
-  # set the wait flag to a channel
+  # when waiting end without util macthed, set the channel's wait flag.
+  # when channel matched the util or finished, if there is wait flag, reset it and notice the session with `Result`.
 fn wait(
   time: time, #summary
 ) -> time
@@ -69,11 +70,6 @@ fn <tool>(**args):
   # route to server cmd with caller session as extra argument
   # extra tool's schema is not registered in tools but dynamic found via skill.
 ```
-
-- a channel notice the session with Result when:
-  - it has wait flag.
-  - finished or output matched the util.
-  then clear the wait flag
 
 - wait: if none, wait default time, if 0, return immediately.
 - util: wait util macthed certain string, config default value for channel based on its name.
@@ -147,7 +143,7 @@ everything in database (sqlite) under a home directory, structured for agentic r
 ## Prompt
 after the system prompt, before the first user message, inject one message with useful information about session name, harness version (commit id), cwd, time. it is stamped once with the session's first prompt row and never re-rendered.
 
-**Invariant: context is append only, context that has been sent must not be change**
+**Invariant: context only has append/cut API**
 
 ## Meta
 preprocess before saving to transcripts.
