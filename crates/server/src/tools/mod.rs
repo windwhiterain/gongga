@@ -707,21 +707,26 @@ impl ToolRegistry {
     /// offered, so what it is offered has to be able to answer.
     pub fn stamp(
         &self,
-        has_remote: bool,
+        _has_remote: bool,
         with_live_compact: bool,
     ) -> Vec<crate::llm::ToolDefinition> {
+        // The schema is context, and context is append only: once these bytes are
+        // sent they are never re-rendered. So this is the full set for the life of
+        // the session -- a remote tool and the remote argument are always declared,
+        // and which of them a call may actually reach is announced at the tail.
+        // Filtering here by a setting is what moved the head and cold-started the
+        // cache (measured: 85k-98k tokens at one explore->work boundary).
         let mut definitions: Vec<crate::llm::ToolDefinition> = self
             .tools
             .iter()
             .filter(|t| t.offered())
             .filter(|t| t.name() != live_compact::LIVE_COMPACT_TOOL)
-            .filter(|t| has_remote || !t.is_remote())
-            .map(|t| Self::definition_of(t, has_remote))
+            .map(|t| Self::definition_of(t, true))
             .collect();
         // Once a lineage has a compaction origin the schema stays for its life, so
         // the head stops moving twice per cycle.
         if with_live_compact && let Some(tool) = self.get(live_compact::LIVE_COMPACT_TOOL) {
-            definitions.push(Self::definition_of(&tool, has_remote));
+            definitions.push(Self::definition_of(&tool, true));
         }
         definitions
     }

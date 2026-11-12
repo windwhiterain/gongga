@@ -623,11 +623,16 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// Four stored facts -- the peer, the model, whether a compaction origin has
-    /// opened, and the build -- are the only things that can change a head. A
-    /// transient flag, a command, a skill or a tool cannot: nothing here renders a
-    /// schema for a request that did not change one, and a session that never did
-    /// sends the same bytes forever. See `docs/notes/server-tools.md`.
+    /// The head is written once and only read afterwards.
+    ///
+    /// # Invariant
+    ///
+    /// A schema is context, and context has two operations: append and cut. A
+    /// schema is neither, so it is written when the session first asks and never
+    /// again -- Store::write_head_once refuses a second write, so no caller can
+    /// express one. Settings are not context: set_session may change the model,
+    /// the peer or the mode freely and none of them re-renders these bytes. Which
+    /// tools a call may reach is announced at the tail.
     fn tool_set_in_force(
         &self,
         session: &SessionHandle,
@@ -635,35 +640,20 @@ impl Agent {
         model: &str,
         llm: &crate::llm::LlmClient,
     ) -> anyhow::Result<crate::store::ToolSet> {
-        let remote = session.remote_name();
-        let has_origin = self.live_compact_enabled && self.store.has_live_compact_origin(id)?;
-        let build = protocol::BUILD.to_string();
-        let kept = self.store.tool_set(id)?;
-        if let Some(kept) = &kept
-            && kept.remote == remote
-            && kept.model.as_deref() == Some(model)
-            && kept.has_origin == has_origin
-            && kept.build == build
-        {
-            return Ok(kept.clone());
+        if let Some(kept) = self.store.tool_set(id)? {
+            return Ok(kept);
         }
-        // Which stored change moved the head, for the record and for a person.
-        let event = match &kept {
-            None => "first",
-            Some(kept) if kept.build != build => "build",
-            Some(kept) if kept.model.as_deref() != Some(model) => "model",
-            Some(kept) if kept.remote != remote => "move",
-            Some(_) => "origin",
-        };
         let tool_set = crate::store::ToolSet {
-            tools: llm.wire_tools(&self.tools.stamp(session.on_remote(), has_origin)),
+            tools: llm.wire_tools(
+                &self.tools.stamp(session.on_remote(), self.live_compact_enabled),
+            ),
             model: Some(model.to_string()),
-            remote,
-            has_origin,
-            build,
-            event: event.to_string(),
+            remote: session.remote_name(),
+            has_origin: self.live_compact_enabled,
+            build: protocol::BUILD.to_string(),
+            event: "first".to_string(),
         };
-        self.store.append_tool_set(id, &tool_set)?;
+        self.store.write_head_once(id, &tool_set)?;
         Ok(tool_set)
     }
 

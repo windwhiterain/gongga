@@ -647,6 +647,20 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
              UPDATE sessions
              SET context_generation = context_generation + 1
              WHERE id = NEW.id;
+         END;
+
+         CREATE TRIGGER IF NOT EXISTS context_no_update
+         BEFORE UPDATE ON messages
+         BEGIN
+             SELECT RAISE(ABORT, 'context is append only: no API may change a written row');
+         END;
+
+         CREATE TRIGGER IF NOT EXISTS context_cut_tail_only
+         BEFORE DELETE ON messages
+         WHEN OLD.seq < (SELECT MAX(seq) FROM messages WHERE session_id = OLD.session_id)
+              AND EXISTS(SELECT 1 FROM sessions WHERE id = OLD.session_id)
+         BEGIN
+             SELECT RAISE(ABORT, 'context may only be cut at its tail');
          END;",
     )?;
     Ok(())
@@ -1625,7 +1639,7 @@ impl Store {
             let conn = self.lock();
             conn.query_row(
                 "SELECT display FROM messages \
-                  WHERE session_id = ?1 AND kind = 'tools' ORDER BY seq DESC LIMIT 1",
+                  WHERE session_id = ?1 AND kind = 'tools' ORDER BY seq ASC LIMIT 1",
                 params![session_id],
                 |r| r.get::<_, String>(0),
             )
@@ -1635,10 +1649,29 @@ impl Store {
         Ok(serde_json::from_str::<ToolSet>(&display).ok())
     }
 
-    /// Stores the tool set the next request is built from, bytes and all.
-    pub fn append_tool_set(&self, session_id: i64, tool_set: &ToolSet) -> anyhow::Result<i64> {
+    /// Writes the head once. There is no API that appends a schema: context has
+    /// two operations, append and cut, and a schema is neither.
+    ///
+    /// # Invariant
+    ///
+    /// Refused here rather than trusted to callers. A head already written makes
+    /// this an error, so no code path -- a setting, a skill, a tool, a command --
+    /// can express appending another schema. Settings are not context.
+    pub fn write_head_once(&self, session_id: i64, tool_set: &ToolSet) -> anyhow::Result<()> {
+        let already = {
+            let conn = self.lock();
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ?1 AND kind = 'tools')",
+                params![session_id],
+                |r| r.get::<_, bool>(0),
+            )?
+        };
+        if already {
+            anyhow::bail!("this session already has a head; a schema is not appendable (context is append and cut only)");
+        }
         let payload = serde_json::to_value(tool_set)?;
-        self.append_message(session_id, Kind::Tools, &payload)
+        self.append_message(session_id, Kind::Tools, &payload)?;
+        Ok(())
     }
 
     // -- what a stream has said so far -------------------------------------
