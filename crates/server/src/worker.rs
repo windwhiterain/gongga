@@ -144,7 +144,7 @@ async fn call(request: &Request) -> Answer {
         )
         .build(&cfg.tools.rows, &cfg.tools.arguments),
     );
-    let program = cfg.bash.program.clone().unwrap_or_default();
+    let program = crate::config::detect_git_bash().unwrap_or_default();
     let ctx = crate::tools::ToolContext {
         session: request.session.clone(),
         call_id: request.call_id.clone(),

@@ -746,7 +746,7 @@ impl ToolRegistry {
         // Before the arguments are read: a refused call must not reach the tool at all,
         // so nothing is spawned for it.
         if tool.writes() && ctx.explore.is_some() {
-            return ToolOutcome::err(crate::explore::refusal(name));
+            return ToolOutcome::err(crate::explore::refusal(crate::prompts::shared(), name));
         }
         if let Some(message) = argument_error(tool.as_ref(), &args) {
             return ToolOutcome::err(message);
@@ -767,7 +767,11 @@ impl ToolRegistry {
             match tool.detached_carrier() {
                 tunnel::Carried::Process => {}
                 tunnel::Carried::Worker => {
-                    return tunnel::spawn_worker(tool, name.to_string(), args, ctx).await;
+                    let outcome = tunnel::spawn_worker(tool, name.to_string(), args, ctx).await;
+                    // The worker changed the workspace the session was reading, so the
+                    // look is owed by the process that holds the watch -- this one.
+                    crate::explore::after_job(ctx, name);
+                    return outcome;
                 }
                 tunnel::Carried::Here if !tool.handles_background() => {
                     return ToolOutcome::err(format!(

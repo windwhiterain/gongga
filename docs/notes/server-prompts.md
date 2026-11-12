@@ -147,6 +147,44 @@ All three are in `REQUIRED`, unlike `REVISION`: a missing patch costs a re-sent 
 while a missing report is a monitor that never learns what it may not do. That is also
 why the content that carries them declares protocol 3.
 
+## the notices the server injects
+
+Everything the server says to a session without being asked is one of these seventeen
+templates, and none of them is a sentence in the binary:
+
+- exploring, from `explore.rs`: `explore_notice`, `work_notice` (the two shapes of one
+  mode change), `explore_changed` (a program changed the workspace), `explore_refusal`
+  (a write-shaped call was refused).
+- a job, from `tools/tunnel.rs`: `job_report_finished` and `job_report_failed` (an ending
+  that differs in one word is two templates, because the model reads the whole sentence
+  either way), `job_lost` (nothing outlived the server), `job_left_owed` (it ended, the
+  answer was never collected).
+- a detached bash, from `tools/detached.rs`: `detached_ended` with `detached_exit`,
+  `detached_no_exit` or `detached_adopted` in its `{{how}}`, and `detached_gone` with
+  `detached_running` in its `{{command}}` or nothing at all.
+- what a stop cost, from `commands.rs`: `lost_notices`, whose `{{notices}}` is the list the
+  store could no longer hand over.
+- `live_compact_notice`, the interval asking for a fold, and `thinking_mark`, the row that
+  is the turn boundary a provider demanded.
+
+Two composition rules, and the second is the one that is easy to get wrong. A sentence
+with two shapes is two templates, never a conditional inside one -- `substitute` has no
+conditionals by design, and a reader editing one shape should not have to hold the other
+in their head. A *fragment* is a template too: `{{how}}` and `{{command}}` are whole
+sentences of their own ("has finished with exit status 1", " It was running: cargo
+test"), so the three endings and the two goings are not three and two copies of the
+sentence around them. An empty substitution is legitimate where a case really has
+nothing to say, which is `{{command}}` when the call gave no command, and it is the same
+shape `monitor_disk` already uses for `{{reach}}` and `{{read_back}}`.
+
+Adding a name to `REQUIRED` couples this build to the content. A build that requires
+`thinking_mark` cannot start on content that does not carry it -- measured here: a home
+whose content carried only the seventeen templates it shipped before refused, naming all
+seventeen of the new ones. So content that adds a name goes out *before* the harness that reads it, and the
+keys nobody reads yet are inert for the builds that are already running: a name added is
+safe for an older reader, a name *renamed* is not (see `monitor_error` above, whose name
+survived a rewrite of its text for exactly that reason).
+
 ## dynamic_tail
 
 The session's start card: name, the model it runs on, the harness and the commit it
@@ -227,8 +265,9 @@ trusted by the time the first request is built.
 
 ## Prompts::of, and who takes a `&Prompts`
 
-`cap_output`, `image_refusal`, `vision`, `with_size_hint`, `context_notice` all take
-the templates as an argument. Not for tidiness: each of them
+`cap_output`, `image_refusal`, `vision`, `with_size_hint`, `context_notice`, and
+explore's three -- `mode_notice`, `changed_notice`, `refusal` -- all take the templates
+as an argument. Not for tidiness: each of them
 used to read prose off a compiled-in file inside a unit test, which stopped being
 possible the moment the prose left the binary. A parameter keeps the test honest about
 the mechanism it owns -- that the numbers arrive, that the spill path is named, that the

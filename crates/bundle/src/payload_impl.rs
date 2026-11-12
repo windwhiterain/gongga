@@ -30,6 +30,13 @@ pub fn place(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
         out.write_all(bytes)?;
         out.sync_all()?;
     }
+    // The payload is a program: `take_over` spawns it directly, so it needs the
+    // execute bit. Windows has none to set.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
+    }
     // A fresh 20 MB exe is what a scanner opens, and Windows answers a rename
     // over one with "access denied" for a moment.
     let mut last = std::io::Error::other("no attempt");

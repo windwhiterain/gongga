@@ -117,7 +117,8 @@ class Reply:
 class Client:
     """One connection: a handshake, then commands by name until `close`."""
 
-    def __init__(self, port, key, host="127.0.0.1", timeout=30.0, label="python"):
+    def __init__(self, port, key, host="127.0.0.1", timeout=30.0, label="python",
+                 mtu=None):
         self.address = (host, int(port))
         self.key = key
         self.timeout = timeout
@@ -138,6 +139,8 @@ class Client:
         self._ahead = set()
         self._next_id = 1
         self._greeted = False
+        # The path drops a datagram above its mtu; a message travels in several.
+        self.mtu = int(mtu or os.environ.get("GONGGA_MTU") or 1200)
 
     # -- connection ---------------------------------------------------------
 
@@ -287,13 +290,18 @@ class Client:
     # -- the wire -----------------------------------------------------------
 
     def _send(self, message):
-        # One frame, one sequence and one message id: the channel drops a frame that
-        # repeats either, so reusing them is a command the server never sees.
+        # One message id, one sequence per frame: the channel drops a frame that
+        # repeats either, and a payload bigger than the path's datagram has to
+        # travel as several. One datagram per message is what a loopback drops
+        # silently above about 1.5k, and the command then never arrives.
         payload = json.dumps(message, ensure_ascii=False).encode("utf-8")
-        self._sequence += 1
         self._message += 1
-        self._sock.send(_frame(DATA | ACK, self._connection, self._sequence,
-                               self._expected, self._message, 0, 1, payload))
+        limit = max(64, int(self.mtu) - HEADER)
+        parts = [payload[at:at + limit] for at in range(0, len(payload), limit)] or [b""]
+        for index, part in enumerate(parts):
+            self._sequence += 1
+            self._sock.send(_frame(DATA | ACK, self._connection, self._sequence,
+                                   self._expected, self._message, index, len(parts), part))
 
     @staticmethod
     def _decode(data):

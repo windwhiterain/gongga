@@ -206,8 +206,6 @@ pub fn image_refusal(
 
 #[derive(Debug, Clone)]
 pub struct BashConfig {
-    /// Explicit shell path. `None` means auto-detect Git Bash.
-    pub program: Option<PathBuf>,
     /// How long a `bash` call waits before returning.
     ///
     /// # Invariant
@@ -421,7 +419,6 @@ struct FileTools {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct FileBash {
-    program: Option<PathBuf>,
     timeout_ms: Option<u64>,
     max_output_chars: Option<usize>,
 }
@@ -666,10 +663,6 @@ impl Config {
         let tools_file = file.tools.clone().unwrap_or_default();
         let bash_file = tools_file.bash.clone().unwrap_or_default();
         let bash = BashConfig {
-            program: env_path("GONGGA_BASH")
-                .or(bash_file.program)
-                .map(shell_program)
-                .or_else(detect_git_bash),
             timeout: Duration::from_millis(
                 bash_file
                     .timeout_ms

@@ -807,16 +807,25 @@ async fn notice_one_end(
         return;
     }
     let how = match code {
-        Some(Some(code)) => format!("has finished with exit status {code}"),
-        Some(None) => "has ended, though its exit status could not be read".to_string(),
+        Some(Some(code)) => {
+            let status = code.to_string();
+            crate::prompts::shared()
+                .render(crate::prompts::DETACHED_EXIT, &[("code", status.as_str())])
+        }
+        Some(None) => crate::prompts::shared().render(crate::prompts::DETACHED_NO_EXIT, &[]),
         // Adopted across a restart: the pid is all that survived, and it is gone.
-        None => "is no longer running, and how it ended cannot be known from here".to_string(),
+        None => crate::prompts::shared().render(crate::prompts::DETACHED_ADOPTED, &[]),
     };
-    let message = format!(
-        "The detached bash `{name}` (pid {pid}) {how}. What it printed was never \
-         collected -- read it at: {}. The row is still there: `list_bash` reports it \
-         as not running, and `del_bash name_regex: \"^{name}$\"` removes it.",
-        log.display()
+    let pid = pid.to_string();
+    let log = log.display().to_string();
+    let message = crate::prompts::shared().render(
+        crate::prompts::DETACHED_ENDED,
+        &[
+            ("name", name),
+            ("pid", pid.as_str()),
+            ("how", how.as_str()),
+            ("log", log.as_str()),
+        ],
     );
     if let Err(e) = store.add_pending_task(
         session,
@@ -835,13 +844,22 @@ async fn notice_gone(store: &Store, row: &DetachedRow, why: &str) {
     let command = if row.cmd.trim().is_empty() {
         String::new()
     } else {
-        format!(" It was running: {}", row.cmd.trim())
+        crate::prompts::shared().render(
+            crate::prompts::DETACHED_RUNNING,
+            &[("command", row.cmd.trim())],
+        )
     };
-    let message = format!(
-        "The detached bash `{}` (pid {}) is gone: {why}.{command} What it printed \
-         before that is at: {}. Nothing is waiting on it any more, so there is nothing \
-         left to wait for.",
-        row.name, row.pid, row.log
+    let pid = row.pid.to_string();
+    let log = row.log.clone();
+    let message = crate::prompts::shared().render(
+        crate::prompts::DETACHED_GONE,
+        &[
+            ("name", row.name.as_str()),
+            ("pid", pid.as_str()),
+            ("why", why),
+            ("command", command.as_str()),
+            ("log", log.as_str()),
+        ],
     );
     if let Err(e) = store.add_pending_task(
         &row.session,

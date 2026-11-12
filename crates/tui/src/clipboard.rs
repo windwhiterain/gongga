@@ -49,7 +49,11 @@ fn readers() -> &'static [(&'static str, &'static [&'static str])] {
 fn image_candidates() -> Vec<ImageTool> {
     if cfg!(windows) {
         // `-STA` or `GetImage()` throws; `-File` or no `$args[0]`.
+        #[cfg(windows)]
         let args = powershell_image_args();
+        // That function is built only for Windows; this branch is unreachable elsewhere.
+        #[cfg(not(windows))]
+        let args: &'static [&'static str] = &[];
         vec![ImageTool::writes_to_path("powershell", args)]
     } else if cfg!(target_os = "macos") {
         // The destination path is appended as the last argument and addressed as
