@@ -297,31 +297,4 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 声明（`metadata.entry:`，规范 `metadata` 允许的扩展位），所以正文和机器读的是同一份事实。
 `scripts/skill_contract.sh` 拦两种走样：正文出现桶路径、`entry` 指不到文件。
 
-- `proxy`：两层。它自己的 `proxy` 脚本是自实现的纯标准库分流代理（HTTP/SOCKS5/直连
-  上游，用户可接任何 API 端点）：先 `doctor`，`upstream add` 加上游，`add host --via` 定规则，
-  `check host` 看代理自己记下的去向。出口 IP 只在两条路由相同时才说明问题——`check` 会明说。
-  改配置后要重启 `serve`。`proxy core …` 直接驱动跑着的 mihomo/clash core：`groups` /
-  `nodes` / `use GROUP NODE` 换节点、`bench [--throughput]` 测延迟和吞吐、`mode` 切
-  rule/global/direct、`reload` 热重载。控制器自己从 core 的 config.yaml 找（不依赖任何
-  客户端），`doctor` 会打印用的是哪一条来源。**换节点不用 flm；只有刷新订阅那一步需要账号。**
-- `computer_use`：用鼠标键盘操作真实桌面。它自己的 `cu` 脚本先跑 `doctor`，
-  然后 `shot` 看屏 → `tree` 拿控件矩形 → `click`/`type`/`key`（都带 `--window`）。
-  `cu.py` + 每平台一个后端（Windows ctypes/UIA 已实测，macOS/Linux 已写未实测），
-  uv 解析内联依赖，不需要 pyautogui/pywinauto。这是用户的真实桌面，打字前先确认目标窗口，
-  截图会把屏幕上的密钥一起带走。
-- `remote`：在另一台机器上跑命令、搬文件。它的 `remote` 脚本是纯标准库的 SSH
-  外壳，目标由 `add` 记住（host/port/user/key），**不读 ~/.ssh/config，不依赖任何本地约定或
-  第三方 CLI**。先 `doctor` 证明这条链每环（退出码/UTF-8/二进制/传输），再 `run`。脚本走
-  base64 落盘执行、输出按 base64 分帧——所以引号、GBK、退出码这三个坑不存在。会话复用一条
-  ssh（~390ms vs 一次性 ~800ms）；带 `--runner`（如 Windows 上跑 Git Bash）的目标没有会话，
-  自动走一次性。传文件用 `put`/`get`，默认读回大小核对——sftp 会报告成功而文件没到。
-- `handoff`：把上下文交接出去。收到 `Context notice` 就是**要求尽快交接**，不是询问——但也不是立刻
-  砍断：先提交、把只存在脑子里的状态写下来、把文档和引用整理好，再交接；不要再开新活。用
-  `gongga-cli skill handoff read`（脚本，不是服务端工具）——服务端只测量和要求。
-  `handoff` 先把整份 transcript 拷进一个 mentor 会话、逐行校验副本，然后**删空自己**——只留在
-  飞的那个 tool call（服务端一收到 call 就执行，所以它总在最后一行）；指引写在它的结果里，
-  交接笔记则由脚本用一次 `send_message` 发出，在下一个 step 边界落成一条普通 user 消息（所以它的
-  `@file(...)`/`@skill(...)` 会进 index，和空会话的首轮一样）；mentor 那边会补一条 tool_result 告它
-  自己成了 mentor，只答被问的。
-  之后卡住了用 `get_messages` 读 mentor、用 `send_message` 问 mentor。
-  read 读的是消息（模型输出 + 注入），工具调用与 reasoning 被过滤掉。
+收到 `Context notice` 就是**要求尽快交接**，不是询问——但也不是立刻砍断：先提交、把只存在脑子里的状态写下来、把文档和引用整理好，再交接；不要再开新活。怎么交接读 `handoff` 技能正文（`skill` 表给路径）——服务端只测量和要求。
