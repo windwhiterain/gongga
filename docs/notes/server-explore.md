@@ -72,7 +72,7 @@ report the whole tree it had just met.
 
 ## is_program
 
-The tools whose result is a program's: `bash`, `exec`, `python`, `skill` and the
+The calls whose result is a program's: `bash`, `exec`, `python`, `run_skill` and the
 `remote_*` family. A file tool's writes are its identity and are refused, so looking
 after one would be looking twice. `read_file` is not in the list because it cannot
 write.

@@ -25,11 +25,32 @@ pub async fn run(
     tool: &str,
     args: Value,
 ) -> Outcome {
-    let handle = match sessions.get(session) {
-        Ok(handle) => handle,
-        Err(e) => return Outcome::err(e.to_string()),
+    let ctx = match context(agent, sessions, store, session, tool) {
+        Ok(ctx) => ctx,
+        Err(why) => return Outcome::err(why),
     };
-    let ctx = crate::tools::ToolContext {
+    let outcome = agent.tools.run(tool, args, &ctx).await;
+    match outcome.ok {
+        true => Outcome::ok(outcome.output),
+        false => Outcome::err(outcome.output),
+    }
+}
+
+/// The context one call runs as: the session's shells, its directory, its machine.
+///
+/// # Invariant
+///
+/// One construction, shared with a command that runs a skill itself (`run_skill`): a
+/// tool's call and the command layer's reach the same session state, keyed the same way.
+pub fn context(
+    agent: &crate::agent::Agent,
+    sessions: &SessionManager,
+    store: &Store,
+    session: &str,
+    tool: &str,
+) -> Result<crate::tools::ToolContext, String> {
+    let handle = sessions.get(session).map_err(|e| e.to_string())?;
+    Ok(crate::tools::ToolContext {
         session: session.to_string(),
         call_id: format!("cmd-{}", uuid::Uuid::new_v4().simple()),
         tool: tool.to_string(),
@@ -56,12 +77,7 @@ pub async fn run(
         stop: handle.stop_signal(),
         closing: handle.closing_signal(),
         explore: handle.explore(),
-    };
-    let outcome = agent.tools.run(tool, args, &ctx).await;
-    match outcome.ok {
-        true => Outcome::ok(outcome.output),
-        false => Outcome::err(outcome.output),
-    }
+    })
 }
 
 /// The commands the tools publish: one entry per tool, `<session>` first.

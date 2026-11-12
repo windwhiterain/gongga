@@ -5,7 +5,7 @@
 An entry is a file, and a file is not a program: something has to read its extension or its
 `#!` line and decide what starts it. That decision used to live in the command layer, which
 was fine while `gongga-cli skill` was the only door. It stopped being fine the moment the
-server grew a `skill` tool: the server cannot depend on the command layer, and a second copy
+server grew its own runner (SPEC's `run_skill`): the server cannot depend on the command layer, and a second copy
 of the rule is a second answer to "what runs this file".
 
 So the rule moved here, and only the rule. What it does *not* do is look for programs.
@@ -21,7 +21,7 @@ which program is missing.
 
 The command layer's Python lookup is the six-times-duplicated probe the scripts carry (`for
 candidate in python3 python py; do … ; done`, because Windows' Store alias sits on `PATH` and
-exits 49). It is eager there, which costs one probe on a `skill` line that never needed
+exits 49). It is eager there, which costs one probe on a `run_skill` line that never needed
 Python. That was accepted rather than solved: the alternative is the command layer asking
 this module which program an entry needs, which is the rule leaking back out.
 

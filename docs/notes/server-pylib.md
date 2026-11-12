@@ -31,7 +31,7 @@ mtime that changes for no reason makes every "did the installer run" question un
 Three callers, and each says so in the child's environment rather than by copying files:
 
 - the `python` tool, through `GONGGA_SKILL_LIB` on the interpreter it starts;
-- `skill`, on the entry process it starts -- so a package's own `import gongga` resolves
+- `run_skill`, on the process it starts -- so a package's own `import gongga` resolves
   from inside the package, not only from the driver's scope;
 - the command layer's `skill <name>`, when `--home`'s `lib/` exists. It writes nothing
   there: a home that never ran a server has no `lib/`, and that home's entry simply has

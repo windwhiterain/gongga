@@ -42,7 +42,7 @@ which is where a session with no directory of its own starts.
 The client's own process directory is deliberately *not* the fallback any more.
 It used to be, and it is where the bug came from: a window launched from `C:/`
 offered `C:/.agents/skills` for a session working in a checkout, while the
-server's own `skill` table read the checkout's. Two directories that agree only
+server's own skill table read the checkout's. Two directories that agree only
 by luck is not a contract. `server_cwd` is the datum that makes them agree, and
 it arrives in the greeting's `ServerInfo`, which already existed.
 

@@ -2831,65 +2831,61 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     })
 }
 
-/// `skill`: `ls` and `--name` ask a server, the rest is the entry's own argv.
+/// `skill`: the entry itself, run here; `ls` asks the server when a shell names one.
 ///
 /// # Invariant
 ///
 /// The words after `skill` belong to the entry -- `skill remote add --home x` is the
-/// script's flag -- so this layer claims only what cannot be a word of it: `ls`, whose
-/// answer is the session's, and `--name`/`--args`, which spell the server's command.
-/// A skill that must receive `--name` itself is reachable as `skill run <name>`.
+/// script's flag -- so this layer claims only `ls`, whose answer is the session's.
+/// Running stays here: SPEC's `run_skill` takes an `id`, which this machine resolves.
 async fn skill(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
     let local = || crate::skill_command::dispatch(&home_of(args), &tokens[1..]);
-    let listing = tokens.get(1).map(String::as_str) == Some("ls");
-    let named = tokens[2..]
-        .iter()
-        .any(|word| word == "--name" || word.starts_with("--name="));
-    if !listing && !named {
+    if tokens.get(1).map(String::as_str) != Some("ls") {
         return local();
     }
+    let Some(session) = calling_session() else {
+        return local();
+    };
     let Ok((mut client, mut link)) = connect(args).await else {
         return local();
     };
-    let result = if client.has_command("skill") {
-        match (listing, calling_session()) {
-            (true, Some(session)) => match ask_table(&mut client, &mut link, &session).await {
-                Ok(()) => Ok(()),
-                // A shell of another server's session still has a machine to
-                // list: the refusal is said, and the local walk answers.
-                Err(why) => {
-                    eprintln!("note: {session} is not a session this server knows ({why})");
-                    local()
-                }
-            },
-            (true, None) => {
-                link.goodbye().await;
-                return local();
-            }
-            _ => run_once(&mut client, &mut link, tokens).await,
+    let result = match ask_table(&mut client, &mut link, &session).await {
+        Ok(()) => Ok(()),
+        // A shell of another server's session still has a machine to list: the
+        // refusal is said, and the local walk answers.
+        Err(why) => {
+            eprintln!("note: {session} is not a session this server knows ({why})");
+            local()
         }
-    } else {
-        local()
     };
     link.goodbye().await;
     result
 }
 
 /// `skill ls` through the server: the table, printed as the same four columns.
+///
+/// # Invariant
+///
+/// One walk answers both readers: SPEC's `ls_skill` is what `@skill(...)` expansion and
+/// `run_skill` read, so the columns here are its rows and not a second listing.
 async fn ask_table(client: &mut Client, link: &mut Link, session: &str) -> anyhow::Result<()> {
-    let asked = vec!["skill".to_string(), session.to_string()];
+    let asked = vec![
+        "ls_skill".to_string(),
+        "--session".to_string(),
+        session.to_string(),
+    ];
     let (ok, message) = ask(client, link, &asked).await?;
     if !ok {
         anyhow::bail!(message);
     }
-    let table: serde_json::Value = serde_json::from_str(&message)?;
+    // Nothing installed is a sentence rather than an empty table, and it is the
+    // answer: print it as it came.
+    let Ok(table) = serde_json::from_str::<serde_json::Value>(&message) else {
+        println!("{message}");
+        return Ok(());
+    };
     let mut lines = String::new();
-    for row in table
-        .get("skills")
-        .and_then(|s| s.as_array())
-        .into_iter()
-        .flatten()
-    {
+    for row in table.as_array().into_iter().flatten() {
         let field = |name: &str| row.get(name).and_then(|v| v.as_str()).unwrap_or_default();
         lines.push_str(&format!(
             "{}\t{}\t{}\t{}\n",
@@ -2900,9 +2896,6 @@ async fn ask_table(client: &mut Client, link: &mut Link, session: &str) -> anyho
         ));
     }
     print!("{lines}");
-    if let Some(elsewhere) = table.get("elsewhere").and_then(|v| v.as_str()) {
-        eprintln!("{elsewhere}");
-    }
     Ok(())
 }
 

@@ -112,10 +112,10 @@ owners sharing one layout cannot corrupt each other's order, only fail to share 
 
 `plan(store, owner, purpose, wanted, rates, tolerance)` is the whole interface: a caller
 hands over keys with their text and sizes and gets an order back -- each entry with the
-text to send under it, plus the patches that catch up what changed. `skill` and the
-prompt index are the two callers, and they are different kinds of thing -- a tool result
-and a system prompt -- which is the point of the algorithm being generic. `purpose`
-separates their chains inside one owner's forest, so they never evict each other.
+text to send under it, plus the patches that catch up what changed. The prompt index is the
+caller: a listing a person or a model reads on demand has no cache to hit, which is why
+the skill rows are the walk's own order and not a plan. `purpose`
+separates chains inside one owner's forest, so two purposes never evict each other.
 
 
 ## what a provider's cache actually serves
@@ -221,12 +221,12 @@ never held is a miss rather than an error; the first request after that failure 
 what actually went out. Making that exact would mean dropping unconfirmed nodes, which is
 worth doing when something else needs the distinction.
 
-The skill table was once planned the same way and no longer is. `plan` answers a
+The skill listing was once planned the same way and no longer is. `plan` answers a
 different question: *what content goes into the first turn's meta index, in what order*.
 That injection is paid once and reused by every later step of the conversation, which is
-why its order is worth a cost model. A `skill` call is a tool result the agent may make
+why its order is worth a cost model. A `run_skill` call is a command result the agent may ask for
 at any time, or never; a listing a person reads has no cache to hit at all. Sorting the
-table by a plan bought nothing the walk's own order does not, so the rows are the walk.
+rows by a plan bought nothing the walk's own order does not, so the rows are the walk.
 
 `expire` runs first, before anything reads a node index. A stale node takes its whole
 subtree with it, because a provider's cache is a prefix -- if the front of a chain is

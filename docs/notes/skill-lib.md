@@ -7,7 +7,7 @@ One reading of a skill directory, shared by the three places that need it: the s
 `gongga-cli skill`, which runs the entry. It exists because the reading had grown two
 implementations -- one in `server/src/tools/skill.rs`, one in `cli/src/commands.rs`
 -- each documented as "the same roots in the same order as the other one". That comment
-is the bug: a third caller appeared (`skill`), and a third copy would have been the
+is the bug: a third caller appeared (`run_skill`), and a third copy would have been the
 point where the three orders stopped agreeing.
 
 ## Bucket
@@ -15,7 +15,7 @@ point where the three orders stopped agreeing.
 `Bucket::ALL` is the precedence, and it is the only place the order is written. `project`
 is the checkout the session works in, `harness` is what the pin installed under the home,
 `general` is the machine's, which on this harness is the community clone linked into
-`~/.agents/skills`. The words are the ones `skill` already prints and the prompts
+`~/.agents/skills`. The words are the ones `ls_skill` already prints and the prompts
 already use, so nothing here is a new vocabulary.
 
 The crate is separate from `protocol` on purpose: the wire crate carries the frames, and

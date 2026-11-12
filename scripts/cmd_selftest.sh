@@ -191,8 +191,8 @@ probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$
 ok "the delete_session operation is answered" $?
 say "$probe"
 
-# 15. The `skill` command is a server command: the tool's own registration put it
-#     in the catalog, so an operator and the model reach the same entry.
+# 15. `run_skill` is a server command (SPEC's `## Python Cmd`): what a skill is -- a
+#     package, an entry, a body -- decides how it runs, and no tool row is involved.
 mkdir -p "$home/skills/argv-probe" "$home/skills/body-only"
 cat > "$home/skills/argv-probe/SKILL.md" <<'MD'
 ---
@@ -232,7 +232,7 @@ def echo(*words):
 def code(fail: bool = False):
     return 2 if fail else None
 PY
-packed=$("${cli[@]}" '{"name":"skill","args":{"session":"main","name":"echo-pkg","args":["echo","a b","c"]}}' 2>&1)
+packed=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/echo-pkg","cmd":{"args":["echo","a b","c"]}}}' 2>&1)
 [[ "$packed" == *"argv: a b | c"* ]]
 ok "a package skill runs the function its API publishes" $?
 say "$packed"
@@ -269,8 +269,7 @@ except gongga.GonggaError as refused:
 ok "import gongga: a command per function, a typo caught here, a refusal raised" $rc
 say "$client"
 
-# `index_skill` is gone: the same table is `ls_skill` on the server, and `skill` with
-# no name when a session's tool call asks for it.
+# `index_skill` is gone: the same table is `ls_skill` on the server.
 [[ "$listed" != *"index_skill"* ]]
 ok "the catalog no longer carries index_skill" $?
 
@@ -279,21 +278,21 @@ verbs=$("${cli[@]}" '{"name":"ls_skill","args":{"session":"main"}}' 2>&1)
 ok "ls_skill asks the server, and carries the description" $rc
 say "$verbs"
 
-probed=$("${cli[@]}" '{"name":"skill","args":{"session":"main","name":"argv-probe","args":["a b","$HOME","semi;colon"]}}' 2>&1)
+probed=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/argv-probe","cmd":{"args":["a b","$HOME","semi;colon"]}}}' 2>&1)
 { [[ "$probed" == *'[a b]'* ]] && [[ "$probed" == *'[$HOME]'* ]] && \
   [[ "$probed" == *'[semi;colon]'* ]] && [[ "$probed" == *'exit status 3'* ]] && \
   [[ "$probed" == *'"ok":false'* ]]; } && rc=0 || rc=1
-ok "skill <name> <args> passes the words unread and keeps the entry's exit code" $rc
+ok "run_skill passes the words unread and keeps the entry's exit code" $rc
 say "$probed"
 
-body=$("${cli[@]}" '{"name":"skill","args":{"session":"main","name":"body-only"}}' 2>&1)
+body=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/body-only","cmd":"no_such_function"}}' 2>&1)
 [[ "$body" == *"is a body and nothing to run"* ]]
 ok "a skill with no entry says there is nothing to run" $?
 
-absent=$("${cli[@]}" '{"name":"skill","args":{"session":"main","name":"no-such-skill"}}' 2>&1)
+absent=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/no-such-skill","cmd":"no_such_function"}}' 2>&1)
 say "unknown skill answered: $(printf '%s' "$absent" | tail -1 | head -c 300)"
-[[ "$absent" == *"no skill with name"* && "$absent" == *"is installed here"* ]]
-ok "an unknown skill name is refused with where to look" $?
+[[ "$absent" == *"no skill is"* && "$absent" == *ls_skill* ]]
+ok "an unknown skill id is refused with where to look" $?
 
 # 16. The session it deleted is gone.
 left=$("${cli[@]}" '{"name":"get_messages","args":{"session":"doomed"}}' 2>&1)

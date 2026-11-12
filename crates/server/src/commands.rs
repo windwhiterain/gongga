@@ -395,7 +395,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "list_paths".into(),
             description: "List one directory on a remote, for a front-end completing `--cwd`. \
-                      Not a tool the model needs: the paths of a session's own shell are \
+                      Not a tool the model needs: the paths of a session's own shell are 
                       read by running `ls` in it."
                 .into(),
             args: vec![
@@ -421,7 +421,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "del_session".into(),
             description: "Delete a session and everything under that path: its shells, its \
-                      channels and its transcript. A path that names a directory deletes \
+                      channels and its transcript. A path that names a directory deletes 
                       every session below it."
                 .into(),
             args: vec![kind_arg(
@@ -451,8 +451,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "interrupt_session".into(),
             description: "Stop the turn one session is running: a tool that is waiting is \
-                      ended and its result handed back, the stream stops, and everything \
-                      received is kept. Nothing is owed to a restart -- `cancel` is the verb \
+                      ended and its result handed back, the stream stops, and everything 
+                      received is kept. Nothing is owed to a restart -- `cancel` is the verb 
                       that continues a turn, not this one. Background jobs keep running."
                 .into(),
             args: vec![{
@@ -472,13 +472,13 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "cancel".into(),
             description: "Interrupt every running turn and shut the server down at once. SPEC: \
-                      every running session that is not waiting is flagged, and the next start \
-                      continues it. This is the only stop that lets background jobs go: they are \
-                      processes of their own, outlive this server and are adopted on the next \
-                      start. Any other stop -- a signal, a killed process -- ends every job it \
-                      started with it. \
-                      Channels are ended too unless `keep_alive` asks for them: their programs \
-                      are processes of their own, and one left running is adopted by the next \
+                      every running session that is not waiting is flagged, and the next start 
+                      continues it. This is the only stop that lets background jobs go: they are 
+                      processes of their own, outlive this server and are adopted on the next 
+                      start. Any other stop -- a signal, a killed process -- ends every job it 
+                      started with it. 
+                      Channels are ended too unless `keep_alive` asks for them: their programs 
+                      are processes of their own, and one left running is adopted by the next 
                       start instead of the session losing the shell it was using."
                 .into(),
             args: vec![arg(
@@ -494,7 +494,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "events".into(),
             description: "Read the server's event log: one row per thing that happened, oldest \
-                      first, as `{id, kind, payload}`. A cursor, not a transcript -- keep the \
+                      first, as `{id, kind, payload}`. A cursor, not a transcript -- keep the 
                       last id and ask again from there."
                 .into(),
             args: vec![
@@ -534,18 +534,18 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "subscribe".into(),
             description: "Name a subscription over the event stream and ask for it to be \
-                      armed. It answers at once -- it does not wait for a match. A match \
-                      runs `cmd` in `session`: one command, the same door a tool's \
+                      armed. It answers at once -- it does not wait for a match. A match 
+                      runs `cmd` in `session`: one command, the same door a tool's 
                       `fn <tool>(**args)` uses."
                 .into(),
             args: vec![
                 pos(
                     "pattern",
                     "A regex, matched against an event's name -- a log row's `kind` \
-                     (`turn_end`, `tool_result`, `context_notice`) or another event's own \
-                     (`status`, `usage`, `sessions`, `log`, `cmd_result`) -- and against \
-                     `name:session` when the event is about a session, so `turn_end:child` \
-                     is one session's turn ending. Unanchored, so write `^turn_end$` for \
+                     (`turn_end`, `tool_result`, `context_notice`) or another event's own 
+                     (`status`, `usage`, `sessions`, `log`, `cmd_result`) -- and against 
+                     `name:session` when the event is about a session, so `turn_end:child` 
+                     is one session's turn ending. Unanchored, so write `^turn_end$` for 
                      exactly one name.",
                     true,
                     Some("pattern"),
@@ -570,7 +570,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 arg(
                     "id",
                     "The name it is armed and dropped by. Arming a name again replaces \
-                     what it held. Omit it to be given one, which `ls_subscription` \
+                     what it held. Omit it to be given one, which `ls_subscription` 
                      reports.",
                     false,
                     Some("name"),
@@ -644,7 +644,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "trigger_event".into(),
             description: "Publish one event under a chosen name, so the subscriptions whose \
-                      pattern matches it fire. The row lands in the event log like any \
+                      pattern matches it fire. The row lands in the event log like any 
                       other, which is how a matcher sees it."
                 .into(),
             args: vec![pos(
@@ -719,7 +719,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 arg(
                     "wait",
                     "How long to wait for the answer, in milliseconds. A limit on waiting, \
-                     not on the program: what has not arrived stays unread for the next \
+                     not on the program: what has not arrived stays unread for the next 
                      call. Defaults to 30000.",
                     false,
                     Some("ms"),
@@ -764,7 +764,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "del_channel".into(),
             description: "End a channel's program and forget the name, and do the same for \
-                      every channel under that path. A channel that had already ended is \
+                      every channel under that path. A channel that had already ended is 
                       only forgotten."
                 .into(),
             args: vec![
@@ -826,9 +826,9 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 pos(
                     "range",
                     "Which rows, as a closed range of sequence numbers: `-1` the newest \
-                     row, `-5:` the newest five, `5:10` rows 5 through 10, `:10` the first \
-                     ten, `5:` from 5 on. A negative number counts from the end; both ends \
-                     inclusive, a missing end means the newest, and a range past the end is \
+                     row, `-5:` the newest five, `5:10` rows 5 through 10, `:10` the first 
+                     ten, `5:` from 5 on. A negative number counts from the end; both ends 
+                     inclusive, a missing end means the newest, and a range past the end is 
                      just the rows that exist. Omitted is the whole transcript.",
                     false,
                     Some("begin:end"),
@@ -845,9 +845,9 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 arg(
                     "replay",
                     "`true` sends the transcript as a window draws it, and says which \
-                     point of the stream the answer is a picture of: the rows a window \
-                     shows, the operator's own messages as their own lines, and the \
-                     answer still being written. A window that reconnected asks this \
+                     point of the stream the answer is a picture of: the rows a window 
+                     shows, the operator's own messages as their own lines, and the 
+                     answer still being written. A window that reconnected asks this 
                      way; a person reading asks without it.",
                     false,
                     Some("true|false"),
@@ -864,7 +864,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "clone_session".into(),
             description: "Copy a session's transcript into a name that is free, row for row, \
-                      at the same `seq`. The copy reads exactly as the source does; a turn \
+                      at the same `seq`. The copy reads exactly as the source does; a turn 
                       it runs later is its own."
                 .into(),
             args: vec![
@@ -891,16 +891,16 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "ls_skill".into(),
             description: "List the skills a session can open, one row per skill, under \
-                      `path`. A skill's path is `<bucket>/<name>`: `project` for the \
-                      checkout's own, `harness` for the home's, `general` for the \
-                      machine's. A path names a subtree, so `ls_skill harness` is every \
+                      `path`. A skill's path is `<bucket>/<name>`: `project` for the 
+                      checkout's own, `harness` for the home's, `general` for the 
+                      machine's. A path names a subtree, so `ls_skill harness` is every 
                       skill the home installed and no path is every skill there is."
                 .into(),
             args: vec![
                 pos(
                     "path",
                     "Where to look, as the beginning of a skill's path: `harness`, \
-                     `harness/self-control`, or nothing for all of them. Matched by \
+                     `harness/self-control`, or nothing for all of them. Matched by 
                      component, so `har` matches no bucket.",
                     false,
                     Some("path"),
@@ -919,11 +919,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "run_skill".into(),
-            description: "Call one function of a skill that is a Python package: `cmd` \
-                      names the function and its arguments, the way `subscribe` names the \
-                      command a match runs. The package is imported in the session's \
-                      directory on this machine, and what the function answers is this \
-                      call's result, exactly as `skill` reports it."
+            description: "Run one skill: `cmd` gives it its words, the way `subscribe` \
+                      names the command a match runs. An entry skill starts the file its 
+                      frontmatter declares, with those words as its argv; a skill that is 
+                      a Python package runs the function its first word names, and binds 
+                      the rest to that function's parameters by name. It runs on this 
+                      machine in the session's directory, and its output and exit code are 
+                      the answer. A skill that is only a body is refused, naming the file 
+                      to read instead."
                 .into(),
             args: vec![
                 pos(
@@ -935,17 +938,18 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
                 pos(
                     "cmd",
-                    "The call: a function name, or the whole call as an object, \
-                     `{\"name\": \"fetch\", \"args\": {\"url\": \"https://example.com\"}}`. \
-                     Each `args` entry reaches the function as `--key value`.",
+                    "The words the skill runs with: a bare word, or the whole call as an \
+                     object, `{\"name\": \"fetch\", \"args\": {\"url\": \"https://example.com\"}}`. 
+                     An `args` object reaches the skill as `--key value` words; an `args` 
+                     list reaches it as the words it spells.",
                     true,
                     Some("cmd"),
                     CompletionSource::None,
                 ),
                 pos(
                     "session",
-                    "The session it runs as: its directory is where the package is \
-                     imported, and the call is that session's work.",
+                    "The session it runs as: its directory is where it runs, and the call \
+                     is that session's work.",
                     true,
                     Some("name"),
                     CompletionSource::Sessions,
@@ -2257,9 +2261,9 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
 ///
 /// # Invariant
 ///
-/// One walk: the same `installed_for` that `skill` and `@skill(...)` read, so a path
-/// this lists is a path `run_skill` takes. `path` is matched by component (`under`),
-/// which is what makes `harness` a subtree and `har` nothing.
+/// One walk: the same `installed_for` that `run_skill` and `@skill(...)` read, so a
+/// path this lists is a path `run_skill` takes. `path` is matched by component
+/// (`under`), which is what makes `harness` a subtree and `har` nothing.
 async fn ls_skill(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
     let path = args
@@ -2284,28 +2288,19 @@ async fn ls_skill(d: &Dispatch, args: &Args) -> Outcome {
     Outcome::ok(serde_json::Value::Array(listed).to_string())
 }
 
-/// Calls one function of a skill that is a Python package, as `session`.
+/// Runs one skill as `session`: an entry with the call's words, or a package's function.
 ///
 /// # Invariant
 ///
-/// The call is the `skill` tool's: the id is resolved here, because a path names one
-/// root where a name may name two, and then the same entry is started with the same
-/// argv. Nothing about how a skill runs is decided twice.
+/// SPEC's `## Python Cmd`, and the one runner there is: the id is resolved here, because
+/// a path names one root where a name may name two, and what a skill *is* is decided in
+/// one place, [`skill::Skills::run`].
 async fn run_skill(d: &Dispatch, args: &Args) -> Outcome {
     let session = args["session"].clone();
     let id = args["id"].trim().to_string();
-    let action = match args.get("cmd").map(String::as_str) {
-        Some(raw) => match parse_cmd(raw) {
-            Ok(action) => action,
-            Err(why) => return Outcome::err(why),
-        },
-        None => {
-            return Outcome::err(
-                "run_skill calls a function: `run_skill <id> {\"name\": \"<function>\", \
-                 \"args\": {}}`"
-                    .to_string(),
-            );
-        }
+    let words = match crate::tools::skill::call_words(args.get("cmd").map(String::as_str)) {
+        Ok(words) => words,
+        Err(why) => return Outcome::err(why),
     };
     let handle = match d.sessions.get(&session) {
         Ok(handle) => handle,
@@ -2323,30 +2318,21 @@ async fn run_skill(d: &Dispatch, args: &Args) -> Outcome {
             }
         ));
     };
-    // A package publishes functions; a body or a script has one entry, so `skill` runs it.
-    if skill.entry.is_some() || !skill.dir().join("__init__.py").is_file() {
-        return Outcome::err(format!(
-            "{id} is not a Python package with functions: `skill --name {}` starts what \
-             it declares",
-            skill.name
-        ));
+    let Some(skills) = d.agent.tools.skills() else {
+        return Outcome::err(
+            "run_skill is not carried: this build was given no skill programs".to_string(),
+        );
+    };
+    let ctx = match crate::tool_cmd::context(&d.agent, &d.sessions, &d.store, &session, "run_skill")
+    {
+        Ok(ctx) => ctx,
+        Err(why) => return Outcome::err(why),
+    };
+    let outcome = skills.run(skill, words, &ctx).await;
+    match outcome.ok {
+        true => Outcome::ok(outcome.output),
+        false => Outcome::err(outcome.output),
     }
-    // One argv: the function first, then its arguments as the words `gongga_skill`
-    // binds to parameters by name.
-    let mut words: Vec<String> = vec![action.name.clone()];
-    for (key, value) in action.args.iter() {
-        words.push(format!("--{key}"));
-        words.push(value.clone());
-    }
-    let mut call = Args::new();
-    call.insert("session".to_string(), session);
-    call.insert("id".to_string(), id.clone());
-    call.insert(
-        "args".to_string(),
-        serde_json::to_string(&words).unwrap_or_else(|_| "[]".to_string()),
-    );
-    call.insert("description".to_string(), format!("run_skill {id}"));
-    crate::tool_cmd::dispatch_tool(d, "skill", &call).await
 }
 
 /// Arms a pattern, and answers with what it armed.
@@ -3292,7 +3278,7 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         if !lost.is_empty() {
             let mut message = String::from(
                 "Work you were told would report did not outlive the server that was running \
-                 it, so what it printed went with that process and there is nothing left to \
+                 it, so what it printed went with that process and there is nothing left to 
                  read. These are the notices you can no longer act on:\n\n",
             );
             for said in &lost {

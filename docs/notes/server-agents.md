@@ -89,7 +89,7 @@ says so.
 
 ## link_skills
 
-A skill is only useful where `skill` looks, and that tool reads two roots:
+A skill is only useful where the server looks, and that walk reads two roots
 the home's `skills/` and the machine's. The community clone is not one of them,
 so its skills are linked into the machine's directory instead of being taught to
 the index as a third place -- one place to look is what makes "a name the reader

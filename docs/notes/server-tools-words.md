@@ -2,7 +2,7 @@
 
 ## module doc
 
-`exec` had the spawn the `skill` tool needed: the program and its words, no shell between
+`exec` had the spawn a skill's entry needed: the program and its words, no shell between
 them, both streams read while the program runs, a deadline that stops it rather than leaving
 it behind, and the error wording a reader acts on when a name is not on PATH. Copying that
 into a second tool would have been two places for a pipe to deadlock.
@@ -28,7 +28,7 @@ tools promise, and it is the reason neither takes a command line.
 
 The one thing this does not cover is the *program* being a shell: `["bash", "-c", "…"]` starts
 a shell with a string, and then the string is code again. That is the caller's word to give,
-not this module's to refuse -- but it is why `skill` passes an entry and argv instead of
+not this module's to refuse -- but it is why a skill is started as an entry and an argv instead of
 letting a body's instructions reach a shell.
 
 ## The environment the child gets

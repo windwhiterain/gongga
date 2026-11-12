@@ -5,7 +5,7 @@
 Every tool call arrives with arguments the tool itself does not read: how long it
 may take, whether to wait for it at all. Reading them in each tool was the shape the
 first version had, and it made the ceiling a per-tool opinion -- `bash` capped at one
-number, `skill` at another, and a tool that forgot to look waited for ever. SPEC puts
+number, a skill at another, and a tool that forgot to look waited for ever. SPEC puts
 them on the tunnel, so they are read once, here, and a tool that states its own
 default states it as a default (`Tool::default_timeout`), never as a ceiling.
 

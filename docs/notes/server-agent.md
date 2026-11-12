@@ -245,7 +245,7 @@ orphan from a pair and leave the orphan out (`docs/notes/server-body.md`).
 The chunk that ends a call carries the tool's own output only when the tool
 streamed nothing: the forwarder counts what it published, and a count of zero is
 the one case with no other road to the window. Every builtin except `bash`
-returns a `ToolOutcome` and emits no chunk, so `skill`'s table, a
+returns a `ToolOutcome` and emits no chunk, so `ls_skill`'s table, a
 `check_bash` answer, an argument error and an unknown tool's refusal were all a
 block with a verdict and nothing to read -- while the store kept that same output
 and a replay of it showed it. Live and replayed then read differently, which is

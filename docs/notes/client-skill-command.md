@@ -23,22 +23,18 @@ flag, and the order check would otherwise refuse the line as a misplaced global.
 
 `skill ls` is the one verb that can be answered by either side. With `GONGGA_SESSION` set --
 a shell the harness started -- it asks the server for the table *that session* would be
-offered (`skill <session>`, no `name`), because the project root is the session's checkout
-and the command layer's cwd is not it. With no session it walks this machine's roots: a bare
-shell is not standing in anything. Both print the same four columns -- name, root,
-description, `SKILL.md` -- so a reader and a model are looking at one shape; the server's
-answer arrives as the tool's JSON and is rendered here, which is why `ask` exists (one
+offered (SPEC's `ls_skill`, with that session), because the project root is the session's
+checkout and this process's directory is not it. With no session it walks this machine's
+roots: a bare shell is not standing in anything. Both print the same four columns -- name,
+root, description, `SKILL.md` -- so a reader and a model are looking at one shape; the
+server's answer arrives as rows and is rendered here, which is why `ask` exists (one
 command, asked quietly: its `cmd_result` and nothing else).
 
-That local route now yields to a server that publishes `skill` (`crates/server/src/tools/
-skill.rs`): the greeting's catalog decides, as it does for every other name, and the entry
-runs on the session's terms with the output capped and shaped like any other tool result. The
-fallback is what the rest of this note is about -- a machine with no server still runs an
-entry, because an entry is a file and not a command's work.
-
-The two spellings of the same line differ in one place, on purpose: the server command types
-its arguments by the tool's schema, so `skill main web-search '["fetch", "<url>"]'` arrives as
-a word list, while this route passes argv as typed and unparsed, as SPEC says.
+Running stays local, and that is not a fallback but the answer: SPEC's `run_skill` takes a
+skill's `id`, and the bucket a bare name belongs to is a question this machine answers from
+its own roots. So `skill <name> [args...]` passes argv as typed and unparsed -- the entry's
+own argv, exactly as a `run_skill` call would give it -- and the entry's exit code is this
+process's.
 
 ## dispatch
 
@@ -70,7 +66,7 @@ business.
 
 ## runner
 
-`runner` moved to `crates/skill/src/entry.rs` when the server grew the `skill` tool: the rule
+`runner` moved to `crates/skill/src/entry.rs` when the server grew a way to run a skill: the rule
 "which program starts this file" has one answer, and the server could not keep a second copy.
 What stayed here is the *lookup* -- `which`, the Python probe, PowerShell -- handed to the
 crate as `skill::Programs`. The paragraph below is the reasoning that moved with it.

@@ -521,15 +521,8 @@ struct Settings {
     bash_timeout: Duration,
     max_output_chars: usize,
     python: Option<(crate::config::PythonConfig, Option<std::path::PathBuf>)>,
-    skill: Option<SkillSettings>,
+    skills: Option<skill::Skills>,
     live_compact: bool,
-}
-
-struct SkillSettings {
-    programs: ::skill::Programs,
-    lib: Option<std::path::PathBuf>,
-    timeout: Duration,
-    max_output_chars: usize,
 }
 
 impl ToolRegistry {
@@ -547,7 +540,7 @@ impl ToolRegistry {
                 bash_timeout,
                 max_output_chars,
                 python: None,
-                skill: None,
+                skills: None,
                 live_compact: false,
             },
         }
@@ -569,7 +562,7 @@ impl ToolRegistry {
         self
     }
 
-    /// The entries a `skill` row may start, and where this home keeps its import.
+    /// What this build runs a skill with: the programs, the home's import, the bounds.
     pub fn with_skills(
         mut self,
         programs: ::skill::Programs,
@@ -577,13 +570,23 @@ impl ToolRegistry {
         timeout: Duration,
         max: usize,
     ) -> Self {
-        self.settings.skill = Some(SkillSettings {
+        self.settings.skills = Some(skill::Skills {
             programs,
             lib,
             timeout,
             max_output_chars: max,
         });
         self
+    }
+
+    /// The skills this build can run; `None` when the machine resolved no programs.
+    ///
+    /// # Invariant
+    ///
+    /// The setting and not a row: `run_skill` runs a skill whether or not any tool is
+    /// registered for it, so what a skill is started with must outlive the table.
+    pub fn skills(&self) -> Option<&skill::Skills> {
+        self.settings.skills.as_ref()
     }
 
     /// Builds one tool per row the config declares.
@@ -653,22 +656,6 @@ impl ToolRegistry {
                 })
             }
             "live_compact" => Box::new(live_compact::LiveCompactTool),
-            // SPEC's `## Skill`: the row runs the entry itself, not a forward back
-            // into the command layer, which would only meet this same row again.
-            "skill" => {
-                let Some(settings) = self.settings.skill.as_ref() else {
-                    return Err(
-                        "`skill` is not carried: this build was given no skill settings"
-                            .to_string(),
-                    );
-                };
-                Box::new(skill::SkillTool {
-                    programs: settings.programs.clone(),
-                    lib: settings.lib.clone(),
-                    timeout: settings.timeout,
-                    max_output_chars: settings.max_output_chars,
-                })
-            }
             // SPEC's `fn <tool>(**args)`: a row this build has no type for is a command
             // the command layer runs, whether the model is offered it or not. A name the
             // catalog does not know is refused when it is called, in the command's words.

@@ -168,7 +168,8 @@ talking while the model still reads a user turn.
 
 ## Still owed: the eighteen go
 
-SPEC's tool surface is `exec`, `wait` and the skill table. Everything the
+SPEC's tool surface is `exec` and `wait`; a skill is run by the `run_skill` command and
+never by a tool, which is why nothing here carries a skill index. Everything the
 channel replaced is still here as a row marked `offered = false` **and** as a helper the
 command layer or a subscription still reaches: about 5200 lines across
 `tools/bash.rs`, `tools/python.rs`, `tools/interpreter.rs`, `tools/detached.rs`,
@@ -206,7 +207,7 @@ program becomes a job", which is what a channel is for now. `check_job`/`del_job
 `tools/detached.rs` are still here for the slice that removes the `background` carrier.
 
 What stays: `read_file`, `write_file`, `replace` (a model has no other door to a file),
-`list_paths`, `skill`, and every command in `commands.rs` that the channel world added.
+`list_paths`, and every command in `commands.rs` that the channel world added.
 `Shells::names`, `ToolContext::peek` and the job view are used by live paths today; the
 slice that removes their last caller removes them.
 

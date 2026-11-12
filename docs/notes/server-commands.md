@@ -80,7 +80,7 @@ twice.
 
 `cwd` is the live one when the session has a shell, and the row only when it has
 none. The row is where the session was *placed*; the shell's own directory is where
-every tool reads -- `skill`, `@skill(...)`, `@file(...)` all resolve against it -- so a
+every tool reads -- `run_skill`, `@skill(...)`, `@file(...)` all resolve against it -- so a
 row that said the placement while the shell had `cd`-ed elsewhere would let a
 front-end complete a name from one directory and send it to another. That is exactly
 the bug the client was fixed for: its skills came from the window's launch directory,
@@ -684,28 +684,34 @@ is `<bucket>/<name>`: `project/evolve` for the checkout's own, `harness/heir` fo
 home's, `general/polity` for the machine's. `skill::Skill::id` is that spelling and
 nothing else, which is what lets a row this lists be pasted into `run_skill`.
 
-The walk is the one `skill` and `@skill(...)` already make (`tools::skill::installed_for`):
+The walk is the one `run_skill` and `@skill(...)` already make (`tools::skill::installed_for`):
 the project layer needs the session *on this machine*, so a session whose directory is
 on a peer is handed the home's and the machine's rows instead. `path` is filtered with
 `commands::under`, so `harness` is every skill the home installed, `harness/heir` is
-one, and `har` is nothing -- a component, never a string prefix. The rows are the tool
-table's own (`tools::skill::row`), so the two faces never disagree about an `id`.
+one, and `har` is nothing -- a component, never a string prefix. A row is
+`tools::skill::row`, so the listing and the call never disagree about an `id`.
 
 ## run_skill
 
-`run_skill(id, cmd, session)` is SPEC's call: `cmd` is `{name, args}`, the same shape
-`subscribe` runs on a match, and `parse_cmd` reads it the same way. The id resolves
-against the same walk and picks one root by name, which is the reason the id exists:
-`skill` refuses a name two roots spell, and a path never does.
+`run_skill(id, cmd, session)` is SPEC's call and the only way to run a skill: `cmd` is
+`{name, args}`, and the words it spells are the name first, then its arguments. An
+`args` **object** is spelled `--key value` per entry, which is what `gongga_skill.py`
+binds to a parameter by name; an `args` **list** is passed through as written, which is
+how an entry takes a subcommand and its flags. `tools::skill::call_words` is that
+reading, and it is the only one.
 
-It then starts nothing itself. The words `[name, --key value, ...]` go to the `skill`
-tool through `tool_cmd::dispatch_tool`, so how a package is imported, where its
-`gongga_skill` comes from, what the entry's exit code means and how much output it may
-print are decided in one place. A skill that is a body or a script entry has no
-functions to choose between, so it is refused here and named for `skill` instead of
-being guessed at; a function the package does not publish is refused by
-`gongga_skill` with the signature and the list of what it does publish.
+The id resolves against the same walk and picks one root by name, which is the reason
+the id exists: a name two roots spell is two rows, and a path names one.
 
-`run_skill` fills the tool's `id` argument, which is why the tool accepts one at all:
-the catalog never offers it to a model, so the tool's own sentence still begins at
-`name`.
+It then runs the skill itself, through `tools::skill::Skills::run` -- the same door
+the command layer and the config's tool rows meet at, reached directly rather than
+through a registered tool: `run_skill` is SPEC's, so it does not depend on a row
+naming a `skill` tool. What a skill *is* decides what happens, in one place: a package
+is imported from its own directory and the words bind to a published function; an
+entry is started as its frontmatter declares; a body has nothing to start and is
+refused, naming the `SKILL.md` to read. A function the package does not publish is
+refused by `gongga_skill` with the signature and the list of what it does publish.
+
+The entry's own exit code is the call's, and its output is the answer: `[exit status
+N]`, capped like any other result. Neither is re-encoded, because a skill's answer is
+what it printed.

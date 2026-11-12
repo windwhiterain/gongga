@@ -2,81 +2,83 @@
 
 ## module doc
 
-The server already knew which skills exist: a separate tool read the three roots and published
-rows with a name, a path and the entry. What a model could not do was *run* one -- and that
-tool has since been folded in here: one registration answers the table when no `name` is
-given and runs the entry when one is. Its only
-route was `bash "…/web-search.sh fetch <url>"` -- a shell line it had to quote, from a path it
-had to copy out of a body, on an interpreter it had to infer from an extension. The entry
-runner already existed on the command line (`gongga-cli skill`), but a tool call cannot reach
-a command layer's local route.
+One skill, run: the entry its `SKILL.md` declares, or the function the package it is
+publishes. There is no `skill` tool and no `skill` command -- SPEC's `## Python Cmd`
+gives the namespace two commands, `ls_skill` and `run_skill`, and this module is what
+`run_skill` calls. The table `ls_skill` prints is the same walk, for the reason that
+matters to a reader: a row's `id` is what `run_skill` takes, so a path one lists is a
+path the other runs.
 
-So `skill` is a tool, and because `tool_cmd` publishes every tool as a command, the operator
-reaches it too. That is the whole reason it is a *tool* rather than a command: one
-registration is both surfaces, and the model's call and the operator's line run one body.
+## Three shapes, one door
 
-## Why not `exec`
+A skill is a directory holding a `SKILL.md`, and what else is in it decides how it
+runs. `Skills::run` is the one place that decides:
 
-`exec` starts a program the caller names. A skill's entry is a program the *skill* names, and
-which program starts it depends on a file this server can read and the model cannot be
-expected to inspect: `.sh` needs a bash, `.py` needs a Python, `.ps1` needs PowerShell, a
-`.cmd` needs `cmd /c`, and an extension-less entry is whatever its `#!` says. Making the model
-spell that is making it re-derive `crates/skill/src/entry.rs` in prose, per call, in a machine
-where `.sh` is not executable at all. `exec` stays for the words the caller owns; `skill` is
-for the entry the skill owns.
+| shape | what makes one | what runs |
+| --- | --- | --- |
+| **body** | only a `SKILL.md` | nothing: refused, naming the path to read. A body is prose, and prose is read. |
+| **entry** | `metadata.entry:` names a file in that directory | that file, with the call's words as its argv |
+| **package** | an `__init__.py` in that directory | `gongga_skill.py` imports it and binds the words to the function the first one names |
 
-The argv is a list, like `exec`'s, so the same property holds in both: no shell reads the
-words. The command form takes it as JSON (`skill main web-search '["fetch", "<url>"]'`),
-coerced by the tool's own schema, which is how an operator reaches the shape the model sends.
+Both an entry and an `__init__.py` can be present. The package wins there, and
+`crates/skill/src/entry.rs` says why: discovering the functions is the point of that
+form. A skill that wants one answer declares one form.
 
-## The roots decision
+## The words
 
-The lookup is `installed_for` and nothing else: the same rows the table prints are the rows
-it can run. A name in more than one root is refused with both directories
-rather than resolved to the first -- `Roots` documents that a shadowed name is never resolved
-silently, and running a file is the last place to break that.
+`tools::skill::call_words` reads SPEC's `Cmd := {name, args}` into argv, and nothing
+there is a command line: no shell stands between the call and the program, so a word
+holding a space, a quote or a `$` arrives whole. Two spellings of `args` end in the
+same argv:
 
-A skill that is a body and neither a package nor an entry is a refusal, not an empty run:
-the answer is its `SKILL.md`, and the message says so with the path to read. A directory
-holding `__init__.py` is a Python package, and it wins over a declared entry: what runs is
-the callable its first word names -- see `docs/notes/skill-entry.md`.
+- an **object**, `{"tier": "flash"}`, is `--tier flash` -- two words per entry. That is
+  the contract `gongga_skill.py` binds to a parameter by name, which is why the order of
+  the object does not matter.
+- a **list**, `["pick_config", "--tier", "flash"]`, is those words as written -- how an
+  entry takes a subcommand and its flags, and how a package takes its arguments by
+  position.
+
+The name comes first, then the args. For a package that is the function's name; for an
+entry it is just the first word the script sees.
+
+## What it answers
+
+What the skill printed, then `[exit status N]`, and `ok` is `code == 0` -- the skill's
+answer *is* the call's answer, unparsed. Re-encoding it (into JSON, into rows) would be
+a second copy of a contract every one of these scripts already keeps, and `jq`-ability
+is why they print what they print. The cap is the shared one: over `max_output_chars`
+the text is spilled to a file and the answer is that file's name.
+
+A package's return value is rendered by `gongga_skill.py`: `None` prints nothing, a
+string prints as it is, an `int` is an exit code, anything else prints as JSON.
 
 ## Where it runs
 
-On this machine, in the session's own directory, whatever machine the session works on. The
-entry is a file this server can open -- the checkout of a peer session is not in the roots at
-all, so a `remote` session runs the home's and the machine's skills and is never handed a
-path it cannot read. Its arguments are the caller's, and a peer path among them is the
-caller's business.
+On this machine, in the session's directory, whatever machine the session works on. The
+entry is a file this server can open -- the checkout of a peer session is not in the
+roots at all, so a `remote` session runs the home's and the machine's skills and is
+never handed a path it cannot read. The package form is handed `GONGGA_SKILL_LIB`, so a
+skill's own `import gongga` resolves against the home's client.
 
-## Output
+The run is the session's work: it holds the turn (`tool_cmd::context` is the same
+context a tool call gets), its output is capped and spilled the same way, and
+`explore::after_job` looks at the workspace afterwards as it does after a shell -- a
+skill's entry is a program of the caller's choosing.
 
-What the entry printed, then `[exit status N]`, and `ok` is `code == 0` -- the entry's answer
-is the call's answer, unparsed. Re-encoding it (into JSON, into rows) would be a second copy
-of a contract every one of these scripts already keeps, and `jq`-ability is why they print
-what they print. The cap is the shared one: over `max_output_chars` the text is spilled to a
-file and the answer is that file's name.
+## The three roots
 
-## The table, and why it is not a second walk
+`installed_for` walks three roots, nearest first, and `@skill(...)` expansion, `ls_skill`
+and `run_skill` all read that one walk:
 
-`installed_for` walks the three roots once -- the same call `@skill(...)` expansion uses -- and
-the project layer is the session's checkout, which is why it takes a cwd and a machine: the
-same server serves sessions in different checkouts, and a skill in one of them must not
-appear in another's table. A session whose directory is on a peer gets the home's and the
-machine's rows, plus one sentence saying that checkout's skills are that machine's files to
-`ls` and `cat` over `remote_bash`.
+| bucket | whose | where |
+| --- | --- | --- |
+| `project` | this checkout | the session's `.agents/skills` |
+| `harness` | the content repository | the home's `skills` |
+| `general` | this machine | `~/.agents/skills` |
 
-The description is the whole argument for the table: a reader decides from that line whether
-to open the body, and the body is what costs context. A row is `name`, `description`, `path`
-and `bucket` -- the four things needed to decide *and* to open, since `path` is the
-`SKILL.md` `@skill(...)` hands out.
+The project layer needs the session *on this machine*: a session whose directory is on a
+peer gets the home's and the machine's rows, and one sentence saying that checkout's
+skills are that machine's files to `ls` and `cat` over `remote_bash`.
 
-The order is the walk's: project, then the home, then the machine, and whatever order each
-root's directory listing gives. It is not the prefix-cache plan -- `plan` answers what goes
-into the first turn's meta index and in what order, which is content paid once and reused by
-every later step. A tool result may be asked for at any step or never, and a listing a person
-reads has no cache to hit, so planning it would buy what the walk already gives.
-
-`skill ls` in the command layer prints those four columns, asking this tool when the shell
-names a session (`GONGGA_SESSION`) and walking the roots itself when it does not: a shell
-with no session has no checkout to ask about.
+A name in two roots is two rows and two ids. That is the reason `run_skill` takes an
+`id` and never a bare name: a path names one row, a name may name two.

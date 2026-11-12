@@ -60,8 +60,8 @@ greeting says what exists, the session decides what runs.
 ## Which arguments are positional
 
 `positional_of` names, per tool, the arguments that spell bare on the line: the
-object a tool acts on (`bash`'s command, `write_file`'s path and content, and
-now `skill`'s name and argv), never the switches. The session is positional
+object a tool acts on (`bash`'s command, `write_file`'s path and content),
+never the switches. The session is positional
 everywhere because every tool command addresses one, and it is *hinted*
 `<name>` while a tool's own `name` argument is hinted by its JSON type -- the
 one collision this table cannot rename, since both are the caller's words.

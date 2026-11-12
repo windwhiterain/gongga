@@ -13,8 +13,7 @@ ones.
 Nothing here drives the harness. There was a `harness` tool that called the
 dispatch in-process, and a tool call cannot be piped, looped or written into a
 script, so the agent's commands are a line it types in `bash` instead -- see
-`server-shell-command.md`. `with_builtins` is the whole registry: the four bash verbs, the skill
-index; `with_python` adds the persistent interpreter and the three file verbs
+`server-shell-command.md`. `with_builtins` is the whole registry: the four bash verbs; `with_python` adds the persistent interpreter and the three file verbs
 described in `server-tools-python.md`; `check_bash` carries the optional wait,
 so there is no `wait_bash`.
 
@@ -173,7 +172,7 @@ worker does -- nobody is reading that channel any more -- and then it is
 indistinguishable from a job that was started as one.
 
 What it is *not* is a process of its own: this path is for the work that is a future
-inside this server (`read_file`, `write_file`, `replace`, `skill`, a peer's `exec`),
+inside this server (`read_file`, `write_file`, `replace`, a peer's `exec`),
 and such a job dies with the server that was running it. `exec` on this machine does
 not come through here at all -- `tunnel::run_own_program` starts its program as a job
 from the first moment, so a wait that ends leaves a process rather than a row. A

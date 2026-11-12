@@ -51,7 +51,7 @@ being replaced, a lock that outlived a crash) falls back to an in-memory one and
 call anyway: what the database is used for here is a failure note for the disk monitor, and
 losing that is smaller than losing the answer. See `docs/notes/server-disk.md`.
 
-`pylib::install` is called for the same reason the server calls it at start: a `skill`
+`pylib::install` is called for the same reason the server calls it at start: a skill
 whose Python imports `gongga_skill` finds it in the home, and the worker is the process
 that runs that skill.
 
@@ -60,6 +60,6 @@ that runs that skill.
 A tool that acts on what the server holds -- its shells, its interpreters, its jobs, its
 rows -- has nothing to do in a process that holds none of them. `Tool::detached_carrier`
 answers `Carried::Here` for those, and the call is refused with a sentence rather than
-answered with work that would silently do nothing. The five that answer `Worker` are
-`exec`, `read_file`, `write_file`, `replace` and `skill`: each is one program or one file,
+answered with work that would silently do nothing. The four that answer `Worker` are
+`exec`, `read_file`, `write_file` and `replace`: each is one program or one file,
 and each is done by the time it answers.
