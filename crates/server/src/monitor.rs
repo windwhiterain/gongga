@@ -127,7 +127,7 @@ async fn report_failure(d: &Arc<Dispatch>, home: &Path, failure: &Failure, self_
     let attempts = failure.monitor_attempts;
     // The attempts made so far are also the index of the next candidate.
     match hand_over(d, PROVIDERS, attempts, |entry| {
-        report(d, home, failure, self_failed, entry)
+        report(d, home, failure, self_failed, entry).map(crate::prompts::harness_wrap)
     })
     .await
     {
@@ -201,7 +201,7 @@ async fn sweep_quota(d: &Arc<Dispatch>, home: &Path) {
 async fn give_quota(d: &Arc<Dispatch>, home: &Path, row: &crate::store::EventRow, attempts: u32) {
     let payload = row.payload.clone();
     match hand_over(d, PROVIDERS, attempts, move |_| {
-        Ok(quota_report(home, &payload))
+        Ok(crate::prompts::harness_wrap(quota_report(home, &payload)))
     })
     .await
     {
@@ -323,7 +323,11 @@ async fn sweep_disk(d: &Arc<Dispatch>, home: &Path) {
 /// Hands one disk event to the monitor, and records what came of it.
 async fn give_disk(d: &Arc<Dispatch>, home: &Path, row: &crate::store::EventRow, attempts: u32) {
     let payload = row.payload.clone();
-    match hand_over(d, DISK, attempts, move |_| Ok(disk_report(home, &payload))).await {
+    match hand_over(d, DISK, attempts, move |_| {
+        Ok(crate::prompts::harness_wrap(disk_report(home, &payload)))
+    })
+    .await
+    {
         Handed::Accepted(model) => {
             tracing::info!(
                 event = row.id,

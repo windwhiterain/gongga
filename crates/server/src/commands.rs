@@ -1299,7 +1299,7 @@ async fn expand_message(
         (_, crate::session::Machine::Local) => crate::meta::Source::Local,
     };
     let llm = d.agent.route(session.name(), &session.tuning()).ok();
-    let llm = llm.as_ref().map(|(client, _)| client.as_ref());
+    let llm = llm.as_ref().map(|(client, _, _)| client.as_ref());
     let home = session.cwd();
     Ok(crate::meta::expand(&d.store, source, &home, &message, llm).await)
 }

@@ -92,9 +92,11 @@ pub const THINKING_MARK: &str = "(thinking enabled)";
 /// What the model is told about a call that never returned: the
 /// `interrupted_call` template.
 pub fn interrupted_call() -> String {
-    crate::prompts::shared()
-        .text("interrupted_call")
-        .unwrap_or_default()
+    crate::prompts::harness_wrap(
+        crate::prompts::shared()
+            .text("interrupted_call")
+            .unwrap_or_default(),
+    )
 }
 
 const SCHEMA: &str = r#"
