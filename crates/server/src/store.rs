@@ -358,8 +358,6 @@ CREATE TABLE IF NOT EXISTS channels (
     dir          TEXT NOT NULL,
     pid          INTEGER NOT NULL,
     started_at   INTEGER NOT NULL,
-    ended_at     INTEGER,
-    exit         INTEGER,
     upto         INTEGER NOT NULL DEFAULT 0,
     -- When this channel was last written to: what a call's `time` is measured
     -- from. NULL until the first write, so the program's start stands then.
@@ -624,6 +622,20 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         "until_sentinel",
         "ALTER TABLE channels ADD COLUMN until_sentinel TEXT NOT NULL DEFAULT ''",
     )?;
+    // An older build's ended rows held names for nothing: swept, then their columns go.
+    if has_column(conn, "channels", "ended_at") {
+        let corpses = conn.execute("DELETE FROM channels WHERE ended_at IS NOT NULL", [])?;
+        if corpses > 0 {
+            tracing::info!(
+                corpses,
+                "released the names of channels whose program had ended"
+            );
+        }
+        conn.execute("ALTER TABLE channels DROP COLUMN ended_at", [])?;
+    }
+    if has_column(conn, "channels", "exit") {
+        conn.execute("ALTER TABLE channels DROP COLUMN exit", [])?;
+    }
     add_column_if_missing(
         conn,
         "subscriptions",
@@ -2970,11 +2982,11 @@ impl Store {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Every channel a session has, alive or ended.
+    /// Every channel a session has: one it started, whose program still runs.
     pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker, until_sentinel
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel
              FROM channels WHERE session = ?1 ORDER BY path",
         )?;
         let rows = stmt
@@ -2983,13 +2995,17 @@ impl Store {
         Ok(rows)
     }
 
-    /// Every channel whose program has not ended yet, across sessions: what a watcher
-    /// has to look at.
-    pub fn live_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
+    /// Every channel, across sessions: what a watcher has to look at.
+    ///
+    /// # Invariant
+    ///
+    /// There is no other kind of row: a channel whose program has ended is removed where
+    /// the end is seen, so a name never points at a program that is gone.
+    pub fn every_channel(&self) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker, until_sentinel
-             FROM channels WHERE ended_at IS NULL ORDER BY id",
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel
+             FROM channels ORDER BY id",
         )?;
         let rows = stmt
             .query_map([], channel_row)?
@@ -3001,7 +3017,7 @@ impl Store {
     pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, ended_at, exit, upto, wrote_at, wait_marker, until_sentinel
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel
              FROM channels WHERE session = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query(params![session, path])?;
@@ -3031,17 +3047,18 @@ impl Store {
         Ok(())
     }
 
-    /// Says what became of a channel that ended, and whether this was the telling.
+    /// Removes a channel's row, and says whether this was the telling.
     ///
     /// # Invariant
     ///
-    /// `WHERE ended_at IS NULL` is the claim: two writers may see one end, and only
-    /// the one that moved the row may speak of it.
-    pub fn finish_channel(&self, id: i64, exit: i32) -> anyhow::Result<bool> {
-        Ok(self.lock().execute(
-            "UPDATE channels SET ended_at = ?2, exit = ?3 WHERE id = ?1 AND ended_at IS NULL",
-            params![id, now_millis(), exit],
-        )? > 0)
+    /// The row goes with the program: SPEC's channel is a program, so a row outliving it
+    /// is a name that answers for a process that is gone. The DELETE is the claim -- two
+    /// writers may see one end, and only the one that removed the row may speak of it.
+    pub fn claim_channel_end(&self, id: i64) -> anyhow::Result<bool> {
+        Ok(self
+            .lock()
+            .execute("DELETE FROM channels WHERE id = ?1", params![id])?
+            > 0)
     }
 
     /// Records that a caller waits on this channel, and for what.
@@ -3381,8 +3398,6 @@ pub struct ChannelRow {
     pub dir: String,
     pub pid: i64,
     pub started_at: i64,
-    pub ended_at: Option<i64>,
-    pub exit: Option<i64>,
     /// How far this reader has read: taking the window is what advances it.
     pub upto: u64,
     /// When this channel was last written to; `None` before the first write.
@@ -3404,12 +3419,10 @@ fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
         dir: row.get(5)?,
         pid: row.get(6)?,
         started_at: row.get(7)?,
-        ended_at: row.get(8)?,
-        exit: row.get(9)?,
-        upto: row.get::<_, i64>(10)?.max(0) as u64,
-        wrote_at: row.get(11)?,
-        wait_marker: row.get(12)?,
-        until_sentinel: row.get(13)?,
+        upto: row.get::<_, i64>(8)?.max(0) as u64,
+        wrote_at: row.get(9)?,
+        wait_marker: row.get(10)?,
+        until_sentinel: row.get(11)?,
     })
 }
 

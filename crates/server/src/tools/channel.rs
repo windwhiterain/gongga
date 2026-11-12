@@ -567,8 +567,9 @@ impl Channels {
         self.store
             .set_channel_upto(row.id, read_to)
             .map_err(quiet)?;
-        if let Some(code) = gone {
-            self.store.finish_channel(row.id, code).map_err(quiet)?;
+        if gone.is_some() {
+            // The program is the channel: its end removes the row, and frees the name.
+            self.store.claim_channel_end(row.id).map_err(quiet)?;
         }
         if matched || gone.is_some() {
             // What it waited for is in the answer: the flag goes, so the watcher cannot
@@ -629,14 +630,6 @@ impl Channels {
                     "pid": row.pid,
                     "dir": row.dir,
                     "started_at": row.started_at,
-                    "ended_at": match row.ended_at {
-                        Some(at) => json!(at),
-                        None => Value::Null,
-                    },
-                    "exit": match row.exit {
-                        Some(code) => json!(code),
-                        None => Value::Null,
-                    },
                 "unread": unread,
             }));
         }
@@ -651,10 +644,6 @@ impl Channels {
     /// writing must not look gone while it is not.
     pub async fn stop(&self, session: &str, id: &str) -> Result<bool, String> {
         let row = self.row_of(session, id)?;
-        if row.exit.is_some() {
-            self.store.delete_channel(session, id).map_err(quiet)?;
-            return Ok(false);
-        }
         let place = self.place_of(&row).await?;
         place.append("in", "kill\n").await?;
         let deadline = Instant::now() + START_DEADLINE;
@@ -702,7 +691,7 @@ impl Channels {
     /// session at a time. A row left behind would be adopted by the next start as a
     /// channel that answers nothing.
     pub async fn stop_every(&self) -> usize {
-        let rows = match self.store.live_channels() {
+        let rows = match self.store.every_channel() {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::warn!("could not read the live channels: {e}");
@@ -760,7 +749,7 @@ impl Channels {
     /// it ended, and the server that promised to adopt it is the one that has to say
     /// so. Finished first, then told: a row that is gone cannot be noticed twice.
     pub async fn adopt(&self) -> usize {
-        let rows = match self.store.live_channels() {
+        let rows = match self.store.every_channel() {
             Ok(rows) => rows,
             Err(e) => {
                 tracing::warn!("could not read the channels to adopt: {e}");
@@ -768,44 +757,50 @@ impl Channels {
             }
         };
         let mut gone = 0;
-        for row in rows {
-            let Ok(place) = self.place_of(&row).await else {
-                continue;
-            };
-            // Still running: adopted, and the watcher speaks for it from here.
-            let Some(exit) = place.status().await.and_then(|status| status.exit) else {
-                continue;
-            };
-            let printed = place.read_from("out", row.upto).await.unwrap_or_default();
-            // The claim, not the flag: whoever takes it is the one that speaks.
-            let waited = self.store.take_channel_wait(row.id).unwrap_or(false);
-            if !self.store.finish_channel(row.id, exit).unwrap_or(false) {
-                continue;
+        for row in &rows {
+            if self.reap(row).await.is_some() {
+                gone += 1;
             }
-            gone += 1;
-            (self.notify)(ChannelEnd {
-                session: row.session.clone(),
-                id: row.path.clone(),
-                output: format!(
-                    "{}\n\n[it had already ended when this server adopted it, with exit \
-                     {exit}; nothing was left to keep alive]",
-                    String::from_utf8_lossy(&printed)
-                ),
-                time: Duration::from_millis(
-                    (now_millis() - row.wrote_at.unwrap_or(row.started_at))
-                        .max(0)
-                        .try_into()
-                        .unwrap_or(0),
-                ),
-                exit: Some(exit),
-                matched: false,
-                waited,
-            });
         }
         if gone > 0 {
             tracing::info!(gone, "channels the last run kept were gone when adopted");
         }
         gone
+    }
+
+    /// Ends one channel whose program is already gone, and says the status it ended with.
+    ///
+    /// # Invariant
+    ///
+    /// Removing the row is the claim, so one end is told once, and the name it held is
+    /// free afterwards. `None` is a program that is still there: the name is not the
+    /// caller's to take.
+    pub async fn reap(&self, row: &ChannelRow) -> Option<i32> {
+        let place = self.place_of(row).await.ok()?;
+        let exit = place.status().await.and_then(|status| status.exit)?;
+        let printed = place.read_from("out", row.upto).await.unwrap_or_default();
+        let waited = self.store.take_channel_wait(row.id).unwrap_or(false);
+        if !self.store.claim_channel_end(row.id).unwrap_or(false) {
+            return Some(exit);
+        }
+        (self.notify)(ChannelEnd {
+            session: row.session.clone(),
+            id: row.path.clone(),
+            output: format!(
+                "{}\n\n[its program had already ended, with exit {exit}; nothing was left to keep alive]",
+                String::from_utf8_lossy(&printed)
+            ),
+            time: Duration::from_millis(
+                (now_millis() - row.wrote_at.unwrap_or(row.started_at))
+                    .max(0)
+                    .try_into()
+                    .unwrap_or(0),
+            ),
+            exit: Some(exit),
+            matched: false,
+            waited,
+        });
+        Some(exit)
     }
 
     /// Ends every channel of one session, for `del_session`.
@@ -826,7 +821,7 @@ impl Channels {
                     false
                 }
             };
-            if row.exit.is_none() && alive {
+            if alive {
                 stopped += 1;
             }
             let _ = self.store.delete_channel(session, &row.path);
@@ -872,7 +867,7 @@ impl Channels {
                     _ = stop.cancelled() => return,
                     _ = tokio::time::sleep(LOOK) => {}
                 }
-                let live = match channels.store.live_channels() {
+                let live = match channels.store.every_channel() {
                     Ok(live) => live,
                     Err(e) => {
                         tracing::warn!("could not read the live channels: {e}");
@@ -910,10 +905,9 @@ impl Channels {
                     if !channels.store.take_channel_wait(row.id).unwrap_or(false) {
                         continue;
                     }
-                    if let Some(exit) = ended {
-                        // The claim above is what makes this once; moving the row is
-                        // another writer's to do, and a refusal here is no failure.
-                        let _ = channels.store.finish_channel(row.id, exit);
+                    if ended.is_some() {
+                        // Not the flag but the removal is the claim here: one of us wins.
+                        let _ = channels.store.claim_channel_end(row.id);
                     }
                     // A notice is a read: it carries the window, so the cursor
                     // moves with it.

@@ -51,10 +51,17 @@ impl Cmd for ExecTool {
                     );
                 }
             };
-            let running = match ctx.channels.find(&ctx.session, &id) {
+            let mut running = match ctx.channels.find(&ctx.session, &id) {
                 Ok(running) => running,
                 Err(why) => return ToolOutcome::err(why),
             };
+            // SPEC: a channel is its program, so a name whose program ended is free.
+            if args.get("args").is_some_and(|a| !a.is_null())
+                && let Some(row) = running.as_ref()
+                && ctx.channels.reap(row).await.is_some()
+            {
+                running = None;
+            }
             let bin = match (bin, &running) {
                 // SPEC: a name already speaks for the program it was started with.
                 (Some(bin), Some(row))

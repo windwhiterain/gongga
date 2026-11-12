@@ -198,6 +198,26 @@ oneshot_out=$(field "$once" output)
 say "one-shot: exit=[$oneshot_exit] out=[$oneshot_out]"
 ok "a one-shot channel reports its own exit" "$([[ "$oneshot_exit" == 3 && "$oneshot_out" == done ]] && echo 0 || echo 1)"
 
+# 5b. A channel is its program: the end removes the row, so the name is free and the
+#     next program may take it. A row that outlived its program was a name the next
+#     `exec` spoke to a corpse through.
+listed=$("${cli[@]}" '{"name":"ls_channel","args":{"session":"main","path":""}}' 2>&1)
+ok "an ended channel keeps no row" "$(has "$listed" "$shell_id-oneshot" && echo 1 || echo 0)"
+again=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$shell_id-oneshot"'","args":["-lc","echo again"],"wait":8000}}' 2>&1)
+say "$again"
+again_out=$(field "$again" output)
+ok "its name starts a fresh program" "$([[ "$again_out" == again ]] && echo 0 || echo 1)"
+
+# 5c. The watcher is the third observer: a call that gave up waiting leaves the flag, the
+#     program ends on its own, and the end is told and the row removed without a call.
+ing=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$shell_id-ending"'","args":["-lc","echo bye; sleep 3"],"wait":800}}' 2>&1)
+say "$ing"
+ok "a call that ran out leaves the program running" "$([[ "$(field "$ing" exit)" == None ]] && echo 0 || echo 1)"
+sleep 6
+listed=$("${cli[@]}" '{"name":"ls_channel","args":{"session":"main","path":""}}' 2>&1)
+say "$listed"
+ok "the program's own end removes the row too" "$(has "$listed" "$shell_id-ending" && echo 1 || echo 0)"
+
 # 6. The machine and the directory are the call's, not the session's.
 elsewhere=$(mktemp -d 2>/dev/null || echo "$work/elsewhere")
 mkdir -p "$elsewhere"

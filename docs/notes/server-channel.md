@@ -152,9 +152,11 @@ would be the same window told twice, a turn after the session stopped listening.
 
 That is also the end of a double notice: one end told twice, once as a result and once
 as a notice. Measured on this machine before the change -- four calls in a row returned
-`exit: 0` in their own answer and each was announced again a step later. `finish_channel`
-was meant to arbitrate (`WHERE ended_at IS NULL`), but it answered `Ok(())` whether or
-not it had moved the row, so the `is_err()` guarding the notice never fired.
+`exit: 0` in their own answer and each was announced again a step later. What arbitrates
+it was a column update (`ended_at`, "only if not already moved"), and it answered
+`Ok(())` whether or not it had moved the row, so the `is_err()` guarding the notice never
+fired. The arbiter is the DELETE now (`claim_channel_end`), which says how many rows it
+removed, so one end is one speaker.
 
 It is a task on the server's shutdown token, so a `cancel` announces nothing it just
 ended: each pass reads `status` and the new bytes of every channel carrying a flag, and
@@ -175,6 +177,22 @@ The notice **is** the answer: the same `Result` an `exec` returns, built by
 carried the bytes and left the cursor where it was would be the way to hand the same
 window over twice. The row is stored as `inject`, so the reader draws it as the harness
 talking while the model still reads a user turn.
+
+## An end is the row's end
+
+A channel is the program, so the program's end is what removes its row -- and with the
+row goes the name: the next `exec` under it starts a program instead of answering a
+corpse with the window it printed before it died. Three places see an end and all three
+finish it the same way, by removing the row: a call inside the channel (`answer`, when
+the relay's `status` says the program is gone), the watcher (a channel carrying a flag),
+and `Channels::reap` -- which `adopt` runs over every row at start, and `exec` runs over
+one row when a call asks to start a program under a name that is already taken.
+
+So `ended_at` and `exit` are not a state a channel can be in, and the columns that held
+them are gone (`migrate` sweeps the rows an older build left, then drops them). What an
+end still owes is the notice: the last thing that channel will say, and the only copy of
+its final window. That is why every removal reads first -- `reap` and the watcher take
+the bytes, then claim the end with the DELETE, which is the only speaker.
 
 ## Still owed: the eighteen go
 
@@ -227,10 +245,10 @@ slice that removes their last caller removes them.
 them. A channel is not a process the server owns -- it is a program a relay keeps,
 read and written through its files -- so "adopted" is not a step taken at start: it is
 the relay's watcher speaking for a row that is still live. What a start can say is the
-other half: which of those rows are not. `adopt` reads each live row's status, and one
-that has already ended is finished and told to its session as a channel end notice,
-with what it printed and the exit it ended with. The notice goes before the turns that
-would read it, which is why `run` adopts before it resumes anything.
+other half: which of those rows are not. `adopt` reads each row's status, and one that
+has ended is told to its session as a channel end notice -- what it printed, and the exit
+it ended with -- and then removed (`Channels::reap`). The notice goes before the turns
+that would read it, which is why `run` adopts before it resumes anything.
 
 `stop_every` is the same debt on the way out. A default `cancel` ends every channel, and
 with its row gone the relay's watcher can never see it end -- so the kill is the only
