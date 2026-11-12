@@ -61,8 +61,7 @@ fn exec(
 ):
   # create a channel running the binary at `bin` if `id` does not exists.
   # if `id` exists and `bin` arg doesn't match the channel's `bin`, report error.
-  # when waiting timeout without util macthed, set the channel's wait flag.
-  # when channel matched the util or finished, if there is wait flag, reset it and notice the session with `Result`.
+
 fn wait(
   time: time, #summary
 ) -> time
@@ -70,7 +69,10 @@ fn <tool>(**args):
   # route to server cmd with caller session as extra argument
   # extra tool's schema is not registered in tools but dynamic found via skill.
 ```
-
+- channel: a sub-process that can detached and adopted to live across server restart.
+  - when waiting timeout without util macthed, set the channel's wait flag.
+  - `exec` will reset channel's wait flag.
+  - when channel matched the util or finished, if there is wait flag, reset it and notice the session with `Result`.
 - wait: if none, wait default time, if 0, return immediately.
 - util: wait util macthed certain string, config default value for channel based on its name.
 - id: in each session's namespace.
