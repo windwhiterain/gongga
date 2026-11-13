@@ -65,9 +65,6 @@ pub struct ToolSet {
     /// The peer it was stamped for: a move changes which machine a schema names.
     #[serde(default)]
     pub remote: Option<String>,
-    /// Whether a compaction origin had opened, which is what puts the schema in.
-    #[serde(default)]
-    pub has_origin: bool,
     /// The build that rendered it.
     ///
     /// # Invariant
@@ -154,6 +151,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- written before this column existed reads what a session that never asked
     -- reads. See `docs/notes/server-explore.md`.
     mode TEXT,
+    -- Whether the server asks this session to fold its own context, and how far its
+    -- context may grow between checkpoints. NULL follows the home's `[agent]`
+    -- setting: the switch is a session's own, the default is the file's, and a
+    -- session that never asked reads the file.
+    live_compact INTEGER,
+    live_compact_interval_tokens INTEGER,
     -- When this session's last turn ended, and nothing else. NULL is a session
     -- that has not finished a turn yet, which the list orders by `created_at`.
     -- Its own column rather than `updated_at`, which a tuning change rewrites:
@@ -400,7 +403,6 @@ pub struct Store {
     conn: Arc<Mutex<Connection>>,
     /// Where the database is, so a request can open its own read-only view of it.
     path: PathBuf,
-    live_compact_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Whether `table` already has `column`, and adds it when it does not.
@@ -515,6 +517,14 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
             "ALTER TABLE sessions ADD COLUMN cache_keepalive INTEGER NOT NULL DEFAULT 0",
         ),
         ("mode", "ALTER TABLE sessions ADD COLUMN mode TEXT"),
+        (
+            "live_compact",
+            "ALTER TABLE sessions ADD COLUMN live_compact INTEGER",
+        ),
+        (
+            "live_compact_interval_tokens",
+            "ALTER TABLE sessions ADD COLUMN live_compact_interval_tokens INTEGER",
+        ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
@@ -873,19 +883,7 @@ impl Store {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: path.to_path_buf(),
-            live_compact_enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
-    }
-
-    /// Enables plan requests and delivery only for an explicit nonzero interval.
-    pub fn set_live_compact_enabled(&self, enabled: bool) {
-        self.live_compact_enabled
-            .store(enabled, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    pub(crate) fn live_compact_is_enabled(&self) -> bool {
-        self.live_compact_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The connection every picture and upload row is read and written through.
@@ -1118,7 +1116,8 @@ impl Store {
                     (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id) AS messages,
                     s.context_limit, s.thinking_effort,
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote,
-                    s.cache_tier, s.cache_keepalive, s.ended_at, s.mode
+                    s.cache_tier, s.cache_keepalive, s.ended_at, s.mode,
+                    s.live_compact, s.live_compact_interval_tokens
              FROM sessions s";
 
     /// Every session in `error` because of a provider, with what a monitor turn
@@ -1261,6 +1260,10 @@ impl Store {
             cache_keepalive: r.get::<_, i64>(16)? != 0,
             ended_at: r.get(17)?,
             mode: crate::explore::Mode::of(r.get::<_, Option<String>>(18)?.as_deref()),
+            live_compact_enabled: r.get::<_, Option<i64>>(19)?.map(|stated| stated != 0),
+            live_compact_interval_tokens: r
+                .get::<_, Option<i64>>(20)?
+                .map(|tokens| tokens.max(0) as u64),
         })
     }
 
@@ -1313,6 +1316,51 @@ impl Store {
               WHERE id = ?4",
             params![tier, i64::from(keepalive), now_millis(), id],
         )?;
+        Ok(())
+    }
+
+    /// A session's own live compact: the switch, the threshold, and the request
+    /// they stop owing.
+    ///
+    /// # Invariant
+    ///
+    /// Switching off drops a request already queued. The notice is the server
+    /// asking, so a session that is no longer asked owes no summary, and a
+    /// checkpoint written for a request nobody wants would fold a segment the
+    /// operator just said to keep.
+    pub fn set_session_live_compact(
+        &self,
+        id: i64,
+        session: &str,
+        enabled: Option<bool>,
+        interval_tokens: Option<u64>,
+    ) -> anyhow::Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE sessions SET live_compact = ?1, live_compact_interval_tokens = ?2,
+                    updated_at = ?3
+              WHERE id = ?4",
+            params![
+                enabled.map(i64::from),
+                interval_tokens.map(|tokens| tokens as i64),
+                now_millis(),
+                id
+            ],
+        )?;
+        if enabled == Some(false) {
+            tx.execute(
+                "UPDATE sessions SET live_compact_requested = 0 WHERE id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM pending_tasks
+                  WHERE session = ?1 AND kind = 'inject'
+                    AND json_extract(payload, '$.live_compact') IS NOT NULL",
+                params![session],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -2067,9 +2115,13 @@ impl Store {
         Ok(true)
     }
 
-    /// Opens live compaction where the plan finished: explore -> work.
+    /// Opens live compaction: where the plan finished, or where the session
+    /// switched the feature on.
     ///
     /// # Invariant
+    ///
+    /// Only the first call opens it. The origin is the permanent prefix, so a
+    /// session switched off and on again keeps the boundary it had.
     ///
     /// Plan finish is the agent's own act inside its turn, so a running session is
     /// the rule, not the error: the baseline is the last persisted measurement,
@@ -2090,9 +2142,8 @@ impl Store {
             params![session_id],
             |row| row.get(0),
         )?;
-        if origin == 0 {
-            anyhow::bail!("no rows anchor this lineage yet");
-        }
+        // Zero rows is a session that has not spoken yet: nothing is held back, so
+        // the first round it writes is already the segment a checkpoint folds.
         tx.execute(
             "UPDATE sessions SET live_compact_origin_seq = ?2,
                     live_compact_baseline_tokens = CASE WHEN ?3 > 0 THEN ?3 ELSE NULL END,
@@ -2587,6 +2638,7 @@ impl Store {
         &self,
         session_id: i64,
         session: &str,
+        live_compact: bool,
     ) -> anyhow::Result<(usize, i64, OperatorRows)> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -2635,13 +2687,22 @@ impl Store {
                 }
             }
 
-            if payload.get("live_compact").is_some() && !self.live_compact_is_enabled() {
-                tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
-                tx.execute(
-                    "UPDATE sessions SET live_compact_requested = 0 WHERE id = ?1",
+            if payload.get("live_compact").is_some() {
+                // The switch is the session's and `live_compact` is the file's, for a
+                // session that stated neither.
+                let stated: Option<i64> = tx.query_row(
+                    "SELECT live_compact FROM sessions WHERE id = ?1",
                     params![session_id],
+                    |row| row.get(0),
                 )?;
-                continue;
+                if !stated.map_or(live_compact, |stated| stated != 0) {
+                    tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
+                    tx.execute(
+                        "UPDATE sessions SET live_compact_requested = 0 WHERE id = ?1",
+                        params![session_id],
+                    )?;
+                    continue;
+                }
             }
             let mut compact_round = None;
             if let Some(request) = payload.get("live_compact") {
@@ -3486,6 +3547,10 @@ pub struct SessionRow {
     pub cache_keepalive: bool,
     /// What this session is for: a read, or the work it may change.
     pub mode: crate::explore::Mode,
+    /// The session's own live compact switch; `None` follows the home's `[agent]`.
+    pub live_compact_enabled: Option<bool>,
+    /// Its own interval; `None` follows the home's `[agent]`.
+    pub live_compact_interval_tokens: Option<u64>,
 }
 
 /// What a clone wrote: the new session, its rows, and where it ends.

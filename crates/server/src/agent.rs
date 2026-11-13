@@ -16,7 +16,6 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::bus::EventBus;
-use crate::config::ModelConfig;
 use crate::llm::{LlmClient, LlmEvent};
 use crate::providers::{self};
 use crate::session::SessionHandle;
@@ -56,42 +55,25 @@ pub struct Agent {
     /// The machine's roster, which `--model` names resolve against. A live view:
     /// a reload reaches every later route.
     pub providers: providers::Handle,
-    /// What a session's own entry inherits: timeouts and retries.
-    pub model_config: ModelConfig,
     /// Clients for sessions that named their own model, by `provider/model_name`.
     ///
     /// # Invariant
     ///
-    /// Keyed by the roster read that produced each one: a cached client carries the
-    /// base URL, the key and the model it was built from, so one kept across a reload
-    /// sends the new model to the old endpoint.
-    pub clients: std::sync::Mutex<std::collections::HashMap<String, (u64, Arc<LlmClient>)>>,
-    /// [`Self::llm`]'s context window, for a percentage set without naming a model.
-    pub default_context: Option<u64>,
+    /// Keyed by the roster read and the config read that produced each one: a cached
+    /// client carries the base URL, the key, the timeouts and the model it was built
+    /// from, so one kept across a reload sends the new model to the old endpoint, and
+    /// one kept across an edit sends the timeout the file no longer states.
+    pub clients:
+        std::sync::Mutex<std::collections::HashMap<String, (u64, u64, Arc<LlmClient>)>>,
     pub tools: Arc<ToolRegistry>,
     /// The channels `exec` speaks to, and what a context is built with.
     pub channels: Arc<crate::tools::channel::Channels>,
     pub bus: EventBus,
-    /// How often a cached prefix is assumed to be gone: the plan's hyperparameter.
-    pub cache_invalid_rate: f64,
-    /// This machine's own lifetime for a cached prefix, in millis; `None` leaves the
-    /// provider's number in force.
-    pub cache_ttl_ms: Option<u64>,
-    /// The share of an indexed entry's lines that may change and still be patched.
-    pub index_change_tolerance: f64,
-    /// Compress once a request would carry more than this many input tokens.
-    /// 0 disables it.
-    pub compress_above_tokens: u64,
-    /// Share of the window a session states no percentage for.
-    pub context_limit_percent: u8,
     /// The home this call belongs to: what a worker needs to be started.
     pub home: PathBuf,
-    /// Whether the agent is asked to write checkpoint summaries; the switch, not the
-    /// threshold, is the opt-in.
-    pub live_compact_enabled: bool,
-    /// Input-token growth between agent-written checkpoints; the threshold the
-    /// enabled feature measures against.
-    pub live_compact_interval_tokens: u64,
+    /// The home's config file as it is now: what a step reads, instead of what the
+    /// process started with.
+    pub config: Arc<crate::config::Current>,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
     /// Jobs running in this process, so a call can stop one by its id.
@@ -278,7 +260,7 @@ impl Agent {
             }
             // Ask before the request is built, so this is the step that hears it.
             self.maybe_notify_context(session, id, &name, budget, window);
-            self.maybe_request_live_compact(id, &name);
+            self.maybe_request_live_compact(session, id, &name);
             let cwd = session.cwd();
             tracing::info!(
                 session = %name,
@@ -378,16 +360,17 @@ impl Agent {
 
     /// The notice threshold in input tokens; zero means off without exception.
     fn budget(&self, name: &str, context: Option<u64>, percent: Option<u8>) -> u64 {
+        let config = self.config.now();
         // A percentage has no size without a window; warn rather than guess.
-        if self.compress_above_tokens != 0 && context.is_none() && percent.is_some() {
+        if config.agent.compress_above_tokens != 0 && context.is_none() && percent.is_some() {
             tracing::warn!(
                 session = %name,
                 "no context window is known for this model; using the configured token budget"
             );
         }
         notice_budget(
-            self.compress_above_tokens,
-            self.context_limit_percent,
+            config.agent.compress_above_tokens,
+            config.agent.context_limit_percent,
             context,
             percent,
         )
@@ -401,19 +384,22 @@ impl Agent {
     ) -> anyhow::Result<Arc<LlmClient>> {
         let model = entry.model.clone();
         let generation = self.providers.generation();
+        let config = self.config.now();
+        let read = config.read;
         let cached = self
             .clients
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&model)
             .cloned();
-        if let Some((pinned, client)) = cached {
-            if pinned == generation {
-                return Ok(client);
-            }
+        if let Some((pinned, pinned_read, client)) = cached
+            && pinned == generation
+            && pinned_read == read
+        {
+            return Ok(client);
         }
         // Built outside the lock: a duplicate client is cheaper than serialising turns.
-        let mut cfg = self.model_config.for_entry(entry, api_key);
+        let mut cfg = config.model.for_entry(entry, api_key);
         // Every client measures its own provider, into this home's store.
         cfg.measure = Some(self.store.clone());
         cfg.price = entry.price;
@@ -421,13 +407,14 @@ impl Agent {
         self.clients
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(model, (generation, client.clone()));
+            .insert(model, (generation, read, client.clone()));
         Ok(client)
     }
 
     /// Moves the session's inbox into the transcript in one durable transaction.
     pub(crate) fn deliver_inbox(&self, id: i64, name: &str) -> usize {
-        match self.store.deliver_pending(id, name) {
+        let live_compact = self.config.now().agent.live_compact_enabled;
+        match self.store.deliver_pending(id, name, live_compact) {
             // `waited` is the "no answer yet" number: a message written mid-step lands
             // only here.
             Ok((delivered, waited_ms, written)) => {
@@ -511,11 +498,24 @@ impl Agent {
     }
 
     /// Queues one durable agent-written checkpoint request for this token interval.
-    fn maybe_request_live_compact(&self, id: i64, name: &str) {
-        if !self.live_compact_enabled {
+    ///
+    /// # Invariant
+    ///
+    /// Read from the session at every step: the switch and the interval are the
+    /// session's own, and a session that states neither reads the home's config as
+    /// it is now rather than as it was when this process started.
+    fn maybe_request_live_compact(&self, session: &SessionHandle, id: i64, name: &str) {
+        let tuning = session.tuning();
+        let config = self.config.now();
+        if !tuning
+            .live_compact_enabled
+            .unwrap_or(config.agent.live_compact_enabled)
+        {
             return;
         }
-        let interval = self.live_compact_interval_tokens;
+        let interval = tuning
+            .live_compact_interval_tokens
+            .unwrap_or(config.agent.live_compact_interval_tokens);
         let Ok(measurement) = self.store.live_compact_measurement(id) else {
             return;
         };
@@ -653,10 +653,9 @@ impl Agent {
             return Ok(kept);
         }
         let tool_set = crate::store::ToolSet {
-            tools: llm.wire_tools(&self.tools.stamp(self.live_compact_enabled)),
+            tools: llm.wire_tools(&self.tools.stamp()),
             model: Some(model.to_string()),
             remote: session.remote_name(),
-            has_origin: self.live_compact_enabled,
             build: protocol::BUILD.to_string(),
             event: "first".to_string(),
         };
@@ -675,7 +674,7 @@ impl Agent {
         let prompts = crate::prompts::shared();
         let explained = prompts.text(crate::prompts::REVISION).is_some();
         explained
-            .then_some(self.index_change_tolerance)
+            .then(|| self.config.now().agent.index_change_tolerance)
             .filter(|tolerance| *tolerance > 0.0)
     }
 
@@ -719,17 +718,18 @@ impl Agent {
     /// that named its own tier times against that tier's own window.
     pub(crate) fn cache_fire_after_ms(&self, model: &str, tier: Option<&str>) -> u64 {
         let entry = self.providers.place(model);
+        let config = self.config.now();
         let window = tier
             .and_then(|name| entry.as_ref().and_then(|e| e.cache_ttl_tiers.get(name)))
             .map(|secs| secs.saturating_mul(1_000))
-            .or(self.cache_ttl_ms)
+            .or(cache_ttl_ms(&config))
             .or_else(|| {
                 entry
                     .as_ref()
                     .and_then(|e| e.cache_ttl_secs)
                     .map(|secs| secs.saturating_mul(1_000))
             });
-        let pct = 100_u64.saturating_sub(self.model_config.cache_margin_pct as u64);
+        let pct = 100_u64.saturating_sub(config.model.cache_margin_pct as u64);
         window.unwrap_or(0).saturating_mul(pct) / 100
     }
 
@@ -798,10 +798,11 @@ impl Agent {
             .ok()
             .flatten()
             .map(|rate| rate.clamp(0.0, 1.0));
+        let config = self.config.now();
         crate::prefix_cache::Rates {
             price: entry.as_ref().and_then(|entry| entry.price),
-            invalid: observed.unwrap_or(self.cache_invalid_rate),
-            ttl_ms: self.cache_ttl_ms.or(stated).unwrap_or(0),
+            invalid: observed.unwrap_or(config.agent.cache_invalid_rate),
+            ttl_ms: cache_ttl_ms(&config).or(stated).unwrap_or(0),
         }
     }
 
@@ -2013,6 +2014,12 @@ fn notice_budget(configured: u64, fallback: u8, context: Option<u64>, percent: O
         return configured;
     };
     providers::tokens_for_percent(window, percent.unwrap_or(fallback))
+}
+
+/// This machine's own lifetime for a cached prefix, in millis; `None` is no opinion,
+/// which leaves the provider's number in force.
+fn cache_ttl_ms(config: &crate::config::Config) -> Option<u64> {
+    (config.agent.cache_ttl_secs > 0).then(|| config.agent.cache_ttl_secs.saturating_mul(1_000))
 }
 
 #[cfg(test)]

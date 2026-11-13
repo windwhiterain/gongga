@@ -111,6 +111,11 @@ SessionConfig := { # sticky
   model_config: ModelConfig,
   workspace: Workspace,
   keep_alive: bool, # if auto send message to interrup waiting when approaching the cache alive deadline.
+  live_compact: LiveCompact,
+}
+LiveCompact := { # sticky; the opt-in is a switch, never a token count
+  enabled: bool = agent_default(), # unset follows the home's [agent] live_compact_enabled
+  interval_tokens: int = agent_default(), # the threshold only; [agent] live_compact_interval_tokens
 }
 fn new_session(id: Session, config: SessionConfig)
 fn set_session(id: Session, config_delta: SessionConfig{..})
@@ -174,6 +179,7 @@ a cache tree is simulated for each model or (model, some config) that shares pre
 for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
 
 ## Live Compact
+- the opt-in is the session's own `live_compact`; a session that states none follows the home's `[agent]` setting. Switched on, it opens the starting checkpoint at the transcript's end, exactly where the plan finish below opens it.
 - when agent switch from explore to build, set the starting checkpoint of compaction.
 - after the starting checkpoint, every time reach a context increase limit, ask the agent to call `live_compact` to summary and replace the history since the last checkpoint, and create a new checkpoint.
 - `live_compact` summary can reference meta that directly embed in the summary, creating a new checkpoint.

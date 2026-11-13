@@ -234,6 +234,12 @@ pub struct Tuning {
     pub cache_tier: Option<String>,
     /// Whether a periodic time notice keeps this session's prefix warm.
     pub cache_keepalive: bool,
+    /// Whether the server asks this session for checkpoint summaries; `None`
+    /// follows the home's `[agent] live_compact_enabled`.
+    pub live_compact_enabled: Option<bool>,
+    /// Input-token growth between this session's checkpoints; `None` follows the
+    /// home's `[agent] live_compact_interval_tokens`.
+    pub live_compact_interval_tokens: Option<u64>,
 }
 
 /// A live session. Cheap to clone; the heavy parts are shared.
@@ -1267,6 +1273,10 @@ impl SessionManager {
                 remote: recorded.clone(),
                 cache_tier: None,
                 cache_keepalive: false,
+                // A session that stated nothing reads the home's `[agent]` setting,
+                // which is what the NULL columns mean.
+                live_compact_enabled: None,
+                live_compact_interval_tokens: None,
                 // Born working; `set_session` moves it in the same command.
                 mode: crate::explore::Mode::Work,
             },
@@ -1530,6 +1540,8 @@ impl SessionManager {
                     thinking_effort: row.thinking_effort,
                     cache_tier: row.cache_tier,
                     cache_keepalive: row.cache_keepalive,
+                    live_compact_enabled: row.live_compact_enabled,
+                    live_compact_interval_tokens: row.live_compact_interval_tokens,
                 }),
                 explore: Mutex::new(crate::explore::watch_of(row.mode)),
                 deleted: AtomicBool::new(false),

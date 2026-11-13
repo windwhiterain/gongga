@@ -36,7 +36,16 @@ pub struct Workspace {
     pub cwd: Option<String>,
 }
 
-/// SPEC `SessionConfig := {model_config, workspace, keep_alive}`.
+/// SPEC `LiveCompact := {enabled, interval_tokens}`: a session's own opt-in.
+#[derive(Debug, Default, Deserialize)]
+pub struct LiveCompact {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub interval_tokens: Option<u64>,
+}
+
+/// SPEC `SessionConfig := {model_config, workspace, keep_alive, live_compact}`.
 #[derive(Debug, Default, Deserialize)]
 pub struct SessionConfig {
     #[serde(default)]
@@ -45,6 +54,8 @@ pub struct SessionConfig {
     pub workspace: Option<Workspace>,
     #[serde(default)]
     pub keep_alive: Option<bool>,
+    #[serde(default)]
+    pub live_compact: Option<LiveCompact>,
 }
 
 /// Flatten a nested `SessionConfig` into the flat settings the handler reads.
@@ -104,6 +115,17 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
             "keep_alive".to_string(),
             if keep_alive { "true" } else { "false" }.to_string(),
         );
+    }
+    if let Some(live_compact) = config.live_compact {
+        if let Some(enabled) = live_compact.enabled {
+            args.insert(
+                "live_compact_enabled".to_string(),
+                if enabled { "true" } else { "false" }.to_string(),
+            );
+        }
+        if let Some(tokens) = live_compact.interval_tokens {
+            args.insert("live_compact_interval_tokens".to_string(), tokens.to_string());
+        }
     }
     Ok(())
 }
@@ -190,6 +212,18 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         CompletionSource::Static(vec!["true".to_string(), "false".to_string()]),
         "true|false",
     );
+    let live_compact_enabled = leaf(
+        "enabled",
+        "Whether the server asks this session to fold its own context.",
+        CompletionSource::Static(vec!["true".to_string(), "false".to_string()]),
+        "true|false",
+    );
+    let live_compact_interval = leaf(
+        "interval_tokens",
+        "Input-token growth between this session's checkpoints.",
+        CompletionSource::None,
+        "tokens",
+    );
     StructSchema {
         fields: vec![
             object(
@@ -199,6 +233,11 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
             ),
             object("workspace", "Where the session works.", vec![remote, cwd]),
             keep_alive,
+            object(
+                "live_compact",
+                "Whether the server asks this session for checkpoint summaries.",
+                vec![live_compact_enabled, live_compact_interval],
+            ),
         ],
     }
 }

@@ -264,7 +264,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     clock.step("prompts");
 
     let store = store::Store::open(&cfg.db_path)?;
-    store.set_live_compact_enabled(cfg.agent.live_compact_enabled);
     clock.step("store");
     // Read after every tool call, before a full disk takes the room to report it.
     disk::install(cfg.disk_low, cfg.home.clone());
@@ -402,9 +401,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let agent = Arc::new(Agent {
         store: store.clone(),
         providers: providers::Handle,
-        model_config: cfg.model.clone(),
         clients: std::sync::Mutex::new(std::collections::HashMap::new()),
-        default_context: cfg.model.context,
         channels: channels.clone(),
         tools: Arc::new(
             ToolRegistry::settings(
@@ -412,7 +409,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 cfg.bash.timeout,
                 cfg.bash.max_output_chars,
             )
-            .with_live_compact(cfg.agent.live_compact_enabled)
             .with_python(cfg.python.clone(), skill_lib.clone())
             .with_skills(
                 tools::skill::programs(&cfg),
@@ -423,14 +419,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             .build(&cfg.tools.rows, &cfg.tools.arguments),
         ),
         bus: bus.clone(),
-        compress_above_tokens: cfg.agent.compress_above_tokens,
-        live_compact_enabled: cfg.agent.live_compact_enabled,
-        live_compact_interval_tokens: cfg.agent.live_compact_interval_tokens,
-        cache_invalid_rate: cfg.agent.cache_invalid_rate,
-        cache_ttl_ms: (cfg.agent.cache_ttl_secs > 0)
-            .then(|| cfg.agent.cache_ttl_secs.saturating_mul(1_000)),
-        index_change_tolerance: cfg.agent.index_change_tolerance,
-        context_limit_percent: cfg.agent.context_limit_percent,
+        config: config.clone(),
         home: cfg.home.clone(),
         output_dir: output_dir.clone(),
         jobs: crate::tools::tunnel::JobRegistry::new(),

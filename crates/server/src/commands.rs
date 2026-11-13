@@ -176,7 +176,7 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
     let keepalive_agent = d.agent.clone();
     let keepalive_d = Arc::new(d.clone());
     let keepalive_session = work.session.clone();
-    let keepalive_model = d.agent.model_config.model();
+    let keepalive_model = d.agent.config.now().model.model();
     let keepalive_tuning = work.session.tuning();
     tokio::spawn(async move {
         let _active = active;
@@ -1132,6 +1132,22 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
         Some("work|explore"),
         CompletionSource::Static(vec!["work".into(), "explore".into()]),
     ),
+        // SPEC's `LiveCompact`: the session's own opt-in, and the threshold it
+    // measures. Unset follows the home's `[agent]`, and the document says so.
+    arg(
+        "live_compact_enabled",
+        "Whether the server asks this session to write checkpoint summaries. Unset follows the home's `[agent] live_compact_enabled`; switched on, the starting checkpoint is the transcript's end.",
+        false,
+        Some("true|false"),
+        CompletionSource::Static(vec!["true".into(), "false".into()]),
+    ),
+    arg(
+        "live_compact_interval_tokens",
+        "Input-token growth between this session's checkpoints. Unset follows the home's `[agent] live_compact_interval_tokens`; a count of tokens is the threshold, never the switch.",
+        false,
+        Some("tokens"),
+        CompletionSource::None,
+    ),
         arg(
             "must_create",
             "true refuses the command unless the session does not exist yet, so a caller that means to start its own session cannot join another one's transcript by picking a name that was already taken.",
@@ -1538,8 +1554,24 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             Err(e) => return Outcome::err(format!("--mode: {e}")),
         },
     };
+    let live_enabled = match flag_of(args, "live_compact_enabled") {
+        Ok(value) => value,
+        Err(e) => return Outcome::err(format!("--live_compact_enabled: {e}")),
+    };
+    // Zero would ask at every step; the interval is the threshold, not the switch.
+    let live_interval = match count_of(args, "live_compact_interval_tokens") {
+        Ok(None) => None,
+        Ok(Some(tokens)) if tokens > 0 => Some(tokens as u64),
+        Ok(Some(_)) => {
+            return Outcome::err(
+                "--live_compact_interval_tokens takes a positive count of tokens: the                  interval is the threshold, not the switch"
+                    .to_string(),
+            );
+        }
+        Err(e) => return Outcome::err(format!("--live_compact_interval_tokens: {e}")),
+    };
     // A percentage needs a window; silently keeping the old budget would lie.
-    let context = entry.context.or(d.agent.default_context);
+    let context = entry.context.or(d.agent.config.now().model.context);
     if let (Some(percent), None) = (threshold, context) {
         return Outcome::err(format!(
             "--ctx_limit {percent}% needs a context window to be a percentage of, and \
@@ -1682,7 +1714,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(tier) = cache_tier {
         tuning.cache_tier = tier;
     }
-    if changed || cache_changed {
+    let live_changed = live_enabled.is_some() || live_interval.is_some();
+    if let Some(value) = live_enabled {
+        tuning.live_compact_enabled = Some(value);
+    }
+    if let Some(tokens) = live_interval {
+        tuning.live_compact_interval_tokens = Some(tokens);
+    }
+    if changed || cache_changed || live_changed {
         // Persist before applying: a restart must restore what turns here read.
         if let Err(e) = d.store.set_session_tuning(
             session.id(),
@@ -1702,15 +1741,40 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 return Outcome::err(format!("could not save the cache settings: {e}"));
             }
         }
+        if live_changed {
+            if let Err(e) = d.store.set_session_live_compact(
+                session.id(),
+                &name,
+                tuning.live_compact_enabled,
+                tuning.live_compact_interval_tokens,
+            ) {
+                return Outcome::err(format!("could not save the live compact settings: {e}"));
+            }
+            // Switched on, the starting checkpoint is where the transcript is now: a
+            // session that is already running has no plan finish left to wait for.
+            let config = d.agent.config.now();
+            if tuning
+                .live_compact_enabled
+                .unwrap_or(config.agent.live_compact_enabled)
+                && let Err(e) = d.store.start_live_compact(session.id())
+            {
+                return Outcome::err(format!("could not open the live compact checkpoint: {e:#}"));
+            }
+        }
         session.set_tuning(tuning.clone());
     }
     // A mode that changed says so: the agent hears it at the next step boundary.
     if let Some(mode) = mode.filter(|mode| *mode != session.mode()) {
         // Plan finish (explore -> work) opens the starting checkpoint; a failed
         // open refuses the mode change.
+        let config = d.agent.config.now();
+        let live_compact = session
+            .tuning()
+            .live_compact_enabled
+            .unwrap_or(config.agent.live_compact_enabled);
         if mode == crate::explore::Mode::Work
             && session.mode() == crate::explore::Mode::Explore
-            && d.store.live_compact_is_enabled()
+            && live_compact
             && let Err(e) = d.store.start_live_compact(session.id())
         {
             return Outcome::err(format!("could not open the live compact checkpoint: {e:#}"));
@@ -3583,6 +3647,8 @@ fn stated_tuning(
             thinking_effort: row.thinking_effort.clone(),
             cache_tier: row.cache_tier.clone(),
             cache_keepalive: row.cache_keepalive,
+            live_compact_enabled: row.live_compact_enabled,
+            live_compact_interval_tokens: row.live_compact_interval_tokens,
         },
     }
 }
@@ -3631,6 +3697,8 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         model,
         thinking_effort,
         remote: row.remote.clone(),
-        context_limit: tuning.context_limit.or(Some(d.agent.context_limit_percent)),
+        context_limit: tuning
+            .context_limit
+            .or(Some(d.agent.config.now().agent.context_limit_percent)),
     }
 }

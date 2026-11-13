@@ -85,6 +85,14 @@ pub const DEFAULT_CONTEXT_LIMIT_PERCENT: u8 = 70;
 /// Everything the server needs to boot.
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Which read of the files produced this value, counted for this process.
+    ///
+    /// # Invariant
+    ///
+    /// A cache that holds something built *from* a config -- an HTTP client, a
+    /// tool list -- is keyed on this, so an edit that changes a timeout or a base
+    /// URL cannot keep sending the one the old read stated.
+    pub read: u64,
     /// The file these values came from; the templates read the same path.
     pub config_path: PathBuf,
     pub home: PathBuf,
@@ -461,6 +469,10 @@ struct FileTransport {
     idle_timeout_ms: Option<u64>,
 }
 
+/// How many times this process has read a home's config, so each value carries the
+/// name of the read it came from.
+static READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Config {
     /// Loads the config, creating the home directory if it does not exist.
     ///
@@ -813,6 +825,7 @@ impl Config {
             .filter(|url| !url.is_empty());
 
         Ok(Self {
+            read: READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
             config_path: std::path::absolute(&config_path).unwrap_or(config_path),
             home,
             db_path,

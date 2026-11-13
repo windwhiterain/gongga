@@ -611,7 +611,6 @@ struct Settings {
     max_output_chars: usize,
     python: Option<(crate::config::PythonConfig, Option<std::path::PathBuf>)>,
     skills: Option<skill::Skills>,
-    live_compact: bool,
 }
 
 impl ToolRegistry {
@@ -630,15 +629,8 @@ impl ToolRegistry {
                 max_output_chars,
                 python: None,
                 skills: None,
-                live_compact: false,
             },
         }
-    }
-
-    /// Whether this build carries the compaction checkpoint's tool at all.
-    pub fn with_live_compact(mut self, enabled: bool) -> Self {
-        self.settings.live_compact = enabled;
-        self
     }
 
     /// The interpreter a `python` row runs in, and where its package import lives.
@@ -693,9 +685,6 @@ impl ToolRegistry {
         tunnel: &std::collections::BTreeMap<String, String>,
     ) -> Self {
         for (name, row) in rows {
-            if row.cmd == live_compact::LIVE_COMPACT_TOOL && !self.settings.live_compact {
-                continue;
-            }
             // The tunnel's own arguments, in the words it words them once.
             let row = &with_tunnel_arguments(row, tunnel);
             match self.command(row) {
@@ -781,20 +770,17 @@ impl ToolRegistry {
     ///
     /// Every session is offered the same set, `remote` included: a call may name
     /// any machine, and one the server does not know is refused when it runs.
-    pub fn stamp(&self, with_live_compact: bool) -> Vec<crate::llm::ToolDefinition> {
-        let mut definitions: Vec<crate::llm::ToolDefinition> = self
-            .tools
+    ///
+    /// `live_compact` is in the set whatever the session's switch says, because the
+    /// head is written once and never re-stamped: a schema that followed a setting
+    /// would cost a re-render of the cached prefix every time it moved, and a
+    /// setting moved after the head was written would reach nobody.
+    pub fn stamp(&self) -> Vec<crate::llm::ToolDefinition> {
+        self.tools
             .iter()
             .filter(|t| t.offered())
-            .filter(|t| t.name() != live_compact::LIVE_COMPACT_TOOL)
             .map(|t| Self::definition_of(t))
-            .collect();
-        // Once a lineage has a compaction origin the schema stays for its life, so
-        // the head stops moving twice per cycle.
-        if with_live_compact && let Some(tool) = self.get(live_compact::LIVE_COMPACT_TOOL) {
-            definitions.push(Self::definition_of(&tool));
-        }
-        definitions
+            .collect()
     }
 
     fn definition_of(tool: &Arc<dyn Tool>) -> crate::llm::ToolDefinition {
