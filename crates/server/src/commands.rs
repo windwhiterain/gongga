@@ -535,8 +535,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             name: "subscribe".into(),
             description: "Name a subscription over the event stream and ask for it to be \
                       armed. It answers at once -- it does not wait for a match. A match 
-                      runs `cmd` in `session`: one command, the same door a tool's 
-                      `fn <tool>(**args)` uses."
+                      runs `cmd` in `session`: one command, the same door the 
+                      `gongga_cli` tool uses."
                 .into(),
             args: vec![
                 pos(
@@ -1155,7 +1155,7 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
 /// while the origin is who asked. `subscribe` needs the session the command was
 /// run *from*, and `cancel` needs to be able to say who asked, which is the
 /// difference between a window's own goodbye and somebody else's.
-/// What a tool can ask the command layer to do: `exec` with a name that is a cmd.
+/// What a tool can ask the command layer to do: `gongga_cli`, and a row that names one.
 ///
 /// # Invariant
 ///

@@ -317,6 +317,90 @@ impl Cmd for Forward {
     }
 }
 
+/// SPEC's `fn gongga_cli(cmd: Cmd)`: the route whose call names the command it runs.
+///
+/// # Invariant
+///
+/// The same door as [`Forward`], named by the call instead of by the row: one command
+/// layer, the caller's session riding along, and a name nobody answers refused there in
+/// the command's own words. `cmd` is SPEC's `{name, args}` -- the object, or the words
+/// of one, and anything else is refused rather than guessed at. A worker has no command
+/// layer, so this never leaves as one.
+pub struct GonggaCli;
+
+impl Cmd for GonggaCli {
+    fn run<'a>(
+        &'a self,
+        args: Value,
+        ctx: &'a ToolContext,
+    ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            let (name, words) = match route(&args) {
+                Ok(route) => route,
+                Err(refusal) => return ToolOutcome::err(refusal),
+            };
+            run_command(&ctx.session, &name, words, &ctx.cancel).await
+        })
+    }
+}
+
+/// SPEC's `Cmd` as one call's `cmd` argument: the command's name and its words.
+///
+/// # Invariant
+///
+/// The command's own arguments are read by the rule every command's are ([`words_of`]),
+/// and `args` is optional because a command need take none. See
+/// `docs/notes/server-tools-mod.md`.
+fn route(args: &Value) -> Result<(String, protocol::Args), String> {
+    // Said once: the two refusals below are the same sentence about the same shape.
+    let shape = "`cmd` is SPEC's `Cmd`: `cmd.name`, the command, and `cmd.args`, its arguments";
+    let given = args.get("cmd");
+    let Some(table) = given.and_then(object_of) else {
+        return Err(format!(
+            "`gongga_cli` did not run: {shape}. This call gave {}.",
+            given.map_or("none", json_type)
+        ));
+    };
+    let name = match table.get("name") {
+        Some(Value::String(name)) if !name.trim().is_empty() => name.clone(),
+        _ => {
+            return Err(format!(
+                "`gongga_cli` did not run: {shape}, and this one names neither."
+            ));
+        }
+    };
+    let words = match table.get("args") {
+        None | Some(Value::Null) => protocol::Args::new(),
+        Some(value) => match object_of(value) {
+            Some(table) => words_of(&table),
+            None => {
+                return Err(format!(
+                    "`gongga_cli` did not run: `{name}`'s `args` is an object, and this was {}.",
+                    json_type(value)
+                ));
+            }
+        },
+    };
+    Ok((name, words))
+}
+
+/// A value as the object it stands for: the object itself, or the words of one.
+///
+/// # Invariant
+///
+/// An operator's line spells the whole `cmd` as a string, and a call may spell an inner
+/// table the same way, so the JSON of an object is that object. Nothing else is one.
+fn object_of(value: &Value) -> Option<serde_json::Map<String, Value>> {
+    match value {
+        Value::Object(table) => Some(table.clone()),
+        Value::String(text) => match serde_json::from_str::<Value>(text) {
+            Ok(Value::Object(table)) => Some(table),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Runs one server cmd in the caller's session and answers with SPEC's `Result`.
 ///
 /// # Invariant
@@ -366,27 +450,30 @@ pub(crate) async fn run_command(
     }
 }
 
-/// A tool call's arguments as the words a command reads.
+/// A call's arguments as the arguments a command reads.
 ///
 /// # Invariant
 ///
-/// A string is itself and any other value is its JSON, because a command's arguments
-/// are words; a stated `null` is neither, and reaches the command as absent rather than
-/// as the four letters `null`. `cmd` is the one key this drops, since it names the
-/// command rather than one of its arguments. See `docs/notes/server-tools-mod.md`.
-pub(crate) fn named_words(table: &serde_json::Map<String, Value>) -> protocol::Args {
+/// The value the call stated, never its text: SPEC's `Cmd.args` is `dict[str, any]`, so
+/// `wait` may be a number, `config` a table, and a stated `null` the type's empty value
+/// rather than the four letters. See `protocol::Args` and `protocol::argtype`.
+pub(crate) fn words_of(table: &serde_json::Map<String, Value>) -> protocol::Args {
     let mut words = protocol::Args::new();
     for (key, value) in table {
-        if key == "cmd" {
-            continue;
-        }
-        let text = match value {
-            Value::String(text) => text.clone(),
-            Value::Null => continue,
-            other => other.to_string(),
-        };
-        words.insert(key.clone(), text);
+        words.insert(key.clone(), value.clone());
     }
+    words
+}
+
+/// The same for a call whose `cmd` names the command rather than one of its arguments.
+///
+/// # Invariant
+///
+/// `cmd` is the one key this drops: a row names its command under that key, so the value
+/// there is never that command's own. See `docs/notes/server-tools-mod.md`.
+pub(crate) fn named_words(table: &serde_json::Map<String, Value>) -> protocol::Args {
+    let mut words = words_of(table);
+    words.remove("cmd");
     words
 }
 
@@ -658,6 +745,8 @@ impl ToolRegistry {
                 })
             }
             "live_compact" => Box::new(live_compact::LiveCompactTool),
+            // SPEC's `fn gongga_cli(cmd: Cmd)`: a call that names its own command.
+            "gongga_cli" => Box::new(GonggaCli),
             // SPEC's `fn <tool>(**args)`: a row this build has no type for is a command
             // the command layer runs, whether the model is offered it or not. A name the
             // catalog does not know is refused when it is called, in the command's words.

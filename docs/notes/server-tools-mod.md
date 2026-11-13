@@ -19,11 +19,12 @@ so there is no `wait_bash`.
 
 ## A row that names a command this build has no type for
 
-SPEC's tool surface is `exec` and `wait`; everything else is a command,
-`fn <tool>(**args)`. So a `[tool.<name>] cmd = "<what>"` row whose `<what>` this build
-carries no implementation of is offered as the command it names: the call's arguments
-become that command's named words (a string is itself, anything else is its JSON) and the
-command layer runs it with the caller's session.
+SPEC's tools are the rows a home declares; `exec`, `wait` and `live_compact` are this
+build's own. Every other `[tool.<name>] cmd = "<what>"` row is offered as the command it
+names: the call's arguments are that command's arguments as the call stated them, and the
+command layer runs it with the caller's session. The `cmd` key is dropped on the way
+(`named_words`): in a row that key names the command, so it is never one of the command's
+arguments.
 
 The table is therefore the registry on both sides. A row may offer a `ServerScript`, a
 skill's entry or a command added tomorrow, and the answer to a name nobody answers comes
@@ -32,6 +33,21 @@ from the command layer, in its words, rather than from this module saying "no su
 Such a row must not leave as a worker (`tunneled = false`, or a carrier that is `Here`): a
 worker runs one call with no dispatch, so it has no command layer to forward to, and the
 call says so instead of pretending.
+
+## `gongga_cli`: one tool, and the call names the command
+
+SPEC's `fn gongga_cli(cmd: Cmd)` is the same door with the name taken from the call
+instead of from a row: `cmd` is `{"name": "<command>", "args": {...}}`, `GonggaCli` reads
+it, and `run_command` runs it -- the caller's session riding along, the command layer
+answering for a name nobody has. Two shapes of one route, because a config cannot
+enumerate the commands a skill teaches: a model told `gongga-cli '{"name": ...}'` by a
+skill can call the same command as a tool, with no row and no schema stamped for it.
+
+`cmd` is read by `route`: the object, or the words of one, since a call may spell a
+table as its JSON. `args` is optional -- a command need take none -- and its values are
+the ones the call stated (`words_of`), because SPEC's `args` is `dict[str, any]` and a
+value is never its text. Anything else is refused by name rather than guessed at: a
+route that ran a command the call did not mean would be read as a success.
 
 ## Descriptions point at `bash` instead of repeating it
 
@@ -380,8 +396,8 @@ Three tools wait, and each one's early answer is the answer it already had:
   deadline and an interrupt are the same answer, because an ended wait is an ended wait.
 - `exec`: a wait that ends early is an `exec` that waited for no time at all, so
   `talk` answers with the window on disk right now, as SPEC's `Result`.
-- `<tool>(**args)` (`Forward`): the command said nothing, so its `Result` carries an
-  empty `output`, `exit: null`, and the time it spent.
+- a command route (`Forward`, and `GonggaCli` with it): the command said nothing, so its
+  `Result` carries an empty `output`, `exit: null`, and the time it spent.
 
 A tool with no wait to end -- a file read, a skill's entry -- is aborted, and `stopped`
 says the work stopped before it could answer. That is the only sentence left about a

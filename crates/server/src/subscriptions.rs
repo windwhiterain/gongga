@@ -20,7 +20,7 @@ use crate::store::{Store, SubscriptionRow};
 ///
 /// # Invariant
 ///
-/// A match runs the command layer -- the same door a tool's `fn <tool>(**args)` uses --
+/// A match runs the command layer -- the same door the `gongga_cli` tool uses --
 /// so a subscription can do exactly what a session's own call can, and nothing else.
 /// Its address is the record it writes, not a program of its own.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
