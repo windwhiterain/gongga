@@ -37,11 +37,12 @@ Two relay binaries whose `Words`/`Status` code never changed were refused as a p
   is about, and `REFUSED = 3` (the code a refusal uses, now shared with the server).
 - `crates/relay/src/main.rs`: `--protocol <n>` decides; `--build` is identity for the
   refusal's words only. No flag at all is accepted (an older server asks nothing).
-- `crates/server/src/tools/channel.rs`: `start_here` → `launch_relay`, which names the
-  protocol; `await_status` takes the relay's `Child` and fails the moment it is gone
-  without a `status`, carrying the relay's own last words instead of a deadline.
+- `crates/server/src/tools/channel.rs`: `start_here` → `open_channel` → `launch_relay`,
+  which names the protocol; `await_status` takes the relay's `Child` and fails the moment
+  it is gone without a `status`, carrying the relay's own last words instead of a deadline.
   A refusal (`2`, `3`, or nothing started) is answered with one `refresh_relay` and one
-  retry; when there is nothing to install the start fails at once with those words.
+  retry; when there is nothing to install the start fails at once with those words, and the
+  directory it invented for the attempt is removed.
 - `crates/server/src/shell_command.rs`: `refresh_relay` — place from beside the server and
   answer `Some` only when `bin` then holds those bytes; never a source for itself (a
   server running from `bin` would "update" a file with itself).
@@ -66,14 +67,18 @@ Two relay binaries whose `Words`/`Status` code never changed were refused as a p
 The disk was at 66 MB free and a server died with `os error 112`. `clean-disk.ps1
 -NoElevate` freed 2.86 GB (`SUMMARY_JSON.freed_bytes`), exit 0, `recycle_left` 0.
 
+## Corrected
+
+The first diagnosis said the command layer prints nothing for a refused command. It does:
+`gongga_cli.py` prints every event, and a refusal carries `cmd_result {"ok": false,
+"message": ...}`. Measured with `input_channel` on a channel that does not exist: the
+message is there, the exit status is 1. What was silent was the *tool* result an agent met
+— 20 s of waiting, then "its own words are in `<log>`" instead of the words themselves.
+That is what this change fixes, and it is why the note no longer lists a CLI hole.
+
 ## Still open
 
-- **The command layer prints no message for a refused command.** `gongga_cli.py` prints
-  `reply.events` and an exit code; `Outcome::err` text is not among them, so a failed
-  `new_channel` shows the echo and nothing else. That is why this incident read as
-  silence. Fixing it changes every failing command's output — worth its own pass.
-- A relay pinned by a running channel still cannot be replaced (Windows). The start now
-  says so instead of pretending; a build-named copy (`bin/relay/<BUILD>.exe`) would not
-  need replacing at all, if it turns out to matter often.
-- `crates/server/src/tools/channel.rs` still leaves the channel directory behind when a
-  start is refused (no row, no `status`, just files). Harmless, but it is litter.
+- A relay pinned by a running channel still cannot be replaced (Windows). The protocol
+  bump that needs the replacement is rare by design, and the start now names both numbers
+  instead of pretending; a build-named copy (`bin/relay/<BUILD>.exe`) would not need
+  replacing at all, if a bump ever turns out to be routine.

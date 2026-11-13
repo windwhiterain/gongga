@@ -286,10 +286,9 @@ impl Channels {
     ///
     /// # Invariant
     ///
-    /// A relay that will not hold a channel of this protocol is answered with one
-    /// attempt to install this build's copy, and no more. A start that cannot be paired
-    /// is a failure the caller reads now, with the relay's own words, rather than a
-    /// silence that ends in a deadline.
+    /// A start that fails leaves nothing behind: no row, no `status`, and no directory
+    /// either. The directory is this call's own invention, and a channel nobody holds is
+    /// litter no reader can use.
     async fn start_here(&self, words: &crate::relay::Words) -> Result<(Where, u32), String> {
         let dir = self
             .root
@@ -304,24 +303,48 @@ impl Channels {
         std::fs::write(dir.join("in"), b"").map_err(|e| format!("could not write `in`: {e}"))?;
         let log = dir.join("relay.log");
         let place = Where::Here(dir);
-        let pid = match self.launch_relay(&self.server, &place, &log, words).await {
-            Ok(pid) => pid,
+        match self.open_channel(&place, &log, words).await {
+            Ok(pid) => Ok((place, pid)),
+            Err(why) => {
+                if let Where::Here(dir) = &place {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+                Err(why)
+            }
+        }
+    }
+
+    /// One channel's relay, and the pid it named: this build's copy, then a second look.
+    ///
+    /// # Invariant
+    ///
+    /// A relay that will not hold a channel of this protocol is answered with one attempt
+    /// to install this build's copy, and no more. A start that cannot be paired is a
+    /// failure the caller reads now, with the relay's own words, not a silence that ends
+    /// in a deadline.
+    async fn open_channel(
+        &self,
+        place: &Where,
+        log: &Path,
+        words: &crate::relay::Words,
+    ) -> Result<u32, String> {
+        match self.launch_relay(&self.server, place, log, words).await {
+            Ok(pid) => Ok(pid),
             // A pair that cannot work is the one thing an install answers; anything else
             // is already the answer.
             Err(refused) if refused.may_be_out_of_date() => {
                 match self.home().and_then(crate::shell_command::refresh_relay) {
                     Some(fresh) => self
-                        .launch_relay(&fresh, &place, &log, words)
+                        .launch_relay(&fresh, place, log, words)
                         .await
-                        .map_err(|refused| refused.words)?,
+                        .map_err(|refused| refused.words),
                     // Nothing to update from: the words name the two protocols, and
                     // that is what this start can say.
-                    None => return Err(refused.words),
+                    None => Err(refused.words),
                 }
             }
-            Err(refused) => return Err(refused.words),
-        };
-        Ok((place, pid))
+            Err(refused) => Err(refused.words),
+        }
     }
 
     /// One relay, started for one channel directory, and the pid it named.

@@ -104,8 +104,9 @@ start_channel() {
   CH_MS=$((ended_ms - began_ms))
 }
 
-# How many channels have said who they started: the one file a refusal never writes.
-statuses() { ls "$home"/channels/ch-*/status 2>/dev/null | wc -l | tr -d ' '; }
+# How many channel directories there are: a start that fails leaves neither a row nor a
+# directory, so this counts both kinds of litter at once.
+channels() { ls -d "$home"/channels/ch-* 2>/dev/null | wc -l | tr -d ' '; }
 
 relay="$bin/gongga-relay.exe"; [[ -x "$relay" ]] || relay="$bin/gongga-relay"
 protocol=$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9][0-9]*\);/\1/p' "$root/crates/relay/src/relay.rs")
@@ -167,13 +168,13 @@ cp -r "$work/home/ship" "$home/ship" 2>/dev/null
 [[ "$(stat -c %s "$home/bin/gongga-relay.exe")" == 14 ]] || {
   echo "the copy in $home/bin could not be written as a non-program" >&2; exit 1; }
 up "$home/bin/gongga-server.exe"
-before=$(statuses)
+before=$(channels)
 start_channel three
 say "unfixable: $(grep -v '^{"t":"event"' <<<"$CH_ANSWER" | head -3) (${CH_MS}ms, exit ${CH_CODE})"
 ok "a start that cannot be paired is refused" "$([[ "$CH_CODE" != 0 ]] && echo 0 || echo 1)"
 ok "and it is refused at once, not at the deadline (${CH_MS}ms)" \
   "$([[ "$CH_MS" -lt 5000 ]] && echo 0 || echo 1)"
-ok "no channel is left saying nothing" "$([[ "$(statuses)" == "$before" ]] && echo 0 || echo 1)"
+ok "no channel is left behind" "$([[ "$(channels)" == "$before" ]] && echo 0 || echo 1)"
 
 build=${GONGGA_BUILD:-$(git -C "$root" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)}
 verdict=$([[ "$fails" == 0 ]] && echo PASS || echo FAIL)
