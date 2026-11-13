@@ -77,6 +77,9 @@ pub struct Agent {
     /// This machine's own lifetime for a cached prefix, in millis; `None` leaves the
     /// provider's number in force.
     pub cache_ttl_ms: Option<u64>,
+    /// How long one endpoint's reading stands; `0` asks at every step end. See
+    /// `docs/notes/server-quota.md`.
+    pub quota_interval: std::time::Duration,
     /// The share of an indexed entry's lines that may change and still be patched.
     pub index_change_tolerance: f64,
     /// Compress once a request would carry more than this many input tokens.
@@ -1275,6 +1278,7 @@ impl Agent {
                         self.bus.clone(),
                         self.store.clone(),
                         attempt.llm.provider().map(str::to_string),
+                        self.quota_interval,
                     );
                     // A delta, not a whole list: republishing that every step
                     // would cost every view its scroll.

@@ -191,6 +191,8 @@ for the first user message to a empty session, find all meta references recursiv
     - [session{name (click: toggle show, if show change to true, set sticky session, if false and sticky, del sticky session)}] (vertical scroll, tree: a prefix of a name is a group row, a click on its marker folds it away)
     - [{session(show = true){name, context (in tokens), cached (in n%, latest), tps (latest), ttft (latest), cwd, model, thinking_effort, context_limit}(click: set sticky session), events}] (horizontal split):(vertical)
   - [active_quota{provider, [mouth n%] [week n%] [5h n%] [credit n] [money n¥]}]: update each step end.
+    - each endpoint is asked at most once per `quota_interval_secs` (`0` asks every step end);
+      in between the row keeps the numbers it last read.
   - last cmd | cmd_result (non session related)
   - cmd_input: perfix select, auto complete (match candidates in any char position).
     - `/<cmd>`

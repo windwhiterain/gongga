@@ -429,6 +429,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         cache_invalid_rate: cfg.agent.cache_invalid_rate,
         cache_ttl_ms: (cfg.agent.cache_ttl_secs > 0)
             .then(|| cfg.agent.cache_ttl_secs.saturating_mul(1_000)),
+        quota_interval: cfg.quota_interval,
         index_change_tolerance: cfg.agent.index_change_tolerance,
         context_limit_percent: cfg.agent.context_limit_percent,
         home: cfg.home.clone(),

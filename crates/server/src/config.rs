@@ -68,6 +68,17 @@ pub const DEFAULT_RETRY_CEILING_MS: u64 = 30_000;
 /// `docs/notes/server-disk.md`.
 pub const DEFAULT_DISK_LOW_MB: u64 = 1024;
 
+/// How long one quota endpoint's reading stands before it is asked again, in
+/// seconds; `0` asks at every step's end.
+///
+/// # Invariant
+///
+/// A cadence, not a budget: nothing is held back and no number is withheld. It is
+/// what one endpoint's last answer is compared against, so a turn of many steps
+/// reads a provider's allowance once instead of once per step. See
+/// `docs/notes/server-quota.md`.
+pub const DEFAULT_QUOTA_INTERVAL_SECS: u64 = 60;
+
 /// How long one call waits when nothing states one.
 pub const DEFAULT_TOOL_MAX_WAIT_MS: u64 = 60_000;
 
@@ -107,6 +118,9 @@ pub struct Config {
     /// Room left below which this server says the disk is out of room. See
     /// `docs/notes/server-disk.md`.
     pub disk_low: u64,
+    /// How long one endpoint's reading stands; `0` asks at every step end. See
+    /// `docs/notes/server-quota.md`.
+    pub quota_interval: Duration,
     /// `[ship] url`: this home's content repository. See `docs/notes/server-ship.md`.
     pub ship_url: Option<String>,
 }
@@ -373,6 +387,9 @@ struct FileServer {
     /// Room left below which the disk counts as out of room, in MiB; `0` turns the
     /// reading off.
     disk_low_mb: Option<u64>,
+    /// How long one quota endpoint's reading stands, in seconds; `0` asks at every
+    /// step's end.
+    quota_interval_secs: Option<u64>,
 }
 
 /// `[ship]`: where this home fetches content from; a path is a local checkout.
@@ -805,6 +822,14 @@ impl Config {
             .unwrap_or(DEFAULT_DISK_LOW_MB)
             .saturating_mul(1024 * 1024);
 
+        let quota_interval = Duration::from_secs(
+            file.server
+                .as_ref()
+                .and_then(|s| s.quota_interval_secs)
+                .or_else(|| env_or("GONGGA_QUOTA_INTERVAL_SECS").and_then(|v| v.parse().ok()))
+                .unwrap_or(DEFAULT_QUOTA_INTERVAL_SECS),
+        );
+
         // An empty line is the compiled URL, not a repository called nothing.
         let ship_url = file
             .ship
@@ -827,6 +852,7 @@ impl Config {
             transport,
             endpoint,
             disk_low,
+            quota_interval,
             ship_url,
         })
     }

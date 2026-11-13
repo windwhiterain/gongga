@@ -3,9 +3,8 @@
 //! See `docs/notes/server-quota.md`.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use protocol::Quota;
 use serde_json::Value;
@@ -20,7 +19,7 @@ use crate::bus::EventBus;
 /// keep a child process alive for the life of the server.
 const READER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The newest reading, per provider, and whether one is being read.
+/// The newest reading, per provider, and what each endpoint last said.
 struct Last {
     /// The newest reading of any provider: SPEC's `active_quota` row.
     reading: Option<Quota>,
@@ -33,11 +32,35 @@ struct Last {
     /// nothing about the others. In memory only: a reading is a measurement of a
     /// moment, not a fact about a home.
     by_provider: std::collections::HashMap<String, Quota>,
-    /// One read at a time: a step end inside a slow read starts no second child.
-    reading_now: AtomicBool,
+    /// Every endpoint's last answer, by `<provider>/<query id>`.
+    ///
+    /// # Invariant
+    ///
+    /// Keyed by the endpoint, never by the provider: the interval is a statement
+    /// about one endpoint, and a provider with three readers would otherwise have
+    /// whichever answered first decide for the other two.
+    answered: std::collections::HashMap<String, Answered>,
+    /// The providers with a read in flight: a step end inside a slow read starts
+    /// no second child for that provider.
+    in_flight: std::collections::HashSet<String>,
     /// Invariant: one wake per distinct reason, never one per step.
     /// See `docs/notes/server-monitor.md`.
     announced: std::collections::HashMap<String, String>,
+}
+
+/// One endpoint's last answer, and when it was given.
+struct Answered {
+    at: Instant,
+    answer: Answer,
+}
+
+/// What asking one endpoint gave.
+#[derive(Clone)]
+enum Answer {
+    /// A reading, already filed under SPEC's labels.
+    Reading(Quota),
+    /// What went wrong, in the reader's own words; `run` prefixes the query's id.
+    Failed(String),
 }
 
 fn state() -> &'static Mutex<Last> {
@@ -46,7 +69,8 @@ fn state() -> &'static Mutex<Last> {
         Mutex::new(Last {
             reading: None,
             by_provider: std::collections::HashMap::new(),
-            reading_now: AtomicBool::new(false),
+            answered: std::collections::HashMap::new(),
+            in_flight: std::collections::HashSet::new(),
             announced: std::collections::HashMap::new(),
         })
     })
@@ -62,29 +86,37 @@ pub fn of(provider: &str) -> Option<Quota> {
     state().lock().ok()?.by_provider.get(provider).cloned()
 }
 
+/// The event a provider's unreadable allowance is logged as, for the monitor.
+pub const EVENT: &str = "quota";
+
 /// Reads `provider`'s allowance and publishes it, at a step's end.
 ///
 /// # Invariant
 ///
 /// Never on the turn's path: the read is a network call through a child process,
-/// so it is spawned and the step goes on. See `docs/notes/server-quota.md`.
-/// The event a provider's unreadable allowance is logged as, for the monitor.
-pub const EVENT: &str = "quota";
-
-pub fn publish(bus: EventBus, store: crate::store::Store, provider: Option<String>) {
+/// so it is spawned and the step goes on. An endpoint that answered less than
+/// `interval` ago is not asked again -- the kept answer is published -- so a turn
+/// of many steps costs one request per endpoint, not one per step. See
+/// `docs/notes/server-quota.md`.
+pub fn publish(
+    bus: EventBus,
+    store: crate::store::Store,
+    provider: Option<String>,
+    interval: Duration,
+) {
     let Some(provider) = provider else {
         return;
     };
     {
-        let Ok(guard) = state().lock() else {
+        let Ok(mut guard) = state().lock() else {
             return;
         };
-        if guard.reading_now.swap(true, Ordering::SeqCst) {
+        if !guard.in_flight.insert(provider.clone()) {
             return;
         }
     }
     tokio::spawn(async move {
-        let reading = read(&provider).await;
+        let reading = read(&provider, interval).await;
         // A note with no numbers: see `docs/notes/server-monitor.md`.
         if let Some(failed) = &reading
             && let Some(note) = &failed.note
@@ -113,7 +145,7 @@ pub fn publish(bus: EventBus, store: crate::store::Store, provider: Option<Strin
             }
         }
         if let Ok(mut state) = state().lock() {
-            state.reading_now.store(false, Ordering::SeqCst);
+            state.in_flight.remove(&provider);
             if let Some(reading) = &reading {
                 state.reading = Some(reading.clone());
                 state
@@ -128,8 +160,14 @@ pub fn publish(bus: EventBus, store: crate::store::Store, provider: Option<Strin
 }
 
 /// One provider's allowance, or `None` when it publishes no reader at all.
-pub async fn read(provider: &str) -> Option<Quota> {
-    read_in(&crate::providers::roster(), provider, interpreter()).await
+pub async fn read(provider: &str, interval: Duration) -> Option<Quota> {
+    read_in(
+        &crate::providers::roster(),
+        provider,
+        interpreter(),
+        interval,
+    )
+    .await
 }
 
 /// The same, against a roster the caller hands in: what a test drives.
@@ -137,9 +175,10 @@ pub async fn read_in(
     catalog: &crate::providers::Catalog,
     provider: &str,
     program: Option<PathBuf>,
+    interval: Duration,
 ) -> Option<Quota> {
     let access = catalog.quota_of(provider)?;
-    run(&access, program).await
+    run(&access, program, interval).await
 }
 
 /// The interpreter, found once: every candidate probe is a child process.
@@ -155,10 +194,12 @@ fn interpreter() -> Option<PathBuf> {
 /// File order is the preference order: the first reading that answers is the
 /// one shown, and a query that fails is reported only when every one did. A
 /// provider whose queries name no script at all is `None` -- it has no allowance
-/// to show, and a row saying so at every step is noise.
+/// to show, and a row saying so at every step is noise. A query that answered
+/// within `interval` is not asked again; its kept answer is what this run uses.
 pub async fn run(
     access: &crate::providers::QuotaAccess,
     program: Option<PathBuf>,
+    interval: Duration,
 ) -> Option<Quota> {
     let readable: Vec<&crate::providers::QuotaQuery> = access
         .queries
@@ -178,12 +219,25 @@ pub async fn run(
     let mut failure: Option<String> = None;
     for query in readable {
         let script = query.script.as_ref()?;
-        match ask(program, script, query, access.key.as_deref()).await {
-            Ok(text) => match parse(&text) {
-                Ok(reading) => return Some(reading.of(&access.provider, &query.unit)),
-                Err(e) => failure = Some(format!("{}: {e}", query.id)),
-            },
-            Err(e) => failure = Some(format!("{}: {e}", query.id)),
+        let endpoint = format!("{}/{}", access.provider, query.id);
+        let answer = match kept(&endpoint, interval) {
+            Some(answer) => answer,
+            None => {
+                let answer = ask_endpoint(
+                    &access.provider,
+                    program,
+                    script,
+                    query,
+                    access.key.as_deref(),
+                )
+                .await;
+                remember(&endpoint, &answer);
+                answer
+            }
+        };
+        match answer {
+            Answer::Reading(reading) => return Some(reading),
+            Answer::Failed(e) => failure = Some(format!("{}: {e}", query.id)),
         }
     }
     Some(Quota {
@@ -191,6 +245,52 @@ pub async fn run(
         note: failure,
         ..Quota::default()
     })
+}
+
+/// Asks one endpoint and files what came back as one of the two things it can be.
+async fn ask_endpoint(
+    provider: &str,
+    program: &PathBuf,
+    script: &PathBuf,
+    query: &crate::providers::QuotaQuery,
+    key: Option<&str>,
+) -> Answer {
+    match ask(program, script, query, key).await {
+        Ok(text) => match parse(&text) {
+            Ok(reading) => Answer::Reading(reading.of(provider, &query.unit)),
+            Err(e) => Answer::Failed(e),
+        },
+        Err(e) => Answer::Failed(e),
+    }
+}
+
+/// What this endpoint last said, when that is younger than `interval`.
+///
+/// # Invariant
+///
+/// A failure is kept exactly like a reading, and for the same reason: an endpoint
+/// that just answered 429 or timed out must not be asked again at the next step's
+/// end, which is what a rate limit is for.
+fn kept(endpoint: &str, interval: Duration) -> Option<Answer> {
+    let state = state().lock().ok()?;
+    let answered = state.answered.get(endpoint)?;
+    // Saturating rather than `elapsed`: a monotonic clock that stepped back is not
+    // a reason to panic on the turn's path.
+    (Instant::now().saturating_duration_since(answered.at) < interval)
+        .then(|| answered.answer.clone())
+}
+
+/// Files one endpoint's answer, stamped with the moment it arrived.
+fn remember(endpoint: &str, answer: &Answer) {
+    if let Ok(mut state) = state().lock() {
+        state.answered.insert(
+            endpoint.to_string(),
+            Answered {
+                at: Instant::now(),
+                answer: answer.clone(),
+            },
+        );
+    }
 }
 
 /// Runs one reader and returns the line it printed.
