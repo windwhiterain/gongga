@@ -109,73 +109,73 @@ It travels inside the answer rather than as a second question, so a front-end as
 the catalog once per keystroke: a separate `subject(line)` call would parse the line
 twice and could disagree with the list it labels.
 
-## Completing inside a structured value
+## The command is one JSON object
 
-An argument may publish a shape (`ArgSpec::structure`, SPEC's `SessionConfig`):
-`--config` is one JSON object, and the whole of it is a single shell word, so the
-token rules above see one unreadable word and offer nothing. What the operator
-needs there is the names at the depth the cursor stands in, and the values of the
-field being filled.
+A command line spells its arguments as one JSON object right after the name:
+`/set_session{"id":"abc","config":{...}}`. Completion offers this form alone --
+the flag/positional spelling still parses (a front-end's own click lines use it),
+but the popup never offers it, so there is one way to complete a command. The
+grammar split lives in `client/src/json_command.rs`, shared by the submission
+(strict: the object must parse) and the completion (tolerant: a half-typed line is
+a place, not an error).
 
-**Where the value's text is.** From just past the quote that makes it one word to
-the closing one. Only a quoted value is read: an unquoted object reaches the
-server as prose, because the shell split strips its quotes, so completing inside
-one would help write a line that cannot parse. A `--` that names no argument of
-the command is not a flag, which is how a quoted value may spell one.
+**The root shape.** The command's published arguments become one object schema
+(`root_schema`): each argument a field, a structured argument (`ArgSpec::structure`,
+SPEC's `SessionConfig`) a nested object. Completing inside the object is then the
+same field-name / leaf-value completion at every depth.
+
+**Where the object's text is.** From the `{` that follows the name to the end of
+the line. Accepting a command name writes `/name{}` with the caret inside, so the
+next completion fills the fields; a name with no arguments writes `/name` alone.
 
 **A place, not a parse.** `client/src/json_value.rs` walks the text once and
 answers where the cursor stands: the path of field names from the root, whether
 the cursor names a field or fills one, what has been typed of that token, and the
-fields of the enclosing object that are already written. The value is half typed
-by definition, so nothing there is an error: text it cannot place -- an array, a
-closed object, a value that never opened -- is `None`, which reads as "offer
-nothing". A cursor past the end is clamped, never refused.
+fields of the enclosing object already written. The value is half typed by
+definition, so nothing there is an error: text it cannot place -- an array, a
+closed object, a value that never opened -- is `None`, "offer nothing". A cursor
+past the end is clamped, never refused.
 
-**What a candidate replaces.** The whole JSON token: from its opening quote to
-its closing one. A fragment left behind would be the head of the value; a quote
-left behind would close the insertion in the middle. So `Offered` carries an `end`
-as well as a `start` (`token_bounds` cannot answer it: the token ends where the
-JSON says, not at the next space), and the front-end takes both. Accepting at
-`{"model":"deepseek-fl|"}}' --model x` replaces exactly the quoted fragment and
-leaves the rest of the line as it was.
+**What a candidate replaces.** The whole JSON token, from its opening quote to its
+closing one; `Offered` carries `start` and `end` because the token ends where the
+JSON says, not at the next space. A fragment left behind would be the head of the
+value; a quote left behind would close the insertion in the middle.
 
-**What it inserts.** A whole token, so that what the popup leaves behind is JSON
-the server could read if the object were closed:
+**What it inserts.** A whole token, so what the popup leaves behind is JSON the
+server could read if the object were closed:
 
-- a field name is `"name":`, plus `{}` when the field holds an object -- what
-  follows a name is not in doubt, and a name alone is not JSON. A field the object
-  already states is not offered again.
-- a leaf value is JSON-quoted when it is not a literal, decided from the text the
-  candidate carries: `keep_alive` takes `true` and `ctx_limit` takes `"70%"` from
-  one list of texts, because quoting is this layer's decision and not the
+- a field name is `"name":`, plus `{}` when the field holds an object; a field the
+  object already states is not offered again.
+- a leaf value is JSON-quoted when it is not a literal (`keep_alive` takes `true`,
+  `ctx_limit` takes `"70%"`), quoting being this layer's decision, not the
   publisher's.
-- a `model_ref` leaf is the object SPEC spells `Model := {provider, model}`,
-  split out of the roster's `<provider>/<model>`.
-- an empty value gets the brace that starts the object, because a name outside an
-  object is not JSON.
+- a `model_ref` leaf is the object SPEC spells `Model := {provider, model}`, split
+  out of the roster's `<provider>/<model>`.
 
-**Every brace a candidate opens, it closes.** A key that opens an object also
-writes that object's `}`; and each candidate appends what the *value* still owes:
-the objects the cursor stands in, less the `}` the operator already wrote after
-it (`json_value::Spot::open` and `after`). The caret goes before those closers
-(`Candidate::cursor`), so a chain of acceptances leaves balanced JSON and can go
-on: `Tab` on the first word yields `{"model_config":{}}`, `Tab` inside it yields
-`"model":`, and the model object fills the last hole. A comma typed at the caret
-still starts the next sibling, because the caret sits before the closers rather
-than past them.
+**Every brace a candidate opens, it closes.** A key that opens an object writes
+that object's `}`; each candidate appends what the value still owes -- the objects
+the cursor stands in, less the `}` already written after it
+(`json_value::Spot::open` and `after`). The caret goes before those closers
+(`Candidate::cursor`), so a chain of acceptances leaves balanced JSON: a lone `{`
+typed by hand is closed by the next acceptance, and no insertion ever leaves a
+bracket or a quote unmatched. A comma typed at the caret starts the next sibling.
 
-What a candidate still does not do: it writes no comma for you, nothing is
-offered where an object field's value goes (its name wrote the brace), in a list,
-or after the object has closed.
+What a candidate does not do: write a comma, offer anything where an object
+field's value goes (its name wrote the brace), in a list, or after the object has
+closed.
 
 **Which model a value belongs to.** `accepts` is keyed by model, and a config
 states its own: a value inside `model_config` reads the `model` its enclosing
-object already carries -- in either spelling, `"deepseek-flash"` or
-`{provider, model}` -- before the line's `--model` or the server's default is
-asked. Offering another model's levels would be a list the server refuses.
+object already carries -- in either spelling -- before the line's model or the
+server's default is asked. Offering another model's levels would be a list the
+server refuses.
 
-**The words of a line that cannot be split.** A line whose value is still open is
-not a shell line, so `words_of` closes that one quote and splits again: what the
-rest of the completion needs from the words is which command, session and machine
-the line names, and those are behind the quote, not inside it. Without that, the
-whole popup of a line being typed mid-quote would be empty.
+**The context words.** The session, model and machine a line names are read from
+its fields projected to the flag spelling they bind as (`words_of_line` /
+`project_json`), so the place/model readers work unchanged. A half-typed object
+projects its name alone, and the context falls back to the sticky session.
+
+**Sticky.** The JSON form fills sticky entries by the same rule as the flag form
+(`window_input::sticky_additions`): a field left open takes the entry whose kind
+names it, unless it would change what the session already holds or the model
+refuses it. The echo stays the operator's text unless a fill changed it.

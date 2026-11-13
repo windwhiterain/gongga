@@ -5,6 +5,7 @@
 pub mod catalog;
 pub mod commands;
 pub mod complete;
+pub mod json_command;
 pub mod json_value;
 pub mod render_wire;
 pub mod runtime;
@@ -1023,15 +1024,11 @@ impl Client {
     /// A command that acts on this window answers on the command line, so its echo
     /// goes there too: an answer without its question reads as a line of somebody
     /// else's transcript that landed in the wrong place.
-    fn show(&self, sink: &mut dyn Sink, echo: &Echo<'_>, tokens: &[String], session: Option<&str>) {
+    fn show(&self, sink: &mut dyn Sink, echo: &Echo<'_>, text: &str, session: Option<&str>) {
         let window = self.command_line(session);
         match echo {
-            Echo::Command => sink.line(
-                &window,
-                LineKind::Command,
-                &format!("/{}", tokens.join(" ")),
-            ),
-            Echo::Message(text) => sink.line(&window, LineKind::User, text),
+            Echo::Command => sink.line(&window, LineKind::Command, text),
+            Echo::Message(prose) => sink.line(&window, LineKind::User, prose),
         }
     }
 
@@ -1066,7 +1063,18 @@ impl Client {
     /// The same window `run_client_command` would have used: a command that names
     /// a session is echoed where that session's lines are read.
     pub fn echo(&self, tokens: &[String], session: Option<&str>, sink: &mut dyn Sink) {
-        self.show(sink, &Echo::Command, tokens, session);
+        self.show(
+            sink,
+            &Echo::Command,
+            &format!("/{}", tokens.join(" ")),
+            session,
+        );
+    }
+
+    /// Echoes a command line already spelled out -- the JSON form -- as typed,
+    /// where its answer is read.
+    pub fn echo_command(&self, text: &str, session: Option<&str>, sink: &mut dyn Sink) {
+        self.show(sink, &Echo::Command, text, session);
     }
 
     /// Every session the server knows, in its order.
@@ -2439,25 +2447,7 @@ impl Client {
                     return Submission::Rejected;
                 }
             }
-            let known: Vec<String> = self
-                .catalog
-                .commands()
-                .iter()
-                .map(|c| c.name.clone())
-                .collect();
-            // No greeting yet means no list: the server owns it.
-            let why = if known.is_empty() {
-                "the command list comes from the server and it has not sent one yet: \
-                 connect, then ask again"
-                    .to_string()
-            } else {
-                format!("this server publishes: {}", known.join(", "))
-            };
-            self.row(
-                sink,
-                LineKind::Error,
-                &format!("unknown command {head:?}; {why}"),
-            );
+            self.unknown_command(&head, sink);
             return Submission::Rejected;
         };
 
@@ -2470,6 +2460,30 @@ impl Client {
                 return Submission::Rejected;
             }
         };
+        let typed = match &echo {
+            Echo::Command => format!("/{}", tokens.join(" ")),
+            Echo::Message(text) => (*text).to_string(),
+        };
+        self.dispatch_command(head, spec, args, typed, echo, sink)
+    }
+
+    /// Sends a command whose arguments are already bound: refuses a missing one,
+    /// echoes the line, and hands it to the link.
+    ///
+    /// # Invariant
+    ///
+    /// The arguments arrive bound -- by the flag parser or by the one JSON object
+    /// -- so this is the one place both spellings are validated and sent, and the
+    /// echo is the operator's own text, not a re-derivation of it.
+    fn dispatch_command(
+        &mut self,
+        head: String,
+        spec: protocol::CommandSpec,
+        args: protocol::Args,
+        typed: String,
+        echo: Echo<'_>,
+        sink: &mut dyn Sink,
+    ) -> Submission {
         let missing: Vec<&str> = spec
             .args
             .iter()
@@ -2477,42 +2491,79 @@ impl Client {
             .map(|a| a.name.as_str())
             .collect();
         if !missing.is_empty() {
-            // The window the error belongs to is the session the command
-            // names, wherever its spec keeps the kind-`session` argument.
+            // The window the error belongs to is the session the command names.
             let session = spec
                 .args
                 .iter()
                 .find(|a| a.kind.as_deref() == Some("session"))
                 .and_then(|a| args.get(&a.name))
                 .map(String::as_str);
-            self.show(sink, &echo, &tokens, session);
+            self.show(sink, &echo, &typed, session);
             self.row(
                 sink,
                 LineKind::Error,
                 &format!(
                     "{head} is missing required argument(s): {}; it takes {}",
                     missing.join(", "),
-                    commands::signature(Some(&spec)),
+                    crate::commands::signature(Some(&spec)),
                 ),
             );
             return Submission::Rejected;
         }
-
-        // One echo per command: this one, where it answers. A server command is
-        // drawn from its `cmd` event.
         let id = self.next_id();
-        // The words stay the operator's until the server answers them: this is
-        // what a link that ends first gives back.
-        let typed = match &echo {
-            Echo::Command => format!("/{}", tokens.join(" ")),
-            Echo::Message(text) => (*text).to_string(),
-        };
         self.unconfirmed.push((id, typed));
         Submission::Send(ClientMessage::Command {
             id,
             name: head,
             args,
         })
+    }
+
+    /// Submits a command parsed from the JSON form: its arguments are already
+    /// bound, so only the published spec is consulted.
+    pub fn submit_command(
+        &mut self,
+        name: String,
+        args: protocol::Args,
+        typed: String,
+        sink: &mut dyn Sink,
+    ) -> Submission {
+        if !self.connected {
+            self.row(
+                sink,
+                LineKind::Error,
+                &format!("{name}: not connected to the server, nothing was sent"),
+            );
+            return Submission::Offline;
+        }
+        let Some(spec) = self.catalog.command(&name) else {
+            self.unknown_command(&name, sink);
+            return Submission::Rejected;
+        };
+        self.dispatch_command(name, spec, args, typed, Echo::Command, sink)
+    }
+
+    /// Says a command is not one this server publishes, and what it does publish.
+    fn unknown_command(&self, head: &str, sink: &mut dyn Sink) {
+        let known: Vec<String> = self
+            .catalog
+            .commands()
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        // No greeting yet means no list: the server owns it.
+        let why = if known.is_empty() {
+            "the command list comes from the server and it has not sent one yet: \
+             connect, then ask again"
+                .to_string()
+        } else {
+            format!("this server publishes: {}", known.join(", "))
+        };
+        self.row(
+            sink,
+            LineKind::Error,
+            &format!("unknown command {head:?}; {why}"),
+        );
     }
 
     /// Forgets a command that never left this process: nothing was sent, so there

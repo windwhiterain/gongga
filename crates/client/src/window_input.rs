@@ -42,6 +42,14 @@ pub fn submission(
     if trimmed.is_empty() {
         return Submission::Rejected;
     }
+    // The JSON form `/name{...}`: completion offers it alone; sticky fills the
+    // fields left open.
+    if let Some(rest) = trimmed.strip_prefix('/') {
+        let (name, tail) = crate::json_command::split(rest);
+        if crate::json_command::is_json(&tail) {
+            return submit_json(client, state, &name, &tail, sink, moved);
+        }
+    }
     match classified(line) {
         Some(Ok(tokens)) => {
             let head = tokens.first().cloned().unwrap_or_default();
@@ -100,14 +108,40 @@ fn filled(client: &Client, state: &State, tokens: Vec<String>, sink: &mut dyn Si
     };
     let mut merged = args.clone();
     state.sticky().fill(Some(&spec), &mut merged);
+    let line = format!("/{}", tokens.join(" "));
+    let mut filled = tokens;
+    for (name, value) in sticky_additions(client, &spec, &args, &merged, &line, sink) {
+        // A flag, whatever its position: filled, not re-ordered, and one token.
+        filled.push(format!("--{name}"));
+        filled.push(value);
+    }
+    filled
+}
+
+/// The sticky entries a line may take, as `(argument, value)` pairs; both
+/// spellings fill by this one rule.
+///
+/// # Invariant
+///
+/// A value lands on a slot that is still empty, and only through the argument
+/// whose `kind` names it; what the caller typed wins. Nothing filled may change
+/// what an existing session holds -- a fill that disagrees with the row is left
+/// out *and said*, like one the published `accepts` refuses.
+fn sticky_additions(
+    client: &Client,
+    spec: &protocol::CommandSpec,
+    args: &protocol::Args,
+    merged: &protocol::Args,
+    line: &str,
+    sink: &mut dyn Sink,
+) -> Vec<(String, String)> {
     // Which session this line acts on, entries and all: the answer `follow` keeps.
-    let acting = client.session_named(&head, &merged).map(str::to_string);
+    let acting = client.session_named(&spec.name, merged).map(str::to_string);
     // Its row, when it already exists: the one thing a fill has to agree with.
     let existing = acting
         .as_deref()
         .and_then(|name| client.sessions().iter().find(|info| info.name == name));
-    let line = format!("/{}", tokens.join(" "));
-    let mut filled = tokens;
+    let mut additions = Vec::new();
     let mut left = Vec::new();
     for arg in &spec.args {
         // Typed, or no entry names it: nothing to add.
@@ -126,7 +160,7 @@ fn filled(client: &Client, state: &State, tokens: Vec<String>, sink: &mut dyn Si
             continue;
         }
         if client
-            .refused_values(&line, &merged)
+            .refused_values(line, merged)
             .iter()
             .any(|(name, _)| *name == arg.name)
         {
@@ -139,9 +173,7 @@ fn filled(client: &Client, state: &State, tokens: Vec<String>, sink: &mut dyn Si
             );
             continue;
         }
-        // A flag, whatever its position: filled, not re-ordered, and one token.
-        filled.push(format!("--{}", arg.name));
-        filled.push(value);
+        additions.push((arg.name.clone(), value));
     }
     if let (Some(acting), false) = (acting, left.is_empty()) {
         sink.note(
@@ -153,7 +185,63 @@ fn filled(client: &Client, state: &State, tokens: Vec<String>, sink: &mut dyn Si
             ),
         );
     }
-    filled
+    additions
+}
+
+/// Submits the JSON form `/name{...}`: the object's fields are the arguments,
+/// sticky fills the ones left open.
+///
+/// # Invariant
+///
+/// The same fill rule as the flag form ([`sticky_additions`]), so a sticky entry
+/// reaches a JSON line exactly as it reaches a flag line -- the mixing that dropped
+/// it is gone. A client command runs here; a server command is sent bound.
+fn submit_json(
+    client: &mut Client,
+    state: &mut State,
+    name: &str,
+    tail: &str,
+    sink: &mut dyn Sink,
+    moved: &mut Option<std::net::SocketAddr>,
+) -> Submission {
+    let map = match crate::json_command::parse_object(tail) {
+        Ok(map) => map,
+        Err(e) => {
+            client.say(LineKind::Error, &e, sink);
+            return Submission::Rejected;
+        }
+    };
+    let raw = format!("/{name}{tail}");
+    if command::spec(name).is_some() {
+        client.echo_command(&raw, None, sink);
+        let args = crate::json_command::args_of(&map);
+        if let Done::Moved(addr) = command::run(client, state, name, &args, sink) {
+            *moved = Some(addr);
+        }
+        return Submission::Local;
+    }
+    let args = crate::json_command::args_of(&map);
+    let Some(spec) = client.commands().into_iter().find(|spec| spec.name == name) else {
+        // Unknown here is the command layer's to say, with the published list.
+        return client.submit_command(name.to_string(), args, raw, sink);
+    };
+    let mut merged = args.clone();
+    state.sticky().fill(Some(&spec), &mut merged);
+    let additions = sticky_additions(client, &spec, &args, &merged, &raw, sink);
+    if additions.is_empty() {
+        return client.submit_command(name.to_string(), args, raw, sink);
+    }
+    let mut filled = map.clone();
+    for (field, value) in additions {
+        filled.insert(field, serde_json::Value::String(value));
+    }
+    let typed = crate::json_command::render(name, &filled);
+    client.submit_command(
+        name.to_string(),
+        crate::json_command::args_of(&filled),
+        typed,
+        sink,
+    )
 }
 
 /// Whether an entry restates what a session's row already says.
@@ -226,6 +314,14 @@ pub fn follow(
 
 /// The argument names a line spelled out, before any sticky filled one in.
 fn typed_names(client: &Client, line: &str) -> Vec<String> {
+    if let Some(rest) = line.trim().strip_prefix('/') {
+        let (_, tail) = crate::json_command::split(rest);
+        if crate::json_command::is_json(&tail) {
+            return crate::json_command::parse_object(&tail)
+                .map(|map| map.keys().cloned().collect())
+                .unwrap_or_default();
+        }
+    }
     let Some(Ok(tokens)) = classified(line) else {
         return Vec::new();
     };
