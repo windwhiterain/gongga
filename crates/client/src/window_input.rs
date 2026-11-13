@@ -2,8 +2,6 @@
 
 //! See `docs/notes/client-window-input.md`.
 
-use serde_json::Value;
-
 use crate::window_command::{self as command, Done};
 use crate::window_state::{Follow, State};
 use crate::{Client, LineKind, Sink, Submission};
@@ -95,10 +93,9 @@ pub fn submission(
 /// # Invariant
 ///
 /// A value lands on a slot that is still empty, and only through the argument
-/// whose `kind` names it; what the caller typed wins. Nothing filled may change
-/// what an existing session holds -- a fill that disagrees with the row is left
-/// out *and said*, like one the published `accepts` refuses. A session the line
-/// creates takes the entries as they stand. See `docs/notes/tui-run.md`.
+/// whose `kind` names it; what the caller typed wins, and a structured argument
+/// keeps every leaf the caller stated. A value the model refuses is left out and
+/// said, because the caller never wrote it. See `docs/notes/client-window-input.md`.
 fn filled(client: &Client, state: &State, tokens: Vec<String>, sink: &mut dyn Sink) -> Vec<String> {
     let head = tokens.first().cloned().unwrap_or_default();
     let Some(spec) = client.commands().into_iter().find(|spec| spec.name == head) else {
@@ -113,11 +110,34 @@ fn filled(client: &Client, state: &State, tokens: Vec<String>, sink: &mut dyn Si
     let line = format!("/{}", tokens.join(" "));
     let mut filled = tokens;
     for (name, value) in sticky_additions(client, &spec, &args, &merged, &line, sink) {
-        // A flag, whatever its position: filled, not re-ordered, and one token.
-        filled.push(format!("--{name}"));
-        filled.push(crate::json_command::word(&value));
+        // One token, where the line already spells it or at its end.
+        place(&mut filled, &name, crate::json_command::word(&value));
     }
     filled
+}
+
+/// Puts one filled value where the line spells that argument, or at its end.
+///
+/// # Invariant
+///
+/// A structured argument the line stated is rewritten in place: the entries fill
+/// the leaves it left open, and a second `--config` would be one argument given
+/// twice -- refused by the parser the fill itself relies on.
+fn place(tokens: &mut Vec<String>, name: &str, word: String) {
+    let flag = format!("--{name}");
+    if let Some(at) = tokens.iter().position(|token| *token == flag)
+        && let Some(value) = tokens.get_mut(at + 1)
+    {
+        *value = word;
+        return;
+    }
+    let spelled = format!("--{name}=");
+    if let Some(at) = tokens.iter().position(|token| token.starts_with(&spelled)) {
+        tokens[at] = format!("{spelled}{word}");
+        return;
+    }
+    tokens.push(flag);
+    tokens.push(word);
 }
 
 /// The sticky entries a line may take, as `(argument, value)` pairs; both
@@ -126,9 +146,10 @@ fn filled(client: &Client, state: &State, tokens: Vec<String>, sink: &mut dyn Si
 /// # Invariant
 ///
 /// A value lands on a slot that is still empty, and only through the argument
-/// whose `kind` names it; what the caller typed wins. Nothing filled may change
-/// what an existing session holds -- a fill that disagrees with the row is left
-/// out *and said*, like one the published `accepts` refuses.
+/// whose `kind` names it; what the caller typed wins. A structured argument is
+/// filled leaf by leaf, so the object the caller wrote keeps every leaf it
+/// stated. A filled value the model refuses is dropped and said: the caller never
+/// wrote it, so it is not theirs to answer for.
 fn sticky_additions(
     client: &Client,
     spec: &protocol::CommandSpec,
@@ -137,57 +158,88 @@ fn sticky_additions(
     line: &str,
     sink: &mut dyn Sink,
 ) -> Vec<(String, serde_json::Value)> {
-    // Which session this line acts on, entries and all: the answer `follow` keeps.
-    let acting = client.session_named(&spec.name, merged).map(str::to_string);
-    // Its row, when it already exists: the one thing a fill has to agree with.
-    let existing = acting
-        .as_deref()
-        .and_then(|name| client.sessions().iter().find(|info| info.name == name));
+    let refused = client.refused_values(line, merged);
     let mut additions = Vec::new();
-    let mut left = Vec::new();
     for arg in &spec.args {
-        // Typed, or no entry names it: nothing to add.
-        if args.contains_key(&arg.name) {
-            continue;
-        }
         let Some(value) = merged.get(&arg.name).cloned() else {
             continue;
         };
-        // An entry that would change what the session already holds.
-        if !arg.required
-            && let Some(info) = existing
-            && !restates(info, arg.kind.as_deref(), &value)
-        {
-            left.push(arg.kind.clone().unwrap_or_else(|| arg.name.clone()));
+        let stated = args.get(&arg.name);
+        let Some(schema) = &arg.structure else {
+            if stated.is_some() {
+                continue;
+            }
+            if refused.iter().any(|(name, _)| *name == arg.name) {
+                sink.note(
+                    LineKind::System,
+                    &format!(
+                        "sticky {} = {value} is not one this model takes; left to the model's own",
+                        arg.kind.as_deref().unwrap_or(&arg.name)
+                    ),
+                );
+                continue;
+            }
+            additions.push((arg.name.clone(), value));
+            continue;
+        };
+        // A structured argument: the leaves the line left open are the entries'.
+        if stated == Some(&value) {
             continue;
         }
-        if client
-            .refused_values(line, merged)
-            .iter()
-            .any(|(name, _)| *name == arg.name)
-        {
+        let (kept, dropped) = without_refused(schema, &value, &refused);
+        for (name, text) in &dropped {
             sink.note(
                 LineKind::System,
                 &format!(
-                    "sticky {} = {value} is not one this model takes; left to the model's own",
-                    arg.kind.as_deref().unwrap_or(&arg.name)
+                    "sticky {name} = {text} is not one this model takes; left to the model's own"
                 ),
             );
+        }
+        if is_empty_object(&kept) {
             continue;
         }
-        additions.push((arg.name.clone(), value.clone()));
-    }
-    if let (Some(acting), false) = (acting, left.is_empty()) {
-        sink.note(
-            LineKind::System,
-            &format!(
-                "sticky {} left off: {acting} does not hold {}",
-                left.join(", "),
-                if left.len() == 1 { "it" } else { "them" }
-            ),
-        );
+        additions.push((arg.name.clone(), kept));
     }
     additions
+}
+
+/// The object a line carries, without the leaves the model refuses, and what was
+/// dropped.
+fn without_refused(
+    schema: &protocol::StructSchema,
+    value: &serde_json::Value,
+    refused: &[(String, String)],
+) -> (serde_json::Value, Vec<(String, String)>) {
+    let serde_json::Value::Object(object) = value else {
+        return (value.clone(), Vec::new());
+    };
+    let mut kept = object.clone();
+    let mut dropped = Vec::new();
+    for field in &schema.fields {
+        let Some(current) = kept.get(&field.name).cloned() else {
+            continue;
+        };
+        match &field.object {
+            Some(nested) => {
+                let (inner, gone) = without_refused(nested, &current, refused);
+                kept.insert(field.name.clone(), inner);
+                dropped.extend(gone);
+            }
+            None => {
+                if refused.iter().any(|(name, _)| name == &field.name) {
+                    kept.remove(&field.name);
+                    dropped.push((field.name.clone(), crate::json_command::word(&current)));
+                }
+            }
+        }
+    }
+    (serde_json::Value::Object(kept), dropped)
+}
+
+/// Whether an object holds nothing at all: a value nobody contributed to is left
+/// out of the line instead of sent empty.
+fn is_empty_object(value: &serde_json::Value) -> bool {
+    matches!(value, serde_json::Value::Object(map) if map.is_empty())
 }
 
 /// Submits the JSON form `/name{...}`: the object's fields are the arguments,
@@ -246,37 +298,14 @@ fn submit_json(
     )
 }
 
-/// Whether an entry restates what a session's row already says.
-///
-/// # Invariant
-///
-/// Only a restatement is filled into a line about a session that exists: an entry
-/// that disagrees would rewrite a setting nobody stated on this line. A kind this
-/// function does not know answers `false` -- filling it would change something it
-/// cannot check.
-fn restates(info: &crate::protocol::SessionInfo, kind: Option<&str>, value: &Value) -> bool {
-    let Some(value) = value.as_str() else {
-        return false;
-    };
-    match kind {
-        Some("model") => info.model.as_deref() == Some(value),
-        Some("thinking") => info.thinking_effort.as_deref() == Some(value),
-        // The row holds the percentage, the entry spells it `50%`.
-        Some("ctx_limit") => {
-            let percent = value.trim_end_matches('%').parse::<u8>().ok();
-            info.context_limit == percent
-        }
-        _ => false,
-    }
-}
-
 /// What the window keeps for a command it is about to send.
 ///
 /// # Invariant
 ///
-/// Two things, both SPEC's: a session the command names is drawn and becomes the
-/// sticky one, and an accepted `set_session` writes back every mode it carried.
-/// Neither is written before the answer -- a refused command writes nothing.
+/// Three things, all SPEC's: a session the command names is drawn and becomes the
+/// sticky one; an accepted `set_session` or `new_session` writes back every value
+/// the line stated, by the type it names -- a structured one leaf by leaf; and
+/// neither is written before the answer, so a refused command writes nothing.
 pub fn follow(
     client: &Client,
     state: &mut State,
@@ -293,48 +322,76 @@ pub fn follow(
         }
         let _ = state.set_sticky("session", &session);
     }
-    if name == "set_session"
-        && let Some(spec) = client
-            .commands()
-            .into_iter()
-            .find(|spec| spec.name == *name)
-    {
-        // Only what was typed: a filled value is already in the file.
-        let typed = typed_names(client, line);
-        let pairs: Vec<(String, String)> = spec
-            .args
-            .iter()
-            .filter(|arg| typed.contains(&arg.name))
-            .filter_map(|arg| {
-                let kind = arg.kind.clone()?;
-                let value = args.get(&arg.name)?;
-                Some((kind, crate::json_command::word(value)))
-            })
-            .collect();
-        if !pairs.is_empty() {
-            pending.push((*id, pairs));
+    // The two commands whose arguments are a session's settings.
+    if name != "set_session" && name != "new_session" {
+        return;
+    }
+    let Some(spec) = client
+        .commands()
+        .into_iter()
+        .find(|spec| spec.name == *name)
+    else {
+        return;
+    };
+    // Only what was typed: a filled value is already in the file.
+    let Some(typed) = typed_args(client, line) else {
+        return;
+    };
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for arg in &spec.args {
+        let Some(stated) = typed.value(&arg.name) else {
+            continue;
+        };
+        match &arg.structure {
+            Some(schema) => stated_leaves(schema, stated, &mut pairs),
+            None => {
+                if let Some(kind) = arg.kind.as_deref() {
+                    pairs.push((kind.to_string(), crate::json_command::word(stated)));
+                }
+            }
+        }
+    }
+    if !pairs.is_empty() {
+        pending.push((*id, pairs));
+    }
+}
+
+/// The leaves one stated object carries, each under the name its type answers to.
+fn stated_leaves(
+    schema: &protocol::StructSchema,
+    value: &serde_json::Value,
+    leaves: &mut Vec<(String, String)>,
+) {
+    let serde_json::Value::Object(object) = value else {
+        return;
+    };
+    for field in &schema.fields {
+        let Some(current) = object.get(&field.name) else {
+            continue;
+        };
+        match &field.object {
+            Some(nested) => stated_leaves(nested, current, leaves),
+            None => leaves.push((field.name.clone(), crate::json_command::word(current))),
         }
     }
 }
 
-/// The argument names a line spelled out, before any sticky filled one in.
-fn typed_names(client: &Client, line: &str) -> Vec<String> {
+/// The arguments a line spelled out itself, before any sticky filled one in.
+fn typed_args(client: &Client, line: &str) -> Option<protocol::Args> {
     if let Some(rest) = line.trim().strip_prefix('/') {
         let (_, tail) = crate::json_command::split(rest);
         if crate::json_command::is_json(&tail) {
-            return crate::json_command::parse_object(&tail)
-                .map(|map| map.keys().cloned().collect())
-                .unwrap_or_default();
+            let map = crate::json_command::parse_object(&tail).ok()?;
+            return Some(crate::json_command::args_of(&map));
         }
     }
-    let Some(Ok(tokens)) = classified(line) else {
-        return Vec::new();
+    let Ok(tokens) = classified(line)? else {
+        return None;
     };
     let head = tokens.first().cloned().unwrap_or_default();
-    let Some(spec) = client.commands().into_iter().find(|spec| spec.name == head) else {
-        return Vec::new();
-    };
-    crate::commands::parse_args(&tokens[1..], Some(&spec))
-        .map(|args| args.keys().cloned().collect())
-        .unwrap_or_default()
+    let spec = client
+        .commands()
+        .into_iter()
+        .find(|spec| spec.name == head)?;
+    crate::commands::parse_args(&tokens[1..], Some(&spec)).ok()
 }

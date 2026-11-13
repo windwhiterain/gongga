@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{self, ArgSpec, Args, CommandSpec};
+use serde_json::{Map, Value};
+
+use crate::protocol::{self, ArgSpec, Args, CommandSpec, StructField, StructSchema};
 
 /// How many wrapped rows one block may fill. Client-side only.
 ///
@@ -283,21 +285,23 @@ impl Sticky {
     ///
     /// # Invariant
     ///
-    /// A value lands only on an argument whose `kind` names it. SPEC's two
-    /// bullets are one rule: a missing non-optional argument is filled from
-    /// its entry, and a missing optional argument takes the entry as its
-    /// initial value. An argument no entry names is left alone: absence keeps
-    /// the command's own initial, applied where the command runs.
+    /// A value lands only on an argument whose `kind` names it: a required one
+    /// always, an optional one only when the catalog declares it sticky. A
+    /// structured argument is filled leaf by leaf, so what the line stated stays.
+    /// See `docs/notes/tui-state.md`.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
         for a in &spec.args {
-            self.fill_one(a, args);
+            match &a.structure {
+                Some(schema) => self.fill_struct(a, schema, args),
+                None => self.fill_one(a, args),
+            }
         }
     }
 
     /// One argument, one entry: fill when omitted and an entry names its kind.
     fn fill_one(&self, a: &ArgSpec, args: &mut Args) {
-        if args.contains_key(&a.name) {
+        if args.contains_key(&a.name) || !(a.required || a.sticky) {
             return;
         }
         let Some(kind) = a.kind.as_deref() else {
@@ -306,6 +310,51 @@ impl Sticky {
         if let Some(v) = self.args.get(kind) {
             args.insert(a.name.clone(), v.clone());
         }
+    }
+
+    /// A structured argument, leaf by leaf: each leaf filled by the entry its name
+    /// keys.
+    fn fill_struct(&self, a: &ArgSpec, schema: &StructSchema, args: &mut Args) {
+        // A value of the wrong shape is the server's to refuse; a fill must not
+        // stand in its way by rewiring it.
+        let mut object = match args.get(&a.name) {
+            None => Map::new(),
+            Some(Value::Object(map)) => map.clone(),
+            Some(_) => return,
+        };
+        if !self.fill_fields(schema, &mut object) {
+            return;
+        }
+        args.insert(a.name.clone(), Value::Object(object));
+    }
+
+    /// Returns whether any leaf was filled, so an object nobody contributed to is
+    /// left out of the line instead of sent empty.
+    fn fill_fields(&self, schema: &StructSchema, object: &mut Map<String, Value>) -> bool {
+        let mut filled = false;
+        for field in &schema.fields {
+            if let Some(nested) = &field.object {
+                let mut inner = match object.get(&field.name) {
+                    Some(Value::Object(map)) => map.clone(),
+                    Some(_) => continue,
+                    None => Map::new(),
+                };
+                if self.fill_fields(nested, &mut inner) {
+                    object.insert(field.name.clone(), Value::Object(inner));
+                    filled = true;
+                }
+                continue;
+            }
+            if object.contains_key(&field.name) {
+                continue;
+            }
+            let Some(value) = self.args.get(&field.name) else {
+                continue;
+            };
+            object.insert(field.name.clone(), leaf_value(field, value));
+            filled = true;
+        }
+        filled
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -327,6 +376,25 @@ impl Sticky {
             Some(_) => self.save().map(|()| true),
             None => Ok(false),
         }
+    }
+}
+
+/// One stored entry as the value a structured leaf takes.
+///
+/// # Invariant
+///
+/// The leaf's shape decides what its text is on the wire: a switch is a boolean, a
+/// model is the object SPEC spells (or its flat `provider/model` word, which the
+/// server reads as the same value), and everything else keeps the word itself.
+/// See `docs/notes/tui-state.md`.
+fn leaf_value(field: &StructField, text: &str) -> Value {
+    match (field.name.as_str(), text) {
+        ("keep_alive", "true") => Value::Bool(true),
+        ("keep_alive", "false") => Value::Bool(false),
+        _ if field.model_ref => {
+            serde_json::from_str(text).unwrap_or(Value::String(text.to_string()))
+        }
+        _ => Value::String(text.to_string()),
     }
 }
 

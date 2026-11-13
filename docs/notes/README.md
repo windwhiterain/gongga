@@ -177,6 +177,12 @@ library holds the loop it runs.
 | [`tui-cache.md`](tui-cache.md) | `crates/client/src/window_cache.rs` |
 | [`tui-command.md`](tui-command.md) | `crates/client/src/window_command.rs` |
 
+### server
+
+| note | source |
+| --- | --- |
+| [`server-session-config.md`](server-session-config.md) | `crates/server/src/session_config.rs` |
+
 ### cli (historical name)
 
 | note | source |

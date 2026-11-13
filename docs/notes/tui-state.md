@@ -48,10 +48,22 @@ an otherwise readable file falls back to the default the type publishes.
 (which is what keeps `--must_create` out). The kinds that exist are the ones the
 published catalog declares.
 
-`fill` is SPEC's two bullets as one rule: an omitted non-optional argument is filled
-from its entry, and an omitted optional argument takes the entry as its initial
-value. An argument no entry names keeps the command's own initial, applied where the
-command runs.
+`fill` fills what the line left open: a **required** argument from its entry, and an
+optional one only when the catalog declares it sticky (`ArgSpec.sticky`) -- a mode a
+reader set once, never a fact about one command. An argument no entry names keeps the
+command's own initial, applied where the command runs.
+
+A structured argument -- `--config`, SPEC's `SessionConfig` -- is filled leaf by
+leaf, and its leaves are the entries' names too: `model`, `thinking`, `ctx_limit`,
+`cache_tier`, `remote`, `cwd`, `keep_alive`. What the line stated stays, and the
+object is built only when an entry contributed to it. `leaf_value` reads an entry as
+the leaf's own shape: a switch is a boolean, a model is the object SPEC spells (or
+the flat `provider/model` word the server also takes), everything else stays the
+text it was stored as.
+
+So one list of kinds has two sources -- an argument's `kind` and a leaf's name -- and
+`client::commands::sticky_kinds` is the only place that reads both, for `set_sticky`'s
+accept set and for the completion of its `--type`.
 
 ## Sticky to xxx
 
@@ -77,6 +89,12 @@ what its command accepts (`ArgSpec.accepts`, see `docs/notes/protocol-message.md
 so the window drops a filled value that set does not take and says so in one line.
 A value the operator *typed* is sent as typed and judged by the server: that one is
 a statement, and a statement is worth a refusal.
+
+The same question is asked of a structured leaf, because sticky `thinking = low`
+reaches a session through `--config` just the same: the leaf's own `accepts` is
+checked against the model the filled call runs on -- the sticky model if that is the
+one it names. A refused leaf is cut out of the object, the rest is sent, and one
+line says which entry was left to the model's own.
 
 ## Shown
 

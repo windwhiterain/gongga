@@ -6,7 +6,7 @@ This file is the grammar of a command line and nothing else: `parse_args` binds
 the tokens, `signature` spells a spec back, `roots`/`installed_skills` read where
 a skill lives. The state these were once shared with -- sticky entries, drawn
 sessions, block size, box edge, the remembered address -- is the window's, and
-moved to `crates/tui/src/state.rs` (`docs/notes/tui-state.md`).
+lives in `crates/client/src/window_state.rs` (`docs/notes/tui-state.md`).
 
 That move is also why a one-shot `gongga-cli` cannot inherit an operator's
 session: the command layer reads no `client.toml` at all, so an argument it was not
@@ -75,3 +75,12 @@ machine. Its checkout is then not on this disk, and reading
 name -- a name that cannot be opened, which is the failure this whole area keeps
 producing. The home's and the machine's still count: they are what the server's
 own `@skill(...)` expansion reads, since that expansion runs on the server.
+
+## sticky_kinds
+
+One list of the types a sticky entry may name, from the two places the catalog
+declares them: an argument's `kind` (`session`, `mode`) and a leaf of a structured
+value (`model`, `thinking`, `ctx_limit`, `cache_tier`, `remote`, `cwd`,
+`keep_alive`). `set_sticky` refuses a type outside it, `--type` completes it, and
+the window fills leaves by the same names -- so a name offered is a name that
+fills something. Two readers of one walk, rather than a list kept equal by hope.

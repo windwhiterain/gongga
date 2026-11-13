@@ -2,11 +2,12 @@
 //!
 //! See `docs/notes/cli-commands.md`.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde_json::Value;
 
-use protocol::{ArgSpec, Args, CommandSpec};
+use protocol::{ArgSpec, Args, CommandSpec, StructSchema};
 
 /// The skills a session can open: the project's own, the home's, then the machine's.
 ///
@@ -31,6 +32,41 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
         home.join("skills"),
         dirs::home_dir().map(|home| home.join(".agents").join("skills")),
     )
+}
+
+/// Every sticky type the catalog declares: an argument's `kind`, and a leaf of a
+/// structured value under its own name.
+///
+/// # Invariant
+///
+/// One list for three readers -- what `set_sticky` refuses, what `--type`
+/// completes, and the leaves a structured argument fills -- so a type an entry may
+/// name is a type some argument of some command can take. See
+/// `docs/notes/client-commands.md`.
+pub fn sticky_kinds(commands: &[CommandSpec]) -> Vec<String> {
+    let mut kinds = BTreeSet::new();
+    for command in commands {
+        for arg in &command.args {
+            if let Some(kind) = &arg.kind {
+                kinds.insert(kind.clone());
+            }
+            if let Some(structure) = &arg.structure {
+                leaf_kinds(structure, &mut kinds);
+            }
+        }
+    }
+    kinds.into_iter().collect()
+}
+
+fn leaf_kinds(schema: &StructSchema, kinds: &mut BTreeSet<String>) {
+    for field in &schema.fields {
+        match &field.object {
+            Some(nested) => leaf_kinds(nested, kinds),
+            None => {
+                kinds.insert(field.name.clone());
+            }
+        }
+    }
 }
 
 /// Binds a line's tokens to a published spec. See `next_unfilled`.

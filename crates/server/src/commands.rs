@@ -455,18 +455,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                       received is kept. Nothing is owed to a restart -- `cancel` is the verb 
                       that continues a turn, not this one. Background jobs keep running."
                 .into(),
-            args: vec![{
-                let mut spec = pos(
-                    "id",
-                    "Session whose turn should stop.",
-                    true,
-                    Some("name"),
-                    CompletionSource::Sessions,
-                );
-                // Of the sticky entry `session`, like every session argument.
-                spec.kind = Some("session".into());
-                spec
-            }],
+            args: vec![kind_pos(
+                "id",
+                "Session whose turn should stop.",
+                true,
+                "session",
+                Some("name"),
+                CompletionSource::Sessions,
+            )],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -929,11 +925,12 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("path"),
                     CompletionSource::None,
                 ),
-                pos(
+                kind_pos(
                     "session",
                     "Whose skills: its directory is the `project` layer, and the machine \
                      it stands on decides whether that layer is read at all.",
                     true,
+                    "session",
                     Some("name"),
                     CompletionSource::Sessions,
                 ),
@@ -969,11 +966,12 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("cmd"),
                     CompletionSource::None,
                 ),
-                pos(
+                kind_pos(
                     "session",
                     "The session it runs as: its directory is where it runs, and the call \
                      is that session's work.",
                     true,
+                    "session",
                     Some("name"),
                     CompletionSource::Sessions,
                 ),
@@ -1046,6 +1044,19 @@ fn kind_arg(
     )
 }
 
+fn kind_pos(
+    name: &str,
+    description: &str,
+    required: bool,
+    kind: &str,
+    value_hint: Option<&str>,
+    completions: CompletionSource,
+) -> protocol::ArgSpec {
+    let mut spec = pos(name, description, required, value_hint, completions);
+    spec.kind = Some(kind.to_string());
+    spec
+}
+
 fn arg_spec(
     name: &str,
     description: &str,
@@ -1116,14 +1127,19 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
         true,
     ),
     // SPEC: `config: SessionConfig` -- the nested settings, one JSON object.
-        arg(
+        sticky_arg(
+            arg(
             "config",
             "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (remote, cwd), and keep_alive. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. remote and cache_tier take none to clear.",
             false,
         Some("json"),
         CompletionSource::None,
-    )
-    .with_structure(crate::session_config::schema(remotes)),
+            )
+            .with_structure(crate::session_config::schema(remotes)),
+            true,
+        ),
+    // SPEC does not name `mode`; it is this build's own, sticky like a level.
+    sticky_arg(
     kind_arg(
         "mode",
         "What this session may do to the workspace. work (the default) writes as it likes; explore refuses write_file and replace outright and tells the session which paths a bash, exec, python or skill call changed when it ended. Not a jail: a program that writes is told, not stopped, so read the changed paths and put them back before answering.",
@@ -1131,6 +1147,8 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
         "mode",
         Some("work|explore"),
         CompletionSource::Static(vec!["work".into(), "explore".into()]),
+    ),
+        true,
     ),
         arg(
             "must_create",

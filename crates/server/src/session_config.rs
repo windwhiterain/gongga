@@ -13,12 +13,26 @@ pub struct ModelRef {
     pub model: Option<String>,
 }
 
+/// One model, as the two spellings the roster publishes it in.
+///
+/// # Invariant
+///
+/// SPEC's `Model := {provider, model}` and the flat `provider/model` name a
+/// session's row and a sticky entry already hold are the same value; both are read
+/// here so a client can hand over whichever it keeps. See `docs/notes/server-session-config.md`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ModelValue {
+    Spelled(String),
+    Ref(ModelRef),
+}
+
 /// SPEC `ModelConfig := {model, thinking, ctx_limit, cache_tier}`. Fields are optional:
 /// a delta keeps what it omits.
 #[derive(Debug, Default, Deserialize)]
 pub struct ModelConfig {
     #[serde(default)]
-    pub model: Option<ModelRef>,
+    pub model: Option<ModelValue>,
     #[serde(default)]
     pub thinking: Option<String>,
     #[serde(default)]
@@ -60,15 +74,20 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
         .map_err(|e| format!("--config is not a SessionConfig object: {e}"))?;
     if let Some(model_config) = config.model_config {
         if let Some(model) = model_config.model {
-            let spelled = match (model.provider, model.model) {
-                (Some(provider), Some(name)) => format!("{provider}/{name}"),
-                (None, Some(name)) => name,
-                (Some(provider), None) => {
-                    return Err(format!(
-                        "--config model names provider {provider:?} but no model"
-                    ));
-                }
-                (None, None) => return Err("--config model is empty: name a model".to_string()),
+            let spelled = match model {
+                ModelValue::Spelled(text) => text,
+                ModelValue::Ref(model) => match (model.provider, model.model) {
+                    (Some(provider), Some(name)) => format!("{provider}/{name}"),
+                    (None, Some(name)) => name,
+                    (Some(provider), None) => {
+                        return Err(format!(
+                            "--config model names provider {provider:?} but no model"
+                        ));
+                    }
+                    (None, None) => {
+                        return Err("--config model is empty: name a model".to_string());
+                    }
+                },
             };
             args.insert("model".to_string(), spelled);
         }

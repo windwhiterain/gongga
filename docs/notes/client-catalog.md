@@ -239,3 +239,17 @@ A name can mean one thing in two commands (`set_session <session>` targets a
 session; `show_session <session>` names one to draw), and the hop prefers the
 argument that is *required*: that is the reading a free-form value should mirror.
 Catalog order does not decide it.
+
+## A refused value, top level or leaf
+
+`refused_values` answers "would the model this line runs on take this value", for
+values the *window* filled in -- an operator's own word is a statement, and a
+statement is worth the server's refusal. Two readings keep it honest for a sticky
+entry:
+
+- The model is read from the **arguments**, not from the line (`model_of`), because
+the entry that filled `--config` may be the one naming the session's model; checking
+against the session's old model would refuse a level the new one accepts.
+- A structured argument's leaves are checked as well, against the same model: a
+sticky `thinking` reaches a session through `--config` exactly as a top-level
+`--thinking` once did.

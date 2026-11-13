@@ -11,9 +11,9 @@ The input line's grammar and the window's sticky entries, lifted out of
 | `classified` | is this line a command, and what are its tokens |
 | `submission` | one line, answered locally or sent |
 | `filled` | a command line with its sticky entries |
-| `restates` | whether a sticky entry agrees with the session's row |
+| `place` | one filled value, where the line spells it or at its end |
 | `follow` | what the window keeps for a command the server has not answered |
-| `typed_names` | the arguments a line spelled out, before any sticky one |
+| `typed_args` | the arguments a line spelled out, before any sticky one |
 
 `submission`'s sink parameter was `&mut TuiSink`; it is now `&mut dyn Sink`, so
 a front-end in another language can pass its own `Sink`. `shell-words` moved out
@@ -32,3 +32,21 @@ encodes. What the operator sees is unchanged.
 `crates/tui/src/run.rs`: they read the window's journal (`ui.stamp_of`,
 `ui.drawn`, `ui.room_of`, `ui.take_settled`). They move with the journal, not
 before it. The `interactive` loop itself is still there. See `DESIGN.md` §1.
+
+## A structured argument is filled leaf by leaf
+
+`--config` is SPEC's `SessionConfig`, one JSON object. A sticky entry may name any
+leaf of it -- `model`, `thinking`, `ctx_limit`, `cache_tier`, `remote`, `cwd`,
+`keep_alive` -- and the line keeps every leaf it stated. `place` rewrites the
+object where the line spells it instead of appending a second `--config`, which
+the parser refuses as given twice.
+
+`follow` is the other direction: an accepted `new_session` or `set_session` writes
+back every leaf the line stated, under the entry its type answers to. A value the
+entries filled in is not written back, because it is already in the file.
+
+A filled leaf the model refuses (`thinking = low` where the roster publishes
+`on, off`) is dropped and said: the caller never wrote it. `without_refused` cuts
+those leaves out of the object, and `catalog::refused_leaves` decides which ones:
+the same question the catalog asks a top-level argument, asked of every leaf that
+publishes an `accepts` set.
