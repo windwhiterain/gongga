@@ -817,8 +817,9 @@ impl Agent {
     ///
     /// The order is `prefix_cache`'s, a permutation of what it was given: no entry is
     /// invented for a reference that could not be read, and the spellings returned are the
-    /// ones the index carries, so a message naming one again keys the same entry. Everything
-    /// is read in `home`, the session's directory. See `docs/notes/server-agent.md`.
+    /// ones the index carries, so a message naming one again keys the same entry. The rules
+    /// travel outside it (`meta::rules`). Everything is read in `home`. See
+    /// `docs/notes/server-agent.md`.
     async fn index_of(
         &self,
         id: i64,
@@ -834,8 +835,9 @@ impl Agent {
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let rules = crate::meta::rules(source, home).await;
         let roots = crate::meta::roots(source, home, &borrowed).await;
-        if roots.is_empty() {
+        if rules.is_none() && roots.is_empty() {
             return None;
         }
         let rates = self.rates(model);
@@ -867,6 +869,22 @@ impl Agent {
             })
             .collect::<Vec<_>>()
             .join("\n\n");
+        // The rules first and out of the plan's reach: no price moves them, no patch hides them.
+        let body = match rules {
+            Some(text) => {
+                let spelling = crate::meta::rules_spelling();
+                let rules = format!(
+                    "{spelling} ({})\n{text}",
+                    crate::meta::machine_note(&spelling, source, remote)
+                );
+                if body.is_empty() {
+                    rules
+                } else {
+                    format!("{rules}\n\n{body}")
+                }
+            }
+            None => body,
+        };
         let prompts = crate::prompts::shared();
         let mut index = prompts.render("reference_index", &[("entries", &body)]);
         if !planned.revisions.is_empty() {

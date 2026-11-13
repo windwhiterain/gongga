@@ -190,36 +190,51 @@ pub const REMOTE_SKILL: &str = "remote";
 /// stands, and no ancestor's copy is inherited.
 pub const RULES: &str = "AGENTS.md";
 
-/// The rules of `home`, then every reference `texts` name, and their own.
+/// The spelling the directory's rules are indexed under.
+pub fn rules_spelling() -> String {
+    format!("@{}({})", Reference::File.name(), RULES)
+}
+
+/// The rules of `home`, as the file says them now, or nothing when it keeps none.
+///
+/// # Invariant
+///
+/// Not a memory module: what this returns opens the index on every request, verbatim,
+/// so no plan can reorder it, patch it, or let it expire, and the model reads the rules
+/// that are on disk rather than the ones a provider was holding.
+pub async fn rules(source: Source<'_>, home: &Path) -> Option<String> {
+    content(source, home, &rules_spelling()).await
+}
+
+/// Every reference the rules name, every reference `texts` name, and their own.
 ///
 /// # Invariant
 ///
 /// Everything is read in `home`, the session's own directory, never in the directory
 /// its shell happens to stand in: a request already sent is never rewritten, so its map
-/// must not follow a `cd`. The rules file is a root whether or not a message names it.
-/// Breadth-first by first-seen order; what cannot be read is left out.
+/// must not follow a `cd`. The rules file is no entry, only what it names; breadth-first
+/// by first-seen order, and what cannot be read is left out.
 /// See `docs/notes/server-meta.md`.
 pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root> {
-    // Seeded here rather than named by a message: the index holds it behind the prose.
-    let first = format!("@{}({})", Reference::File.name(), RULES);
-    let mut queue: Vec<String> = vec![first.clone()];
-    let mut seen: Vec<String> = vec![first];
+    // Named by a message or met by the walk, the rules file is never an entry.
+    let mut seen: Vec<String> = vec![rules_spelling()];
+    let mut queue: Vec<String> = Vec::new();
+    if let Some(rules) = rules(source, home).await {
+        for mention in mentions(&rules) {
+            enqueue(&mut queue, &mut seen, spelling(&mention));
+        }
+    }
     // The shape of a session on a peer, told to it without being asked.
     if source.machine() == crate::session::Machine::Remote {
         let skill = format!("@{}({})", Reference::Skill.name(), REMOTE_SKILL);
-        seen.push(skill.clone());
-        queue.push(skill);
+        enqueue(&mut queue, &mut seen, skill);
     }
-    let mut out: Vec<Root> = Vec::new();
     for text in texts {
         for mention in mentions(text) {
-            let spelling = spelling(&mention);
-            if !seen.contains(&spelling) {
-                seen.push(spelling.clone());
-                queue.push(spelling);
-            }
+            enqueue(&mut queue, &mut seen, spelling(&mention));
         }
     }
+    let mut out: Vec<Root> = Vec::new();
     let mut index = 0;
     while index < queue.len() {
         let named = queue[index].clone();
@@ -228,11 +243,7 @@ pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root>
             continue;
         };
         for mention in mentions(&content) {
-            let spelling = spelling(&mention);
-            if !seen.contains(&spelling) {
-                seen.push(spelling.clone());
-                queue.push(spelling);
-            }
+            enqueue(&mut queue, &mut seen, spelling(&mention));
         }
         out.push(Root {
             spelling: named,
@@ -240,6 +251,15 @@ pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root>
         });
     }
     out
+}
+
+/// `spelling` at the end of the walk's queue, unless it is already there.
+fn enqueue(queue: &mut Vec<String>, seen: &mut Vec<String>, spelling: String) {
+    if seen.contains(&spelling) {
+        return;
+    }
+    seen.push(spelling.clone());
+    queue.push(spelling);
 }
 
 /// The spelling a reference is indexed under: its prefix and its value, written
