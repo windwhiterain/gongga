@@ -126,10 +126,13 @@ The warning names every place it looked, so the fix is in the message.
 
 A channel runs the installed copy, not the source. `relay_for_channel` answers this
 home's `bin`, which `ensure_pair` filled before any channel existed: a `cargo build`
-under a server that is still running replaces the sibling in the build tree, and a
-relay of that later build refuses the `--build` of the server that asked. Holding the
-installed copy makes a rebuild after startup unable to change what holds this
-server's channels. An explicit `GONGGA_RELAY_BIN` still wins.
+under a server that is still running replaces the sibling in the build tree, and holding
+the installed copy makes that rebuild unable to change what holds this server's channels.
+The pair is held to `relay::PROTOCOL` rather than to the commit, so a rebuild is not a
+reason to replace anything; a protocol bump is, and a copy the server could not install
+then -- a relay still holding a channel pins the file on Windows -- is asked for again by
+the first channel that meets it (`refresh_relay`) and reported with both numbers when
+that cannot land. An explicit `GONGGA_RELAY_BIN` still wins. See `server-channel.md`.
 
 ## GONGGA_CLI
 
