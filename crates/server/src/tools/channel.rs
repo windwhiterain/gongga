@@ -1048,6 +1048,16 @@ struct Looked {
 ///
 /// The relay may still be appending, so this is what had arrived when it was read; what
 /// it is read *from* is the cursor, because a look asks the machine for the tail only.
+/// Longest tail of `fresh` that is a prefix of `marker`, kept so a split marker can still match.
+fn marker_prefix_tail(fresh: &str, marker: &str) -> usize {
+    let (f, m) = (fresh.as_bytes(), marker.as_bytes());
+    let max = f.len().min(m.len().saturating_sub(1));
+    (1..=max)
+        .rev()
+        .find(|&k| f[f.len() - k..] == m[..k])
+        .unwrap_or(0)
+}
+
 fn look(fresh: &[u8], upto: u64, marker: Option<&str>, grammar: &spec::ChannelSpec) -> Looked {
     let mut seen = upto;
     let fresh = String::from_utf8_lossy(fresh).to_string();
@@ -1061,9 +1071,11 @@ fn look(fresh: &[u8], upto: u64, marker: Option<&str>, grammar: &spec::ChannelSp
         };
     };
     let Some(at) = fresh.find(marker) else {
-        seen += fresh.len() as u64;
+        // Keep a mid-write marker's prefix unconsumed so the next read can match it whole.
+        let end = fresh.len() - marker_prefix_tail(&fresh, marker);
+        seen += end as u64;
         return Looked {
-            window: fresh,
+            window: fresh.get(..end).unwrap_or(fresh.as_str()).to_string(),
             matched: false,
             upto: seen,
             exit: None,
