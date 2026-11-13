@@ -109,6 +109,7 @@ fn set_session(id: Session, config_delta: SessionConfig{..})
 fn ls_session(path: path)
 fn del_session(path: path)
   # also delete all channel under the session.
+fn sync_session(id: Session,  trajectory: Range)
 fn send_message(session: Session, message: str)
   # inject message when step end.
   # interrupt if tool waiting.
@@ -135,8 +136,8 @@ provided by a shipped uv python package.
 Skill := path # abstract naming space
 fn ls_skill(path: path, session: Sesssion)
 fn run_skill(id: Skill, cmd: Cmd, sesssion: Session)
-fn get_messages(sesssion: Sesssion, range: Range)
-fn clone_sesssion(id: Sesssion, new_id: path)
+fn get_ trajectory(sesssion: Sesssion, range: Range)
+fn clone_session(source: path, dest: path)
 ```
 
 ## Server State
@@ -166,9 +167,9 @@ for the first user message to a empty session, find all meta references recursiv
 
 ## Live Compact
 - when agent switch from explore to build, set the starting checkpoint of compaction.
-- after the starting checkpoint, every time reach a context increase limit, ask the agent to call live compact to compact the history since the last checkpoint.
-- live compact summary can reference meta that directly embed in the summary, creating a new checkpoint.
-- the summary replace the history to compact.
+- after the starting checkpoint, every time reach a context increase limit, ask the agent to call `live_compact` to summary and replace the history since the last checkpoint, and create a new checkpoint.
+- `live_compact` summary can reference meta that directly embed in the summary, creating a new checkpoint.
+- the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
 
 ## monitor
 - providers: spawn/notice when a session failed on an llm request (refused, or the
@@ -247,11 +248,12 @@ all named argument's name can be ommited via argument order.
   - `connect_server [--ip <ip>](default: localhost) --port <port>`
   - `serve --port <port> [--home <home>](default: "~/.gongga")`
 
-## Remote
-Auto detect, validate and install remote runner with latest compatible version.
-
 ## Git Managed Config
 auto choose the latest commit within same protocol, personal(local) change rebase on official(remote).
+
+## Bundled binary: Remote Runner, Relay...
+Bundle or binaries placed in the same directory should:
+- Auto detect, validate and install each other with latest compatible protocol.
 
 **Invariant: ALL Config File Must Be Live Tracked**
 
