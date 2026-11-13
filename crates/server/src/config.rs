@@ -79,17 +79,15 @@ pub const DEFAULT_DISK_LOW_MB: u64 = 1024;
 /// `docs/notes/server-quota.md`.
 pub const DEFAULT_QUOTA_INTERVAL_SECS: u64 = 60;
 
-/// The longest one call may run.
+/// How long a tool's own mechanism may take before the harness calls it a fault.
 ///
 /// # Invariant
 ///
-/// Hardcoded on purpose, and not a setting a home may raise: nothing a tool does
-/// legitimately takes this long, so a call still running at this bound is a fault
-/// rather than a longer wait. See `docs/notes/server-tools-mod.md`.
-pub const CALL_TIMEOUT_MS: u64 = 600_000;
-
-/// How long a call waits when neither it nor its tool states a wait.
-pub const CALL_DEFAULT_WAIT_MS: u64 = 120_000;
+/// Internal and invisible: nothing a caller writes, reads or is told depends on
+/// this number while the harness is correct. It exists so a hung mechanism ends
+/// instead of holding a turn for ever. A tool whose wait is the call's own --
+/// `exec`'s `wait`, `wait`'s `time` -- does not use it at all.
+pub const CALL_TIMEOUT_MS: u64 = 120_000;
 
 /// How long a peer may stay silent when `[remote] answer_timeout_ms` states nothing.
 ///

@@ -423,7 +423,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 .with_skills(
                     tools::skill::programs(&cfg),
                     skill_lib,
-                    std::time::Duration::from_millis(crate::config::CALL_DEFAULT_WAIT_MS),
+                    std::time::Duration::from_millis(crate::config::CALL_TIMEOUT_MS),
                     cfg.bash.max_output_chars,
                 )
                 .build(&cfg.tools.rows),

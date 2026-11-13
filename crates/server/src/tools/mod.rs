@@ -725,9 +725,13 @@ fn stopped(name: &str) -> ToolOutcome {
 ///
 /// The only wait, so "a message reaches the turn" is one rule and not one per tool.
 /// The work runs on a task with a token of its own, so a message can end the wait
-/// without stopping what the call is doing -- and the one clock is the fault bound:
-/// a call still running at `CALL_TIMEOUT_MS` is a fault, not a longer wait.
-/// See `docs/notes/server-tools-mod.md`.
+/// without stopping what the call is doing.
+///
+/// # Invariant
+///
+/// No clock of its own: how long a call waits is the call's to state (`exec`'s
+/// `wait`, `wait`'s `time`), and a number here would end waits nobody asked to
+/// end. See `docs/notes/server-tools-mod.md`.
 async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOutcome {
     let started = std::time::Instant::now();
     let mut job = ctx.clone();
@@ -741,40 +745,19 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
         let _ = tx.send(outcome).await;
     });
     let mut punctual = tokio::time::interval(INBOX_POLL);
-    // The one clock: past this bound the call is a fault, not something to keep
-    // waiting for.
-    let fault_at =
-        tokio::time::Instant::now() + Duration::from_millis(crate::config::CALL_TIMEOUT_MS);
     let why = loop {
         tokio::select! {
             answer = rx.recv() => return answer.unwrap_or_else(|| stopped(tool.name())),
-            _ = ctx.cancel.cancelled() => break Some(match ctx.stop.interrupted() {
+            _ = ctx.cancel.cancelled() => break match ctx.stop.interrupted() {
                 true => "interrupt",
                 false => "cancel",
-            }),
+            },
             _ = punctual.tick() => {
                 if ctx.inbox.arrived() {
-                    break Some("message");
+                    break "message";
                 }
             }
-            _ = tokio::time::sleep_until(fault_at) => break None,
         }
-    };
-    let Some(why) = why else {
-        // Past the bound: nothing legitimate runs this long, so this is a fault.
-        task.abort();
-        let _ = task.await;
-        tracing::error!(
-            session = %ctx.session,
-            tool = %tool.name(),
-            elapsed = ?started.elapsed(),
-            "a call outlived the fault bound"
-        );
-        return ToolOutcome::err(format!(
-            "`{}` was stopped: it ran past the {} every call is bounded by, and past that              bound is a fault rather than a wait. Run it again if it is still wanted.",
-            tool.name(),
-            crate::agent::spent(crate::config::CALL_TIMEOUT_MS)
-        ));
     };
     tracing::info!(
         session = %ctx.session,
