@@ -692,7 +692,7 @@ leaving the argument out, and leaving it out is what takes the default.
 
 `session` is a default and not an extra argument: SPEC writes `session: Session =
 caller()`, and `commands::session_of` reads it -- a stated session wins, an omitted one is
-the caller of the call (`Origin::session`, which a client fills from `$GONGGA_SESSION`).
+the session the call runs from (`Origin::session`, which a client fills from `$GONGGA_SESSION`).
 
 SPEC names three roles and gives each one word, so the catalog does too: `session`
 is the session a command acts *within* (`send_message`, `get_messages`,
