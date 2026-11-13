@@ -167,8 +167,13 @@ where the view is, so a frame at the bottom draws none.
 
 It sits on the last row of the view it belongs to, right-aligned, painted black on
 cyan like every other mark this window draws, so it reads as a control rather than
-as a line of the log. It says `↓ bottom · Shift+↓` when the width allows it; over a
+as a line of the log. It says `↓ bottom · Ctrl+↓` when the width allows it; over a
 narrow pane it is the bare `↓`, one column, which still fits beside the row's text.
+
+The key it names is not written twice. `bottom_key!` in `render.rs` spells it once
+and composes the button's words and the reminder row's entry from it: the button
+and the reminder that name the same key have to say the same key, and two spellings
+would be two things to keep in step rather than one.
 
 The last row of a scrolled view is the one it covers: the hint is drawn *over* that
 row rather than under the text, and the row is what a click there would otherwise
