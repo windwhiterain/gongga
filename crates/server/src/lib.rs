@@ -399,6 +399,17 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         },
     ));
 
+    // The directories no row names, swept behind the start: minutes of unlinking.
+    {
+        let channels = channels.clone();
+        tokio::task::spawn_blocking(move || {
+            let removed = channels.sweep();
+            if removed > 0 {
+                tracing::info!(removed, "channel directories no row names were removed");
+            }
+        });
+    }
+
     let agent = Arc::new(Agent {
         store: store.clone(),
         providers: providers::Handle,

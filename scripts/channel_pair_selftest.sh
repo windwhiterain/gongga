@@ -133,7 +133,17 @@ ok "and the refusal names both protocols" \
   "$(grep -q "protocol $protocol" "$work/probe-other-protocol/words" \
      && grep -q "speaks $((protocol + 1))" "$work/probe-other-protocol/words" && echo 0 || echo 1)"
 
+# A directory no row names is what every ended channel used to leave behind: the table is
+# what a reader can name, so a start sweeps the rest. Old on purpose -- a fresh directory
+# may be a start that is still writing its row, and the sweep leaves those alone.
+orphan="$home/channels/ch-0000000000000000000000000000dead"
+mkdir -p "$orphan"
+printf '{"program":"bash","args":[],"cwd":"%s","env":[]}' "$(native "$root")" > "$orphan/cmd"
+touch -d '10 minutes ago' "$orphan"
+
 up "$server_bin"
+for _ in $(seq 1 50); do [[ -d "$orphan" ]] || break; sleep 0.2; done
+ok "a start sweeps channel directories no row names" "$([[ -d "$orphan" ]] && echo 1 || echo 0)"
 
 # 1. The copy in `bin` goes bad before anything asks it to hold a channel -- what a relay
 #    of another protocol looks like to a server that finds it there. The start has to
@@ -153,6 +163,13 @@ ok "what the home's bin holds is a program again" \
 start_channel two
 say "healthy: $(grep -v '^{"t":"event"' <<<"$CH_ANSWER" | head -2)"
 ok "the installed pair holds a channel" "$(grep -q 'started: bash' <<<"$CH_ANSWER" && echo 0 || echo 1)"
+
+# 2b. `del_channel` takes the files with the row: a channel nobody can name is litter.
+before=$(channels)
+"${cli[@]}" '{"name":"del_channel","args":{"id":"two","session":"pair"}}' >/dev/null 2>&1
+for _ in $(seq 1 40); do [[ "$(channels)" == "$((before - 1))" ]] && break; sleep 0.1; done
+ok "a deleted channel leaves no directory" "$([[ "$(channels)" == "$((before - 1))" ]] && echo 0 || echo 1)"
+ok "and the one still named is still there" "$([[ "$(channels)" == 1 ]] && echo 0 || echo 1)"
 
 # 3. Now nothing is beside the server but a copy in `bin` that is not a program: there is
 #    nothing to install, so the start must say so at once rather than sit out

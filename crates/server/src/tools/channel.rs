@@ -732,8 +732,9 @@ impl Channels {
     ///
     /// # Invariant
     ///
-    /// `kill` in the command file, then the row: a channel whose program is still
-    /// writing must not look gone while it is not.
+    /// `kill` in the command file, then the row, then this home's directory: a channel
+    /// whose program is still writing must not look gone while it is not, and the files
+    /// outlive the row only as litter nobody can name.
     pub async fn stop(&self, session: &str, id: &str) -> Result<bool, String> {
         let row = self.row_of(session, id)?;
         let place = self.place_of(&row).await?;
@@ -755,7 +756,56 @@ impl Channels {
             tokio::time::sleep(LOOK).await;
         }
         self.store.delete_channel(session, id).map_err(quiet)?;
+        // The files were the row's; a peer's directory is not this machine's to remove.
+        if let Where::Here(dir) = &place {
+            let _ = std::fs::remove_dir_all(dir);
+        }
         Ok(true)
+    }
+
+    /// Removes the directories no row names: what an ended channel used to leave behind.
+    ///
+    /// # Invariant
+    ///
+    /// A directory younger than [`GRACE`] belongs to a start that may still be writing its
+    /// row, and is left alone; a name the table holds is a channel somebody can still
+    /// read. That is what lets this run behind a serving server: unlinking thousands of
+    /// them is minutes of work, and no reader waits for it.
+    pub fn sweep(&self) -> usize {
+        let rows = match self.store.every_channel() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("could not read the channels to sweep: {e}");
+                return 0;
+            }
+        };
+        // A peer's directory is not here; only this machine's rows can vouch for a name.
+        let known: std::collections::HashSet<String> = rows
+            .iter()
+            .filter(|row| row.remote.is_none())
+            .map(|row| named(&row.dir))
+            .collect();
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return 0;
+        };
+        let mut gone = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("ch-") || known.contains(&name) {
+                continue;
+            }
+            let fresh = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|when| when.elapsed().is_ok_and(|age| age < GRACE));
+            if fresh {
+                continue;
+            }
+            if std::fs::remove_dir_all(entry.path()).is_ok() {
+                gone += 1;
+            }
+        }
+        gone
     }
 
     /// Gives a channel another name: one key of this table, and nothing on disk.
@@ -1095,6 +1145,23 @@ fn words_in(log: &str) -> String {
     } else {
         format!("the relay ended: {text}")
     }
+}
+
+/// How long a directory is given to be named by a row before a sweep may take it.
+///
+/// # Invariant
+///
+/// A start writes its row within milliseconds of making the directory. This is the margin
+/// between the two, and it is what lets the sweep run behind a serving server.
+const GRACE: Duration = Duration::from_secs(120);
+
+/// The directory name a row's path ends in, in either spelling of the separator.
+fn named(dir: &str) -> String {
+    dir.replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .unwrap_or(dir)
+        .to_string()
 }
 
 /// Where one channel's files are: a directory this machine has, or one a peer has.
