@@ -1141,17 +1141,6 @@ pub(crate) fn arm_adopted(pid: u32) {
     let _ = pid;
 }
 
-/// Ends a process named only by its pid, and says whether it is gone.
-///
-/// # Invariant
-///
-/// The job object first (it ends every member exactly), then the walk, which is what
-/// is left when nothing armed the tree. See `docs/notes/server-tools-detached.md`.
-pub(crate) async fn stop_process(pid: u32) -> bool {
-    let exact = disarm_detached(pid);
-    kill_tree(pid).await || exact
-}
-
 /// Ends a detached tree now, when this server holds a job for it.
 #[cfg(windows)]
 pub fn disarm_detached(pid: u32) -> bool {

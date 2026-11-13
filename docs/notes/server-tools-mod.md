@@ -30,9 +30,8 @@ The table is therefore the registry on both sides. A row may offer a `ServerScri
 skill's entry or a command added tomorrow, and the answer to a name nobody answers comes
 from the command layer, in its words, rather than from this module saying "no such tool".
 
-Such a row must not leave as a worker (`tunneled = false`, or a carrier that is `Here`): a
-worker runs one call with no dispatch, so it has no command layer to forward to, and the
-call says so instead of pretending.
+A row of this kind answers in this process and nowhere else: it is a command the
+dispatch resolves, so a call that leaves the process could not reach it.
 
 ## `gongga_cli`: one tool, and the call names the command
 
@@ -121,87 +120,6 @@ keeping the full output is being able to find the right one again. `slug()` in
 Implemented with a boxed future rather than `async_trait` so the crate keeps
 one fewer macro dependency; the signature is the same either way.
 
-## GENERAL_ARGS: description, max_output, timeout_ms, background
-
-SPEC's tunnel-level parameters: every tool may carry them, none declares them by
-hand, and a tool the tunnel leaves alone (`Tool::tunneled`, which is `wait` alone)
-offers none of them. `general_parameters` injects them into the model-facing schema
-(a property a tool declares wins) and `argument_error` never names them as
-unexpected. What is injected is a type and no sentence: the four are the call layer's,
-so what they are for is said once, in the `general_parameters` section of the
-session's first request, rather than six times over in one request's schemas. See
-`docs/notes/server-prompts.md`.
-
-The command surface reads the same function, so an operator can spell every argument
-a call may carry. It used to read `Tool::parameters` raw, which was right while the
-general arguments were a title and a cap -- the tunnel's words changed that, and a
-tool command that refuses `--background` is a tool the model has and the operator does
-not.
-
-At the call layer, `description` titles the row (already) and `max_output` caps the
-result: over the cap, in chars per SPEC, the whole output spills to one file and the
-model reads the file's metadata `{path, chars, line_count}` -- the same spill naming
-as `ToolContext::cap`. On an endpoint session the cap is left unhonored rather than
-pointing at a file the session's tools cannot open.
-
-## The five questions the tunnel asks a tool
-
-Each with the answer that fits nearly every tool: a default wait (`None`, meaning the
-ceiling itself), subject to the tunnel (`true`), carried by the server
-(`Carried::Here`), leaving `background` to the tunnel (`false`), and answering for its
-own wait (`false`). Those two defaults together refuse `background` by name: a tool
-that acts on what this server holds cannot be run in a process of its own, and a job
-of the server would die with it. Each override is in the tool that differs: `bash`
-states its configured wait and starts a process of its own for `background`, `exec`
-answers for its own clock because the end of its wait is a program it hands to the job
-table, `wait` says the tunnel does not touch it at all, `bash` and `python` answer that
-their background and their clock are their shell's or their interpreter's, and the
-three reading tools answer for a clock of their own because a read that waits *is* the
-wait.
-
-## waited: from holding the turn to holding a job
-
-The work runs on a task with a token of its own. That is what makes SPEC's first rule
-possible -- "a foreground job running over timeout becomes background": the turn stops
-waiting and the work does not stop.
-
-Two things end the wait before the work does: a message, and a stop (`cancel` or
-`interrupt_session`). Both end it the same way -- the work's own token is cancelled, the
-tool returns on its own path with what it has, and `waited` takes that answer as the
-call's. A tool with no wait to end, a file read, cannot answer early: it is aborted and
-`stopped` says so. The clock is the other path, and it cancels nothing: the work outlives
-the turn as a job, which is the whole difference between an early return and a promotion.
-
-`holds_the_turn` is what tells the two apart. A call that already answers without
-waiting -- a `background` job -- holds no turn, so a clock of its own is
-dormant for it: the id it was given stays the id the caller reads from.
-
-`exec` is where that division stops being enough: its work is a process, not a
-future, so it answers for its own clock (`owns_its_wait`) and hands the program to
-the job table itself (`tunnel::run_own_program`). The tunnel's clock would otherwise
-fire at the same instant and record a second job for one call. See
-`docs/notes/server-tools-exec.md`.
-
-## promote
-
-The promotion is a row and a forwarder, in that order: the receipt names the id before
-the caller can ask, and the forwarder owns the answer until it is written where
-`check_job` reads it. The forwarder gives up the turn's stream for the same reason a
-worker does -- nobody is reading that channel any more -- and then it is
-indistinguishable from a job that was started as one.
-
-What it is *not* is a process of its own: this path is for the work that is a future
-inside this server (`read_file`, `write_file`, `replace`, a peer's `exec`),
-and such a job dies with the server that was running it. `exec` on this machine does
-not come through here at all -- `tunnel::run_own_program` starts its program as a job
-from the first moment, so a wait that ends leaves a process rather than a row. A
-worker per file read would cost more than the read, which is why the reading tools
-keep the cheaper answer.
-
-`tunneled` is one word for one thing on purpose: `wait` is not capped *and* not
-offered `background` *and* not offered `timeout_ms` by the general parameters, because
-all three are the same sentence -- SPEC treats it internally.
-
 ## argument_error
 
 Assembled from [`Tool::parameters`] rather than written per tool, so it cannot
@@ -275,56 +193,6 @@ Two readers, one string: the call's row (SPEC's `toolcall{tool_name·description
 and the spill file's name. Only ever a label either way, so a missing or
 nonsensical one costs an untitled row and a less informative path rather than a
 failed call -- which is why it is read here and not validated.
-
-## BashTool::run (background)
-
-`background` returns at once, which is the point: the turn stays responsive
-instead of sitting out a long command. There is no second flag to differ from;
-one switch decides not to wait. On this machine it starts a process of its own
-through `DetachedRegistry`, so it outlives a cancel and is adopted on restart;
-`check_job` reads what it answered. On a peer there is no process to start here,
-so the command is a job of that shell and `check_bash` reads it -- the one
-background that is not a process of its own.
-
-## CheckJobTool
-
-The collector for everything whose background is not a shell's: a `background` call
-answers at once with its `job_id`, and this is the only thing that reads the answer
-out of the row. It belongs in this file because it is one of the reading tools, next
-to `check_bash` and `check_python`, and it states the same zero default.
-
-Three rules make the answer honest. A job belongs to the session that started it, so
-another session's id is not found rather than refused with its details. A read with no
-number reads now, and a read with one waits on the clock the tunnel resolved. And
-reading marks the row collected, so a second read says the answer was already taken
-instead of handing the same text out twice -- `check_bash` clears its buffer for the
-same reason.
-
-`lost` is a status, not an error: a job that died with the server is something
-`check_job` can say exactly, and answering with a failure would read as "the call was
-wrong" rather than "the work is gone".
-
-## background, and what cannot be
-
-`background` means a process of its own, so the dispatch answers three ways: `Process`
-lets `bash` do what it already does, `Worker` hands the call to `worker.rs`, and `Here`
-refuses it. The refusal is the point of having a third answer: `del_bash` in a process
-with no shells would answer "done" and do nothing, and a silent no-op is worse than a
-word the caller did not expect. An in-process job used to be the fourth answer; it
-outlived the call but not the server, which SPEC does not allow.
-
-## DelJobTool
-
-The other end of the same row. It deletes first and stops second, and the order is the
-whole design: stopping a job makes it write how it ended, and that ending would post a
-notice about a job the caller just asked to forget. With the row gone, the same report
-finds nothing to write to.
-
-A job of this process is stopped through the token it was given -- `JobRegistry` -- so
-the work ends where it is, and a program it started goes with it (`kill_on_drop`). A
-job that is not in the registry had already ended, and deleting it is all that is left
-to do. Leaving the session takes the same road: its jobs are stopped and deleted with
-it, because work a session started is not work a deleted session keeps.
 
 ## BashTool::run (a background job's cwd)
 
@@ -410,52 +278,6 @@ turn, because nothing it answers may depend on that.
 What the stop does to the turn is `commands`' business: whether a restart continues it,
 and what a window is told, are decided there and read from `StopSignal`, not from
 anything a tool call says.
-
-## background_notifier
-
-The other half of `leave_running`: a command that outlived its wait is noticed the
-same way a `background` job is. The row is an `inject`, which is the only shape
-that reaches both states a session can be in -- busy reads it at the next step
-boundary, idle is woken for it by `commands::nudge_inboxes`. Posting a tool result
-instead would only ever reach a turn that had already moved on.
-
-The notice carries how long the job ran, because nothing else in the session can:
-`check_bash` returns output and a count, `list_bash` a number of jobs, and the call
-that started it returned before the job had a duration to report. `spent` spells it,
-so a notice and a tool result write a duration the same way.
-
-A deleted session is skipped rather than written to: nothing would ever read that
-row, and its name may be reused by a different session later.
-
-A session whose shells are being closed is skipped for the same reason, and a
-sharper one. `close_shells` ends every shell the session owns, retired ones
-included, so a shutdown makes each waiting command report "it has now finished"
--- which is false: it was stopped, and the shell that would have held its output
-is gone. Writing those rows is what made a restart wake every idle session to
-read notices about commands nobody was waiting for any more. The flag is set
-before the first shell goes (`SessionHandle::closing_signal`), and the row is the
-one thing it suppresses.
-
-## leave_running
-
-Both ways of losing a command's output -- its deadline passed, or somebody spoke
--- leave the same state behind: a fresh shell under a name that has to keep
-meaning "a shell you can use", and an old one whose output arrives later. Having
-them share one path is what keeps those two promises from drifting apart, and
-the messages differ only in `because`, since that is the only thing the model
-needs to know that the two paths do not share.
-
-It takes the clock rather than a duration, so both callers measure the same thing
-and neither can hand it a number that is not the wait: the deadline arm used to
-pass its `timeout_ms`, which is the ceiling it asked for rather than the time it
-spent. The result says `still running after 1.0s`, and the notice later says how
-long the command ran in all -- two numbers, because a model deciding what to do
-next needs the second one, and reporting only the wait would let a command that
-ran for a minute read as one that ran for five seconds.
-
-Both are `spent`'s spelling, and the notice is the only place the total exists:
-the row that carried `[elapsed ...]` for the call was written when the call
-returned, an hour before the command did.
 
 ## BashTool::run (the late spill label)
 

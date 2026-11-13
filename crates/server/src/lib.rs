@@ -48,7 +48,6 @@ mod tool_cmd;
 mod tools;
 mod transcript;
 mod transport;
-pub mod worker;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -418,20 +417,16 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         default_context: cfg.model.context,
         channels: channels.clone(),
         tools: Arc::new(
-            ToolRegistry::settings(
-                cfg.tools.max_wait,
-                cfg.bash.timeout,
-                cfg.bash.max_output_chars,
-            )
-            .with_live_compact(cfg.agent.live_compact_enabled)
-            .with_python(cfg.python.clone(), skill_lib.clone())
-            .with_skills(
-                tools::skill::programs(&cfg),
-                skill_lib,
-                cfg.bash.timeout,
-                cfg.bash.max_output_chars,
-            )
-            .build(&cfg.tools.rows, &cfg.tools.arguments),
+            ToolRegistry::settings(cfg.bash.max_output_chars)
+                .with_live_compact(cfg.agent.live_compact_enabled)
+                .with_python(cfg.python.clone(), skill_lib.clone())
+                .with_skills(
+                    tools::skill::programs(&cfg),
+                    skill_lib,
+                    std::time::Duration::from_millis(crate::config::CALL_DEFAULT_WAIT_MS),
+                    cfg.bash.max_output_chars,
+                )
+                .build(&cfg.tools.rows),
         ),
         bus: bus.clone(),
         compress_above_tokens: cfg.agent.compress_above_tokens,
@@ -445,7 +440,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         context_limit_percent: cfg.agent.context_limit_percent,
         home: cfg.home.clone(),
         output_dir: output_dir.clone(),
-        jobs: crate::tools::tunnel::JobRegistry::new(),
     });
     clock.step("tools");
 
@@ -511,12 +505,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // Failures the last run left behind, before a client can ask about them.
     monitor::sweep(&dispatch, &cfg.home).await;
     clock.step("sweep");
-    // What the last run left running is adopted, or said to be gone.
-    let owed = tools::tunnel::announce_owed(&store, &cfg, &output_dir).await;
-    clock.step("owed");
-    if owed > 0 {
-        tracing::info!(owed, "reported jobs a stopped server left owed");
-    }
     // Whatever the last run detached is still out there; adopt its pids now.
     let adoption_started = std::time::Instant::now();
     let adopted = detached.adopt().await;
@@ -535,7 +523,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             &'a self,
             session: &'a str,
             name: &'a str,
-            mut args: protocol::Args,
+            args: protocol::Args,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = crate::commands::Outcome> + Send + 'a>,
         > {

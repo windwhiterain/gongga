@@ -136,7 +136,6 @@ commands. The crate rename has landed:
 | [`server-remote.md`](server-remote.md) | `crates/server/src/remote/` |
 | [`server-tools-bash.md`](server-tools-bash.md) | `crates/server/src/tools/bash.rs` |
 | [`server-tools-detached.md`](server-tools-detached.md) | `crates/server/src/tools/detached.rs` |
-| [`server-tools-tunnel.md`](server-tools-tunnel.md) | `crates/server/src/tools/tunnel.rs` |
 | [`server-tools-text.md`](server-tools-text.md) | `crates/server/src/tools/text.rs` |
 | [`server-tools-skill.md`](server-tools-skill.md) | `crates/server/src/tools/skill.rs` |
 | [`server-pylib.md`](server-pylib.md) | `crates/server/src/pylib.rs` |

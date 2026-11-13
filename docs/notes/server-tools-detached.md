@@ -165,10 +165,8 @@ when it closes, and a recycled pid would make this server's death somebody else'
 
 ## arm_adopted
 
-The one place an adopted process is put under a job object, shared with the tool
-jobs that adopt their own workers (`docs/notes/server-tools-worker.md`). Only
-after the caller proved the pid, which the two call sites check differently: this
-one via `same_process`, the worker one via `names_process`.
+The one place an adopted process is put under a job object. Only after the caller
+proved the pid, via `same_process`.
 
 ## names_process
 

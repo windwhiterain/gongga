@@ -189,10 +189,6 @@ templates, and none of them is a sentence in the binary:
 - exploring, from `explore.rs`: `explore_notice`, `work_notice` (the two shapes of one
   mode change), `explore_changed` (a program changed the workspace), `explore_refusal`
   (a write-shaped call was refused).
-- a job, from `tools/tunnel.rs`: `job_report_finished` and `job_report_failed` (an ending
-  that differs in one word is two templates, because the model reads the whole sentence
-  either way), `job_lost` (nothing outlived the server), `job_left_owed` (it ended, the
-  answer was never collected).
 - a detached bash, from `tools/detached.rs`: `detached_ended` with `detached_exit`,
   `detached_no_exit` or `detached_adopted` in its `{{how}}`, and `detached_gone` with
   `detached_running` in its `{{command}}` or nothing at all.

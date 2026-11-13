@@ -327,8 +327,7 @@ impl Cmd for ReadFileTool {
                 "offset": args["offset"].as_u64().unwrap_or(0),
                 "limit": args["limit"].as_u64().unwrap_or(0),
             });
-            // The wait the tunnel resolved for this call, not this tool's built-in one.
-            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout);
+            let wait = self.timeout;
             let outcome = if on_remote {
                 let Some(endpoint) = remote_endpoint(ctx) else {
                     return ToolOutcome::err(
@@ -408,8 +407,7 @@ impl Cmd for WriteFileTool {
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
             let request = json!({"op": "write", "path": path, "content": content});
-            // The wait the tunnel resolved for this call, not this tool's built-in one.
-            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout);
+            let wait = self.timeout;
             let outcome = if on_remote {
                 let Some(endpoint) = remote_endpoint(ctx) else {
                     return ToolOutcome::err(
@@ -494,8 +492,7 @@ impl Cmd for ReplaceTool {
                 "new": new,
                 "all": args["all"].as_bool().unwrap_or(false),
             });
-            // The wait the tunnel resolved for this call, not this tool's built-in one.
-            let wait = crate::tools::tunnel::wait_of(&args).unwrap_or(self.timeout);
+            let wait = self.timeout;
             let outcome = if on_remote {
                 let Some(endpoint) = remote_endpoint(ctx) else {
                     return ToolOutcome::err(

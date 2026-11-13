@@ -1,4 +1,4 @@
-//! Tools the model calls: persistent shells and the jobs they leave behind.
+//! Tools the model calls, and the one clock every call runs on.
 //!
 //! See `docs/notes/server-tools-mod.md`.
 
@@ -28,7 +28,6 @@ pub mod python_remote;
 pub mod skill;
 pub mod spec;
 pub mod spill;
-pub mod tunnel;
 pub mod words;
 
 /// Everything a tool invocation needs, supplied per call by the agent loop.
@@ -76,8 +75,6 @@ pub struct ToolContext {
     /// and nothing else: a session's workspace is on one peer, so no other name can
     /// be where it stands.
     pub remote: Option<String>,
-    /// The jobs running right now, so `del_job` can stop one.
-    pub jobs: tunnel::JobRegistry,
     /// Streaming sink for `tool_answer` events.
     pub events: Option<mpsc::Sender<ToolAnswerEvent>>,
     pub cancel: CancellationToken,
@@ -91,13 +88,6 @@ pub struct ToolContext {
     pub vision: crate::llm::Vision,
     /// Whether a message arrived for this session that its turn cannot read yet.
     pub inbox: crate::session::InboxSignal,
-    /// Whether this call is holding a turn, which is what gives its clock a meaning.
-    ///
-    /// # Invariant
-    ///
-    /// False for a job: a call that already answers without waiting holds no turn, so
-    /// nothing is left for `timeout_ms` to take away from it.
-    pub holds_the_turn: bool,
     /// Whether a `cancel` is ending this turn, said where a tool call can hear it.
     pub stop: crate::session::StopSignal,
     /// Set when shells end because the server is going: nothing that stops then finished.
@@ -201,32 +191,6 @@ pub trait Tool: Send + Sync {
     /// session that has no such machine. See `definitions`.
     fn is_remote(&self) -> bool;
 
-    /// How long this tool's own calls wait when the call states none.
-    ///
-    /// # Invariant
-    ///
-    /// A default, never a ceiling: the tunnel resolves the wait from this and its own
-    /// cap, and writes the answer into the call. See `tunnel::resolve`.
-    fn default_timeout(&self) -> Option<Duration>;
-
-    /// Whether this tool is subject to the tunnel's shared arguments.
-    ///
-    /// # Invariant
-    ///
-    /// `wait` is the one tool that answers no: SPEC treats it internally, because
-    /// waiting is its whole work -- a ceiling on it would keep it from waiting for what
-    /// it was asked to wait for, and `background` would be a way of not waiting at all.
-    fn tunneled(&self) -> bool;
-
-    /// What carries a call to this tool that says `background`.
-    ///
-    /// # Invariant
-    ///
-    /// `Here` is the answer for a tool that acts on this server's state: a process of its
-    /// own would find none of it, so `background` is refused rather than answered with a
-    /// job that would die with the server. See `docs/notes/server-tools-worker.md`.
-    fn detached_carrier(&self) -> tunnel::Carried;
-
     /// Whether calling this tool is itself a change to the workspace.
     ///
     /// # Invariant
@@ -237,24 +201,6 @@ pub trait Tool: Send + Sync {
     /// changes the workspace some other way -- through a program -- is caught by the
     /// look its call takes when it ends. See `docs/notes/server-explore.md`.
     fn writes(&self) -> bool;
-
-    /// Whether `background` is this tool's own work rather than the tunnel's.
-    ///
-    /// # Invariant
-    ///
-    /// A tool that backgrounds into a shell or an interpreter is read back by that
-    /// collector (`check_bash`, `check_python`); every other tool's background is a
-    /// process of its own, read by `check_job`. See `docs/notes/server-tools-mod.md`.
-    fn handles_background(&self) -> bool;
-
-    /// Whether this tool's wait is its own, so the tunnel's clock does not end it.
-    ///
-    /// # Invariant
-    ///
-    /// A shell or an interpreter turns a long wait into its own background job, and a
-    /// reading tool waits for `wait_ms`: in both the work *is* the wait, so a clock
-    /// taking the call away would be taking away the thing that was asked for.
-    fn owns_its_wait(&self) -> bool;
 
     fn run<'a>(
         &'a self,
@@ -516,28 +462,8 @@ impl Tool for Specd {
         self.spec.machine == spec::Side::Remote
     }
 
-    fn default_timeout(&self) -> Option<Duration> {
-        self.spec.timeout_ms.map(Duration::from_millis)
-    }
-
-    fn tunneled(&self) -> bool {
-        self.spec.tunneled
-    }
-
-    fn detached_carrier(&self) -> tunnel::Carried {
-        self.spec.carrier.carried()
-    }
-
     fn writes(&self) -> bool {
         self.spec.writes
-    }
-
-    fn handles_background(&self) -> bool {
-        self.spec.handles_background
-    }
-
-    fn owns_its_wait(&self) -> bool {
-        self.spec.owns_its_wait
     }
 
     fn run<'a>(
@@ -549,53 +475,8 @@ impl Tool for Specd {
     }
 }
 
-/// A row with the tunnel's own arguments added, worded once for every tool that
-/// takes them.
-///
-/// # Invariant
-///
-/// A row that declares one of them keeps its own: these are what the tunnel offers,
-/// and a tool that words `background` for itself is saying what the shared sentence
-/// does not.
-fn with_tunnel_arguments(
-    row: &spec::ToolSpec,
-    tunnel: &std::collections::BTreeMap<String, String>,
-) -> spec::ToolSpec {
-    let mut row = row.clone();
-    if !row.tunneled {
-        return row;
-    }
-    for name in GENERAL_ARGS {
-        if row.parameters.iter().any(|argument| argument.name == *name) {
-            continue;
-        }
-        let Some(sentence) = tunnel.get(*name) else {
-            continue;
-        };
-        // `max_output` and `timeout_ms` are counts; the other two are not.
-        let kind = match *name {
-            "max_output" | "timeout_ms" => "integer",
-            "background" => "boolean",
-            _ => "string",
-        };
-        row.parameters.push(spec::Argument {
-            name: (*name).to_string(),
-            kind: kind.to_string(),
-            items: None,
-            required: false,
-            positional: None,
-            hint: None,
-            completion: spec::Completion::None,
-            sentence: Some(sentence.clone()),
-        });
-    }
-    row
-}
-
 pub struct ToolRegistry {
     tools: Vec<Arc<dyn Tool>>,
-    /// The longest one call may wait for its answer. See `tunnel::resolve`.
-    max_wait: Duration,
     /// What a command needs that no config row states.
     settings: Settings,
 }
@@ -607,7 +488,6 @@ pub struct ToolRegistry {
 /// Not a tool and not a row: the numbers and the programs a command is built with,
 /// which belong to the machine and not to what the model is told.
 struct Settings {
-    bash_timeout: Duration,
     max_output_chars: usize,
     python: Option<(crate::config::PythonConfig, Option<std::path::PathBuf>)>,
     skills: Option<skill::Skills>,
@@ -621,12 +501,10 @@ impl ToolRegistry {
     ///
     /// Nothing is registered here. What a build carries is what the home's `[tools]`
     /// declares, so a row added in the config is a tool and a row removed is not.
-    pub fn settings(max_wait: Duration, bash_timeout: Duration, max_output_chars: usize) -> Self {
+    pub fn settings(max_output_chars: usize) -> Self {
         Self {
             tools: Vec::new(),
-            max_wait,
             settings: Settings {
-                bash_timeout,
                 max_output_chars,
                 python: None,
                 skills: None,
@@ -687,17 +565,11 @@ impl ToolRegistry {
     /// or one whose setting is missing, is not carried and the reason is kept in
     /// [`Self::problems`]: a tool that vanished quietly is a model calling what is not
     /// there.
-    pub fn build(
-        mut self,
-        rows: &std::collections::BTreeMap<String, spec::ToolSpec>,
-        tunnel: &std::collections::BTreeMap<String, String>,
-    ) -> Self {
+    pub fn build(mut self, rows: &std::collections::BTreeMap<String, spec::ToolSpec>) -> Self {
         for (name, row) in rows {
             if row.cmd == live_compact::LIVE_COMPACT_TOOL && !self.settings.live_compact {
                 continue;
             }
-            // The tunnel's own arguments, in the words it words them once.
-            let row = &with_tunnel_arguments(row, tunnel);
             match self.command(row) {
                 Ok(work) => self
                     .tools
@@ -724,22 +596,15 @@ impl ToolRegistry {
         let max_output_chars = row
             .max_output_chars
             .unwrap_or(self.settings.max_output_chars);
-        let bash_timeout = row
-            .timeout_ms
-            .map(Duration::from_millis)
-            .unwrap_or(self.settings.bash_timeout);
         Ok(match row.cmd.as_str() {
             "wait" => Box::new(WaitTool {
-                timeout: bash_timeout,
+                timeout: WAIT_DEFAULT,
             }),
             "exec" => {
-                // The channels are the call's own, and the default wait is the row's.
+                // The channels are the call's own, and the default wait is the tool's.
                 Box::new(exec::ExecTool {
                     wait: exec::Wait {
-                        default: row
-                            .timeout_ms
-                            .map(Duration::from_millis)
-                            .unwrap_or(bash_timeout),
+                        default: exec::DEFAULT_WAIT,
                         max_output_chars,
                     },
                 })
@@ -815,12 +680,7 @@ impl ToolRegistry {
     /// notices is not the tool's own words (`check_bash` sees a field, not a
     /// sentence) but the room left where the harness writes: see
     /// `docs/notes/server-disk.md`.
-    pub async fn run(
-        self: &Arc<Self>,
-        name: &str,
-        mut args: Value,
-        ctx: &ToolContext,
-    ) -> ToolOutcome {
+    pub async fn run(self: &Arc<Self>, name: &str, args: Value, ctx: &ToolContext) -> ToolOutcome {
         let Some(tool) = self.get(name) else {
             // SPEC `fn <tool>(**args)`: an unregistered name is a cmd a skill taught; the command layer runs it.
             let words = match args.as_object() {
@@ -841,38 +701,6 @@ impl ToolRegistry {
         if let Some(message) = argument_error(tool.as_ref(), &args) {
             return ToolOutcome::err(message);
         }
-        // After the schema check, so the number written back is not a word the call was
-        // never allowed to say.
-        tunnel::resolve(tool.as_ref(), &mut args, self.max_wait);
-        // The tunnel's words are the tunnel's to offer: `wait` takes none of them.
-        if let Some(word) = tunnel::foreign(tool.as_ref(), &args) {
-            return ToolOutcome::err(format!(
-                "`{name}` did not run: it said `{word}`, and `{name}` is the one tool the tunnel \
-                 leaves alone -- waiting is its whole work, so it has no answer to leave running. \
-                 Call it without `{word}`."
-            ));
-        }
-        // SPEC: a background call is a process of its own, so it outlives a cancel.
-        if tunnel::wants_background(&args) {
-            match tool.detached_carrier() {
-                tunnel::Carried::Process => {}
-                tunnel::Carried::Worker => {
-                    let outcome = tunnel::spawn_worker(tool, name.to_string(), args, ctx).await;
-                    // The worker changed the workspace the session was reading, so the
-                    // watch owes a fresh look -- this process's.
-                    crate::explore::after_job(ctx, name);
-                    return outcome;
-                }
-                tunnel::Carried::Here if !tool.handles_background() => {
-                    return ToolOutcome::err(format!(
-                        "`{name}` cannot run in the background: a background call is a process \
-                         of its own, and `{name}` acts on what this server holds -- its shells, \
-                         its interpreters, its jobs. Call it in the foreground."
-                    ));
-                }
-                tunnel::Carried::Here => {}
-            }
-        }
         let outcome = invoke(name, tool, args, ctx).await;
         // The call ended; the look is a task of its own, so nothing waits on it.
         crate::explore::after_job(ctx, name);
@@ -884,59 +712,39 @@ impl ToolRegistry {
     }
 }
 
-/// The note a call leaves on its own row.
-///
-/// # Invariant
-///
-/// SPEC spells the shared argument `discription`; every call written before this one
-/// says `description`. They are one argument under two spellings, and a note is a
-/// label: a call is not refused over how it spelled one.
-fn note_of(args: &Value) -> Option<String> {
-    args.get("discription")
-        .or_else(|| args.get("description"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+/// What a call says when its own work stopped without answering.
+fn stopped(name: &str) -> ToolOutcome {
+    ToolOutcome::err(format!(
+        "`{name}` ended without answering: the work it was running stopped before it could          say how it went."
+    ))
 }
 
-/// Waits for one call, and ends that wait when somebody speaks or the turn stops.
+/// Runs one call, and ends its wait when somebody speaks or the turn stops.
 ///
 /// # Invariant
 ///
 /// The only wait, so "a message reaches the turn" is one rule and not one per tool.
-/// The work runs on a task with a token of its own: that is what lets the clock take
-/// the turn away without stopping it. See `docs/notes/server-tools-mod.md`.
+/// The work runs on a task with a token of its own, so a message can end the wait
+/// without stopping what the call is doing -- and the one clock is the fault bound:
+/// a call still running at `CALL_TIMEOUT_MS` is a fault, not a longer wait.
+/// See `docs/notes/server-tools-mod.md`.
 async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOutcome {
     let started = std::time::Instant::now();
-    let description = note_of(args);
-    let max = args
-        .get("max_output")
-        .and_then(Value::as_u64)
-        .map(|max| usize::try_from(max).unwrap_or(usize::MAX))
-        .unwrap_or(crate::config::DEFAULT_MAX_OUTPUT_CHARS);
-    // This call's own clock: a job holds no turn, and a tool whose wait is its work
-    // is not on the clock at all.
-    let clock_at = (ctx.holds_the_turn && tool.tunneled() && !tool.owns_its_wait())
-        .then(|| tunnel::wait_of(args))
-        .flatten()
-        .map(|wait| tokio::time::Instant::now() + wait);
     let mut job = ctx.clone();
     job.cancel = CancellationToken::new();
     let token = job.cancel.clone();
     let work = Arc::clone(tool);
-    let mut given = args.clone();
-    // A tool whose wait is the tunnel's gets no deadline of its own: the clock is
-    // the turn's, and the work outlives it.
-    if !tool.owns_its_wait()
-        && let Some(object) = given.as_object_mut()
-    {
-        object.remove("timeout_ms");
-    }
+    let given = args.clone();
     let (tx, mut rx) = mpsc::channel::<ToolOutcome>(1);
     let task = tokio::spawn(async move {
         let outcome = work.run(given, &job).await;
         let _ = tx.send(outcome).await;
     });
     let mut punctual = tokio::time::interval(INBOX_POLL);
+    // The one clock: past this bound the call is a fault, not something to keep
+    // waiting for.
+    let fault_at =
+        tokio::time::Instant::now() + Duration::from_millis(crate::config::CALL_TIMEOUT_MS);
     let why = loop {
         tokio::select! {
             answer = rx.recv() => return answer.unwrap_or_else(|| stopped(tool.name())),
@@ -949,21 +757,24 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
                     break Some("message");
                 }
             }
-            _ = wait_until(clock_at) => break None,
+            _ = tokio::time::sleep_until(fault_at) => break None,
         }
     };
     let Some(why) = why else {
-        // Out of time, not out of work: the turn stops waiting, the job does not.
-        return promote(
-            ctx,
+        // Past the bound: nothing legitimate runs this long, so this is a fault.
+        task.abort();
+        let _ = task.await;
+        tracing::error!(
+            session = %ctx.session,
+            tool = %tool.name(),
+            elapsed = ?started.elapsed(),
+            "a call outlived the fault bound"
+        );
+        return ToolOutcome::err(format!(
+            "`{}` was stopped: it ran past the {} every call is bounded by, and past that              bound is a fault rather than a wait. Run it again if it is still wanted.",
             tool.name(),
-            description.as_deref(),
-            max,
-            rx,
-            token,
-            started,
-        )
-        .await;
+            crate::agent::spent(crate::config::CALL_TIMEOUT_MS)
+        ));
     };
     tracing::info!(
         session = %ctx.session,
@@ -985,94 +796,6 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
     }
 }
 
-/// Sleeps until `at`, or for ever when this call has no clock of its own.
-async fn wait_until(at: Option<tokio::time::Instant>) {
-    match at {
-        Some(at) => tokio::time::sleep_until(at).await,
-        None => std::future::pending::<()>().await,
-    }
-}
-
-/// What a call says when its own work stopped without answering.
-fn stopped(name: &str) -> ToolOutcome {
-    ToolOutcome::err(format!(
-        "`{name}` ended without answering: the work it was running stopped before it could \
-         say how it went."
-    ))
-}
-
-/// Hands a call that outlived its clock to the job table, and answers for it.
-///
-/// # Invariant
-///
-/// The id is in the receipt before the caller can ask for it, and one forwarder owns
-/// the answer: what arrives later is written where `check_job` reads it, in the same
-/// act that tells the session. Nothing else holds that text.
-async fn promote(
-    ctx: &ToolContext,
-    tool: &str,
-    description: Option<&str>,
-    max: usize,
-    mut rx: mpsc::Receiver<ToolOutcome>,
-    token: CancellationToken,
-    started: std::time::Instant,
-) -> ToolOutcome {
-    // The row starts when the work did, not when the clock gave up on it: one job
-    // must not read as two different ages.
-    let began =
-        crate::store::now_millis() - i64::try_from(started.elapsed().as_millis()).unwrap_or(0);
-    let id = match ctx.store.add_job(
-        &ctx.session,
-        &ctx.call_id,
-        tool,
-        description,
-        tunnel::Mode::Background.as_str(),
-        began,
-    ) {
-        Ok(id) => id,
-        Err(e) => {
-            return ToolOutcome::err(format!(
-                "`{tool}` is still running after {} and this call could not be recorded as a \
-                 job ({e}), so nothing would collect what it answers.",
-                crate::agent::spent(started.elapsed().as_millis() as u64)
-            ));
-        }
-    };
-    let waited = crate::agent::spent(started.elapsed().as_millis() as u64);
-    let mut sink = ctx.clone();
-    // The stream belonged to the turn that is no longer waiting.
-    sink.events = None;
-    let named = tool.to_string();
-    let described = description.map(str::to_string);
-    // Registered before the receipt leaves, so `del_job` reaches it from the first
-    // instant the caller could name it.
-    ctx.jobs.add(id, token);
-    tokio::spawn(async move {
-        let Some(outcome) = rx.recv().await else {
-            return;
-        };
-        sink.jobs.done(id);
-        let text = match crate::tools::cap_max_output(
-            &sink,
-            &named,
-            described.as_deref(),
-            &sink.call_id,
-            &outcome.output,
-            max,
-        ) {
-            Some(metadata) => format!("{metadata}\n(over {max} chars: it is all in that file)"),
-            None => outcome.output,
-        };
-        let ran = crate::agent::spent(started.elapsed().as_millis() as u64);
-        tunnel::report(&sink, id, &named, &text, outcome.ok, &ran).await;
-    });
-    ToolOutcome::ok(format!(
-        "`{tool}` was still running after {waited}, so this call became background job {id}. \
-         It runs on without this turn: `check_job` with `job_id: {id}` collects what it \
-         answers, and this session is told when it ends."
-    ))
-}
-
 /// The adapter's general parameters: every tool may carry them, none
 /// declares them by hand.
 ///
@@ -1081,7 +804,7 @@ async fn promote(
 /// Injected into the model-facing schema in `definitions` (a declared
 /// property wins), read back at the call layer; they never reach the
 /// command surface, which reads `Tool::parameters` raw.
-pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "background"];
+pub const GENERAL_ARGS: &[&str] = &["description", "max_output"];
 
 /// SPEC's adapter-level parameters added to every tool the model is offered.
 ///
@@ -1089,45 +812,18 @@ pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "
 ///
 /// Injected here, in the model-facing schema only, so a provider's validator
 /// accepts what the call layer reads. A property a tool already declares wins.
-/// No name carries a sentence: the four are the call layer's, and what they are
+/// No name carries a sentence: both are the call layer's, and what they are
 /// for is said once, in the session's `general_parameters` section.
 pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
     let mut schema = tool.spec().schema();
-    // SPEC: `description` is every call's; the rest are the tunnel's.
+    // SPEC gives every call `description`; `max_output` is the cap beside it.
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties
             .entry("description".to_string())
-            .or_insert_with(|| {
-                json!({
-                    "type": "string"
-                })
-            });
-    }
-    // The tunnel's other words are the tunnel's: a tool left alone takes none.
-    if tool.tunneled()
-        && let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut)
-    {
+            .or_insert_with(|| json!({"type": "string"}));
         properties
             .entry("max_output".to_string())
-            .or_insert_with(|| {
-                json!({
-                    "type": "integer"
-                })
-            });
-        properties
-            .entry("timeout_ms".to_string())
-            .or_insert_with(|| {
-                json!({
-                    "type": "integer"
-                })
-            });
-        properties
-            .entry("background".to_string())
-            .or_insert_with(|| {
-                json!({
-                    "type": "boolean"
-                })
-            });
+            .or_insert_with(|| json!({"type": "integer"}));
     }
     schema
 }
@@ -1458,6 +1154,9 @@ pub(crate) async fn invoke(
 ///
 /// It consumes nothing it waited for: every arrival is delivered at the next step
 /// boundary, so a tool result is never a second copy of a message.
+/// How long `wait` waits when the call names no `time`.
+pub const WAIT_DEFAULT: Duration = Duration::from_secs(120);
+
 pub struct WaitTool {
     /// The ceiling one call waits, when the call names none.
     pub timeout: Duration,
@@ -1507,20 +1206,6 @@ impl Cmd for WaitTool {
 /// SPEC's `time` for this call: how long it waited, spelled as a `Result`'s is.
 fn spent(began: std::time::Instant) -> String {
     format!("{:.3}s", began.elapsed().as_secs_f64())
-}
-
-/// What one queued row is, in the few words a summary can carry.
-fn arrival(row: &crate::store::PendingTask) -> String {
-    if row.payload.get("subscription").is_some() {
-        return "a `subscribe` match".to_string();
-    }
-    match row.payload.get("notice").and_then(Value::as_str) {
-        Some(kind) => format!("notice `{kind}`"),
-        None => match row.payload.get("context_notice") {
-            Some(_) => "a context notice".to_string(),
-            None => "a message".to_string(),
-        },
-    }
 }
 
 #[cfg(test)]

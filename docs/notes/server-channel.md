@@ -240,10 +240,9 @@ Delete in this order, one slice at a time, each slice building and passing
 3. **Interpreters.** `tools/python.rs`, `tools/interpreter.rs`,
    `tools/python_remote.rs`, `remote/shell*.rs` and their rows. Subscriptions already
    run in a channel; the interpreter's REPL semantics are what a `python` channel gives.
-4. **Detached processes.** `tools/detached.rs` and the `background` carrier: a channel
-   is what outlives a turn, so this is the last to go. It carries `JobRow`, the job
-   view and `cancel_lets_go` -- check each before removing it, because `cancel` and a
-   `resume` after a stop read them.
+4. **Detached processes.** The `background` and `timeout_ms` arguments and the job
+   row behind them are gone: a channel is what outlives a turn, and `exec`'s `wait`
+   is how long a call stays to listen.
 
 ## Deleted so far
 
@@ -252,8 +251,8 @@ Delete in this order, one slice at a time, each slice building and passing
 `tunnel::promote_child`, `words::Own`/`spawn_own`, `Store::job_of_call`,
 `ToolContext::endpoint` and the `CANCEL_LETS_GO` flag nothing read any more. Their two
 rows went with them, and `scripts/job_selftest.sh` retired too: it tested "a call's own
-program becomes a job", which is what a channel is for now. `check_job`/`del_job` and
-`tools/detached.rs` are still here for the slice that removes the `background` carrier.
+program becomes a job", which is what a channel is for now. The job row that
+answered a `background` call went with them.
 
 What stays: `read_file`, `write_file`, `replace` (a model has no other door to a file),
 `list_paths`, and every command in `commands.rs` that the channel world added.

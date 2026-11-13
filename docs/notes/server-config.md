@@ -93,12 +93,11 @@ at all. `0` is no ceiling: retry until the turn is cancelled.
 First retry delay; every further attempt doubles it, up to `retry_ceiling`,
 so a provider having a bad minute is waited out rather than hammered.
 
-## BashConfig::timeout
+## No timeout is configured
 
-The number decides when the model stops waiting, nothing else. It is a default, not a
-ceiling: `ToolsConfig::max_wait` clamps it, so a home that sets a five-minute `bash`
-wait and leaves the tunnel at sixty seconds waits one minute and is told why.
-
+A call's wait is the call's own: `wait` on `exec`, `time` on `wait`. What is left in
+code is one hardcoded bound, `config::CALL_TIMEOUT_MS`, and it is a fault detector
+rather than a setting -- nothing a tool does legitimately runs that long.
 ## ToolsConfig::max_wait
 
 The longest one call may wait for its answer: `[tools] max_wait_ms`, or
