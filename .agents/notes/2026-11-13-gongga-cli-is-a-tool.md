@@ -37,9 +37,18 @@ one door, and the tool list gains `gongga_cli`.
 
 - `cargo build -p gongga-server -p gongga-client`: clean. A workspace-wide `cargo build`
   cannot remove `target/debug/gongga-tui.exe`: a TUI of the user's is running it.
-- `comments-check` on `tools/mod.rs`: the two violations HEAD already had, none added.
-  `test-layout-check`: 0 violations. `scripts/skill_contract.sh`: PASS, 9 skills.
-  `scripts/tool_selftest.sh`: PASS, 29s.
+- `comments-check` on `tools/mod.rs`: the two violations HEAD already had, none added;
+  `commands.rs` and `subscriptions.rs` clean. `test-layout-check`: 0 violations.
+  `scripts/skill_contract.sh`: PASS, 9 skills. `scripts/ship.sh --check`: in agreement.
+- `scripts/tool_selftest.sh`: PASS, 25s, once the content could start a home at all. On
+  the published content it dies before any tool runs: `3afab0a` emptied
+  `[prompts].instructions` in `ship/config/config.toml` (prose -> `''''''`), and the server
+  refuses to start when neither the home nor the pinned content can answer it. Run
+  against a clone of the content with that one paragraph restored from `64321d7`, it
+  passes. Its first run also failed on `exec` for a different, equally unrelated reason:
+  `target/debug/gongga-relay.exe` was a build of `d25570f4` while the server said
+  `0acf7257`, and a channel is started by a pair of one build -- `cargo build -p
+  gongga-relay` fixed it.
 - One real server on a home built from the live home's `config.toml` plus the published
   row (a *fresh* home cannot start: `ship/config/config.toml` ships
   `instructions = ''''''`, which predates this change):
