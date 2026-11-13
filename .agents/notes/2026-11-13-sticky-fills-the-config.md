@@ -58,6 +58,31 @@ SPEC 把 sticky 记在类型上（`Session` / `Model` / `ModelConfig` / `Session
 - 模型两种拼法：`ModelValue` 接受 `{provider, model}` 与 `provider/model`（文件里存后者，JSON 里
   要前者）；客户端 `leaf_value` 按叶子形状插入（`model_ref` 的叶子读成 JSON，`keep_alive` 读成布尔）。
 
+## 类型是整体的：Session / Model / ModelConfig / SessionConfig
+
+用户第四问：`Config` / `ModelConfig` / `Workspace` 是否作为整体被 sticky。SPEC 只在
+`Session`、`Model`、`ModelConfig`、`SessionConfig` 上写了 `# sticky`，**`Workspace` 没有**。
+于是条目就是四个：
+
+| 条目 | 类型 | 值 |
+| --- | --- | --- |
+| `session` | `Session` | 一个名字 |
+| `model` | `Model` | `{provider, model}`（或 `provider/model` 字样） |
+| `model_config` | `ModelConfig` | 一个对象 |
+| `config` | `SessionConfig` | 一个对象 |
+
+`cwd` / `remote` / `thinking` / `keep_alive` 不是类型，是成员，只随 `config` 走。目录用
+`ArgSpec.kind`（`config`）和 `StructField.kind`（`model_config`、`model`）说出这些类型。
+
+- 填：结构化值按**自己的**条目整体填（再把行里写的盖上去），窄的压宽的（`model` > 
+  `model_config` > `config`），并且任何**有默认值**的字段在哪一层都不填（`prune` 也把旧
+  条目里残留的这类值切掉）。
+- 回写：`absorb` 把行里写的剪枝后**合并**进该类型的条目，字段有自己的类型就各自再写一份——
+  所以今天的 `set_session --config {model_config…}` 既更新 `config`，也更新 `model_config`
+  和 `model`。
+- `set_sticky` 的可选类型因此正好是 `config, model, model_config, session`；`cwd`、
+  `keep_alive` 这类会被拒。
+
 ## struct update 不填，只回写
 
 用户第三问：`SessionConfig{..}` 是 struct update，不该被 sticky 填。SPEC 的两个签名正是两种东西：
@@ -80,6 +105,14 @@ SPEC 把 sticky 记在类型上（`Session` / `Model` / `ModelConfig` / `Session
 /set_session --id s1 --config '{"model_config":{"thinking":"high"}}'
                        → set_session --config {"model_config":{"thinking":"high"}} --id s1 → ok
                          （只发调用者写的；thinking 有默认，也不回写）
+/set_sticky --type model_config --value '{"model":{"provider":"fake","model":"flash-fake"}}'   → ok
+/set_sticky --type config --value '{"keep_alive":true}'                                        → ok
+/set_sticky --type cwd --value …      → error: the types are: config, model, model_config, session
+/set_sticky --type keep_alive --value true → 同上（它是 config 的成员，不是类型）
+/new_session --id s1   → --config {"keep_alive":true,"model_config":{"model":{"provider":"fake","model":"flash-fake"}}} → ok
+/set_session --id s1 --config '{"model_config":{"model":{…}}}'
+                       → 只发写的；回写后 client.toml 里 config 合并（保留 keep_alive）、
+                         model_config 与 model 各写一份
 /new_session --id s2 --config '{"workspace":{"cwd":"C:/resource"}}'
                        → --config {"model_config":{"model":"fake/flash-fake"},"workspace":{"cwd":"C:/resource"}}
                          （调用者写的 cwd 保留，粘的 model 补上）                              → ok

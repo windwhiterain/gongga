@@ -157,6 +157,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         accepts: None,
         value_hint: Some(hint.to_string()),
         model_ref: false,
+        kind: None,
         default: None,
     };
     let object = |name: &str, description: &str, fields: Vec<StructField>| StructField {
@@ -167,6 +168,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         accepts: None,
         value_hint: None,
         model_ref: false,
+        kind: None,
         default: None,
     };
     let mut remote_values = vec![protocol::NONE_VALUE.to_string()];
@@ -174,6 +176,8 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
     // SPEC: `model: Model` -- no default, so an entry may fill it.
     let model = StructField {
         model_ref: true,
+        // SPEC: `Model := {provider, model} # sticky`.
+        kind: Some("model".into()),
         ..leaf(
             "model",
             "The model this session runs on.",
@@ -253,11 +257,15 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
     );
     StructSchema {
         fields: vec![
-            object(
-                "model_config",
-                "The model and how it is asked.",
-                vec![model, thinking, ctx_limit, cache_tier],
-            ),
+            // SPEC: `ModelConfig := {model, thinking, ctx_limit, cache_tier} # sticky`.
+            StructField {
+                kind: Some("model_config".into()),
+                ..object(
+                    "model_config",
+                    "The model and how it is asked.",
+                    vec![model, thinking, ctx_limit, cache_tier],
+                )
+            },
             object("workspace", "Where the session works.", vec![remote, cwd]),
             keep_alive,
         ],

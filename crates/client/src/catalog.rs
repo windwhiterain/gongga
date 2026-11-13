@@ -1328,6 +1328,7 @@ fn root_schema(spec: &CommandSpec) -> StructSchema {
                 accepts: a.accepts.clone(),
                 value_hint: a.value_hint.clone(),
                 model_ref: false,
+                kind: a.kind.clone(),
                 default: None,
             })
             .collect(),

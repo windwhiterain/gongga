@@ -997,6 +997,8 @@ fn config_arg(remotes: &[String], update: bool) -> protocol::ArgSpec {
         CompletionSource::None,
     )
     .with_structure(crate::session_config::schema(remotes));
+    // SPEC: `SessionConfig := {...} # sticky`, so the whole object is one entry.
+    spec.kind = Some("config".into());
     spec.update = update;
     spec
 }

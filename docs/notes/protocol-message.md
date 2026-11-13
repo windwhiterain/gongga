@@ -526,6 +526,12 @@ A structured argument publishes its shape -- the fields, their completion source
 the sets a model refuses, and each leaf's default -- so a front-end can complete
 inside it without knowing any command.
 
+`kind` names the sticky type a field carries, and only the types SPEC marks carry
+one: `model_config` (a `ModelConfig`) and `model` (a `Model`) inside a session's
+config. `workspace` has none -- SPEC marks neither it nor its members -- so a value
+of it travels only because a line stated it. A field with a kind is filled as a whole
+from that type's entry, and written back to it as a whole.
+
 `update` separates SPEC's two spellings of one type. `new_session(id, config:
 SessionConfig)` takes a **value**: its field with no default (`model`) is a missing
 required argument, and a sticky entry fills it. `set_session(id, config_delta:

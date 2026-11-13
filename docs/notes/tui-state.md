@@ -42,36 +42,46 @@ an otherwise readable file falls back to the default the type publishes.
 
 ## Sticky
 
-`sticky_cmd_arguments[{name, value}]`, keyed by argument **kind**, never by name:
-`set_session --name <session>` and `get_messages --session <session>` share one
-`session` entry whatever their flags spell, and an argument with no kind never fills
-(which is what keeps `--must_create` out). The kinds that exist are the ones the
-published catalog declares.
+`sticky_cmd_arguments[{name, value}]`, keyed by **type**, never by name: SPEC marks
+`Session := path # sticky`, `Model := {provider, model} # sticky`,
+`ModelConfig := {...} # sticky` and `SessionConfig := {...} # sticky`, and does not
+mark `Workspace`. So the four entries are `session` (a word), `model` (the object, or
+the flat `provider/model` word the server also takes), `model_config` and `config`
+(objects). `cwd`, `remote`, `thinking` and `keep_alive` are not types here: they are
+members, and they travel inside `config`.
 
-`fill` answers exactly one question: **is this a value the caller was obliged to
-supply and did not?** So a required argument is filled from its entry, and an argument
-with a default of its own is not -- whichever way that default is spelled. An argument
-no entry names keeps that default, applied where the command runs.
+### What fills
 
-A structured argument -- `--config`, SPEC's `SessionConfig` -- is filled leaf by leaf
-under the same rule, and only when it is a *value*: `new_session`'s config is one, and
-`set_session`'s is SPEC's `SessionConfig{..}`, a struct update that says what changes
-and is never filled. What an update states is written back instead. and the published schema states which leaves have defaults
-(`StructField.default`, SPEC's `provider_default()`, `70%`, `none`, `.`, `false`).
-Only the rest fill: `model` and `keep_alive` in today's catalog. `thinking`,
-`ctx_limit` and `cache_tier` are marked `# re-default if model change`, and `cwd`
-and `remote` have defaults of their own -- an entry typed days ago may not stand in
-for any of them. What the line stated stays, and the object is built only when an
-entry contributed to it.
+A slot is filled when it is a **missing argument with no default**: a required
+argument outright, and a field SPEC gives no default to. `thinking`, `ctx_limit`,
+`cache_tier` (`# re-default if model change`), `cwd`, `remote` and `mode` have
+defaults, so no entry reaches them. A struct **update** (`set_session`'s
+`config_delta: SessionConfig{..}`) is never filled at all: it says what changes, and
+`new_session`'s `config: SessionConfig`, a value, is the one that is filled.
 
-`leaf_value` reads an entry as the leaf's own shape: a switch is a boolean, a model
-is the object SPEC spells (or the flat `provider/model` word the server also takes),
-everything else stays the text it was stored as.
+### What a type's value is
 
-So one list of kinds has two sources -- the `kind` of a required argument, and the
-name of a leaf without a default -- and `client::commands::sticky_kinds` is the only
-place that reads both: `set_sticky` refuses a type outside it, `--type` completes it,
-and only a type inside it is written back when a line states it.
+A structured type is one value, so a field carrying a type is filled from that
+type's entry as a whole, then from the wider entry it sits in, and the line wins:
+`model` over `model_config` over `config`. One walk does it (`value_of`), and `prune`
+keeps an entry to the fields with no default at every depth -- an entry from an older
+build that still holds a `thinking` loses it here rather than sending it.
+
+`fill` fills what the line left open by that rule; an object nobody contributed to is
+left out instead of sent empty.
+
+### What a line writes back
+
+An accepted `new_session` or `set_session` writes back what the line stated, and only
+that: `absorb` prunes it, merges the whole object into the entry of the argument's own
+type (`config`), and gives each field with a kind its own entry (`model_config`,
+`model`). Merging is why a delta can say `keep_alive` today and `model_config`
+tomorrow without forgetting either. A value the entries supplied is not written back,
+because it is already in the file.
+
+`commands::sticky_kinds` is the one list of types that can fill, and `set_sticky`'
+refusal, `--type`'s completion and the write-back all read it, so an entry nobody
+could set is never recorded either.
 
 ## Sticky to xxx
 
@@ -98,11 +108,9 @@ so the window drops a filled value that set does not take and says so in one lin
 A value the operator *typed* is sent as typed and judged by the server: that one is
 a statement, and a statement is worth a refusal.
 
-The same question is asked of a structured leaf, because sticky `thinking = low`
-reaches a session through `--config` just the same: the leaf's own `accepts` is
-checked against the model the filled call runs on -- the sticky model if that is the
-one it names. A refused leaf is cut out of the object, the rest is sent, and one
-line says which entry was left to the model's own.
+A structured leaf with an `accepts` set is never reached: `thinking` and `cache_tier`
+have defaults by construction, and a defaulted field is not filled. `refused_values`
+therefore reads top-level arguments only, which is every slot a fill can reach.
 
 ## Shown
 

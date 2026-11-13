@@ -285,44 +285,11 @@ pub fn follow(
     let Some(typed) = typed_args(client, line) else {
         return;
     };
-    let mut pairs: Vec<(String, String)> = Vec::new();
-    for arg in &spec.args {
-        let Some(stated) = typed.value(&arg.name) else {
-            continue;
-        };
-        match &arg.structure {
-            Some(schema) => stated_leaves(schema, stated, &mut pairs),
-            None => {
-                if let Some(kind) = arg.kind.as_deref() {
-                    pairs.push((kind.to_string(), crate::json_command::word(stated)));
-                }
-            }
-        }
-    }
     let fillable = crate::commands::sticky_kinds(&client.commands());
+    let mut pairs = state.sticky().absorb(&spec, &typed);
     pairs.retain(|(kind, _)| fillable.contains(kind));
     if !pairs.is_empty() {
         pending.push((*id, pairs));
-    }
-}
-
-/// The leaves one stated object carries, each under the name its type answers to.
-fn stated_leaves(
-    schema: &protocol::StructSchema,
-    value: &serde_json::Value,
-    leaves: &mut Vec<(String, String)>,
-) {
-    let serde_json::Value::Object(object) = value else {
-        return;
-    };
-    for field in &schema.fields {
-        let Some(current) = object.get(&field.name) else {
-            continue;
-        };
-        match &field.object {
-            Some(nested) => stated_leaves(nested, current, leaves),
-            None => leaves.push((field.name.clone(), crate::json_command::word(current))),
-        }
     }
 }
 

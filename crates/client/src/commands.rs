@@ -38,37 +38,37 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
 ///
 /// # Invariant
 ///
-/// A required argument's `kind`, and the name of a structured leaf with no
-/// default: the only slots a fill may reach, and so the only types an entry may
-/// name. See `docs/notes/client-commands.md`.
-///
-/// One list for three readers -- `set_sticky`'s refusal, `--type`'s completion and
-/// a command's write-back -- so an entry nobody could set is never recorded either.
+/// SPEC's four, and nothing else: a required argument's `kind` (`Session`), a
+/// structured value's own type when it is not an update (`SessionConfig`), and a
+/// field's type when it has no default (`ModelConfig`, `Model`). One list for
+/// `set_sticky`, `--type` and the write-back. See `docs/notes/client-commands.md`.
 pub fn sticky_kinds(commands: &[CommandSpec]) -> Vec<String> {
     let mut kinds = BTreeSet::new();
     for command in commands {
         for arg in &command.args {
+            let fillable = arg.required || (arg.structure.is_some() && !arg.update);
             if let Some(kind) = &arg.kind
-                && arg.required
+                && fillable
             {
                 kinds.insert(kind.clone());
             }
             if let Some(structure) = &arg.structure {
-                leaf_kinds(structure, &mut kinds);
+                field_kinds(structure, &mut kinds);
             }
         }
     }
     kinds.into_iter().collect()
 }
 
-fn leaf_kinds(schema: &StructSchema, kinds: &mut BTreeSet<String>) {
+fn field_kinds(schema: &StructSchema, kinds: &mut BTreeSet<String>) {
     for field in &schema.fields {
-        match &field.object {
-            Some(nested) => leaf_kinds(nested, kinds),
-            None if field.default.is_none() => {
-                kinds.insert(field.name.clone());
-            }
-            None => {}
+        if field.default.is_none()
+            && let Some(kind) = &field.kind
+        {
+            kinds.insert(kind.clone());
+        }
+        if let Some(nested) = &field.object {
+            field_kinds(nested, kinds);
         }
     }
 }

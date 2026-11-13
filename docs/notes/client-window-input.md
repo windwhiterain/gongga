@@ -33,17 +33,15 @@ encodes. What the operator sees is unchanged.
 `ui.drawn`, `ui.room_of`, `ui.take_settled`). They move with the journal, not
 before it. The `interactive` loop itself is still there. See `DESIGN.md` §1.
 
-## A structured argument is filled leaf by leaf
+## A structured value is filled by its type
 
-`--config` is SPEC's `SessionConfig`, one JSON object. A sticky entry may name any
-leaf of it -- `model`, `thinking`, `ctx_limit`, `cache_tier`, `remote`, `cwd`,
-`keep_alive` -- and the line keeps every leaf it stated. `place` rewrites the
-object where the line spells it instead of appending a second `--config`, which
-the parser refuses as given twice.
+`--config` is SPEC's `SessionConfig`, one JSON object, and a sticky entry holds that
+type as a whole (`config`), or the narrower types a field carries (`model_config`,
+`model`). `place` rewrites the object where the line spells it instead of appending a
+second `--config`, which the parser refuses as given twice.
 
 `follow` is the other direction: an accepted `new_session` or `set_session` writes
-back every leaf the line stated, under the entry its type answers to. A value the
-entries filled in is not written back, because it is already in the file.
-
-Only the leaves SPEC gives no default to are filled at all (`model`, `keep_alive`);
-the rest are the type's decision, not a missing argument (`docs/notes/tui-state.md`).
+back what the line stated -- `Sticky::absorb`, pruning the fields that have defaults
+and merging each stated value into the entry of its own type. A value the entries
+supplied is not written back, because it is already in the file. A struct *update*
+(`set_session`) is never filled; a value (`new_session`) is.

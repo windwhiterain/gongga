@@ -1420,6 +1420,16 @@ pub struct StructField {
     /// A model-reference leaf: the chosen `<provider>/<model>` arrives as an object.
     #[serde(default)]
     pub model_ref: bool,
+    /// The sticky type this field carries, when SPEC marks its type `# sticky`.
+    ///
+    /// # Invariant
+    ///
+    /// A field with a kind is filled by that type's entry as a whole and written
+    /// back to it; a field without one is a plain member. `Model` and
+    /// `ModelConfig` are the two nested types SPEC marks, `Workspace` is not.
+    /// See `docs/notes/tui-state.md`.
+    #[serde(default)]
+    pub kind: Option<String>,
     /// The value this field takes when nothing says otherwise, in SPEC's spelling;
     /// `None` is no default.
     ///

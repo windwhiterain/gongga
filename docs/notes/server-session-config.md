@@ -29,7 +29,12 @@ model refuses (`thinking` levels and `cache_tier` names come per model). The lea
 are also the sticky entry names the window fills, so a leaf renamed here renames the
 entry that fills it.
 
-The same shape is published for `new_session` as a value and for `set_session` as a
+`schema` also names the sticky types in it: the argument's own `kind` is `config`
+(`SessionConfig`), the `model_config` field carries `model_config` (`ModelConfig`) and
+its `model` leaf carries `model` (`Model`). `workspace` and `keep_alive` carry none:
+SPEC marks neither, so the client neither fills them from an entry nor writes one.
+
+`new_session` as a value and for `set_session` as a
 struct update (`ArgSpec::update`): a value may be filled from a sticky entry, an
 update may only write the entries it stated. `config_arg` is the one place that
 decides which, so the two commands cannot disagree about what `--config` is.

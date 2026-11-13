@@ -78,9 +78,10 @@ own `@skill(...)` expansion reads, since that expansion runs on the server.
 
 ## sticky_kinds
 
-One list of the types a sticky entry may name, and it is a list of what can
-actually fill: the `kind` of a **required** argument (`session`) and the name of a
-structured leaf that has **no default** (`model`, `keep_alive`). A defaulted
-argument is not a missing one, so an entry naming it could never apply -- and
-`set_sticky` refuses it, `--type` does not offer it, and a line that states it
-writes nothing back. Three readers of one walk, rather than a list kept equal by hope.
+One list of the types a sticky entry may name, and it is a list of what can actually
+fill: a **required** argument's `kind` (`session`), a **structured value**'s own type
+when the argument is not an update (`config`), and a field's type when the field has
+no default (`model_config`, `model`). That is SPEC's four: `Session`, `Model`,
+`ModelConfig`, `SessionConfig` -- `Workspace` is not marked, and a defaulted field is
+not a missing one, so neither is in the list. `set_sticky` refuses what is not there,
+`--type` completes what is, and only a listed type is written back.
