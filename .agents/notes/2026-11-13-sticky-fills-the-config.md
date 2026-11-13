@@ -58,12 +58,31 @@ SPEC 把 sticky 记在类型上（`Session` / `Model` / `ModelConfig` / `Session
 - 模型两种拼法：`ModelValue` 接受 `{provider, model}` 与 `provider/model`（文件里存后者，JSON 里
   要前者）；客户端 `leaf_value` 按叶子形状插入（`model_ref` 的叶子读成 JSON，`keep_alive` 读成布尔）。
 
-## 验证（真服务端 + 真 gongga-client 管道，临时 home 在 .dev/sticky2）
+## struct update 不填，只回写
+
+用户第三问：`SessionConfig{..}` 是 struct update，不该被 sticky 填。SPEC 的两个签名正是两种东西：
+
+- `new_session(id, config: SessionConfig)` —— 一个**值**，其中 `model` 无默认，是缺的必填参数，粘性填；
+- `set_session(id, config_delta: SessionConfig{..})` —— 一个 **struct update**，说的是「改什么」，
+  被粘性填就等于「改一个字段」变成「重申整份配置」，所以不填；它写到的叶子回写进条目。
+
+目录里用 `ArgSpec.update` 说出这件事（`config_arg(remotes, update)`，`set_session` 传 true，
+`new_session` 传 false），客户端 `fill_struct` 见到 update 直接返回。
+
+## 验证（真服务端 + 真 gongga-client 管道，临时 home 在 .dev/s3）
 
 粘性文件按用户的形状写（`session` / `model` / `cwd` / `mode` / `thinking`）：
 
 ```
 /new_session --id s1   → new_session --config {"model_config":{"model":"fake/flash-fake"}} --id s1 → ok
+                         （config 是值：model 无默认，填）
+/set_session --id s1   → set_session --id s1（update 不填，行原样发出）                        → ok
+/set_session --id s1 --config '{"model_config":{"thinking":"high"}}'
+                       → set_session --config {"model_config":{"thinking":"high"}} --id s1 → ok
+                         （只发调用者写的；thinking 有默认，也不回写）
+/new_session --id s2 --config '{"workspace":{"cwd":"C:/resource"}}'
+                       → --config {"model_config":{"model":"fake/flash-fake"},"workspace":{"cwd":"C:/resource"}}
+                         （调用者写的 cwd 保留，粘的 model 补上）                              → ok
                          （cwd 有默认 "."、thinking 有 provider_default、mode 有 work：一个都没填）
 /set_sticky --type cwd --value C:/resource
                        → error: "cwd" is not a type any published argument declares; the types are:

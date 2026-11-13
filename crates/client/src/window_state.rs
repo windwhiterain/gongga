@@ -286,8 +286,9 @@ impl Sticky {
     /// # Invariant
     ///
     /// A value lands only on an argument whose `kind` names it and that has no
-    /// default: a required argument, and a leaf SPEC gives no default. What the
-    /// line stated stays. See `docs/notes/tui-state.md`.
+    /// default: a required argument, and a leaf SPEC gives no default. A struct
+    /// update is not filled at all. What the line stated stays. See
+    /// `docs/notes/tui-state.md`.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
         for a in &spec.args {
@@ -318,7 +319,16 @@ impl Sticky {
 
     /// A structured argument, leaf by leaf: each leaf without a default filled by the
     /// entry its name keys.
+    ///
+    /// # Invariant
+    ///
+    /// A struct update (`ArgSpec::update`) is never filled: SPEC's `T{..}` says what
+    /// changes, and a fill would restate the whole config on a line that asked for
+    /// one field. What it stated is written back instead.
     fn fill_struct(&self, a: &ArgSpec, schema: &StructSchema, args: &mut Args) {
+        if a.update {
+            return;
+        }
         // A value of the wrong shape is the server's to refuse; a fill must not
         // stand in its way by rewiring it.
         let mut object = match args.get(&a.name) {

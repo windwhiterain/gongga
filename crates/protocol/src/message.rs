@@ -1256,6 +1256,7 @@ fn spec_arg(
         accepts: None,
         sticky_to: None,
         structure: None,
+        update: false,
     }
 }
 
@@ -1338,6 +1339,15 @@ pub struct ArgSpec {
     /// The shape of a structured (JSON object) value, when this argument takes one.
     #[serde(default)]
     pub structure: Option<StructSchema>,
+    /// SPEC's `T{..}`: a struct update, not a value of the type.
+    ///
+    /// # Invariant
+    ///
+    /// An update is never filled from a sticky entry: it says what changes, and a
+    /// fill would turn "change one field" into "restate the whole config". What it
+    /// stated is written back instead. See `docs/notes/tui-state.md`.
+    #[serde(default)]
+    pub update: bool,
 }
 
 impl ArgSpec {

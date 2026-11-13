@@ -54,7 +54,9 @@ with a default of its own is not -- whichever way that default is spelled. An ar
 no entry names keeps that default, applied where the command runs.
 
 A structured argument -- `--config`, SPEC's `SessionConfig` -- is filled leaf by leaf
-under the same rule, and the published schema states which leaves have defaults
+under the same rule, and only when it is a *value*: `new_session`'s config is one, and
+`set_session`'s is SPEC's `SessionConfig{..}`, a struct update that says what changes
+and is never filled. What an update states is written back instead. and the published schema states which leaves have defaults
 (`StructField.default`, SPEC's `provider_default()`, `70%`, `none`, `.`, `false`).
 Only the rest fill: `model` and `keep_alive` in today's catalog. `thinking`,
 `ctx_limit` and `cache_tier` are marked `# re-default if model change`, and `cwd`

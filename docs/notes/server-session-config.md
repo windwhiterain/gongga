@@ -29,6 +29,11 @@ model refuses (`thinking` levels and `cache_tier` names come per model). The lea
 are also the sticky entry names the window fills, so a leaf renamed here renames the
 entry that fills it.
 
+The same shape is published for `new_session` as a value and for `set_session` as a
+struct update (`ArgSpec::update`): a value may be filled from a sticky entry, an
+update may only write the entries it stated. `config_arg` is the one place that
+decides which, so the two commands cannot disagree about what `--config` is.
+
 Each leaf also states its **default**, in SPEC's own spelling (`provider_default()`,
 `70%`, `none`, `.`, `false`), and a field without one states nothing. That is what the
 client reads to decide whether an entry may fill it: SPEC's `# re-default if model

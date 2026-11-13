@@ -228,8 +228,10 @@ is the kind `session` whether the flag spells `--name` (set_session,
 send_message) or `--session` (get_messages, set_render_session). The kinds the
 published catalog declares are the only entries there are -- the cmd surface
 decides the sticky vocabulary, and a value lands only where a kind names it.
-SPEC's Sticky section fills with an entry what a command omits: required
-arguments outright, optional arguments as their initial value.
+A fill reaches a *required* argument and nothing else: an argument with a default
+is a value the type already chose. A structured argument says which of the two it is
+through `ArgSpec::update`, and a leaf says whether it has a default through
+`StructField::default` -- both below.
 
 ## ArgSpec::positional
 
@@ -517,3 +519,16 @@ watchdog reads exactly as it did before.
 The field exists because the process a front-end spawned is no longer the process
 answering: without it, "did I start this server" is not answerable, and a stop that
 kills only the answering process is undone by a restart.
+
+## ArgSpec::structure, ArgSpec::update
+
+A structured argument publishes its shape -- the fields, their completion sources,
+the sets a model refuses, and each leaf's default -- so a front-end can complete
+inside it without knowing any command.
+
+`update` separates SPEC's two spellings of one type. `new_session(id, config:
+SessionConfig)` takes a **value**: its field with no default (`model`) is a missing
+required argument, and a sticky entry fills it. `set_session(id, config_delta:
+SessionConfig{..})` takes a **struct update**: it says what changes, so it is never
+filled -- a fill would restate the whole config on a line that asked for one field
+-- and what it stated is written back to the entries instead.

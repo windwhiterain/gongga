@@ -104,6 +104,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 accepts: None,
                 sticky_to: None,
                 structure: None,
+                update: false,
             }];
             // The row's order, object first: a bare word binds the first unfilled one.
             let mut ordered: Vec<&crate::tools::spec::Argument> = row
@@ -130,6 +131,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                     accepts: None,
                     sticky_to: None,
                     structure: None,
+                    update: false,
                 });
             }
             protocol::CommandSpec {
