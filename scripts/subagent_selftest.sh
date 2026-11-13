@@ -44,7 +44,9 @@ hard() {
   exit 1
 }
 
-[[ -x "$bin/gongga-server.exe" && -x "$home/bin/gongga-cli" ]] || {
+# Only the server is built here; `bin/gongga-cli` is what that server installs into its
+# home at start, so a fresh tree has no such file until the first run.
+[[ -x "$bin/gongga-server.exe" ]] || {
   echo "build first: cargo build -p gongga-server" >&2; exit 1; }
 
 alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
@@ -95,17 +97,10 @@ rm -rf "$home" "$project" "$log" "$work/subagent-dump.jsonl"
 [[ -f "$home/gongga.db" ]] && hard "a previous run still holds $home"
 
 mkdir -p "$home" "$project" "$project/.agents/skills/late"
-# The content repo, seeded from this checkout: startup never touches the network.
-# A submodule's .git is a file pointing at the outer repo; give the copy its own.
-cp -r "$root/ship" "$home/ship" 2>/dev/null
-if [[ -f "$root/.git/modules/ship/HEAD" ]]; then
-  mkdir -p "$home/ship"
-  cp -r "$root/.git/modules/ship" "$home/ship/.git-real"
-  printf 'gitdir: .git-real\n' > "$home/ship/.git"
-  # The copied config still points at the outer checkout's worktree; git itself
-  # cannot run against it, so the file is edited where it stands.
-  sed -i '/^\tworktree = /d' "$home/ship/.git-real/config"
-fi
+# The content under test is this checkout's own, fetched from a path: startup never
+# touches the network. Handing the server a copy with a hand-made `.git` no longer
+# works -- a checkout is owned by its common git dir, and a copy is nobody's.
+export GONGGA_SHIP_URL="$root/ship"
 printf 'EARLY file named by the brief.\n' > "$project/early.md"
 printf 'LATE file named by a later message.\n' > "$project/late.md"
 cat > "$project/.agents/skills/late/SKILL.md" <<'EOF'
@@ -308,16 +303,34 @@ await probe $(( before + 1 )) || hard "the parent's second turn never ended"
 later=$(query "select json_extract(display,'\$.text') from messages where session_id=(select id from sessions where name='probe') and kind='text' and display like '%late.md%'")
 [[ "$later" == *"@file(late.md)"* && "$later" == *"@skill(late) ("*"late"*"SKILL.md)"* ]]
 ok "H a later message keeps @file(...) and expands @skill(...) to its path" $?
-python - "$work/subagent-dump.jsonl" <<'INNER'
-import json, sys
-last = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()][-1]
-# The head is the prose, the index and the card; the card is where it ends. The
-# index travels as a message, never in the system text (docs/reference/prefix-cache.md),
-# so reading `instructions` alone would miss the very thing this checks.
+python - "$home" "$work/subagent-dump.jsonl" <<'INNER'
+import json, sqlite3, sys
+db = sqlite3.connect("file:%s/gongga.db?mode=ro" % sys.argv[1], uri=True)
+row = db.execute(
+    "select display from messages where session_id=(select id from sessions where name='probe') "
+    "and kind='system' order by seq limit 1").fetchone()
+card = (json.loads(row[0]).get("tail") or "").strip()
+last = [json.loads(line) for line in open(sys.argv[2], encoding="utf-8") if line.strip()][-1]
+if not card:
+    print("      the row states no card, so the head has no end to find")
+    sys.exit(1)
+# The head is the prose, the index and the card, and the card is where it ends. Which
+# sentence that card says is the prompt's business: the boundary is the row's own bytes,
+# sent as one item. The index travels as a message, never in the system text
+# (docs/reference/prefix-cache.md), which is why `instructions` alone would miss what
+# this checks.
+def text_of(item):
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        part.get("text", "") if isinstance(part, dict) else str(part)
+        for part in content or []
+    )
 head = [last.get("instructions") or ""]
-for message in last.get("input") or []:
-    text = json.dumps(message.get("content"), ensure_ascii=False)
-    if "Session `probe`" in text:
+for item in last.get("input") or []:
+    text = text_of(item)
+    if text.strip() == card:
         break
     head.append(text)
 head = "\n".join(head)

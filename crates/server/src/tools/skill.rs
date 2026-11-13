@@ -99,33 +99,43 @@ impl Skills {
     }
 }
 
+/// The one sentence a call gets when it names no words at all.
+fn needs_a_call() -> String {
+    format!(
+        "run_skill needs a `cmd`: the words the skill runs with, `{}` or `{}`",
+        "{\"name\": \"<function>\", \"args\": {}}", "{\"args\": [\"<word>\"]}"
+    )
+}
+
 /// The words one `run_skill` call gives its skill, read off SPEC's `Cmd`.
 ///
 /// # Invariant
 ///
-/// `cmd` is `{name, args}` and never a command line: the name first, then its arguments,
-/// spelled as an object of named ones (`{"tier": "flash"}` reaches the skill as `--tier
-/// flash`) or as a list passed through as written. `--key value` is what `gongga_skill.py`
-/// binds to a parameter by name, so both spellings end as the same argv.
-pub fn call_words(cmd: Option<&str>) -> Result<Vec<String>, String> {
-    let raw = cmd.map(str::trim).unwrap_or_default();
-    if raw.is_empty() {
-        return Err(
-            "run_skill needs a `cmd`: the words the skill runs with, \n             `{\"name\": \"<function>\", \"args\": {}}` or `{\"args\": [\"<word>\"]}`"
-                .to_string(),
-        );
-    }
-    // A bare word is the whole call: the function, or the entry's one argument.
-    if !raw.starts_with('{') {
-        return Ok(vec![raw.to_string()]);
-    }
-    let value: Value = serde_json::from_str(raw)
-        .map_err(|e| format!("`cmd` is an object only when it is a whole call: {e}"))?;
+/// `cmd` is `{name, args}`: the name first, then its arguments as an object of named ones
+/// (`{"tier": "flash"}` reaches the skill as `--tier flash`) or as a list passed through
+/// as written. A bare word is the whole call, and a string that starts with `{` is an
+/// object, because an operator's line spells `cmd` as text.
+pub fn call_words(cmd: Option<&Value>) -> Result<Vec<String>, String> {
+    let Some(value) = cmd.filter(|value| !value.is_null()) else {
+        return Err(needs_a_call());
+    };
+    let value = match value {
+        Value::String(text) if !text.trim().starts_with('{') => {
+            let word = text.trim();
+            return match word.is_empty() {
+                true => Err(needs_a_call()),
+                false => Ok(vec![word.to_string()]),
+            };
+        }
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .map_err(|e| format!("`cmd` is an object only when it is a whole call: {e}"))?,
+        other => other.clone(),
+    };
     let Some(call) = value.as_object() else {
-        return Err(
-            "`cmd` is a call, so it is an object: {\"name\": \"<function>\", \"args\": {}}"
-                .to_string(),
-        );
+        return Err(format!(
+            "`cmd` is a call, so it is an object: {{\"name\": \"<function>\", \"args\": {{}}}}, \n             and this is {}",
+            crate::tools::json_type(&value)
+        ));
     };
     let mut words: Vec<String> = Vec::new();
     if let Some(name) = call

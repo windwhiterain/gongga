@@ -2426,7 +2426,7 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
 async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let session = session_of(args, caller).unwrap_or_default();
     let id = args.word("id").unwrap_or_default().trim().to_string();
-    let words = match crate::tools::skill::call_words(args.word("cmd")) {
+    let words = match crate::tools::skill::call_words(args.value("cmd")) {
         Ok(words) => words,
         Err(why) => return Outcome::err(why),
     };
