@@ -2074,8 +2074,8 @@ impl Store {
     /// Plan finish is the agent's own act inside its turn, so a running session is
     /// the rule, not the error: the baseline is the last persisted measurement,
     /// never a waited-for one, and a zero stays NULL for the usage write to fill.
-    /// Origin and baseline land in one transaction; the origin is the lineage's
-    /// first real operator row — no row, nothing to compact from, and that refuses.
+    /// Origin and baseline land in one transaction; the origin is the transcript's
+    /// end at plan finish — the explore segment is the permanent prefix (SPEC).
     pub fn start_live_compact(&self, session_id: i64) -> anyhow::Result<()> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -2084,30 +2084,15 @@ impl Store {
             params![session_id],
             |row| row.get(0),
         )?;
-        let first = {
-            let mut stmt = tx.prepare(
-                "SELECT seq, display FROM messages
-                 WHERE session_id = ?1 AND kind = 'text' ORDER BY seq ASC",
-            )?;
-            let rows = stmt.query_map(params![session_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?;
-            let mut found = None;
-            for row in rows {
-                let (seq, display) = row?;
-                let value: serde_json::Value = serde_json::from_str(&display).unwrap_or_default();
-                let real = value.get("role").and_then(|r| r.as_str()) == Some("user")
-                    && value.get("harness").is_none();
-                if real {
-                    found = Some(seq);
-                    break;
-                }
-            }
-            found
-        };
-        let Some(origin) = first else {
-            anyhow::bail!("no operator message anchors this lineage yet");
-        };
+        // SPEC: origin is the transcript's end at plan finish; explore is the permanent prefix.
+        let origin: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        if origin == 0 {
+            anyhow::bail!("no rows anchor this lineage yet");
+        }
         tx.execute(
             "UPDATE sessions SET live_compact_origin_seq = ?2,
                     live_compact_baseline_tokens = CASE WHEN ?3 > 0 THEN ?3 ELSE NULL END,
@@ -2208,6 +2193,28 @@ impl Store {
                 "INSERT INTO live_compact_artifacts (session_id, message_seq, checkpoint_id)
                  VALUES (?1, ?2, ?3)",
                 params![session_id, message_seq, checkpoint_id],
+            )?;
+        }
+
+        // `next` is cut at the next round; only `settled` accumulates. See `docs/notes/server-live-compact.md`.
+        let next = call
+            .get("arguments")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|arguments| serde_json::from_str::<serde_json::Value>(arguments).ok())
+            .and_then(|arguments| {
+                arguments
+                    .get("next")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        let next = next.trim().to_string();
+        if !next.is_empty() {
+            Self::append_message_conn(
+                &tx,
+                session_id,
+                Kind::Text,
+                &serde_json::json!({"role": "assistant", "text": next}),
             )?;
         }
 

@@ -702,30 +702,19 @@ impl Channels {
                     if place.append("in", "kill\n").await.is_ok() {
                         ended += 1;
                     }
-                    // Read before the row goes: only a call that gave up waiting is
-                    // this end news for; the rest is queued for the next turn.
-                    let waited = self.store.take_channel_wait(row.id).unwrap_or(false);
-                    let _ = self.store.delete_channel(&row.session, &row.path);
                     // SPEC: killing a channel produces its end notice; the row is gone.
-                    (self.notify)(ChannelEnd {
-                        session: row.session.clone(),
-                        id: row.path.clone(),
-                        output: format!(
+                    self.notice_end(
+                        &row,
+                        format!(
                             "{}\n\n[the server stopped this channel as it was cancelled; \
                              this is what it had printed until then]",
                             String::from_utf8_lossy(&printed)
                         ),
-                        // SPEC's `time`: since the last input.
-                        time: Duration::from_millis(
-                            (now_millis() - row.wrote_at.unwrap_or(row.started_at))
-                                .max(0)
-                                .try_into()
-                                .unwrap_or(0),
-                        ),
-                        exit: None,
-                        matched: false,
-                        waited,
-                    });
+                        row.upto,
+                        None,
+                        false,
+                        true,
+                    );
                 }
                 Err(e) => tracing::warn!(channel = %row.path, "{e}"),
             }
@@ -773,27 +762,17 @@ impl Channels {
         let place = self.place_of(row).await.ok()?;
         let exit = place.status().await.and_then(|status| status.exit)?;
         let printed = place.read_from("out", row.upto).await.unwrap_or_default();
-        let waited = self.store.take_channel_wait(row.id).unwrap_or(false);
-        if !self.store.claim_channel_end(row.id).unwrap_or(false) {
-            return Some(exit);
-        }
-        (self.notify)(ChannelEnd {
-            session: row.session.clone(),
-            id: row.path.clone(),
-            output: format!(
+        self.notice_end(
+            row,
+            format!(
                 "{}\n\n[its program had already ended, with exit {exit}; nothing was left to keep alive]",
                 String::from_utf8_lossy(&printed)
             ),
-            time: Duration::from_millis(
-                (now_millis() - row.wrote_at.unwrap_or(row.started_at))
-                    .max(0)
-                    .try_into()
-                    .unwrap_or(0),
-            ),
-            exit: Some(exit),
-            matched: false,
-            waited,
-        });
+            row.upto,
+            Some(exit),
+            false,
+            true,
+        );
         Some(exit)
     }
 
@@ -841,6 +820,47 @@ impl Channels {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(&id)
+    }
+
+    /// The one door for a channel's end news: the wait flag is the one-speaker token.
+    fn notice_end(
+        &self,
+        row: &ChannelRow,
+        output: String,
+        read_to: u64,
+        exit: Option<i32>,
+        matched: bool,
+        end_row: bool,
+    ) {
+        // A call inside it answers its session itself; saying it again is the double.
+        if self.is_attached(row.id) {
+            return;
+        }
+        let waited = self.store.take_channel_wait(row.id).unwrap_or(false);
+        let claimed = if end_row {
+            self.store.claim_channel_end(row.id).unwrap_or(false)
+        } else {
+            true
+        };
+        // A notice is a read: it carries the window, so the cursor moves with it.
+        let _ = self.store.set_channel_upto(row.id, read_to);
+        if waited && claimed {
+            (self.notify)(ChannelEnd {
+                session: row.session.clone(),
+                id: row.path.clone(),
+                output,
+                // SPEC's `time`: since the last input.
+                time: Duration::from_millis(
+                    (now_millis() - row.wrote_at.unwrap_or(row.started_at))
+                        .max(0)
+                        .try_into()
+                        .unwrap_or(0),
+                ),
+                exit,
+                matched,
+                waited,
+            });
+        }
     }
 
     /// Watches every live channel, and tells a session what it is waiting for.
@@ -895,32 +915,14 @@ impl Channels {
                     if ended.is_none() && !looked.matched {
                         continue;
                     }
-                    // The flag is the token: whoever clears it is the one that speaks.
-                    if !channels.store.take_channel_wait(row.id).unwrap_or(false) {
-                        continue;
-                    }
-                    if ended.is_some() {
-                        // Not the flag but the removal is the claim here: one of us wins.
-                        let _ = channels.store.claim_channel_end(row.id);
-                    }
-                    // A notice is a read: it carries the window, so the cursor
-                    // moves with it.
-                    let _ = channels.store.set_channel_upto(row.id, looked.upto);
-                    (channels.notify)(ChannelEnd {
-                        session: row.session.clone(),
-                        id: row.path.clone(),
-                        output: looked.window,
-                        // SPEC's `time`: since the last input.
-                        time: Duration::from_millis(
-                            (now_millis() - row.wrote_at.unwrap_or(row.started_at))
-                                .max(0)
-                                .try_into()
-                                .unwrap_or(0),
-                        ),
-                        exit: ended,
-                        matched: looked.matched,
-                        waited: true,
-                    });
+                    channels.notice_end(
+                        &row,
+                        looked.window,
+                        looked.upto,
+                        ended,
+                        looked.matched,
+                        ended.is_some(),
+                    );
                 }
             }
         })

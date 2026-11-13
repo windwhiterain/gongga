@@ -15,13 +15,13 @@ impl Cmd for LiveCompactTool {
         ctx: &'a ToolContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let summary = args
-                .get("summary")
+            let settled = args
+                .get("settled")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .trim();
-            if summary.is_empty() {
-                return ToolOutcome::err("summary must not be empty");
+            if settled.is_empty() {
+                return ToolOutcome::err("settled must not be empty");
             }
             // Where this session's references are read: the machine it stands on.
             let source = match (&ctx.reader, ctx.machine) {
@@ -31,7 +31,7 @@ impl Cmd for LiveCompactTool {
                 (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
                 (_, crate::session::Machine::Local) => crate::meta::Source::Local,
             };
-            ToolOutcome::ok(crate::meta::embed(source, &ctx.cwd, summary).await)
+            ToolOutcome::ok(crate::meta::embed(source, &ctx.cwd, settled).await)
         })
     }
 }
