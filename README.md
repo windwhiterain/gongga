@@ -8,6 +8,7 @@
 ## Features
 
 - Powerful prefix cache planning argirithm.
+- Carefully designed live compact machanism to save your token and keep agent focus.
 - Everything is skill, even compact context, spawn subagent, read_image.
   - Skills give scripts, so agents can nest, chain them arbiarily.
 - Tool call is mapped generally to any command to avoid shell escape hell.
@@ -54,7 +55,7 @@ gongga tui
 ```
 
 ## Use
-type this command in the tui to create your fist session "hello" with "provider/model" at directory ".":
+type this command in the tui to create your fist session:
 ```tui
-/set_session hello --model provider/model
+/new_session{"id":"hello_world", "config":{"model_config":{"model":{"model":"deepseek-flash","provider":"deepseek-official"}}}}
 ```
