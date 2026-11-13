@@ -126,8 +126,11 @@ one fewer macro dependency; the signature is the same either way.
 SPEC's tunnel-level parameters: every tool may carry them, none declares them by
 hand, and a tool the tunnel leaves alone (`Tool::tunneled`, which is `wait` alone)
 offers none of them. `general_parameters` injects them into the model-facing schema
-(a property a tool declares wins, so `bash`'s own `background` keeps its longer
-description) and `argument_error` never names them as unexpected.
+(a property a tool declares wins) and `argument_error` never names them as
+unexpected. What is injected is a type and no sentence: the four are the call layer's,
+so what they are for is said once, in the `general_parameters` section of the
+session's first request, rather than six times over in one request's schemas. See
+`docs/notes/server-prompts.md`.
 
 The command surface reads the same function, so an operator can spell every argument
 a call may carry. It used to read `Tool::parameters` raw, which was right while the

@@ -41,6 +41,7 @@ pub fn head(
     effort: Option<&str>,
     temperature: Option<f32>,
     indexing: (Framing, Option<&str>),
+    parameters: Option<&str>,
     card: Option<&str>,
 ) -> Vec<u8> {
     let (framing, index) = indexing;
@@ -86,6 +87,13 @@ pub fn head(
     if let Some(index) = index.filter(|index| !index.is_empty()) {
         head.push_str(
             &json!({"role": "user", "content": [{"type": "text", "text": index}]}).to_string(),
+        );
+        head.push(',');
+    }
+    // Before the card: the same words for every session, the card being what differs.
+    if let Some(parameters) = parameters.filter(|parameters| !parameters.is_empty()) {
+        head.push_str(
+            &json!({"role": "user", "content": [{"type": "text", "text": parameters}]}).to_string(),
         );
         head.push(',');
     }

@@ -247,6 +247,7 @@ impl LlmClient {
         &self,
         instructions: &str,
         index: Option<&str>,
+        parameters: Option<&str>,
         tail: Option<&str>,
         source: &RequestSource,
         tools: &Value,
@@ -262,6 +263,7 @@ impl LlmClient {
         let head = self.build_head(
             instructions,
             index,
+            parameters,
             tail,
             &session_id,
             tools,
@@ -499,6 +501,7 @@ impl LlmClient {
         &self,
         instructions: &str,
         index: Option<&str>,
+        parameters: Option<&str>,
         card: Option<&str>,
         session_id: &str,
         tools: &Value,
@@ -519,6 +522,7 @@ impl LlmClient {
                 effort,
                 self.temperature,
                 (index_framing(), index),
+                parameters,
                 card,
             );
         }
@@ -595,6 +599,17 @@ impl LlmClient {
                 &json!({
                     "role": "user",
                     "content": [{"type": "input_text", "text": index}],
+                })
+                .to_string(),
+            );
+            head.push(',');
+        }
+        // Before the card: the same words for every session, the card being what differs.
+        if let Some(parameters) = parameters.filter(|parameters| !parameters.is_empty()) {
+            head.push_str(
+                &json!({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": parameters}],
                 })
                 .to_string(),
             );

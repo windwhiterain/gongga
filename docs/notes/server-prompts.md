@@ -110,6 +110,32 @@ that is neither on `REQUIRED` nor in the shipped content.
 
 `complained` is why the same damaged file does not produce one line per request.
 
+## PARAMETERS: the shared arguments, said once
+
+SPEC gives every call four arguments its tool does not declare: `description`,
+`max_output`, `timeout_ms`, `background`. Their names reach a model through
+`general_parameters`, which injects a type and nothing else, so for a long time the
+schema of each tool was the only place the four appeared and no place said what they
+were for. The effect was measurable in this repository's own sessions: `description`
+was almost never written, because omitting it costs a token and nothing ever named a
+reason to spend one.
+
+The fix is the section this template is, and three things it deliberately is not.
+It is not a sentence on each tool's schema: the four names are the call layer's, and
+a paragraph copied into six tools is the same paragraph sent six times in every
+request. It is not the system instructions: those bytes are identity and open every
+request of every directory, while this is a fact about calls that belongs beside the
+card. And it is not in [`REQUIRED`]: like `reference_revision`, a home whose content
+predates the template runs without the section rather than refusing to start over
+prose it may never need.
+
+It goes before the card, because its words are the same for every session and the
+card is where a session stops sharing a prefix. It carries no value, so it is stamped
+with the card and replayed from the store: a session already under way keeps the row
+it was started with, which is what "context has two operations" means -- the section
+reaches a session that starts after it ships, or one whose prompt is re-stamped by a
+move.
+
 ## reference_index
 
 The one template whose value is not a notice but a document: the text of every

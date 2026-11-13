@@ -610,6 +610,10 @@ impl Agent {
                 ("model", model),
             ],
         ));
+        // The four names a call may carry, where no schema says what they are for.
+        let parameters = prompts
+            .text(crate::prompts::PARAMETERS)
+            .filter(|text| !text.is_empty());
         // Where the conversation's references stand now, planned once, for the one
         // request that carries it.
         let (index, rooted) = match self
@@ -623,6 +627,7 @@ impl Agent {
             instructions,
             index,
             tail,
+            parameters,
             rooted,
             cwd: here,
             remote: remote.map(str::to_string),
@@ -973,6 +978,7 @@ impl Agent {
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.index.as_deref(),
+            prompt.parameters.as_deref(),
             prompt.tail.as_deref(),
             &source,
             &tools.tools,
@@ -2115,6 +2121,7 @@ mod tests {
             instructions: "prose".to_string(),
             index: None,
             tail: Some("Session `s`, 2026-11-01 14:00 UTC".to_string()),
+            parameters: Some("every call may carry `description`".to_string()),
             rooted: Vec::new(),
             cwd: ".".to_string(),
             remote: None,

@@ -26,6 +26,15 @@ pub struct Prompt {
     /// The start card: name, build, the first turn's time and cwd. Stamped once.
     #[serde(default)]
     pub tail: Option<String>,
+    /// What every call may carry besides its own arguments, introduced once.
+    ///
+    /// # Invariant
+    ///
+    /// Stamped with the card, and `None` on a row written before this field existed:
+    /// a session's context has two operations, append and cut, so a session already
+    /// under way is sent as it was rather than told what it was never told.
+    #[serde(default)]
+    pub parameters: Option<String>,
     /// The spellings `index` carries, so a mention of one stays literal.
     #[serde(default)]
     pub rooted: Vec<String>,

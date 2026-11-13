@@ -1088,8 +1088,9 @@ pub const GENERAL_ARGS: &[&str] = &["description", "max_output", "timeout_ms", "
 /// # Invariant
 ///
 /// Injected here, in the model-facing schema only, so a provider's validator
-/// accepts what the call layer reads. A property a tool already declares wins:
-/// these are the defaults, not an override.
+/// accepts what the call layer reads. A property a tool already declares wins.
+/// No name carries a sentence: the four are the call layer's, and what they are
+/// for is said once, in the session's `general_parameters` section.
 pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
     let mut schema = tool.spec().schema();
     // SPEC: `description` is every call's; the rest are the tunnel's.

@@ -152,7 +152,7 @@ fn clone_session(source: path, dest: path)
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
 ## Prompt
-after the system prompt, before the first user message, inject one message with useful information about session name, harness version (commit id), cwd, time. it is stamped once with the session's first prompt row and never re-rendered.
+after the system prompt, before the first user message, inject two messages: one with useful information about session name, harness version (commit id), cwd, time; one introducing the parameters every tool call shares besides its own arguments. they are stamped once with the session's first prompt row and never re-rendered.
 
 **Invariant: context only has append/cut API**
 
