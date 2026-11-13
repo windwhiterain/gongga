@@ -370,9 +370,10 @@ pub(crate) async fn run_command(
 ///
 /// # Invariant
 ///
-/// A string is itself and anything else is its JSON, because a command's arguments are
-/// words: `cmd` is the one key this drops, since it names the command rather than one of
-/// its arguments. See `docs/notes/server-tools-mod.md`.
+/// A string is itself and any other value is its JSON, because a command's arguments
+/// are words; a stated `null` is neither, and reaches the command as absent rather than
+/// as the four letters `null`. `cmd` is the one key this drops, since it names the
+/// command rather than one of its arguments. See `docs/notes/server-tools-mod.md`.
 pub(crate) fn named_words(table: &serde_json::Map<String, Value>) -> protocol::Args {
     let mut words = protocol::Args::new();
     for (key, value) in table {
@@ -381,6 +382,7 @@ pub(crate) fn named_words(table: &serde_json::Map<String, Value>) -> protocol::A
         }
         let text = match value {
             Value::String(text) => text.clone(),
+            Value::Null => continue,
             other => other.to_string(),
         };
         words.insert(key.clone(), text);
