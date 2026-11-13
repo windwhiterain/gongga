@@ -34,7 +34,6 @@ impl Cmd for ExecTool {
         ctx: &'a ToolContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let args = spelled(args);
             let bin = text(&args, "bin");
             let asked = text(&args, "id");
             // A path in a namespace, however it is spelled: Git Bash rewrites a leading
@@ -88,7 +87,7 @@ impl Cmd for ExecTool {
                      to start, and this call speaks to one that did"
                 ));
             }
-            // A list is argv; an object is named arguments, each spoken as `--key value`.
+            // SPEC's `args` is a list of words: one element is one word.
             let words = match args.get("args") {
                 None | Some(Value::Null) => Vec::new(),
                 Some(Value::Array(words)) => {
@@ -106,27 +105,9 @@ impl Cmd for ExecTool {
                     }
                     out
                 }
-                Some(Value::Object(named)) => {
-                    let mut out = Vec::with_capacity(named.len() * 2);
-                    for (key, value) in named {
-                        match value.as_str() {
-                            Some(value) => {
-                                out.push(format!("--{key}"));
-                                out.push(value.to_string());
-                            }
-                            None => {
-                                return ToolOutcome::err(format!(
-                                    "`args` named arguments take string values, and {key:?} is {}",
-                                    crate::tools::json_type(value)
-                                ));
-                            }
-                        }
-                    }
-                    out
-                }
                 Some(other) => {
                     return ToolOutcome::err(format!(
-                        "`args` is a list of words or a table of named ones, and this is {}",
+                        "`args` is a list of words, and this is {}",
                         crate::tools::json_type(other)
                     ));
                 }
@@ -191,35 +172,6 @@ impl Cmd for ExecTool {
             answer(outcome, self.wait.max_output_chars, ctx)
         })
     }
-}
-
-/// The call's arguments, with the two spellings of `args` read as what they mean.
-///
-/// # Invariant
-///
-/// An operator spells a list or a table as JSON on one line, and a one-element list
-/// holding one is that one: SPEC's `args` is `list[str] | dict[str]`.
-fn spelled(mut args: Value) -> Value {
-    if let Some(spelled) = args.get("args").and_then(Value::as_str)
-        && let Ok(parsed) = serde_json::from_str::<Value>(spelled)
-    {
-        args["args"] = parsed;
-    }
-    if let Some(Value::Array(one)) = args.get("args")
-        && one.len() == 1
-    {
-        let only = match &one[0] {
-            Value::Object(_) => Some(one[0].clone()),
-            Value::String(spelled) => serde_json::from_str::<Value>(spelled)
-                .ok()
-                .filter(Value::is_object),
-            _ => None,
-        };
-        if let Some(table) = only {
-            args["args"] = table;
-        }
-    }
-    args
 }
 
 /// One argument as a word, when the call gave one that is not blank.

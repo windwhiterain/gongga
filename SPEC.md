@@ -52,7 +52,7 @@ Channel := path
 Result := {id: Channel, output: str, time: time, mactehd: bool, exit: int|none}
 fn exec(
   bin: path = channel[id].bin, #summary
-  args: list[str] | dict[str],
+  args: list[str],
   input: optional[str] = none,
   id: Channel = "/{bin}/default",
   wait: optional[time] = none, #summary

@@ -217,7 +217,7 @@ instructions no reader conflates. `PROTOCOL_VERSION` 4 is that change: a 3 clien
 every value as JSON text, and the four letters `null` are not the value.
 
 An argument's type is SPEC's own spelling, published per argument as `ArgSpec.type_of`
-(`optional[path]`, `list[str] | dict[str]`, `time`). `protocol::argtype` is the one table
+(`optional[path]`, `list[str]`, `time`). `protocol::argtype` is the one table
 mapping it to the JSON Schema type, to the value a typed line becomes, and to the kind a
 call is held to -- so a schema, a line and a refusal cannot disagree about a type.
 
