@@ -221,3 +221,9 @@ one has no method at all: a handover is the skill issuing its own
 `DELETE FROM messages` over the same database.
 That is the invariant in code form: **this server never compacts.** Deleting rows is not in this file's vocabulary at all;
 the only `DELETE FROM messages` that touches a session's own rows is in the skill.
+
+What changed is the telling, not the writing. A direct write is silent, so after its
+transaction the skill calls `sync_session` for the mentor and for the emptied session:
+the server re-sends those rows as deltas and the transcript stamp, and a stamp that moved
+backwards is the cut a window refills on. The server still never writes the transcript --
+`sync_session` only reads it and publishes what is already there.

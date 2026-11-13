@@ -395,6 +395,23 @@ client's private question, while a clone is a session every client's tree should
 A failed re-send is a warning in the log, never an undo: the rows are already durable,
 and a clone nobody was told about is still a clone.
 
+## sync_session
+
+A session's rows written straight into the database -- the handoff's copy and its cut --
+are durable but silent: no window is told, because the write did not go through the
+server. `sync_session` is how the writer says so after the fact. The server re-sends the
+session row, then each row in the range as the event it was published as (`row_event`
+with `REPLAY_TURN`, the same rule a clone uses), then the transcript stamp.
+
+The stamp is what makes a cut visible: it can move backwards, and a window that receives
+a stamp below what it drew forgets and refills. So the handoff's tail-cut needs no special
+event -- the backwards stamp is the cut.
+
+The rows are already durable when this runs, so a failed re-send is a report, never an
+undo: a sync nobody received is still a written transcript. This is the bus and not
+`Outcome::events`, for the same reason as `clone_session`: every client's tree should hold
+the change, not just the caller that asked.
+
 ## del_session
 
 Delete means "not this session and not what it is doing", so stop the turn first.

@@ -889,6 +889,29 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
+            name: "sync_session".into(),
+            description: "Re-send a session's state as deltas after its rows were written                       directly: the session row, then each row in the range as the event it                       was published as, then where the transcript ends. A stamp that moved                       backwards is a cut, which a window answers by forgetting and refilling."
+                .into(),
+            args: vec![
+                kind_arg(
+                    "id",
+                    "The session to re-sync. Its rows are already written; this only tells                      every window what changed.",
+                    true,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+                pos(
+                    "trajectory",
+                    "Which rows to re-send, as a closed range of sequence numbers: `-5:` the                      newest five, `5:10` rows 5 through 10, `5:` from 5 on. A negative number                      counts from the end; both ends inclusive. Omitted is the whole transcript.",
+                    false,
+                    Some("begin:end"),
+                    CompletionSource::None,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
             name: "ls_skill".into(),
             description: "List the skills a session can open, one row per skill, under \
                       `path`. A skill's path is `<bucket>/<name>`: `project` for the 
@@ -1181,6 +1204,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "del_channel" => del_channel(d, args).await,
         "ls_session" => ls_session(d, args).await,
         "clone_session" => clone_session(d, args).await,
+        "sync_session" => sync_session(d, args).await,
         "ls_skill" => ls_skill(d, args).await,
         "run_skill" => run_skill(d, args).await,
         "events" => events(d, args).await,
@@ -2251,6 +2275,65 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
             "name": name,
             "rows": report.rows,
             "last_seq": report.last_seq,
+        }),
+    )
+}
+
+/// Re-sends a session's state as deltas after its rows were written directly.
+///
+/// # Invariant
+///
+/// The rows are already durable: this only publishes what a window needs to see them --
+/// the same events a clone or a live turn sends -- so a failed re-send is a report, not an
+/// undo. The transcript stamp goes last, and a stamp that moved backwards is a cut: a
+/// window forgets what it drew and refills. See `docs/notes/server-commands.md`.
+async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
+    let name = args["id"].clone();
+    let session = match d.sessions.get(&name) {
+        Ok(s) => s,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    let last_seq = match d.store.last_seq(session.id()) {
+        Ok(v) => v,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    let window = match args.get("trajectory") {
+        None => SeqWindow {
+            first: 1,
+            last: last_seq.max(1),
+        },
+        Some(raw) => match parse_seq_slice(raw, last_seq) {
+            Ok(w) => w,
+            Err(e) => return Outcome::err(e),
+        },
+    };
+    let transcript = match d
+        .store
+        .messages_between(session.id(), window.first, window.last)
+    {
+        Ok(t) => t,
+        Err(e) => return Outcome::err(e.to_string()),
+    };
+    // List, then rows, then the stamp: what a write behind the server's back cannot send.
+    publish_sessions(d);
+    let mut sent = 0usize;
+    for row in &transcript.messages {
+        if let Some(event) = row_event(&name, row, false) {
+            d.bus.publish(event);
+            sent += 1;
+        }
+    }
+    d.bus.publish(Event::Transcript {
+        session: name.clone(),
+        seq: last_seq,
+    });
+    tracing::info!(session = %name, rows = sent, last_seq, "session synced");
+    Outcome::ok_with(
+        format!("synced {name}: re-sent {sent} row(s), transcript ends at seq {last_seq}"),
+        json!({
+            "session": name,
+            "rows": sent,
+            "last_seq": last_seq,
         }),
     )
 }
