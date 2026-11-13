@@ -71,15 +71,12 @@ Positional-only, because commands have arguments called `name` (`set_session` ha
 `del_session`), and a `name=` that meant the command would make them unreachable. The name
 of the command is the one thing this module will not let an argument shadow.
 
-Arguments travel as the command's own: a string is a string, a list is JSON for an argument
-the schema types as a list, and the server decides what it takes. Nothing is coerced here;
-the values are the caller's.
-
-One conversion is `_wire`'s, and it is the wire's, not a convenience: a command's arguments
-are a map of strings on the link (`protocol::Args`), so a value that is not a string goes as
-JSON -- `cmd={"name": "add", "args": {"left": 2}}` arrives as the object `subscribe` and
-`run_skill` parse, and a number arrives as `2`. A string is itself and never quoted twice,
-which is what keeps a path, a regex and a range readable.
+Arguments travel as the command spells them: a string is a string, a list is a list, and an
+object is the object the command reads. Nothing is converted here, and that is the
+invariant: `protocol::Args` is a JSON object on the link, so `cmd={"name": "add",
+"args": {"left": 2}}` arrives as that object and a number arrives as a number. `None`
+travels as `null`, which a command reads as the empty value of the type and never as the
+word `null`; leaving an argument out is what takes its default.
 
 ## The four names SPEC's `## Python Cmd` gives
 

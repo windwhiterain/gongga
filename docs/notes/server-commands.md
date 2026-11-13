@@ -683,6 +683,17 @@ nothing survives the turn to be discovered later.
 
 ## How an argument is spelled, and what a `path` means
 
+An argument type is SPEC spelling -- `optional[path]`, `list[str] | dict[str]`,
+`time` -- and `protocol::argtype` is the one table that turns it into the JSON Schema a
+model reads, the value a typed line becomes, and the kind a call is held to. A value of
+the wrong kind is refused with the kinds it takes; a stated `null` is the empty value of
+the type (no remote, no directory, no count), which is a different instruction from
+leaving the argument out, and leaving it out is what takes the default.
+
+`session` is a default and not an extra argument: SPEC writes `session: Session =
+caller()`, and `commands::session_of` reads it -- a stated session wins, an omitted one is
+the caller of the call (`Origin::session`, which a client fills from `$GONGGA_SESSION`).
+
 SPEC names three roles and gives each one word, so the catalog does too: `session`
 is the session a command acts *within* (`send_message`, `get_messages`,
 `ls_channel`, `ls_skill`, `run_skill`), `id` is the one entity being addressed

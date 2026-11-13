@@ -207,6 +207,20 @@ carried in. It carries an id like a command, so the answer is addressed the
 same way, and the server answers it with a `CmdResult` -- the same answer, from
 the same handler.
 
+## ClientMessage::Command - the arguments are JSON values
+
+SPEC's `Cmd.args` is `dict[str, any]`, so `Args` is a JSON object and not a map of text:
+a stated `null` stays `null`. `Given` is the one reading of one argument -- `Nothing`
+(the argument's default applies), `Null` (the type's empty value: no remote, no
+directory, no count) and `Value` -- so "said nothing" and "said null" are two
+instructions no reader conflates. `PROTOCOL_VERSION` 4 is that change: a 3 client sent
+every value as JSON text, and the four letters `null` are not the value.
+
+An argument's type is SPEC's own spelling, published per argument as `ArgSpec.type_of`
+(`optional[path]`, `list[str] | dict[str]`, `time`). `protocol::argtype` is the one table
+mapping it to the JSON Schema type, to the value a typed line becomes, and to the kind a
+call is held to -- so a schema, a line and a refusal cannot disagree about a type.
+
 ## ArgSpec::kind
 
 A sticky entry keys on the argument's *type*, never its name: SPEC's `<session>`

@@ -49,7 +49,8 @@ server upgrade break every client, which is what `--client_only` and
 
 So `BUILD` is compared and reported, and `PROTOCOL_VERSION` is what a refusal
 would key on if one were ever needed. Today nothing refuses; the protocol is at
-version 1 and the field is carried, which is the cheapest place to start.
+version 4 -- the last bump made a command's arguments JSON values rather than
+JSON text, see `docs/notes/protocol-message.md`.
 
 ## ServerInfo::home
 
