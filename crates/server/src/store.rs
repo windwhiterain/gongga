@@ -1803,17 +1803,25 @@ impl Store {
     /// # Invariant
     ///
     /// Read from the rows' own `(turn, step)`: a turn answers its calls before it
-    /// ends, so the newest pair in the transcript names the only step that can still
+    /// ends, so the newest step in the transcript names the only one that can still
     /// be half-written. A call there with no result naming it is what a provider
     /// refuses to continue. Rows written before these were columns are settled by
     /// [`seal_calls`] on the open that adds them.
+    ///
+    /// # Invariant
+    ///
+    /// The newest step is the row `seq` puts last, never the largest `(turn, step)`:
+    /// a turn number is counted in memory from one at every start, so a transcript
+    /// that outlived a run holds numbers that go backwards. Read by number, this
+    /// asked about the wrong step in exactly the transcripts it exists for -- the
+    /// ones a dead run left behind.
     pub fn open_calls(&self, session_id: i64) -> anyhow::Result<Vec<(String, serde_json::Value)>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT c.call_id, c.display FROM messages c
                JOIN (SELECT turn, step FROM messages
                       WHERE session_id = ?1 AND turn IS NOT NULL AND step IS NOT NULL
-                      ORDER BY turn DESC, step DESC LIMIT 1) last
+                      ORDER BY seq DESC LIMIT 1) last
                  ON c.turn = last.turn AND c.step = last.step
               WHERE c.session_id = ?1 AND c.kind = 'tool_call' AND c.call_id IS NOT NULL
                 AND NOT EXISTS (
