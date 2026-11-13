@@ -20,10 +20,11 @@ derives from the catalog instead and the two views stay one.
 An agent that wants to run a command used to have to spell it as a shell line
 and worry about quoting -- every `"` and `$` in a message text is a character
 someone must escape. The tool call carries the same arguments as structured
-JSON, which the command layer binds by name: no escaping, no re-splitting, and
-a value that means a number arrives a number. `coerce` types each value by the
-tool's own schema, so the operator's line and the agent's call reach the same
-implementation with the same shapes.
+JSON, which the command layer binds by name: no escaping, no re-splitting, and a value
+that means a number arrives a number. Nothing types an argument on this path any more:
+the wire carries values, so the operator line and the agent call reach the same
+implementation with the same shapes -- the line converts its words through the argument
+type it published (`protocol::argtype`), and both are held to the same kind.
 
 The schema here is `general_parameters`, not `Tool::parameters`: an operator can spell
 the tunnel's arguments too, `--timeout_ms` and `--detached` included. Reading the raw
