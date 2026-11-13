@@ -394,23 +394,25 @@ A block's introduction: what kind of thing it is, and the arguments it was given
 each with a label and a `summary` flag.
 
 The split is one the protocol can make and the server must not. **The schema is
-SPEC's**: `toolcall{tool_name·description, {name, background, detached, timeout} (bash)}`
-says which arguments summarise a bash call, so that list is the protocol's own
+SPEC's**: `toolcall{tool_name·[*summary_args]·description}` says which arguments
+summarise a call -- SPEC's `exec(bin, wait)` and the older `bash{name, background,
+timeout}` set are the same kind of list -- so that list is the protocol's own
 vocabulary, not a rendering choice. What the server adds is the *verdict per field* --
-this call set `name`, and `command` is detail -- because only it knows what the model
-actually passed.
+this call set `name`, and `command` is the detail's -- because only it knows what the
+model actually passed.
 
-`description` is the one argument that is not a `Field`. It is what the call is *for*,
-in the model's own words: it is read on the name's row -- `bash·check the state` -- and
-it is the row's subject rather than one argument among several, which is why it needs
-no label the title already said. `Head::title` spells the `·` once, so the folded row
-and the open item cannot disagree about where the name ends. A front-end may wrap that
-row: SPEC gives `toolcall` no `(line)`, so its summary is a block.
+`description` is the one argument that is not a `Field`: it is what the call is *for*,
+in the model's own words, and it is read last -- `exec·bash·check the state` -- where
+SPEC puts it. The rest of that row is the marked values, spelled bare and joined by the
+same `·`: the name an argument is read under belongs to the open item, which has a row
+for it. `Head::summary` spells the mark once, and `Head::title` spells the open item's
+first row, so neither front-end joins anything itself. A front-end may wrap that row:
+SPEC gives `toolcall` no `(line)`, so its summary is a block.
 
 So the wire carries `Field { label, value, summary }` and never a table of names. A
-front-end composes two rows from one list: the folded `summary` is the fields marked
-`summary`, the open item is all of them. Opening therefore costs no message -- both
-rows were sent, once.
+front-end composes two rows from one list: the folded `summary` is the values marked
+`summary`, the open item is all of them, each under its label. Opening therefore costs
+no message -- both rows were sent, once.
 
 What the server must *not* send is a style. `HeadKind` is a closed semantic set that a
 front-end maps to its own glyph and palette; a `color: "green"` on the wire would be one

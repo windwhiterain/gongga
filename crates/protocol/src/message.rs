@@ -552,13 +552,13 @@ impl Head {
         }
     }
 
-    /// The name and, after it, what the item is for: one row's first words.
+    /// The open item's first row: the name and, after it, what the item is for.
     ///
     /// # Invariant
     ///
-    /// The separator is spelled once, here, because both rows of an item open with
-    /// this and a front-end that had to join them would be a second place to change.
-    /// An item with no description is its name alone -- never a trailing mark.
+    /// The separator is spelled once, here, so a front-end printing this row joins
+    /// nothing itself. An item with no description is its name alone -- never a
+    /// trailing mark.
     fn title(&self) -> String {
         match self.description.is_empty() {
             true => self.name.clone(),
@@ -566,14 +566,30 @@ impl Head {
         }
     }
 
-    /// The folded row: SPEC's `abstract`, from the title and the marked fields.
+    /// The folded row: SPEC's `toolcall{tool_name·[*summary_args]·description}`.
+    ///
+    /// # Invariant
+    ///
+    /// Every part is joined by the one mark, in SPEC's order: the name, then the values
+    /// marked `summary`, then what the call is for. A value is read bare -- the name it
+    /// is read under is the open item's own row, and a one-row summary has no room to
+    /// say it twice -- and an empty part is no part, so no mark is left stranded.
     pub fn summary(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
+        let mut parts: Vec<&str> = Vec::new();
         if !self.name.is_empty() {
-            parts.push(self.title());
+            parts.push(self.name.as_str());
         }
-        parts.extend(self.fields.iter().filter(|f| f.summary).map(spelled));
-        parts.join(", ")
+        parts.extend(
+            self.fields
+                .iter()
+                .filter(|field| field.summary)
+                .map(|field| field.value.as_str())
+                .filter(|value| !value.is_empty()),
+        );
+        if !self.description.is_empty() {
+            parts.push(self.description.as_str());
+        }
+        parts.join("\u{b7}")
     }
 
     /// The open item: the title, then one row per argument.

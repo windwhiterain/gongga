@@ -314,9 +314,10 @@ a tool error rather than an error of the harness.
 ## Client::handle_tool_call
 
 One block per call, keyed `c:<call_id>` and labelled with the words the server sent
-(`bash·check the state, name=default `). The key is the call and not the turn: SPEC's `abstract`
-holds a call and its result together, and the id is the only thing they share -- two
-calls in one turn are two items, not one block that keeps growing.
+(`exec·bash·check the state `: name, marked values, description, joined by the one
+mark). The key is the call and not the turn: SPEC's `summary` holds a call and its
+result together, and the id is the only thing they share -- two calls in one turn are
+two items, not one block that keeps growing.
 
 The block opens and closes in one call (`text: ""`, `done: true`): a call is a fact,
 not a stream. Its content is the tool's output, which arrives as `tool_answer`.

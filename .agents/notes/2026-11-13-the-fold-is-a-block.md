@@ -35,6 +35,21 @@ cut at the window edge, and the rest of the description was gone from the log.
 - `summary_text` reads `Head::summary` rather than `tag`: `layout` cuts the label to
   the one row it rides on, and wrapping an already-cut label only moves the `…`.
 
+## Follow-up: the row's own order and spelling
+User: SPEC says the summary args come before the description, joined by `·`, with no
+arg name -- fix that too. SPEC's `toolcall{tool_name·[*summary_args]·description}` is
+read literally, so `Head::summary` is now `name · value · value · description`
+(`crates/protocol/src/message.rs`): values bare, because the name an argument is read
+under is the open item's row, and an empty part is dropped so no mark is stranded.
+`Head::title` stays the open item's first row (`name·description`), which is what
+`detail()` opens with. `frontends/avalonia/Wire/WireTypes.cs` mirrors the rule in C#
+and was changed with it; `docs/notes/protocol-message.md` and `client-lib.md` quote the
+new spelling.
+
+Proved in a frame: `▸ exec·bash·check the state` for
+`{"bin":"bash","args":["-lc","seq 1 3"],"description":"check the state"}` -- the
+arg name is gone, the marked value sits between the name and the description.
+
 ## Verification
 - `scripts/tui_live.py --home .dev/live-home7`, one scripted turn with a described
   call: frame shows the call over two rows

@@ -53,6 +53,8 @@ public sealed record HeadRow(
     private static string Spelled(HeadField item) =>
         item.Label.Length == 0 ? item.Value : $"{item.Label}={item.Value}";
 
+    // Contract: crates/protocol/src/message.rs Head::summary -- the name, the marked
+    // values bare, then the description, every part joined by the one mark.
     public string Summary
     {
         get
@@ -60,16 +62,20 @@ public sealed record HeadRow(
             var parts = new List<string>();
             if (Name.Length != 0)
             {
-                parts.Add(Title);
+                parts.Add(Name);
             }
             foreach (var item in Fields)
             {
-                if (item.Summary)
+                if (item.Summary && item.Value.Length != 0)
                 {
-                    parts.Add(Spelled(item));
+                    parts.Add(item.Value);
                 }
             }
-            return string.Join(", ", parts);
+            if (Description.Length != 0)
+            {
+                parts.Add(Description);
+            }
+            return string.Join("\u00b7", parts);
         }
     }
 
