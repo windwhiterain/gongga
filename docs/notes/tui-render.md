@@ -19,27 +19,32 @@ to see is the answer they are replying to, so the box stops growing.
 
 ## HELP
 
-SPEC's `hot-key` list, one entry per binding, in SPEC's order: six of them, the
-ones the reminder may name.
+SPEC's `hot-key` list, one entry per binding: eight of them, the ones the
+reminder may name.
 
-`Shift+Delete` is the delete and `Alt+V` the paste. Both are SPEC's, so they are
+`Shift+Delete` is the delete and `Ctrl+V` the paste. Both are SPEC's, so they are
 on the row; the paste also arrives as a bracketed paste from a terminal that
 pastes by itself, and the entry is about the key, which is what the row is for.
 
-`Shift+↑ last cmd` is the newest entry, and the shortest way to say it: one key,
-one thing it brings back. Its two neighbours on the row are about the view
-(`Shift+↓`, `PageUp/PageDown`) and it is not -- the row reads as a list of keys,
-not as a grouping, so the entries stand in SPEC's order rather than by topic.
+`Ctrl+↓ to bottom` is the third key of the view, and it sits beside the two pages
+because that is what it acts on: PageUp/PageDown walk the sticky session, and this
+one puts it back at its newest line. The recall is the next entry,
+`Shift+↑/↓ cmd line`, which says both directions in one entry because SPEC binds
+them together and the row has one thing to say about them.
 
-The paste entry used to name two spellings, `Ctrl+V/Ctrl+Alt+V`, because SPEC
-named two. Neither reaches a program inside VS Code -- the first is the
-terminal's own paste, and xterm.js writes nothing at all for the second -- so the
-row now says the one key SPEC binds, `Alt+V paste`: one entry, one binding, one
-key. The measurement is in `docs/notes/tui-paste.md`.
+Those two entries are the one place the row departs from SPEC's order: SPEC lists
+the recall after the paste, and the row keeps the view's keys together because
+that is how an operator reads them. The rest stand in SPEC's order.
+
+The paste entry has been through the console's own gestures: it named two
+spellings while SPEC did, then `Alt+V` while the console was doing its own
+pasting, and it says `Ctrl+V paste` again now that quick-edit is off and SPEC
+binds the one key. What a terminal does with that key is
+`docs/notes/tui-paste.md`'s.
 
 Nothing else goes on the row even though this window binds more: the operator
 reads a reminder as the whole keyboard, and SPEC is the source of truth for which
-keys exist. `Alt+Q` still quits, `Tab` still completes — they are in
+keys exist. `Tab` still completes, an arrow still moves the caret — those are in
 `docs/notes/tui-lib.md` and in DESIGN, not on the row. The first version of the
 row listed every binding the handler knows, which was wrong in the direction that
 costs more: a key that is not a SPEC key looked like one.

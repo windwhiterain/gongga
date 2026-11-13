@@ -46,7 +46,8 @@ contain spaces. `#` starts a comment.
     burst <text>             type as fast as the pipe takes it
     enter                    CR
     key <name>               enter|esc|tab|backspace|delete|shift-delete|up|down|left|right|
-                             home|end|pgup|pgdn|f1..f4
+                             home|end|pgup|pgdn|f1..f4|shift-up|shift-down|
+                             ctrl-down|alt-enter
     alt <text>               Alt+<text>: ESC then the characters
     paste <text>             bracketed paste (ESC[200~ ... ESC[201~), one burst
     send-message <text>      burst + enter, i.e. prose to the agent
@@ -1430,6 +1431,14 @@ KEY_SEQUENCES = {
     "backspace": b"\x7f",
     "delete": b"\x1b[3~",
     "shift-delete": b"\x1b[3;2~",
+    # The modified arrows and the break, one write each: a sequence a console
+    # reads as keys is one write, and these are the spellings a terminal sends.
+    "shift-up": b"\x1b[1;2A",
+    "shift-down": b"\x1b[1;2B",
+    "ctrl-down": b"\x1b[1;5B",
+    "alt-enter": b"\x1b\r",
+    # The paste key itself: the byte a console that forwards it sends.
+    "ctrl-v": b"\x16",
     "up": b"\x1b[A",
     "down": b"\x1b[B",
     "right": b"\x1b[C",

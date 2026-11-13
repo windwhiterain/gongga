@@ -64,9 +64,9 @@ the row below it in a live run.
 
 ## scroll_by and scroll_to_bottom
 
-SPEC's page keys act on the *sticky session*: PageUp/PageDown scroll it, Shift+Down
-takes it back to its newest line (`Panes::pin`). The keyboard therefore does not act
-on whatever was last clicked; the click sets the sticky, and the keys follow it.
+SPEC's keys act on the *sticky session*: PageUp/PageDown scroll it, Ctrl+Down takes
+it back to its newest line (`Panes::pin`). The keyboard therefore does not act on
+whatever was last clicked; the click sets the sticky, and the keys follow it.
 
 With no sticky session there is nothing to scroll, and a page is a no-op rather than
 a guess at which pane the operator meant.
@@ -400,13 +400,15 @@ scrolls past what is visible and the jump looks arbitrary.
 ## Arrow
 
 SPEC's bindings on the vertical arrows, told apart before any state is read:
-`Shift+Up` the last command line, `Shift+Down` the newest row of the sticky
-session, a bare `Up`/`Down` the line above or below the caret.
+`Shift+Up` the last command line and `Shift+Down` the next one, `Ctrl+Down` the
+newest row of the sticky session, a bare `Up`/`Down` the line above or below the
+caret.
 
 # Invariant
 
-The recall is Shift's, and a bare arrow is the prompt's, so the two are never the
-same keystroke. Left to the shell convention the history sat on the bare `Up` --
+The recall is Shift's, a bare arrow is the prompt's, and `Ctrl+Down` is the sticky
+session's, so no two of the three are the same keystroke. Left to the shell
+convention the history sat on the bare `Up` --
 which is also the key every editor uses for the line above, and on a one-line
 prompt it is the one thing an operator presses by reflex. The result was that a
 message already sent came back into the prompt when nothing was being recalled.
@@ -418,12 +420,13 @@ One arrow key, and the only place an arrow is answered.
 
 # Invariant
 
-Only Shift changes what an arrow does, and only where SPEC says so. A terminal
-that attaches Alt or Ctrl to the arrows -- a keyboard layer, an IME, a host that
-decorates them -- must not take the caret away from the operator. It used to:
-Alt+Left was a word jump, Alt+Right was bound to nothing at all, and Alt+Up/Down
-paged the log, so an operator whose arrows arrived decorated saw the caret jump a
-word on one side and stay still on the other.
+Only Shift and Ctrl change what an arrow does, and only where SPEC says so: the
+recall, and `Ctrl+Down` on the sticky session. A terminal that attaches Alt to the
+arrows -- a keyboard layer, an IME, a host that decorates them -- must not take
+the caret away from the operator. It used to: Alt+Left was a word jump, Alt+Right
+was bound to nothing at all, and Alt+Up/Down paged the log, so an operator whose
+arrows arrived decorated saw the caret jump a word on one side and stay still on
+the other.
 
 The word jump moved to Ctrl+Left and Ctrl+Right, which is where every other
 editor puts it. VS Code's terminal eats those, so the jump is simply absent
@@ -431,8 +434,9 @@ there; the caret still moves.
 
 ## Tui::arrow_key
 
-The key table alone: which code with which modifiers asks for which of the three.
-No modifier but Shift reaches it, so `Line` is every arrow that is not a recall.
+The key table alone: which code with which modifiers asks for which of the four.
+Shift and Ctrl are the two modifiers that reach it, so `Line` is every arrow that
+is neither the recall nor the sticky session's.
 
 ## Tui::arrow
 
@@ -468,18 +472,17 @@ a session deleted by a key that was not pressed is not recoverable.
 The binding deletes the session the sticky names; the sticky setting itself is
 the command layer's, and clearing it is a `del_sticky` nobody pressed.
 
-## clipboard_paste and paste_from_clipboard
+## clipboard_paste and pasted_block
 
-SPEC makes `Alt+V` the paste. Where the terminal pastes by itself no key
-arrives; where one does, `paste_from_clipboard` reads the clipboard and hands the
-text to `Tui::paste`, so a paste from the key and a paste from the terminal take
-the same road.
-
-Alt is the binding rather than a tolerated extra, because the Ctrl spellings do
-not survive a terminal that wants them for itself: VS Code binds `Ctrl+V` to its
-own paste, and never writes `Ctrl+Alt+V` into the pty at all. `Alt+V` reaches
-this window as `KeyCode::Char('v')` with `ALT`; `Ctrl+V` is still accepted, for a
-terminal that forwards `^V`.
+SPEC makes `Ctrl+V` the paste, and it reaches this window three ways
+(`docs/notes/tui-paste.md`): as the key itself, where the terminal forwards it,
+and then `clipboard_paste` reads the clipboard and hands the text to `Tui::paste`;
+as one `Paste(text)` carrying the text the terminal pasted; and as one `Paste("")`
+where the terminal pasted and had no text to hand over -- which is what a
+clipboard holding a picture and nothing else looks like from the terminal's side.
+The empty block is `pasted_block`'s: it reads the clipboard too, so the key and
+the terminal take the same road, and a picture -- which no terminal can deliver
+-- can still be pasted.
 
 # Invariant
 
@@ -582,12 +585,15 @@ The flag is dropped by a line that changed since: an answer for the words that
 were there is not an answer for the words that are. An answer whose range runs
 past the line is stale for the same reason and is never applied.
 
-## Tui::history_prev
+## Tui::history_prev and Tui::history_next
 
-`Shift+Up`, one line back per press, stopping at the oldest line: the prompt's
-whole history is one key and one direction. Nothing walks forward again --
-`Shift+Down` is SPEC's "back to the newest row" -- and Enter clears the position,
-so the next recall starts from the newest line.
+`Shift+Up`, one line back per press, stopping at the oldest line; `Shift+Down`,
+the same walk forward. The prompt's whole history is one pair of keys, one
+direction each, so a line recalled by mistake is undone by the arrow opposite the
+one that recalled it. Past the newest line there is nothing to recall and the
+prompt is cleared: the draft typed before the recall does not come back. Enter
+clears the position in either direction, so the next recall starts from the newest
+line.
 
 # Invariant
 

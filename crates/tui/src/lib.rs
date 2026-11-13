@@ -85,19 +85,22 @@ enum ConsoleAction {
     CopySelection,
 }
 
-/// What a vertical arrow asks for: SPEC's three bindings on ↑/↓, told apart.
+/// What a vertical arrow asks for: SPEC's four bindings on ↑/↓, told apart.
 ///
 /// # Invariant
 ///
-/// The recall is Shift's, never a bare key. A bare ↑ is the line above the
-/// caret and nothing else, so on a one-line prompt it is not a key at all --
-/// the last command line is one Shift+↑ away, and never a surprise. See
-/// `docs/notes/tui-lib.md`.
+/// The recall is Shift's, never a bare key, one direction each. A bare ↑ is the
+/// line above the caret and nothing else, so on a one-line prompt it is not a key
+/// at all -- the last command line is one Shift+↑ away, and never a surprise.
+/// Ctrl+↓ is the one arrow that is not the prompt's: SPEC gives it the sticky
+/// session. See `docs/notes/tui-lib.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Arrow {
     /// Shift+↑: the last command line, then the one before it.
     LastCmd,
-    /// Shift+↓: the sticky session's newest row.
+    /// Shift+↓: the next command line, forward towards the one being typed.
+    NextCmd,
+    /// Ctrl+↓: the sticky session's newest row.
     Bottom,
     /// A bare ↑/↓: the popup first, then the line above (true) or below.
     Line(bool),
@@ -217,7 +220,7 @@ impl Screen {
         self.panes.take_wants()
     }
 
-    /// Shift+Down: back to the newest line, which is where a window starts.
+    /// Ctrl+Down: back to the newest line, which is where a window starts.
     pub fn scroll_to_bottom(&mut self) {
         let Some(target) = self.sticky_session.clone() else {
             return;
@@ -1202,7 +1205,7 @@ impl Tui {
                 // One string, so a pasted block stays a block: see `paste`.
                 Ok(TermEvent::Paste(text)) => {
                     self.screen.dismiss_cover();
-                    self.paste(&text);
+                    self.pasted_block(text);
                 }
                 Ok(TermEvent::Resize(..)) => self.dirty = true,
                 _ => {}
@@ -1253,8 +1256,9 @@ impl Tui {
     ///
     /// The console's own paste was turned off ([`QuickEdit`]), so the key this window
     /// reads is the key the operator pressed rather than a replay the terminal made.
-    /// A terminal that still keeps Ctrl+V for itself pastes the text instead, which
-    /// reaches this window as a whole `Paste`; either way the clipboard is read once.
+    /// A terminal that still keeps Ctrl+V for itself pastes instead, which reaches
+    /// this window as a whole `Paste`: with its text, and empty when it has none.
+    /// Either way the clipboard is read once -- an empty one by `pasted_block`.
     fn clipboard_paste(key: &KeyEvent) -> bool {
         key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('v' | 'V'))
@@ -1277,15 +1281,18 @@ impl Tui {
     ///
     /// # Invariant
     ///
-    /// Shift is the recall's, and a bare arrow is the prompt's, so the two can
-    /// never be the same keystroke. No other modifier reaches here: an arrow
-    /// means the same thing whatever the terminal sent with it.
+    /// Shift is the recall's, a bare arrow is the prompt's, and Ctrl+↓ is the
+    /// sticky session's, so no two of them are the same keystroke. Whatever else
+    /// the terminal sent with an arrow reaches nothing: the arrow means what it
+    /// means. See `docs/notes/tui-lib.md`.
     fn arrow_key(key: &KeyEvent) -> Option<Arrow> {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Up if shift => Some(Arrow::LastCmd),
             KeyCode::Up => Some(Arrow::Line(true)),
-            KeyCode::Down if shift => Some(Arrow::Bottom),
+            KeyCode::Down if shift => Some(Arrow::NextCmd),
+            KeyCode::Down if control => Some(Arrow::Bottom),
             KeyCode::Down => Some(Arrow::Line(false)),
             _ => None,
         }
@@ -1301,6 +1308,7 @@ impl Tui {
     fn arrow(&mut self, action: Arrow) {
         match action {
             Arrow::LastCmd => self.history_prev(),
+            Arrow::NextCmd => self.history_next(),
             Arrow::Bottom => self.screen.scroll_to_bottom(),
             Arrow::Line(up) => {
                 if let Some(c) = self.screen.completion.as_mut() {
@@ -1377,8 +1385,8 @@ impl Tui {
             return None;
         }
 
-        // Above the Alt branch: a terminal that keeps Ctrl+V for itself leaves
-        // Alt+V as the spelling that reaches this window.
+        // Above the Alt branch and the Ctrl swallow: a forwarded ^V carries
+        // CONTROL, and both branches below would drop it.
         if Self::clipboard_paste(&key) {
             self.paste_from_clipboard();
             return None;
@@ -1660,7 +1668,24 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Alt+V: the clipboard, when the terminal did not paste it for us.
+    /// What the terminal delivered as a paste, and what an empty one means.
+    ///
+    /// # Invariant
+    ///
+    /// An empty block is the terminal saying it had no text to hand over, never
+    /// the operator pasting nothing: a terminal that keeps Ctrl+V for itself
+    /// pastes the clipboard's text, and a clipboard holding only a picture gives
+    /// it none. So it is answered by reading the clipboard here, the only place a
+    /// picture can be read. See `docs/notes/tui-paste.md`.
+    fn pasted_block(&mut self, text: String) {
+        if text.is_empty() {
+            self.paste_from_clipboard();
+        } else {
+            self.paste(&text);
+        }
+    }
+
+    /// Ctrl+V: the clipboard, when the terminal did not paste it for us.
     ///
     /// # Invariant
     ///
@@ -1782,9 +1807,9 @@ impl Tui {
     /// # Invariant
     ///
     /// Never a bare ↑: the arrow belongs to the prompt's own lines, and a
-    /// one-line prompt has no line above, so that key does nothing there.
-    /// Recall walks one way and stops at the oldest line; nothing here goes
-    /// forward again. See `docs/notes/tui-lib.md`.
+    /// one-line prompt has no line above, so that key does nothing there. The
+    /// walk stops at the oldest line, and [`Self::history_next`] is the way
+    /// back. See `docs/notes/tui-lib.md`.
     fn history_prev(&mut self) {
         if self.history.is_empty() {
             return;
@@ -1798,6 +1823,30 @@ impl Tui {
             return;
         };
         self.history_pos = Some(pos);
+        self.screen.input.clear();
+        self.screen.input.insert_str(line);
+    }
+
+    /// Shift+↓: the next command line, and past the newest one the prompt is
+    /// empty again.
+    ///
+    /// # Invariant
+    ///
+    /// The other half of [`Self::history_prev`]'s walk, over the same list: one
+    /// direction per arrow direction, so a line recalled by mistake is undone by
+    /// the arrow opposite the one that recalled it. Past the newest line there is
+    /// nothing to recall, and the prompt is cleared rather than left holding the
+    /// line before it. See `docs/notes/tui-lib.md`.
+    fn history_next(&mut self) {
+        let Some(pos) = self.history_pos else {
+            return;
+        };
+        let Some(line) = self.history.get(pos + 1) else {
+            self.history_pos = None;
+            self.screen.input.clear();
+            return;
+        };
+        self.history_pos = Some(pos + 1);
         self.screen.input.clear();
         self.screen.input.insert_str(line);
     }

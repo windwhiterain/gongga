@@ -54,7 +54,7 @@ earlier batch left open -- a record is whole, so the unfinished escape goes.
 What the mode costs: with it in force the console host unwraps a terminal's own
 bracketed paste into plain keys, so that paste arrives as typed text and a line
 break inside it submits. SPEC's paste is `Ctrl+V`, which is this window reading
-the clipboard (`Ctrl+V` arrives as the key it is), and it is unaffected. A
+the clipboard, and it is unaffected either way -- see "Ctrl+V, three ways". A
 terminal that replays a paste as keys already had this failure mode, below.
 
 ## Why the key-stream rules were removed (2026-11-11)
@@ -105,23 +105,34 @@ file the raw bytes and parsed events go to, made fresh each run.
 
 A terminal that answers `EnableBracketedPaste` by replaying the text as plain
 keys, without the markers. Nothing separates those keystrokes from typing, and
-this window says so rather than pretend: the first `Enter` sends. `Alt+V` reads
-the clipboard for an operator in such a terminal.
+this window says so rather than pretend: the first `Enter` sends.
 
-## Alt+V, for the terminals that forward it
+## Ctrl+V, three ways
 
-SPEC makes `Alt+V` the paste. Bracketed paste is the other half of the same
-feature: a terminal that pastes by itself (Windows Terminal, VS Code) never sends
-the key at all, it sends the text. A terminal that forwards the key gets the
-clipboard read here instead — `clipboard::paste()` — and the answer goes in
-through `Tui::paste`, so both roads end in the same place and neither replays
-keystrokes. `Ctrl+V` is read the same way, for the terminals that forward `^V`.
+SPEC binds `Ctrl+V` (`clipboard_paste`), and what reaches this window depends on
+what the terminal does with the key:
 
-Nothing is said when the clipboard is empty. When there is no tool to read it, or
+| the terminal | what arrives | how the paste is read |
+| --- | --- | --- |
+| forwards the key | `Char('v')` with `CONTROL` | the clipboard -- `clipboard::paste()`, image first |
+| pastes, and the clipboard holds text (Windows Terminal, VS Code) | one `Paste(text)` | `Tui::paste`, the block whole |
+| pastes, and the clipboard holds no text | one `Paste("")` | the clipboard -- `pasted_block` |
+
+The third row is what a picture looks like from the terminal's side: a terminal
+pastes text, and a screenshot gives it none. Measured in this window's own console
+on 2026-11-13 (`GONGGA_TUI_RAW_KEYS`): `Ctrl+V` arrived as the `Ctrl` press,
+`ESC[200~` `ESC[201~` with nothing between them, and then the `V` **release** --
+the press was the terminal's, and the block had nothing in it. The window inserted
+nothing and the picture was never asked for. `pasted_block` answers the empty
+block by reading the clipboard, which is the only place a picture can be read at
+all.
+
+All three roads end in the same place, and none of them replays keystrokes.
+Nothing is said when the clipboard is empty; when there is no tool to read it, or
 the tool refuses, the status line says so and the prompt is untouched: a paste
 that quietly did nothing is the failure mode this note keeps coming back to.
 
-## Why the spelling is Alt+V and not a Ctrl one
+## Why Ctrl+V needs a keybinding in VS Code
 
 VS Code's terminal binds `Ctrl+V` to `workbench.action.terminal.paste`, and that
 command is in the default `commandsToSkipShell` list: the key is taken before the
@@ -151,38 +162,31 @@ the byte receives the byte. VS Code does not send it. xterm.js reads any
 character the browser never composes on a US layout, so nothing is written to
 the pty at all.
 
-`Alt+V` is therefore SPEC's binding: `clipboard_paste` accepts `ALT` with `v`,
-and `CONTROL` too, for a terminal that forwards `^V`. Alt alone is the binding,
-not Alt as a tolerated extra -- a Ctrl spelling leaves an operator in VS Code
-with no key that pastes anything.
+What the last two rows of that table buy is the way out: a key VS Code does not
+claim, mapped to the bytes of `Ctrl+V`. SPEC binds one key and this window reads
+only that one, so the terminal has to be told to send it.
 
-Which hop is measured: everything in the table above, and the paste itself --
-in a real VS Code terminal `Alt+V` writes `gongga-paste-<pid>-<n>.png` and
-inserts `@image(<path>)` into the prompt. What is reasoned is only why xterm.js
-drops the key, which no line of VS Code's bundle was read to confirm; the
-observation is that nothing arrives, and the fix does not depend on the reason.
-
-### Keeping the Ctrl+Alt+V habit
+### A keybinding, for a terminal that keeps Ctrl+V
 
 A keybinding wins over xterm.js's AltGr handling -- measured, same probe -- so one
 line in `keybindings.json` sends the byte directly and the operator keeps pressing
-`Ctrl+Alt+V`:
+`Ctrl+V`:
 
     {"key": "ctrl+alt+v", "command": "workbench.action.terminal.sendSequence",
-     "args": {"text": "\u0016"}, "when": "terminalFocus"}
+     "args": {"text": ""}, "when": "terminalFocus"}
 
-`\u0016` arrives as `Char('v')` with `CONTROL`, which is the forwarded-`Ctrl+V`
-path and needs nothing new from this window. `\u001bv` also works -- it arrives as
-SPEC's `Alt+V` and is the plainest to write.
+`` arrives as `Char('v')` with `CONTROL`, which is the forwarded-key row of
+the table above and needs nothing new from this window.
 
 `commandsToSkipShell: ["-workbench.action.terminal.paste"]` also works and keeps
 the plain `Ctrl+V`, but it applies to every terminal in the window: `^V` stops
 being readline's quoted-insert in ordinary shells too. The keybinding is scoped
 to the terminal and is the one this note recommends.
 
-## Alt+V, and a picture
+## Ctrl+V, and a picture
 
-The same key pastes a picture, and the picture is tried first.
+The same key pastes a picture, and the picture is tried first -- on both rows of
+"Ctrl+V, three ways" that read the clipboard.
 
 `Tui::paste_from_clipboard` asks the clipboard for an image before it asks it
 for text. The order is the whole design: a screenshot copied out of an image

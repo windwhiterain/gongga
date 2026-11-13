@@ -64,7 +64,7 @@ else is touched: tabs and trailing spaces are the operator's text.
 
 ## The image, and the tools that read it
 
-A clipboard can hold a picture as well as text, and the same Alt+V that reads
+A clipboard can hold a picture as well as text, and the same Ctrl+V that reads
 the text reads the picture. The picture is read first, because a screenshot
 copied out of an image tool usually carries both formats and the picture is what
 the operator meant; the text read is the fallback and is unchanged.

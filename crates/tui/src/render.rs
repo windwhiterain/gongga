@@ -22,6 +22,7 @@ use crate::{LineKind, Screen};
 pub const HELP: &[&str] = &[
     "Shift+Enter newline",
     "PageUp/PageDown scroll",
+    "Ctrl+\u{2193} to bottom",
     "Shift+\u{2191}/\u{2193} cmd line",
     "Shift+Delete delete session",
     "Ctrl+V paste",
