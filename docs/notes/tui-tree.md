@@ -77,13 +77,20 @@ finished where the operator was not looking. An error keeps its own mark -- the 
 is the stronger fact, and it is already the loudest mark in the column (`mark_of`).
 
 Siblings keep the order the layout hands over -- the session whose turn ended longest
-ago first, the one that just finished last -- which makes a group appear where its
-first session is. That order is the announcement read backwards: the store lists the
-last-ended turn first, and `Client::layout` reverses it, because a frame reads like a
-transcript -- what arrived last is at the bottom, and the session that has just
-finished is where the next one will be. The alternative, sorting siblings by name,
-would keep the tree's rows still while sessions come and go; it was not taken because
-the list's order is how a person finds the session they were just working on.
+ago first, the one that just finished last. A group takes the place of the **newest**
+session it holds, which is the last index under its name: the subtree is one thing
+under the fold, so it stands where the work in it stands, and a group that holds one
+old name and one that just finished is drawn once, at the bottom, not once per child.
+The user's 2026-11-13 report: a group appeared where its *first* session was, so
+`work/api` finishing a turn still drew `work` above every name that had not moved,
+far from the row that said so.
+
+That order is the announcement read backwards: the store lists the last-ended turn
+first, and `Client::layout` reverses it, because a frame reads like a transcript --
+what arrived last is at the bottom, and the session that has just finished is where
+the next one will be. The alternative, sorting siblings by name, would keep the
+tree's rows still while sessions come and go; it was not taken because the list's
+order is how a person finds the session they were just working on.
 
 The cost is real and it was taken deliberately: a turn ending moves its row to the
 bottom of the list. A name's row therefore is not the place the operator left it; the
