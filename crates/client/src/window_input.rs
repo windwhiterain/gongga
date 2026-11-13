@@ -1,6 +1,8 @@
 //! The input line's grammar and sticky entries, without a terminal.
-//!
+
 //! See `docs/notes/client-window-input.md`.
+
+use serde_json::Value;
 
 use crate::window_command::{self as command, Done};
 use crate::window_state::{Follow, State};
@@ -113,7 +115,7 @@ fn filled(client: &Client, state: &State, tokens: Vec<String>, sink: &mut dyn Si
     for (name, value) in sticky_additions(client, &spec, &args, &merged, &line, sink) {
         // A flag, whatever its position: filled, not re-ordered, and one token.
         filled.push(format!("--{name}"));
-        filled.push(value);
+        filled.push(crate::json_command::word(&value));
     }
     filled
 }
@@ -134,7 +136,7 @@ fn sticky_additions(
     merged: &protocol::Args,
     line: &str,
     sink: &mut dyn Sink,
-) -> Vec<(String, String)> {
+) -> Vec<(String, serde_json::Value)> {
     // Which session this line acts on, entries and all: the answer `follow` keeps.
     let acting = client.session_named(&spec.name, merged).map(str::to_string);
     // Its row, when it already exists: the one thing a fill has to agree with.
@@ -173,7 +175,7 @@ fn sticky_additions(
             );
             continue;
         }
-        additions.push((arg.name.clone(), value));
+        additions.push((arg.name.clone(), value.clone()));
     }
     if let (Some(acting), false) = (acting, left.is_empty()) {
         sink.note(
@@ -233,7 +235,7 @@ fn submit_json(
     }
     let mut filled = map.clone();
     for (field, value) in additions {
-        filled.insert(field, serde_json::Value::String(value));
+        filled.insert(field, value);
     }
     let typed = crate::json_command::render(name, &filled);
     client.submit_command(
@@ -252,7 +254,10 @@ fn submit_json(
 /// that disagrees would rewrite a setting nobody stated on this line. A kind this
 /// function does not know answers `false` -- filling it would change something it
 /// cannot check.
-fn restates(info: &crate::protocol::SessionInfo, kind: Option<&str>, value: &str) -> bool {
+fn restates(info: &crate::protocol::SessionInfo, kind: Option<&str>, value: &Value) -> bool {
+    let Some(value) = value.as_str() else {
+        return false;
+    };
     match kind {
         Some("model") => info.model.as_deref() == Some(value),
         Some("thinking") => info.thinking_effort.as_deref() == Some(value),
@@ -302,8 +307,8 @@ pub fn follow(
             .filter(|arg| typed.contains(&arg.name))
             .filter_map(|arg| {
                 let kind = arg.kind.clone()?;
-                let value = args.get(&arg.name)?.clone();
-                Some((kind, value))
+                let value = args.get(&arg.name)?;
+                Some((kind, crate::json_command::word(value)))
             })
             .collect();
         if !pairs.is_empty() {

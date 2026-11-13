@@ -21,6 +21,7 @@ pub fn version_line() -> &'static str {
     BUILD
 }
 
+pub mod argtype;
 pub mod channel;
 pub mod frame;
 pub mod message;
@@ -32,7 +33,7 @@ pub use channel::{
 };
 pub use message::{
     Accepts, ArgSpec, Args, BLOCK_SIZES, BOX_EDGES, ClientInfo, ClientMessage, CmdArg, CommandSpec,
-    CommandTarget, CompletionSource, DEFAULT_BOX_EDGE, Delta, Event, Field, Head, HeadKind,
+    CommandTarget, CompletionSource, DEFAULT_BOX_EDGE, Delta, Event, Field, Given, Head, HeadKind,
     LogLevel, ModelInfo, NONE_VALUE, Operation, PROTOCOL_VERSION, Quota, REPLAY_TURN,
     ResponseEvent, ResponsePart, SERVER_STOP, SHOW_VALUES, ServerInfo, ServerMessage, SessionInfo,
     SessionStatus, StructField, StructSchema, THINKING_DEFAULT, ToolAnswerEvent, ToolCallEvent,

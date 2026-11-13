@@ -66,7 +66,7 @@ pub fn word(value: &Value) -> String {
 /// The object's fields as wire arguments.
 pub fn args_of(map: &Map<String, Value>) -> Args {
     map.iter()
-        .map(|(name, value)| (name.clone(), word(value)))
+        .map(|(name, value)| (name.clone(), value.clone()))
         .collect()
 }
 

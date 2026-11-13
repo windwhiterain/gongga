@@ -370,9 +370,10 @@ pub(crate) async fn run_command(
 ///
 /// # Invariant
 ///
-/// A string is itself and anything else is its JSON, because a command's arguments are
-/// words: `cmd` is the one key this drops, since it names the command rather than one of
-/// its arguments. See `docs/notes/server-tools-mod.md`.
+/// A string is itself and any other value is its JSON, because a command's arguments
+/// are words; a stated `null` is neither, and reaches the command as absent rather than
+/// as the four letters `null`. `cmd` is the one key this drops, since it names the
+/// command rather than one of its arguments. See `docs/notes/server-tools-mod.md`.
 pub(crate) fn named_words(table: &serde_json::Map<String, Value>) -> protocol::Args {
     let mut words = protocol::Args::new();
     for (key, value) in table {
@@ -381,6 +382,7 @@ pub(crate) fn named_words(table: &serde_json::Map<String, Value>) -> protocol::A
         }
         let text = match value {
             Value::String(text) => text.clone(),
+            Value::Null => continue,
             other => other.to_string(),
         };
         words.insert(key.clone(), text);
@@ -1041,6 +1043,53 @@ pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
     schema
 }
 
+/// The JSON kind of one value, in a schema's own vocabulary.
+fn kind_word(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// The first argument whose value is not of the JSON kind its schema declares, and the
+/// refusal that says so.
+///
+/// # Invariant
+///
+/// The schema is the whole judgement: a type that does not list `null` refuses a stated
+/// `null`, which is how "the same as omitting it" stops being something a reader has to
+/// guess. See `protocol::argtype`.
+fn wrong_kind(schema: &Value, given: &serde_json::Map<String, Value>) -> Option<String> {
+    let properties = schema["properties"].as_object()?;
+    for (key, value) in given {
+        let Some(spec) = properties.get(key) else {
+            continue;
+        };
+        let spelled = kind_of(spec);
+        // `any` is a property that declares no type: nothing to hold the call to.
+        if spelled == "any" {
+            continue;
+        }
+        let kinds: Vec<&str> = spelled.split(" or ").collect();
+        let given_kind = kind_word(value);
+        let matches =
+            kinds.contains(&given_kind) || (given_kind == "integer" && kinds.contains(&"number"));
+        if !matches {
+            return Some(format!(
+                "`{key}` takes {}, and this call gave {}: leave it out for its default, or give a value of that kind.",
+                kinds.join(" or "),
+                json_type(value)
+            ));
+        }
+    }
+    None
+}
+
 /// Why a call does not fit the declared schema, in the schema's own words.
 ///
 /// See `docs/notes/server-tools-mod.md`.
@@ -1084,6 +1133,11 @@ fn argument_error_for(name: &str, schema: &Value, args: &Value) -> Option<String
             },
         )
         .collect();
+
+    // Wrong kinds are refused here, in the schema own words.
+    if let Some(wrong) = wrong_kind(schema, given) {
+        return Some(wrong);
+    }
 
     if missing.is_empty() && unexpected.is_empty() {
         return None;
@@ -1155,7 +1209,19 @@ pub(crate) fn kind_of(spec: &Value) -> String {
             return kinds.join(" or ");
         }
     }
-    spec["type"].as_str().unwrap_or("any").to_string()
+    match spec.get("type") {
+        Some(Value::String(one)) => one.clone(),
+        // A union is a list: `optional[str]` renders as `["string", "null"]`.
+        Some(Value::Array(kinds)) => {
+            let kinds: Vec<&str> = kinds.iter().filter_map(Value::as_str).collect();
+            if kinds.is_empty() {
+                "any".to_string()
+            } else {
+                kinds.join(" or ")
+            }
+        }
+        _ => "any".to_string(),
+    }
 }
 
 /// The strings of a JSON array, or the keys of an object, in document order.

@@ -457,7 +457,7 @@ async fn run_commands(
         let outcome = dispatch(&d, &command.name, &command.args, &command.origin).await;
         tracing::info!(
             command = %command.name,
-            session = command.args.get("session").map(String::as_str).unwrap_or("-"),
+            session = command.args.word("session").unwrap_or("-"),
             waited = ?ran_at.duration_since(command.arrived),
             took = ?ran_at.elapsed(),
             "command ran"

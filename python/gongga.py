@@ -75,20 +75,6 @@ def _frame(flags, connection, sequence, ack, message, index, count, payload=b"")
     return head + payload
 
 
-def _wire(value):
-    """One argument as the wire spells it: every argument travels as a string.
-
-    # Invariant
-
-    A `cmd` is an object here and a string there, and so is a list of words: what a
-    caller means as a structure is JSON, which is what the argument's own schema says
-    it accepts. A string is itself, never quoted twice.
-    """
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False)
-
-
 class Reply:
     """What one command answered: `ok`, the message, and any rows it carried."""
 
@@ -208,8 +194,9 @@ class Client:
         """Ask for one command and answer with its `Reply`, refused or not.
 
         The name is positional only, so a command that has an argument called `name`
-        -- `set_session` does -- spells it like any other. An argument that is not a
-        string is sent as JSON, which is how a caller passes a `cmd` object.
+        -- `set_session` does -- spells it like any other. An argument is sent as the
+        value it is: a `cmd` object arrives as a table, and `None` as `null`, which is
+        a statement of its own and never the word `null`.
         """
         self.connect()
         wanted = self._next_id
@@ -218,7 +205,7 @@ class Client:
             "t": "command",
             "id": wanted,
             "name": command,
-            "args": {key: _wire(value) for key, value in arguments.items()},
+            "args": dict(arguments),
         })
 
         def answered(message):

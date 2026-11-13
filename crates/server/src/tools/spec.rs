@@ -12,9 +12,9 @@ use serde_json::{Value, json};
 
 use crate::session::Machine;
 
-/// The JSON type an argument is written as when the row does not say.
+/// The type an argument is written as when the row does not say: a word.
 fn string_type() -> String {
-    "string".to_string()
+    "str".to_string()
 }
 
 fn yes() -> bool {
@@ -32,7 +32,8 @@ fn yes() -> bool {
 pub struct Argument {
     /// The name both the model and the operator spell.
     pub name: String,
-    /// The JSON type: `string`, `integer`, `number`, `boolean` or `array`.
+    /// SPEC's type in SPEC's spelling: `time`, `list[str]`, `optional[...]`, or a `|`.
+    /// `protocol::argtype` is the one table that maps it to JSON.
     #[serde(rename = "type", default = "string_type")]
     pub kind: String,
     /// What an `array` argument's elements are. Only arrays have one.
@@ -212,12 +213,15 @@ impl ToolSpec {
         let mut properties = serde_json::Map::new();
         let mut required: Vec<String> = Vec::new();
         for argument in &self.parameters {
-            // `a|b` is a union: JSON Schema spells it as a list of types.
-            let mut property = match argument.kind.split('|').collect::<Vec<_>>().as_slice() {
-                [one] => json!({ "type": one }),
-                several => json!({ "type": several }),
+            let kind = argument.kind.as_str();
+            let name = &argument.name;
+            // SPEC's spelling, mapped once by `protocol::argtype`.
+            let mut property = match protocol::argtype::schema_types(kind) {
+                Ok(types) if types.len() == 1 => json!({ "type": types[0] }),
+                Ok(types) => json!({ "type": types }),
+                Err(why) => panic!("the row for {name:?} says {why}"),
             };
-            if let Some(items) = &argument.items {
+            if let Some(items) = protocol::argtype::item_type(kind).or(argument.items.as_deref()) {
                 property["items"] = json!({ "type": items });
             }
             if let Some(sentence) = &argument.sentence {

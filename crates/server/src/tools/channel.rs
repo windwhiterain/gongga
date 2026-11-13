@@ -388,7 +388,7 @@ impl Channels {
             let mut known = self.remotes.names();
             known.sort_unstable();
             return Err(format!(
-                "no remote named {machine:?}; this machine's remotes are {}",
+                "no remote named {machine:?}; this machine's remotes are {}; `none` (or `local`) is this machine",
                 if known.is_empty() {
                     "none".to_string()
                 } else {

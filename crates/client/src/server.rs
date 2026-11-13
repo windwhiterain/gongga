@@ -40,14 +40,14 @@ pub fn serve(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
         .into_iter()
         .find(|c| c.name == "serve");
     let parsed = parse_args(tokens, spec.as_ref())?;
-    let Some(port) = parsed.get("port") else {
+    let Some(port) = parsed.word("port") else {
         anyhow::bail!("serve needs a port: `{} serve <port>`", crate::typed_name());
     };
     let port: u16 = port
         .parse()
         .with_context(|| format!("parsing port {port:?}"))?;
     // The flag before the command name loses to `serve --home`: nearer is newer.
-    let home = match parsed.get("home") {
+    let home = match parsed.word("home") {
         Some(named) => crate::home_dir(Some(&PathBuf::from(named))),
         None => crate::home_of(args),
     };
