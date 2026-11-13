@@ -5,10 +5,180 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
-pub type Args = BTreeMap<String, String>;
+/// One command's arguments: SPEC's `Cmd.args` is `dict[str, any]`.
+///
+/// # Invariant
+///
+/// A value is what the caller stated, never its text: a stated `null` stays `null`,
+/// which is a statement of its own -- the type's empty value -- and neither the four
+/// letters `null` nor the same thing as leaving the key out. See [`Given`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Args(BTreeMap<String, Value>);
+
+/// What a call said about one argument, in the three ways a JSON object can say it.
+///
+/// # Invariant
+///
+/// The three are different instructions and none is read as another: SPEC gives an
+/// argument a default (`= <session's remote>`), so saying nothing takes that default,
+/// while a stated `null` is the empty value of the argument's own type (`str`'s empty
+/// value is no word at all, `optional[path]`'s is no directory).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Given<'a> {
+    /// The call did not mention it.
+    Nothing,
+    /// The call stated `null`.
+    Null,
+    /// The call stated a value.
+    Value(&'a Value),
+}
+
+impl<'a> Given<'a> {
+    /// The word stated, when the value is a string; `None` for nothing, `null`, and
+    /// any other kind of value.
+    pub fn word(&self) -> Option<&'a str> {
+        match self {
+            Given::Value(Value::String(word)) => Some(word.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The count stated, when the value is a non-negative integer.
+    pub fn count(&self) -> Option<u64> {
+        match self {
+            Given::Value(value) => value.as_u64(),
+            _ => None,
+        }
+    }
+
+    /// The switch stated, when the value is a boolean.
+    pub fn flag(&self) -> Option<bool> {
+        match self {
+            Given::Value(value) => value.as_bool(),
+            _ => None,
+        }
+    }
+
+    /// The value stated, whatever it is.
+    pub fn value(&self) -> Option<&'a Value> {
+        match self {
+            Given::Value(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    /// Whether the call said anything at all, `null` included.
+    pub fn stated(&self) -> bool {
+        !matches!(self, Given::Nothing)
+    }
+}
+
+impl Args {
+    pub fn new() -> Self {
+        Self(BTreeMap::new())
+    }
+
+    /// What this call said about one argument.
+    pub fn given(&self, key: &str) -> Given<'_> {
+        match self.0.get(key) {
+            None => Given::Nothing,
+            Some(Value::Null) => Given::Null,
+            Some(value) => Given::Value(value),
+        }
+    }
+
+    /// The word stated for one argument; a non-string value is not one.
+    pub fn word(&self, key: &str) -> Option<&str> {
+        self.given(key).word()
+    }
+
+    /// One argument as the JSON object a command or a tool reads.
+    pub fn value(&self, key: &str) -> Option<&Value> {
+        self.0.get(key)
+    }
+
+    /// The arguments as one JSON object: what a script and a subscription read.
+    pub fn as_json(&self) -> Value {
+        Value::Object(self.0.clone().into_iter().collect())
+    }
+
+    /// One JSON object as arguments, or why it is not one.
+    pub fn from_json(value: Value) -> Result<Self, String> {
+        match value {
+            Value::Object(table) => Ok(Self(table.into_iter().collect())),
+            Value::Null => Ok(Self::new()),
+            other => Err(format!(
+                "arguments are a JSON object, and this is {}",
+                json_kind(&other)
+            )),
+        }
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<Value>) {
+        self.0.insert(key.into(), value.into());
+    }
+}
+
+impl std::ops::Deref for Args {
+    type Target = BTreeMap<String, Value>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Args {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl From<BTreeMap<String, Value>> for Args {
+    fn from(table: BTreeMap<String, Value>) -> Self {
+        Self(table)
+    }
+}
+
+impl FromIterator<(String, Value)> for Args {
+    fn from_iter<I: IntoIterator<Item = (String, Value)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+impl IntoIterator for Args {
+    type Item = (String, Value);
+    type IntoIter = std::collections::btree_map::IntoIter<String, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Args {
+    type Item = (&'a String, &'a Value);
+    type IntoIter = std::collections::btree_map::Iter<'a, String, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+/// The JSON kind of one value, in words: what a refusal names when it says no.
+fn json_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
 
 // Client -> server
 
