@@ -52,3 +52,6 @@ cut at the window edge, and the rest of the description was gone from the log.
   session started (prompt prose being moved out of the binary). Not mine, left alone.
 - The rest of the `abstract` vocabulary in code comments predates SPEC's rename to
   `summary`; only the fold's own comments were renamed here.
+- `frontends/avalonia/ViewModels/ViewBase.cs` still shows a block's summary as one
+  `Abstract` string, so the same reading applies there. This session only fixed the
+  TUI, which is what the user asked about.
