@@ -26,8 +26,7 @@ ok() { # name, condition-result
 
 [[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
   echo "build first: cargo build -p gongga-server" >&2; exit 1; }
-[[ -x "$home/bin/gongga-cli" || -x "$home/bin/gongga-cli" ]] || {
-  echo "build first: cargo build -p gongga-cli" >&2; exit 1; }
+
 server_bin="$bin/gongga-server.exe"; [[ -x "$server_bin" ]] || server_bin="$bin/gongga-server"
 cli_bin="$home/bin/gongga-cli"; [[ -x "$cli_bin" ]] || cli_bin="$home/bin/gongga-cli"
 
