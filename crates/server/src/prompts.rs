@@ -38,16 +38,16 @@ pub const TAIL_REMOTE: &str = "dynamic_tail_remote";
 /// See `docs/notes/server-prompts.md`.
 pub const TAIL_REMOTE_UNSTATED: &str = "dynamic_tail_remote_unstated";
 
-/// The system instructions: prose as written, no value filled in; per-session facts
-/// go in the card.
+/// The system instructions: prose as written, nothing filled in, and the one template a
+/// home may leave empty.
 ///
 /// # Invariant
 ///
 /// No per-session or per-turn fact belongs here: these bytes open every request, so a
-/// value ends the prefix a provider holds at the byte it changes. A provider caches a
-/// byte prefix at an endpoint, shared by every request that sends it; the per-session
-/// `prefix_layout` row is our order for the index, not that cache. See
-/// `docs/notes/server-prefix-cache.md`.
+/// value ends the prefix a provider holds at the byte it changes. Empty is a statement --
+/// every procedure a model needs is a skill's -- so `missing` stays quiet about this one
+/// name, and stops a start only for a template nobody answers. See
+/// `docs/notes/server-prompts.md`.
 pub const SYSTEM: &str = "instructions";
 
 /// What a monitor session is handed when a turn failed. See `docs/notes/server-prompts.md`.
@@ -97,9 +97,8 @@ pub const DETACHED_NO_EXIT: &str = "detached_no_exit";
 /// The same for one adopted across a restart: the pid is all that survived.
 pub const DETACHED_ADOPTED: &str = "detached_adopted";
 
-/// How a detached bash that is gone is reported.
-///
-/// Placeholders: `{{name}}`, `{{pid}}`, `{{why}}`, `{{command}}`, `{{log}}`.
+/// How a vanished detached bash is reported. Placeholders: `{{name}}`, `{{pid}}`,
+/// `{{why}}`, `{{command}}`, `{{log}}`.
 pub const DETACHED_GONE: &str = "detached_gone";
 
 /// The command a gone bash was running, or empty. `{{command}}`.
@@ -123,7 +122,6 @@ pub const THINKING_MARK: &str = "thinking_mark";
 /// nothing about prompts, and whose pinned content cannot be read, would send an
 /// empty system prompt and look healthy. Startup asks for this list instead.
 pub const REQUIRED: &[&str] = &[
-    SYSTEM,
     "context_notice",
     "interrupted_call",
     "size_hint",
@@ -295,7 +293,8 @@ impl Prompts {
             snapshot.complained = !problems.is_empty();
         }
         for name in templates.keys() {
-            if !self.pinned.contains_key(name) && !REQUIRED.contains(&name.as_str()) {
+            let known = REQUIRED.contains(&name.as_str()) || name == SYSTEM;
+            if !self.pinned.contains_key(name) && !known {
                 tracing::warn!(prompt = %name, "no prompt uses this template; is the name misspelled?");
             }
         }

@@ -63,8 +63,16 @@ and the session and the spill path really are different every time.
 
 The check that replaces a compiled-in copy. Without it the failure is silent and
 total: a home whose config has no `[prompts]` and whose content checkout cannot be read
-would send an empty system prompt, run every tool, and look healthy in the log.
-`main.rs` refuses to start on a non-empty answer, naming the templates and the content.
+would send a home's worth of missing templates -- notices, the card, the index framing --
+rendered as empty strings, run every tool, and look healthy in the log. `main.rs` refuses
+to start on a non-empty answer, naming the templates and the content.
+
+`instructions` is the one name deliberately outside `REQUIRED`, so `missing` cannot look
+for it: an empty system prompt is a *statement* -- since 2026-11-13 the content leaves it
+empty and everything procedural is a skill's -- while a template nobody answers is a
+broken install. The guard is about the second. A home, or a pin, that mentions nothing at
+all still starts with no system prose and no refusal; what can no longer happen is the
+silent half-install above, because the other thirty-two names are still required.
 
 `TABLE` is the one section read. The rest of the config is the loader's business, and
 this module must not learn to parse `[provider]` -- two readers of one file disagreeing
