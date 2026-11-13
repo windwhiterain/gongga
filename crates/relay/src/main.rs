@@ -1,21 +1,17 @@
-//! The relay as a program: `gongga-relay --relay <dir> [--build <hash>]`, named by
-//! the server that starts a channel.
+//! The relay as a program: `gongga-relay --relay <dir> [--protocol <n>] [--build <id>]`.
 //!
 //! # Invariant
 //!
-//! `--build` is the pair's version. The files a relay and a server exchange (`cmd`,
-//! `status`) are a contract, and a mismatched pair does not fail loudly -- it starts
-//! channels whose `exit` is never written. A build that is not this one is refused here,
-//! where both numbers can be named, rather than inside a channel that is already gone.
+//! `--protocol` is the pair's version, and another one is refused here, where both
+//! numbers can be named, instead of starting channels whose `exit` is never written. The
+//! build is identity, not compatibility: SPEC pairs one *protocol*, not one commit.
 
+use gongga_relay::relay::{PROTOCOL, REFUSED};
 use std::path::Path;
 use std::process::ExitCode;
 
-/// The code a refusal uses: not a program that failed, a pair that cannot work.
-const REFUSED: u8 = 3;
-
 fn usage() -> ExitCode {
-    eprintln!("usage: gongga-relay --relay <dir> [--build <hash>]");
+    eprintln!("usage: gongga-relay --relay <dir> [--protocol <n>] [--build <id>]");
     ExitCode::from(2)
 }
 
@@ -23,6 +19,7 @@ fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let mut dir = None;
     let mut build = None;
+    let mut protocol_asked: Option<u32> = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--version") | Some("-V") => {
@@ -33,6 +30,13 @@ fn main() -> ExitCode {
                 Some(value) => dir = Some(std::path::PathBuf::from(value)),
                 None => return usage(),
             },
+            // Nothing said is a server from before this flag: read the files as always.
+            Some("--protocol") => {
+                match args.next().and_then(|value| value.to_str()?.parse().ok()) {
+                    Some(value) => protocol_asked = Some(value),
+                    None => return usage(),
+                }
+            }
             Some("--build") => match args.next() {
                 Some(value) => build = Some(value.to_string_lossy().into_owned()),
                 None => return usage(),
@@ -43,14 +47,18 @@ fn main() -> ExitCode {
     let Some(dir) = dir else {
         return usage();
     };
-    if let Some(asked) = build
-        && asked != protocol::BUILD
+    if let Some(asked) = protocol_asked
+        && asked != PROTOCOL
     {
         eprintln!(
-            "gongga-relay: this is build {}, and the server that asked is {asked}; \
-             a channel is started by a pair of the same build -- install the server's own \
-             relay beside it, or `gongga relay` from the same build",
-            protocol::BUILD
+            "gongga-relay: this relay speaks protocol {PROTOCOL}, and the server that asked \
+             speaks {asked}{}; a channel's `cmd` and `status` are a contract of one protocol -- \
+             install that server's own relay beside it (`gongga relay` from the same build, or \
+             the bundle it came from)",
+            match &build {
+                Some(build) => format!(" (build {build}, relay {})", protocol::BUILD),
+                None => String::new(),
+            }
         );
         return ExitCode::from(REFUSED);
     }

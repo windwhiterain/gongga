@@ -35,6 +35,27 @@ appendable.
 That is why `--relay` is answered before clap and before the watchdog: a supervised
 relay would be started again the moment its program ends.
 
+## The pair is a protocol, not a build
+
+`cmd` and `status` are a contract between the relay that writes them and the server that
+reads them, and that contract's version is `relay::PROTOCOL`, declared beside the two
+structs it is about. The server names its own on the command line (`--protocol <n>`), and
+a relay of another one refuses with exit 3, naming both numbers. `--build` rides along
+for the refusal's words alone: SPEC's rule for programs that travel together is the
+latest *compatible protocol*, so two commits that left `Words` and `Status` untouched are
+one pair. A check on the commit instead (the guard as first written, 2026-11-11) refused
+every rebuild, and since a copy it could not replace was reused in silence, a home ended
+up with channels that all died on `exit 3` with nothing but a line in each `relay.log`.
+
+A relay of another protocol is therefore not the end of a start. The server asks
+`refresh_relay` for the copy beside itself (a build tree, or a bundle's `payload/<stamp>`),
+places that in the home's `bin`, and tries once more. When there is nothing to update from
+— a server running from `bin` has only the copy it is looking at — the start fails at once
+with the relay's own words instead of waiting out `START_DEADLINE`, and a copy pinned by a
+relay that is still holding a channel (Windows will not replace a running image) is the
+same answer. `scripts/channel_pair_selftest.sh` is the proof of all four: same protocol and
+another build, no protocol named at all, a copy that gets replaced, and a copy that cannot.
+
 The `.run` of a relay is a loop of two questions — are there new commands in `in`, and
 has the child ended — every 50 ms. The poll is the floor on a write's round trip, and
 a `kill` also waits for one.
