@@ -1884,6 +1884,25 @@ def branch_exists(git, checkout, ref):
     )
 
 
+def is_repo_root(git, path):
+    """Whether git answers for `path` as that path's own repository root.
+
+    Contract: the server's `Fork::exists`. `git -C <dir>` inside a repository answers
+    for the repository it sits inside, so a leftover `.git` that git will not read
+    points every command in the directory at somebody else's config.
+    """
+    told = subprocess.run(
+        [git, "-C", path, "rev-parse", "--show-toplevel"], capture_output=True
+    )
+    if told.returncode != 0:
+        return False
+    top = told.stdout.decode("utf-8", "replace").strip()
+    try:
+        return os.path.samefile(top, path)
+    except OSError:
+        return False
+
+
 def seed_ship_checkout(home):
     """Put the content in the home before the server asks for it.
 
@@ -1903,9 +1922,11 @@ def seed_ship_checkout(home):
     if not git:
         return "git is not on PATH; cannot seed the home's content checkout"
     os.makedirs(home, exist_ok=True)
-    # A directory left by an interrupted earlier run is not a clone: ask git
-    # rather than for a name, and start over when it says no.
-    if subprocess.run([git, "-C", checkout, "rev-parse", "--git-dir"], capture_output=True).returncode != 0:
+    # A directory left by an interrupted earlier run is not a clone: ask git rather
+    # than for a name, and start over when it says no. The question is whether git
+    # answers for that path as *its* root, not whether a `.git` is there -- a `.git`
+    # git will not read makes every command in it edit the repository above it.
+    if not is_repo_root(git, checkout):
         if os.path.isdir(checkout):
             shutil.rmtree(checkout, ignore_errors=True)
         clone = subprocess.run([git, "clone", "-q", source, checkout], capture_output=True)

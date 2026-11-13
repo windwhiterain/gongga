@@ -44,9 +44,22 @@ impl Fork {
         &self.dir
     }
 
-    /// Whether there is a clone here at all.
+    /// Whether there is a clone here at all: this path is the root of a repository.
+    ///
+    /// # Invariant
+    ///
+    /// Asked of git, never of a `.git` entry. A directory whose `.git` git will not
+    /// read -- a clone an interrupted run emptied -- is answered for by the repository
+    /// it sits *inside*, so every `git -C` here would read and write that one's
+    /// config: inside a project worktree, `remote set-url` renamed the project's own
+    /// origin to the content's. See `docs/notes/server-fork.md`.
     pub fn exists(&self) -> bool {
-        self.dir.join(".git").exists()
+        let out = git(&self.dir, &["rev-parse", "--show-toplevel"]);
+        if !out.status.success() {
+            return false;
+        }
+        let told = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        same_path(Path::new(&told), &self.dir)
     }
 
     /// Clones it when it is absent, and leaves anything else alone.
@@ -292,6 +305,19 @@ pub fn bounded() -> Command {
 /// OpenSSH, which a `git@` clone URL goes through.
 fn ssh() -> &'static str {
     "ssh"
+}
+
+/// Whether two spellings name one directory, as the file system has it.
+///
+/// # Invariant
+///
+/// Resolved, not compared as text: git prints forward slashes and either case, and
+/// one directory has one identity. A path that does not resolve is not one we own.
+fn same_path(told: &Path, dir: &Path) -> bool {
+    match (std::fs::canonicalize(told), std::fs::canonicalize(dir)) {
+        (Ok(told), Ok(dir)) => told == dir,
+        _ => false,
+    }
 }
 
 /// `git -C <dir>`, so one checkout is asked about instead of the process's directory.

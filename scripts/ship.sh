@@ -65,10 +65,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -d "$ship/.git" || -f "$ship/.git" ]] || {
-  echo "no ship/ here: git submodule update --init" >&2
+# Asked of git, never of a `.git` entry: a directory whose `.git` git will not read is
+# answered for by the repository *above* it, and every command below would then commit,
+# rebase and push that one. See AGENTS.md.
+ship_top=$(git -C "$ship" rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -z "$ship_top" || "$(cd "$ship_top" && pwd -P)" != "$(cd "$ship" && pwd -P)" ]]; then
+  echo "ship/ is not its own repository: git submodule update --init" >&2
   exit 1
-}
+fi
 [[ -f "$manifest" ]] || { echo "no $manifest to read" >&2; exit 1; }
 
 say() { printf '  %s\n' "$*"; }

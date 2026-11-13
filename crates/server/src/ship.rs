@@ -390,12 +390,38 @@ fn point(home: &Path, fork: &Fork, link: &Link) -> anyhow::Result<()> {
 fn adopt(home: &Path, link: &Link) -> anyhow::Result<()> {
     let dir = checkout(home);
     let old = home.join(LEGACY);
-    if dir.exists() || !old.is_dir() {
+    if Fork::at(&dir).exists() || !old.is_dir() {
         return Ok(());
     }
     std::fs::create_dir_all(&dir)?;
     std::fs::rename(&old, dir.join(".git"))?;
+    // An explicit git dir: the cache is bare, and a relative question would be
+    // answered by the repository above this home.
+    let git_dir = dir.join(".git");
+    let named = crate::fork::git(
+        &dir,
+        &[
+            "--git-dir",
+            &git_dir.to_string_lossy(),
+            "rev-parse",
+            "--git-dir",
+        ],
+    );
+    if !named.status.success() {
+        let _ = std::fs::rename(&git_dir, &old);
+        anyhow::bail!(
+            "{} is not a repository, so it is not this home's content; left where it is",
+            old.display()
+        );
+    }
     crate::fork::git_ok(&dir, &["config", "core.bare", "false"])?;
+    // Converted, it must answer as this directory's own checkout -- see `Fork::exists`.
+    if !Fork::at(&dir).exists() {
+        anyhow::bail!(
+            "{} was adopted but is not a checkout of this home",
+            dir.display()
+        );
+    }
     if crate::fork::git(&dir, &["remote", "get-url", "origin"])
         .status
         .success()

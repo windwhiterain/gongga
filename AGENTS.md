@@ -10,7 +10,7 @@
 - server home for tests should be local to each worktree: a shared home makes worktrees lock each other, and someone else's home is not yours to write in -- the program you run may stop the server on it.
 - pointing at a home in use is not a read-only act: `GONGGA_HOME` on a live home makes the bundle place its payload there and retire the build it replaces, and that asks the home's server to `cancel` -- every turn it is running dies with the ask, unless the program starts no server of its own (as `--client_only` says). See `docs/notes/bundle-main.md`, "There is no read-only run".
 - track your WIP under (notes)[.agents/notes/].
-- 主仓上游是 `gongga.git`，**绝不是**内容仓 `gongga-ship`：`.gitmodules`/`crates/server/ship.toml` 里的 ship URL 只属于 `ship` 子模块。树里没有记录主仓自己的 URL，别拿唯一可见的 ship URL 去设主仓 origin（这是反复发生的错误，worktree 共享主仓 config，一处设错处处错）。设错就 `git remote set-url origin https://github.com/windwhiterain/gongga.git`；pre-commit 会拦 origin 指向 `gongga-ship` 的提交。
+- 主仓上游是 `gongga.git`，**绝不是**内容仓 `gongga-ship`：`.gitmodules`/`crates/server/ship.toml` 里的 ship URL 只属于 `ship` 子模块。**已知成因不是人手敲错 URL**：`git -C <path>` 在一个目录里回答的是它**外面**那个仓库，而旧守卫只问 `.git` 在不在；测试 home 本来就落在工作树内，于是 `<home>/ship` 里一个被中断留下的空 `.git` 目录就让 server 的 `ship::point` 在主仓上执行了 `remote set-url origin <ship url>`（日志会是 `content origin follows this home's config home=... from=<主仓 origin>`）。`Fork::exists` 现在用 `rev-parse --show-toplevel` 问归属，`scripts/ship.sh` 与 `scripts/tui_live.py` 的种子步骤同改；见 `docs/notes/server-fork.md`。设错就 `git remote set-url origin https://github.com/windwhiterain/gongga.git`（worktree 共享主仓 config，一处设错处处错）；pre-commit 会拦 origin 指向 `gongga-ship` 的提交。
 
 ## Disk low：立刻跑脚本，一刻都不耽搁
 

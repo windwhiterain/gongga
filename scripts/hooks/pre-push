@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Refuse a push from this repository into the content repository.
+#
+# Invariant
+#
+# The harness upstream is `gongga.git`; `gongga-ship.git` is the content, published
+# from `ship/` by `scripts/ship.sh` through the submodule's own remote. A push from
+# *here* to there would put this repository's history on the content's branch, which
+# is worse than the wrong `origin` this checks: `pre-commit` catches that config
+# before it is committed, and this catches it before anything leaves the machine --
+# a push is the other moment a wrong remote costs something.
+#
+# Tracked here rather than in `.git/hooks` so it is the same for every checkout;
+# install it once per clone:
+#
+#     git config core.hooksPath scripts/hooks
+set -uo pipefail
+
+# git hands the hook: the remote's name, then the URL it is about to push to.
+remote_name=${1:-origin}
+url=${2:-$(git config --get "remote.$remote_name.url" || true)}
+case "$url" in
+*gongga-ship*)
+  printf 'pre-push: %s is the content repository, not this one: %s\n' "$remote_name" "$url" >&2
+  printf '  Content is published from ship/ by scripts/ship.sh, never from this tree.\n' >&2
+  printf '  Fix: git remote set-url origin https://github.com/windwhiterain/gongga.git\n' >&2
+  exit 1
+  ;;
+esac
+exit 0

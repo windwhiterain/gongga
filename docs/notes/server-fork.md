@@ -15,6 +15,24 @@ publisher and the reader cannot disagree about which branch is. `local` has no
 upstream by design — its commits are not meant to be pushed anywhere, and upstream
 lands on it only by rebase.
 
+## Fork::exists -- the question is asked of git
+
+`exists` answers whether this path is the root of *its own* repository, and it asks
+git (`rev-parse --show-toplevel`, resolved and compared with the path) rather than
+looking for a `.git`. The difference is not cosmetic: `git -C <dir>` inside a
+repository answers for the repository *above* it, so a `.git` directory git will not
+read -- a clone an interrupted run emptied -- makes every command here read and write
+the enclosing repository's config.
+
+That is how this project's own `origin` twice became the content repository's URL. A
+test home lives inside the worktree (AGENTS.md asks for that), so a stale
+`<home>/ship` is *inside this repository*; the old `.git`-exists test said "a clone is
+here", and `ship::point` then ran `remote set-url origin <content url>` on the project
+itself, logging `content origin follows this home's config from=<this repo's origin>`.
+`Fork::exists` now answers no, `ship::resolve` stops with "is not a clone, so it is not
+the shipped content", and `scripts/ship.sh` and `scripts/tui_live.py` ask the same
+question the same way before they write anything.
+
 ## Fork::ensure, Fork::sync
 
 `ensure` clones when the directory is absent and leaves anything else alone: a
