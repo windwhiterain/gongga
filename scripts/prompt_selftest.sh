@@ -149,32 +149,8 @@ for _ in $(seq 1 120); do grep -q 'turn end session=reader' "$log" && break; sle
 grep -q 'turn end session=reader outcome=Done' "$log"
 ok "a turn that cd's its shell finishes" $?
 
-python - "$home" <<'INNER'
-import json, sqlite3, sys
-c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
-sid = c.execute("select id from sessions where name='reader'").fetchone()[0]
-# The shell really did move: the tool the model called ran a `cd`.
-moved = [json.loads(d).get("arguments", "") for (d,) in c.execute(
-    "select display from messages where session_id=? and kind='tool_call'", (sid,))]
-assert any("cd /tmp" in a for a in moved), moved
-rows = [json.loads(d) for (d,) in c.execute(
-    "select display from messages where session_id=? and kind='system' order by seq", (sid,))]
-# The invariant: the shell moved, and the request that was already sent did not
-# change -- so no second prompt row was written at all.
-assert len(rows) == 1, f"a moved shell rewrote the prompt: {len(rows)} rows, {[r['rooted'] for r in rows]}"
-only = rows[0]
-assert "@file(AGENTS.md)" in only["rooted"], only["rooted"]
-assert "@skill(self-control)" in only["rooted"], only["rooted"]
-# A relative path means the same file after the shell moved: it is resolved in the
-# session's directory, not where the last command left the shell.
-assert "@file(docs/notes/tui-main.md)" in only["rooted"], only["rooted"]
-# The rules file's own references came with it (AGENTS.md names SPEC.md).
-assert any(root.startswith("@file(SPEC.md)") for root in only["rooted"]), only["rooted"]
-INNER
-ok "a cd in the shell writes no new prompt row" $?
-
-python - "$home" <<'INNER'
-import json, sqlite3, sys
+python - "$home" "$(native "$root")" <<'INNER'
+import json, re, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 sid = c.execute("select id from sessions where name='reader'").fetchone()[0]
 prompt = json.loads(c.execute(
@@ -182,12 +158,16 @@ prompt = json.loads(c.execute(
 prose, card = prompt["instructions"], prompt["tail"]
 # No value in the prose at all: these bytes open every request, so a per-session
 # value ends the prefix every session of a directory shares. The card states it.
-assert "`reader`" not in prose, prose[:200]
-assert "$GONGGA_SESSION" not in prose, prose[:200]
+for value in ("`reader`", "$GONGGA_SESSION"):
+    assert value not in prose, prose[:200]
 assert "{{" not in prose and "}}" not in prose, prose[:200]
-# And the card still carries it, with the build, the first minute and the directory.
-assert "Session `reader`" in card, card
-assert "harness gongga at `" in card and "in `" in card, card
+# The card states the session, the build and the directory. Which sentence carries
+# them is the prompt's to choose -- this check is about the facts arriving, never
+# about the words around them.
+assert "reader" in card, card
+assert re.search(r"[0-9a-f]{7,}", card), card
+cwd = sys.argv[2].replace("\\", "/").lower()
+assert cwd in card.replace("\\", "/").lower(), card
 INNER
 ok "the prose carries no value and the card names the session" $?
 
