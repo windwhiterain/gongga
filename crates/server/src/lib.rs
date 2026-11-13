@@ -532,21 +532,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 let Some(dispatch) = self.0.upgrade() else {
                     return crate::commands::Outcome::err("the server is stopping");
                 };
-                // The caller's session fills the first argument the target declares as
-                // one, and only when the call did not name it.
-                if let Some(spec) = dispatch
-                    .catalog()
-                    .await
-                    .into_iter()
-                    .find(|spec| spec.name == name)
-                    && let Some(argument) = spec
-                        .args
-                        .iter()
-                        .find(|argument| argument.kind.as_deref() == Some("session"))
-                {
-                    args.entry(argument.name.clone())
-                        .or_insert_with(|| session.to_string());
-                }
+                // The caller rides in the origin, never in the arguments.
                 let origin = crate::commands::Origin::Tool {
                     session: session.to_string(),
                 };

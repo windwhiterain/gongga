@@ -2496,8 +2496,7 @@ impl Client {
                 .args
                 .iter()
                 .find(|a| a.kind.as_deref() == Some("session"))
-                .and_then(|a| args.get(&a.name))
-                .map(String::as_str);
+                .and_then(|a| args.word(&a.name));
             self.show(sink, &echo, &typed, session);
             self.row(
                 sink,
@@ -2619,7 +2618,7 @@ impl Client {
             .iter()
             .find(|a| a.kind.as_deref() == Some("session"))
             .map(|a| a.name.clone())?;
-        args.get(&name).map(String::as_str)
+        args.word(&name)
     }
 }
 

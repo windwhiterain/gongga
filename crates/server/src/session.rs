@@ -151,16 +151,17 @@ pub enum RemoteAsk {
     Machine(Option<String>),
 }
 
-/// A `--remote` value as the machine it names: `none` (or `local`) is this machine.
+/// A `--remote` value as the machine it names: `none` is this machine.
 ///
 /// # Invariant
 ///
-/// No remote is named `none` or `local` -- `remotes::FileRemote::into_config` refuses
-/// both -- so the one reading of a stated machine is here: a `set_session --remote`, a
-/// file tool's `remote`, and a channel's.
+/// No remote is named `none` -- `remotes::FileRemote::into_config` refuses it -- so the
+/// one reading of a stated machine is here: a `set_session --remote`, a file tool's
+/// `remote`, and a channel's. A stated `null` is the same instruction on a surface that
+/// can carry it, and SPEC's type says which those are.
 pub fn remote_request(stated: &str) -> Option<String> {
     let name = stated.trim();
-    if name.is_empty() || name.eq_ignore_ascii_case("none") || name.eq_ignore_ascii_case("local") {
+    if name.is_empty() || name.eq_ignore_ascii_case("none") {
         None
     } else {
         Some(name.to_string())

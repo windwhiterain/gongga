@@ -1229,6 +1229,11 @@ pub fn client_commands() -> Vec<CommandSpec> {
     .collect()
 }
 
+/// The type an argument takes when its row does not say: a word.
+fn string_type() -> String {
+    "str".to_string()
+}
+
 /// One argument of a published command.
 fn spec_arg(
     name: &str,
@@ -1240,6 +1245,7 @@ fn spec_arg(
     completions: CompletionSource,
 ) -> ArgSpec {
     ArgSpec {
+        type_of: string_type(),
         name: name.into(),
         description: description.into(),
         required,
@@ -1256,6 +1262,15 @@ fn spec_arg(
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArgSpec {
+    /// SPEC's type for this argument, e.g. `optional[path]`.
+    ///
+    /// # Invariant
+    ///
+    /// The SPEC spelling, never its JSON image: `crate::argtype` is the one table that
+    /// maps one to the other, so the schema a model reads, the value a typed line
+    /// becomes and the check a call is held to cannot disagree.
+    #[serde(rename = "type", default = "string_type")]
+    pub type_of: String,
     /// Name without leading dashes, e.g. `message`. The binding key on the wire.
     ///
     /// # Invariant

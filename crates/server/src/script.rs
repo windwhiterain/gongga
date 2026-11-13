@@ -418,6 +418,11 @@ fn parse_arg(raw: &Value) -> Option<ArgSpec> {
         _ => CompletionSource::None,
     };
     Some(ArgSpec {
+        type_of: raw
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("str")
+            .to_string(),
         name: name.to_string(),
         description: raw
             .get("description")

@@ -290,9 +290,9 @@ impl Catalog {
             .iter()
             .filter_map(|a| {
                 let accepts = a.accepts.as_ref()?;
-                let value = args.get(&a.name)?;
+                let value = args.word(&a.name)?;
                 match accepts.takes(model.as_deref(), value) {
-                    Some(false) => Some((a.name.clone(), value.clone())),
+                    Some(false) => Some((a.name.clone(), value.to_string())),
                     _ => None,
                 }
             })
@@ -727,7 +727,7 @@ fn session_named(
     tokens.extend(words.iter().skip(1).cloned());
     crate::commands::parse_args(&tokens, Some(spec))
         .ok()
-        .and_then(|args| args.get(&arg.name).cloned())
+        .and_then(|args| args.word(&arg.name).map(str::to_string))
         .or_else(|| flag_value(words, &arg.name).map(str::to_string))
         .or_else(|| message_session.map(str::to_string))
 }
@@ -748,7 +748,7 @@ fn model_named(ctx: &Ctx<'_>, words: &[String]) -> Option<String> {
             tokens.extend(words.iter().skip(1).cloned());
             crate::commands::parse_args(&tokens, Some(spec))
                 .ok()
-                .and_then(|args| args.get(&arg.name).cloned())
+                .and_then(|args| args.word(&arg.name).map(str::to_string))
                 .or_else(|| flag_value(words, &arg.name).map(str::to_string))
         });
     named

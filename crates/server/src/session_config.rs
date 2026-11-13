@@ -57,8 +57,8 @@ pub struct SessionConfig {
 /// at every level, because an absent key never reaches the handler. A model is
 /// spelled `<provider>/<model>` for the roster; `none` passes through for the
 /// fields that take it (`remote`, `cache_tier`).
-pub fn flatten(raw: &str, args: &mut Args) -> Result<(), String> {
-    let config: SessionConfig = serde_json::from_str(raw)
+pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
+    let config: SessionConfig = serde_json::from_value(raw.clone())
         .map_err(|e| format!("--config is not a SessionConfig object: {e}"))?;
     if let Some(model_config) = config.model_config {
         if let Some(model) = model_config.model {

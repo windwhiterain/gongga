@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use serde_json::Value;
+
 use protocol::{ArgSpec, Args, CommandSpec};
 
 /// The skills a session can open: the project's own, the home's, then the machine's.
@@ -57,7 +59,7 @@ pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Resu
                         signature(spec),
                     );
                 }
-                insert_once(&mut args, name, value)?;
+                insert_once(&mut args, spec, name, value)?;
                 cursor = after_arg(spec, name).unwrap_or(cursor);
                 i += 1;
             } else {
@@ -71,7 +73,7 @@ pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Resu
                 let value = tokens
                     .get(i + 1)
                     .ok_or_else(|| anyhow::anyhow!("--{flag} needs a value"))?;
-                insert_once(&mut args, flag, value)?;
+                insert_once(&mut args, spec, flag, value)?;
                 cursor = after_arg(spec, flag).unwrap_or(cursor);
                 i += 2;
             }
@@ -84,7 +86,7 @@ pub fn parse_args(tokens: &[String], spec: Option<&CommandSpec>) -> anyhow::Resu
                 );
             };
             let name = spec.map(|s| s.args[at].name.clone()).unwrap_or_default();
-            insert_once(&mut args, &name, token)?;
+            insert_once(&mut args, spec, &name, token)?;
             cursor = at + 1;
             i += 1;
         }
@@ -128,11 +130,24 @@ pub fn next_unfilled(spec: &CommandSpec, bound: &Args, cursor: usize) -> Option<
 }
 
 /// A repeated argument is a contradiction, whatever spellings it was given.
-fn insert_once(args: &mut Args, name: &str, value: &str) -> anyhow::Result<()> {
+fn insert_once(
+    args: &mut Args,
+    spec: Option<&CommandSpec>,
+    name: &str,
+    value: &str,
+) -> anyhow::Result<()> {
     if args.contains_key(name) {
         anyhow::bail!("argument --{name} given twice");
     }
-    args.insert(name.to_string(), value.to_string());
+    // The word a line spells, as the value the argument's own type declares: a line
+    // is text, and the type is what it holds.
+    let type_of = spec
+        .and_then(|spec| spec.args.iter().find(|a| a.name == name))
+        .map(|a| a.type_of.as_str())
+        .unwrap_or("str");
+    let value = protocol::argtype::value_of(type_of, value)
+        .map_err(|why| anyhow::anyhow!("--{name}: {why}"))?;
+    args.insert(name.to_string(), value);
     Ok(())
 }
 
@@ -188,11 +203,11 @@ pub fn render_args(args: &Args, spec: Option<&CommandSpec>) -> String {
     out
 }
 
-/// One value as it reads on a command line: quoted when it holds a space.
-fn render_value(value: &str) -> String {
-    if value.contains(' ') {
-        format!("\"{value}\"")
-    } else {
-        value.to_string()
+/// One value as it reads on a command line: a string bare unless it has a space.
+fn render_value(value: &Value) -> String {
+    match value.as_str() {
+        Some(word) if !word.contains(' ') => word.to_string(),
+        Some(word) => format!("\"{word}\""),
+        None => value.to_string(),
     }
 }

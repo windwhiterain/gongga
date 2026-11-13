@@ -1056,6 +1056,7 @@ fn arg_spec(
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
     protocol::ArgSpec {
+        type_of: type_of(name).to_string(),
         name: name.into(),
         description: description.into(),
         required,
@@ -1067,6 +1068,24 @@ fn arg_spec(
         sticky_to: None,
         sticky: false,
         structure: None,
+    }
+}
+
+/// SPEC's type for one of these arguments, by the name it binds.
+///
+/// # Invariant
+///
+/// One table for the whole catalog: a name means one argument wherever it appears, the
+/// same way a `kind` means one sticky entry. `protocol::argtype` maps the spelling.
+fn type_of(name: &str) -> &'static str {
+    match name {
+        "keep_alive" | "must_create" | "persistant" => "bool",
+        "since" | "limit" | "wait" | "block_size" | "box_edge" | "time" => "int",
+        "cmd" => "Cmd",
+        "config" => "SessionConfig",
+        "event" => "Event",
+        "range" | "trajectory" => "Range",
+        _ => "str",
     }
 }
 
@@ -1084,48 +1103,48 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
 /// a name already taken is refused or joined.
 fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
     vec![
-        // SPEC: `--id <session>(sticky)`. A sticky entry keys on the kind `session`.
-        sticky_arg(
-            kind_arg(
-                "id",
-                "Session to create or reconfigure.",
-                true,
-                "session",
-                Some("name"),
-                CompletionSource::Sessions,
-            ),
+    // SPEC: `--id <session>(sticky)`. A sticky entry keys on the kind `session`.
+    sticky_arg(
+        kind_arg(
+            "id",
+            "Session to create or reconfigure.",
             true,
+            "session",
+            Some("name"),
+            CompletionSource::Sessions,
         ),
-        // SPEC: `config: SessionConfig` -- the nested settings, one JSON object.
+        true,
+    ),
+    // SPEC: `config: SessionConfig` -- the nested settings, one JSON object.
         arg(
             "config",
             "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (remote, cwd), and keep_alive. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. remote and cache_tier take none to clear.",
             false,
-            Some("json"),
-            CompletionSource::None,
-        )
-        .with_structure(crate::session_config::schema(remotes)),
-        kind_arg(
-            "mode",
-            "What this session may do to the workspace. work (the default) writes as it likes; explore refuses write_file and replace outright and tells the session which paths a bash, exec, python or skill call changed when it ended. Not a jail: a program that writes is told, not stopped, so read the changed paths and put them back before answering.",
-            false,
-            "mode",
-            Some("work|explore"),
-            CompletionSource::Static(vec!["work".into(), "explore".into()]),
-        ),
+        Some("json"),
+        CompletionSource::None,
+    )
+    .with_structure(crate::session_config::schema(remotes)),
+    kind_arg(
+        "mode",
+        "What this session may do to the workspace. work (the default) writes as it likes; explore refuses write_file and replace outright and tells the session which paths a bash, exec, python or skill call changed when it ended. Not a jail: a program that writes is told, not stopped, so read the changed paths and put them back before answering.",
+        false,
+        "mode",
+        Some("work|explore"),
+        CompletionSource::Static(vec!["work".into(), "explore".into()]),
+    ),
         arg(
             "must_create",
             "true refuses the command unless the session does not exist yet, so a caller that means to start its own session cannot join another one's transcript by picking a name that was already taken.",
             false,
-            Some("true|false"),
-            CompletionSource::Static(
-                protocol::SHOW_VALUES
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
-            ),
+        Some("true|false"),
+        CompletionSource::Static(
+            protocol::SHOW_VALUES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         ),
-    ]
+    ),
+]
 }
 
 /// Runs one command, on behalf of whoever `origin` names.
@@ -1174,12 +1193,12 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         return d.scripts.run(name, args).await;
     }
     match name {
-        "send_message" => send_message(d, args).await,
+        "send_message" => send_message(d, args, origin.session()).await,
         "set_session" => set_session(d, args).await,
         // SPEC `new_session` is `set_session` that refuses a name already taken.
         "new_session" => {
             let mut owned = args.clone();
-            owned.insert("must_create".to_string(), "true".to_string());
+            owned.insert("must_create", true);
             set_session(d, &owned).await
         }
         "del_session" => del_session(d, args).await,
@@ -1187,34 +1206,31 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => {
             // SPEC's flag: `cancel` takes it, the signal path passes false.
-            let keep_alive = match args.get("keep_alive") {
-                None => false,
-                Some(raw) => match parse_bool(raw) {
-                    Ok(kept) => kept,
-                    Err(e) => return Outcome::err(e),
-                },
+            let keep_alive = match flag_of(args, "keep_alive") {
+                Ok(kept) => kept.unwrap_or(false),
+                Err(e) => return Outcome::err(e),
             };
             cancel(d, origin, keep_alive).await
         }
-        "get_messages" => get_messages(d, args).await,
-        "new_channel" => new_channel(d, args).await,
-        "input_channel" => input_channel(d, args).await,
-        "rename_channel" => rename_channel(d, args).await,
-        "ls_channel" => ls_channel(d, args).await,
-        "del_channel" => del_channel(d, args).await,
+        "get_messages" => get_messages(d, args, origin.session()).await,
+        "new_channel" => new_channel(d, args, origin.session()).await,
+        "input_channel" => input_channel(d, args, origin.session()).await,
+        "rename_channel" => rename_channel(d, args, origin.session()).await,
+        "ls_channel" => ls_channel(d, args, origin.session()).await,
+        "del_channel" => del_channel(d, args, origin.session()).await,
         "ls_session" => ls_session(d, args).await,
         "clone_session" => clone_session(d, args).await,
         "sync_session" => sync_session(d, args).await,
-        "ls_skill" => ls_skill(d, args).await,
-        "run_skill" => run_skill(d, args).await,
-        "events" => events(d, args).await,
+        "ls_skill" => ls_skill(d, args, origin.session()).await,
+        "run_skill" => run_skill(d, args, origin.session()).await,
+        "events" => events(d, args, origin.session()).await,
         "subscribe" => subscribe(d, args, origin.session()).await,
         "del_subscription" => del_subscription(d, args, origin.session()).await,
-        "ls_subscription" => ls_subscription(d, args).await,
+        "ls_subscription" => ls_subscription(d, args, origin.session()).await,
         "trigger_event" => trigger_event(d, args).await,
         // Every tool is a command: the registry decides what exists.
         name if d.agent.tools.get(name).is_some() => {
-            crate::tool_cmd::dispatch_tool(d, name, args).await
+            crate::tool_cmd::dispatch_tool(d, name, args, origin.session()).await
         }
         // Published as a server command but unhandled: a catalog bug, named.
         other => Outcome::err(format!(
@@ -1271,8 +1287,8 @@ impl Dispatch {
 }
 
 async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
-    let remote = args.get("remote").map(String::as_str);
-    let path = args.get("path").map(String::as_str).unwrap_or("");
+    let remote = args.word("remote");
+    let path = args.word("path").unwrap_or("");
     match d.sessions.list_paths(remote, path).await {
         Ok(entries) => {
             let rows: Vec<serde_json::Value> = entries
@@ -1289,14 +1305,29 @@ async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
     }
 }
 
-async fn send_message(d: &Dispatch, args: &Args) -> Outcome {
-    let Some(message) = args.get("message").cloned() else {
+/// The session a command runs for: the one it names, else its caller's.
+///
+/// # Invariant
+///
+/// SPEC's `session: Session = caller()`: naming a session acts on that one, and omitting
+/// it acts on the session the call was run from. See `docs/notes/server-commands.md`.
+pub(crate) fn session_of(args: &Args, caller: Option<&str>) -> Option<String> {
+    let named = args
+        .word("session")
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    named
+        .or_else(|| caller.map(str::trim).filter(|name| !name.is_empty()))
+        .map(str::to_string)
+}
+
+async fn send_message(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let Some(message) = args.word("message").map(str::to_string) else {
         return Outcome::err("send_message requires a message");
     };
-    let Some(name) = args.get("session").cloned() else {
+    let Some(name) = session_of(args, caller) else {
         return Outcome::err(
-            "send_message requires a session; set the sticky `session` entry to avoid \
-             typing it",
+            "send_message runs for a session: name one, or run it from a session's shell",
         );
     };
     deliver(d, &name, message).await
@@ -1358,7 +1389,7 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
                 );
                 Outcome::ok(format!(
                     "message queued for {name}; the server is stopping, so the next start \
-                     reads it"
+                 reads it"
                 ))
             }
             Err(e) => Outcome::err(format!("could not record the pending message: {e}")),
@@ -1413,13 +1444,13 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     // SPEC's nested `config` flattens into the settings the flat flags name, so
     // one body applies them either way.
     let mut owned = args.clone();
-    if let Some(raw) = owned.get("config").cloned() {
+    if let Some(raw) = owned.value("config").cloned() {
         if let Err(refusal) = crate::session_config::flatten(&raw, &mut owned) {
             return Outcome::err(refusal);
         }
     }
     let args = &owned;
-    let name = args["id"].clone();
+    let name = args.word("id").unwrap_or_default().to_string();
     // A leading `@` is the harness's own namespace: a name a person could take
     // is a name the harness cannot trust.
     if let Some(refusal) = crate::monitor::reserved(&name) {
@@ -1431,23 +1462,17 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     }
     // A caller that means to start its own session says so: a name collision
     // must never select another one's transcript.
-    match args.get("must_create") {
-        None => {}
-        Some(raw) => match parse_bool(raw) {
-            Ok(false) => {}
-            Ok(true) => {
-                if d.store.get_session(&name).ok().flatten().is_some() {
-                    return Outcome::err(format!(
-                        "a session named {name} already exists, and --must_create refuses to \
-                         join it; pick a name of your own"
-                    ));
-                }
-            }
-            Err(e) => return Outcome::err(e),
-        },
+    match flag_of(args, "must_create") {
+        Ok(Some(true)) if d.store.get_session(&name).ok().flatten().is_some() => {
+            return Outcome::err(format!(
+                "a session named {name} already exists, and --must_create refuses to join it; pick a name of your own",
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => return Outcome::err(e),
     }
     // Resolve `--model` now: a typo should fail the command that made it.
-    let stated = match args.get("model") {
+    let stated = match args.word("model") {
         None => None,
         Some(model) => match resolve_model(d, model) {
             Ok(entry) => Some(entry),
@@ -1477,7 +1502,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             }
         },
     };
-    let threshold = match args.get("ctx_limit") {
+    let threshold = match args.word("ctx_limit") {
         None => None,
         Some(raw) => match parse_percent(raw) {
             Ok(v) => Some(v),
@@ -1485,7 +1510,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         },
     };
     // Absent, stated, stated-as-none: three answers, and only the last sends none.
-    let cache_tier: Option<Option<String>> = match args.get("cache_tier").map(String::as_str) {
+    let cache_tier: Option<Option<String>> = match args.word("cache_tier") {
         None => None,
         Some(protocol::NONE_VALUE) => Some(None),
         Some(tier) => {
@@ -1501,15 +1526,12 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             Some(Some(tier.to_string()))
         }
     };
-    let cache_keepalive = match args.get("keep_alive").map(String::as_str) {
-        None => None,
-        Some(raw) => match parse_bool(raw) {
-            Ok(value) => Some(value),
-            Err(e) => return Outcome::err(format!("--keep_alive: {e}")),
-        },
+    let cache_keepalive = match flag_of(args, "keep_alive") {
+        Ok(value) => value,
+        Err(e) => return Outcome::err(format!("--keep_alive: {e}")),
     };
     // What this session may do to the workspace. Absent keeps what it had.
-    let mode = match args.get("mode").map(String::as_str) {
+    let mode = match args.word("mode") {
         None => None,
         Some(raw) => match crate::explore::Mode::parse(raw) {
             Ok(mode) => Some(mode),
@@ -1521,16 +1543,16 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let (Some(percent), None) = (threshold, context) {
         return Outcome::err(format!(
             "--ctx_limit {percent}% needs a context window to be a percentage of, and \
-             {} is not in the roster with a `context`",
+         {} is not in the roster with a `context`",
             entry.model
         ));
     }
     // A session that exists is moved; one that does not is created where it says.
     // Asking where it already is costs nothing.
-    let stated_cwd = args.get("cwd").map(String::as_str);
+    let stated_cwd = args.word("cwd");
     // Three answers, not two: the flag was left out, it names this machine, or it
     // names a remote. See `session::RemoteAsk`.
-    let asked_remote = match args.get("remote").map(String::as_str) {
+    let asked_remote = match args.word("remote") {
         None => crate::session::RemoteAsk::Keep,
         Some(stated) => crate::session::RemoteAsk::Machine(crate::session::remote_request(stated)),
     };
@@ -1630,7 +1652,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let mut changed = false;
     // Resolved here and stored, never inferred at display time, so the title and
     // the request read one word.
-    let level = match args.get("thinking").map(String::as_str) {
+    let level = match args.word("thinking") {
         // Names no level: clears one earlier, rather than keeping it.
         Some(protocol::THINKING_DEFAULT) => entry.level_in_force(None),
         // Checked against the model this session runs on, so typos fail now.
@@ -1811,7 +1833,41 @@ fn resolve_model(d: &Dispatch, model: &str) -> Result<crate::providers::Entry, S
     }
 }
 
-/// A flag's value, or what is wrong with it: never a silent default.
+/// One boolean argument: a JSON `true`, or the word a script's own line spells.
+///
+/// # Invariant
+///
+/// A boolean is a boolean on the wire; the word is read only because a script's line
+/// spells its arguments as text. A stated `null` is the empty value of the type.
+fn flag_of(args: &Args, key: &str) -> Result<Option<bool>, String> {
+    match args.given(key) {
+        protocol::Given::Nothing => Ok(None),
+        protocol::Given::Null => Ok(Some(false)),
+        protocol::Given::Value(value) => match (value.as_bool(), value.as_str()) {
+            (Some(flag), _) => Ok(Some(flag)),
+            (None, Some(word)) => parse_bool(word).map(Some),
+            (None, None) => Err(format!("`{key}` takes a boolean, and this is {value}")),
+        },
+    }
+}
+
+/// One count argument: a JSON number, or the digits a script's own line spells.
+fn count_of(args: &Args, key: &str) -> Result<Option<i64>, String> {
+    match args.given(key) {
+        protocol::Given::Nothing => Ok(None),
+        protocol::Given::Null => Ok(Some(0)),
+        protocol::Given::Value(value) => match (value.as_i64(), value.as_str()) {
+            (Some(count), _) => Ok(Some(count)),
+            (None, Some(word)) => word
+                .trim()
+                .parse::<i64>()
+                .map(Some)
+                .map_err(|_| format!("`{key}` takes a number, and {word:?} is not one")),
+            (None, None) => Err(format!("`{key}` takes a number, and this is {value}")),
+        },
+    }
+}
+
 fn parse_bool(raw: &str) -> Result<bool, String> {
     match raw.trim() {
         "true" => Ok(true),
@@ -1832,7 +1888,7 @@ fn parse_percent(raw: &str) -> Result<u8, String> {
     if value > 100 {
         return Err(format!(
             "--ctx_limit is a percentage of the context window, so it cannot exceed 100%; \
-             got {raw}"
+         got {raw}"
         ));
     }
     Ok(value as u8)
@@ -1926,9 +1982,9 @@ fn under(name: &str, path: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-async fn ls_channel(d: &Dispatch, args: &Args) -> Outcome {
-    let session = args["session"].clone();
-    let prefix = args.get("path").cloned().unwrap_or_default();
+async fn ls_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let session = session_of(args, caller).unwrap_or_default();
+    let prefix = args.word("path").map(str::to_string).unwrap_or_default();
     match d.agent.channels.list(&session).await {
         Ok(rows) => {
             let listed: Vec<serde_json::Value> = rows
@@ -1944,9 +2000,9 @@ async fn ls_channel(d: &Dispatch, args: &Args) -> Outcome {
     }
 }
 
-async fn del_channel(d: &Dispatch, args: &Args) -> Outcome {
-    let session = args["session"].clone();
-    let id = args["id"].clone();
+async fn del_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let session = session_of(args, caller).unwrap_or_default();
+    let id = args.word("id").unwrap_or_default().to_string();
     // SPEC: a path takes what is under it, so a name in the middle of one ends
     // every channel below it as well.
     let doomed: Vec<String> = match d.agent.channels.list(&session).await {
@@ -1977,20 +2033,20 @@ async fn del_channel(d: &Dispatch, args: &Args) -> Outcome {
     }
 }
 
-async fn rename_channel(d: &Dispatch, args: &Args) -> Outcome {
-    let session = args["session"].clone();
-    let path = args["id"].clone();
-    let new_path = args["new_id"].clone();
+async fn rename_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let session = session_of(args, caller).unwrap_or_default();
+    let path = args.word("id").unwrap_or_default().to_string();
+    let new_path = args.word("new_id").unwrap_or_default().to_string();
     match d.agent.channels.rename(&session, &path, &new_path) {
         Ok(()) => Outcome::ok(format!("{path:?} is now {new_path:?}")),
         Err(why) => Outcome::err(why),
     }
 }
 
-async fn new_channel(d: &Dispatch, args: &Args) -> Outcome {
-    let session = args["session"].clone();
-    let id = args["id"].clone();
-    let name = args["name"].clone();
+async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let session = session_of(args, caller).unwrap_or_default();
+    let id = args.word("id").unwrap_or_default().to_string();
+    let name = args.word("name").unwrap_or_default().to_string();
     let handle = match d.sessions.get(&session) {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
@@ -2017,20 +2073,17 @@ async fn new_channel(d: &Dispatch, args: &Args) -> Outcome {
     }
 }
 
-async fn input_channel(d: &Dispatch, args: &Args) -> Outcome {
-    let session = args["session"].clone();
-    let id = args["id"].clone();
-    let input = args["input"].clone();
-    let wait = match args.get("wait").map(String::as_str) {
-        None => std::time::Duration::from_millis(30_000),
-        Some(raw) => match raw.trim().parse::<u64>() {
-            Ok(ms) => std::time::Duration::from_millis(ms),
-            Err(_) => {
-                return Outcome::err(format!("--wait takes milliseconds, not {raw:?}"));
-            }
-        },
+async fn input_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let session = session_of(args, caller).unwrap_or_default();
+    let id = args.word("id").unwrap_or_default().to_string();
+    let input = args.word("input").unwrap_or_default().to_string();
+    let wait = match count_of(args, "wait") {
+        Ok(None) => std::time::Duration::from_millis(30_000),
+        Ok(Some(ms)) if ms >= 0 => std::time::Duration::from_millis(ms as u64),
+        Ok(Some(ms)) => return Outcome::err(format!("--wait takes milliseconds, not {ms}")),
+        Err(e) => return Outcome::err(e),
     };
-    let until = args.get("until").map(String::as_str);
+    let until = args.word("until");
     let began = std::time::Instant::now();
     match d
         .agent
@@ -2053,7 +2106,7 @@ async fn input_channel(d: &Dispatch, args: &Args) -> Outcome {
 }
 
 async fn ls_session(d: &Dispatch, args: &Args) -> Outcome {
-    let prefix = args.get("path").cloned().unwrap_or_default();
+    let prefix = args.word("path").map(str::to_string).unwrap_or_default();
     let rows = match d.store.list_sessions() {
         Ok(rows) => rows,
         Err(e) => return Outcome::err(format!("could not read the sessions: {e}")),
@@ -2080,9 +2133,9 @@ async fn ls_session(d: &Dispatch, args: &Args) -> Outcome {
     Outcome::ok(serde_json::Value::Array(listed).to_string())
 }
 
-async fn ls_subscription(d: &Dispatch, args: &Args) -> Outcome {
-    let session = args["session"].clone();
-    let prefix = args.get("path").cloned().unwrap_or_default();
+async fn ls_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let session = session_of(args, caller).unwrap_or_default();
+    let prefix = args.word("path").map(str::to_string).unwrap_or_default();
     let rows = match d.store.subscriptions() {
         Ok(rows) => rows,
         Err(e) => return Outcome::err(format!("could not read the subscriptions: {e}")),
@@ -2105,16 +2158,13 @@ async fn ls_subscription(d: &Dispatch, args: &Args) -> Outcome {
     Outcome::ok(serde_json::Value::Array(listed).to_string())
 }
 
-async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["session"].clone();
+async fn get_messages(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let name = session_of(args, caller).unwrap_or_default();
     let session = match d.sessions.get(&name) {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let replay = matches!(
-        args.get("replay").map(String::as_str),
-        Some("true") | Some("1")
-    );
+    let replay = matches!(args.word("replay"), Some("true") | Some("1"));
     if replay {
         return replay_transcript(d, &name, &session, args);
     }
@@ -2122,7 +2172,7 @@ async fn get_messages(d: &Dispatch, args: &Args) -> Outcome {
         Ok(v) => v,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let window = match args.get("range") {
+    let window = match args.word("range") {
         None => SeqWindow {
             first: 1,
             last: last_seq.max(1),
@@ -2165,7 +2215,7 @@ fn replay_transcript(
     // Read inside the gate, the end included: a later row's event is numbered above.
     let (as_of, read) = d.bus.as_of(|| {
         let last = d.store.last_seq(session.id())?;
-        let window = match args.get("range") {
+        let window = match args.word("range") {
             None => SeqWindow {
                 first: 1,
                 last: last.max(1),
@@ -2241,8 +2291,8 @@ fn replay_transcript(
 /// first, then the same rows as the events they streamed as.
 /// See `docs/notes/server-commands.md`.
 async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
-    let source = args["id"].clone();
-    let name = args["new_id"].clone();
+    let source = args.word("id").unwrap_or_default().to_string();
+    let name = args.word("new_id").unwrap_or_default().to_string();
     let report = match d.store.clone_session(&source, &name) {
         Ok(report) => report,
         Err(e) => return Outcome::err(e.to_string()),
@@ -2288,7 +2338,7 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
 /// undo. The transcript stamp goes last, and a stamp that moved backwards is a cut: a
 /// window forgets what it drew and refills. See `docs/notes/server-commands.md`.
 async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["id"].clone();
+    let name = args.word("id").unwrap_or_default().to_string();
     let session = match d.sessions.get(&name) {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
@@ -2297,7 +2347,7 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
         Ok(v) => v,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let window = match args.get("trajectory") {
+    let window = match args.word("trajectory") {
         None => SeqWindow {
             first: 1,
             last: last_seq.max(1),
@@ -2347,14 +2397,9 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
 /// One walk: the same `installed_for` that `run_skill` and `@skill(...)` read, so a
 /// path this lists is a path `run_skill` takes. `path` is matched by component
 /// (`under`), which is what makes `harness` a subtree and `har` nothing.
-async fn ls_skill(d: &Dispatch, args: &Args) -> Outcome {
-    let session = args["session"].clone();
-    let path = args
-        .get("path")
-        .map(String::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
+async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let session = session_of(args, caller).unwrap_or_default();
+    let path = args.word("path").unwrap_or("").trim().to_string();
     let handle = match d.sessions.get(&session) {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
@@ -2378,10 +2423,10 @@ async fn ls_skill(d: &Dispatch, args: &Args) -> Outcome {
 /// SPEC's `## Python Cmd`, and the one runner there is: the id is resolved here, because
 /// a path names one root where a name may name two, and what a skill *is* is decided in
 /// one place, [`skill::Skills::run`].
-async fn run_skill(d: &Dispatch, args: &Args) -> Outcome {
-    let session = args["session"].clone();
-    let id = args["id"].trim().to_string();
-    let words = match crate::tools::skill::call_words(args.get("cmd").map(String::as_str)) {
+async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let session = session_of(args, caller).unwrap_or_default();
+    let id = args.word("id").unwrap_or_default().trim().to_string();
+    let words = match crate::tools::skill::call_words(args.word("cmd")) {
         Ok(words) => words,
         Err(why) => return Outcome::err(why),
     };
@@ -2427,17 +2472,17 @@ async fn run_skill(d: &Dispatch, args: &Args) -> Outcome {
 /// is deliberate -- a subscription with no addressee would match, fire, and tell
 /// nobody, which is the one failure a registry cannot notice by itself.
 async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let pattern = args.get("pattern").map(String::as_str).unwrap_or("").trim();
+    let pattern = args.word("pattern").unwrap_or("").trim();
     if pattern.is_empty() {
         return Outcome::err(
             "subscribe needs a pattern over event names, e.g. `turn_end`".to_string(),
         );
     }
-    let given = args.get("session").map(String::as_str).or(caller);
+    let given = session_of(args, caller);
     let Some(session) = given.filter(|name| !name.trim().is_empty()) else {
         return Outcome::err(
             "subscribe notices a session, and neither the call nor its client named one: \
-             run it from a session's shell, where `$GONGGA_SESSION` is set",
+         run it from a session's shell, where `$GONGGA_SESSION` is set",
         );
     };
     let session = session.trim().to_string();
@@ -2446,7 +2491,7 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(None) => return Outcome::err(format!("no session named {session:?} to notice")),
         Err(e) => return Outcome::err(e.to_string()),
     }
-    let action = match args.get("cmd").map(String::as_str) {
+    let action = match args.value("cmd") {
         Some(raw) => match parse_cmd(raw) {
             Ok(action) => action,
             Err(why) => return Outcome::err(why),
@@ -2454,26 +2499,24 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         None => {
             return Outcome::err(format!(
                 "subscribe runs a command on a match: `subscribe <pattern> <cmd>` \
-                 {session}"
+             {session}"
             ));
         }
     };
-    let persistent = match args.get("persistant") {
-        None => false,
-        Some(raw) => match parse_bool(raw) {
-            Ok(value) => value,
-            Err(_) => {
-                return Outcome::err(format!(
-                    "--persistant takes {}, not {raw:?}",
-                    protocol::SHOW_VALUES.join(" or ")
-                ));
-            }
-        },
+    let persistent = match flag_of(args, "persistant") {
+        Ok(value) => value.unwrap_or(false),
+        Err(_) => {
+            return Outcome::err(format!(
+                "--persistant takes {}",
+                protocol::SHOW_VALUES.join(" or ")
+            ));
+        }
     };
     let named = args
-        .get("id")
-        .map(|name| name.trim().to_string())
-        .filter(|name| !name.is_empty());
+        .word("id")
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string);
     let name = match named {
         Some(name) => name,
         None => match free_subscription_name(d, &session) {
@@ -2494,7 +2537,7 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
             Outcome::ok_with(
                 format!(
                     "subscription `{name}` armed: a match of `{pattern}` runs `{}` in \
-                     {session}{}",
+                 {session}{}",
                     action.name,
                     if persistent { ", every time" } else { " once" }
                 ),
@@ -2518,19 +2561,17 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
 ///
 /// An object is the whole call (`{"name":…,"args":{…}}`), and a bare word is a name
 /// with no arguments: the same two shapes `exec` takes for a cmd's `args`.
-fn parse_cmd(raw: &str) -> Result<crate::subscriptions::Action, String> {
-    let text = raw.trim();
-    if text.is_empty() {
-        return Err("subscribe needs a command to run on a match".to_string());
-    }
-    if !text.starts_with('{') {
+fn parse_cmd(value: &serde_json::Value) -> Result<crate::subscriptions::Action, String> {
+    if let Some(text) = value.as_str() {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("subscribe needs a command to run on a match".to_string());
+        }
         return Ok(crate::subscriptions::Action {
             name: text.to_string(),
             args: Args::new(),
         });
     }
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| format!("`cmd` is an object only when it is a whole call: {e}"))?;
     let name = value
         .get("name")
         .and_then(serde_json::Value::as_str)
@@ -2539,16 +2580,10 @@ fn parse_cmd(raw: &str) -> Result<crate::subscriptions::Action, String> {
         .ok_or_else(|| {
             "`cmd` needs a `name`: {\"name\": \"send_message\", \"args\": {}}".to_string()
         })?;
-    let mut table = Args::new();
-    if let Some(given) = value.get("args").and_then(serde_json::Value::as_object) {
-        for (key, value) in given {
-            let word = match value {
-                serde_json::Value::String(word) => word.clone(),
-                other => other.to_string(),
-            };
-            table.insert(key.clone(), word);
-        }
-    }
+    let table = match value.get("args") {
+        None => Args::new(),
+        Some(given) => Args::from_json(given.clone()).map_err(|why| format!("`cmd.args` {why}"))?,
+    };
     Ok(crate::subscriptions::Action {
         name: name.to_string(),
         args: table,
@@ -2574,12 +2609,12 @@ fn free_subscription_name(d: &Dispatch, session: &str) -> Result<String, String>
 
 /// Drops a subscription, or every one under a path; the caller drops its own.
 async fn del_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let path = args.get("path").map(String::as_str).unwrap_or("").trim();
-    let given = args.get("session").map(String::as_str).or(caller);
+    let path = args.word("path").unwrap_or("").trim();
+    let given = session_of(args, caller);
     let Some(caller) = given.filter(|name| !name.trim().is_empty()) else {
         return Outcome::err(
             "del_subscription drops what a session armed, and neither the call nor its \
-             client named one: run it from a session's shell, where `$GONGGA_SESSION` is set",
+         client named one: run it from a session's shell, where `$GONGGA_SESSION` is set",
         );
     };
     let caller = caller.trim();
@@ -2610,7 +2645,7 @@ async fn del_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Ou
 
 /// Publishes one event under a chosen name, as a log row every matcher sees.
 async fn trigger_event(d: &Dispatch, args: &Args) -> Outcome {
-    let event = args.get("event").map(String::as_str).unwrap_or("").trim();
+    let event = args.word("event").unwrap_or("").trim();
     if event.is_empty() {
         return Outcome::err("trigger_event needs a name: `trigger_event <event>`");
     }
@@ -2627,31 +2662,26 @@ async fn trigger_event(d: &Dispatch, args: &Args) -> Outcome {
 /// new kind is a row, not a wire change. A payload that is not JSON is kept as a
 /// string rather than dropped: a row that exists is a fact, and a reader that
 /// cannot parse it is better off seeing that than seeing nothing.
-async fn events(d: &Dispatch, args: &Args) -> Outcome {
-    let after = match args.get("since").map(String::as_str) {
-        None => 0,
-        Some(raw) => match raw.trim().parse::<i64>() {
-            Ok(n) if n >= 0 => n,
-            _ => return Outcome::err(format!("since wants a log id, not {raw:?}")),
-        },
+async fn events(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let after = match count_of(args, "since") {
+        Ok(None) => 0,
+        Ok(Some(n)) if n >= 0 => n,
+        Ok(Some(n)) => return Outcome::err(format!("since wants a log id, not {n}")),
+        Err(e) => return Outcome::err(e),
     };
-    let kind = args
-        .get("kind")
-        .map(String::as_str)
-        .filter(|k| !k.is_empty());
-    let session = match args.get("session").map(String::as_str) {
+    let kind = args.word("kind").filter(|k| !k.is_empty());
+    let session = match session_of(args, caller) {
         None => None,
-        Some(name) => match d.sessions.get(name) {
+        Some(name) => match d.sessions.get(&name) {
             Ok(s) => Some(s.id()),
             Err(e) => return Outcome::err(e.to_string()),
         },
     };
-    let limit = match args.get("limit").map(String::as_str) {
-        None => 200,
-        Some(raw) => match raw.trim().parse::<u32>() {
-            Ok(n) if n > 0 => n.min(5000),
-            _ => return Outcome::err(format!("limit wants a count above zero, not {raw:?}")),
-        },
+    let limit = match count_of(args, "limit") {
+        Ok(None) => 200,
+        Ok(Some(n)) if n > 0 => (n as u32).min(5000),
+        Ok(Some(n)) => return Outcome::err(format!("limit wants a count above zero, not {n}")),
+        Err(e) => return Outcome::err(e),
     };
     let rows = match d.store.events_after(after, kind, session, limit) {
         Ok(rows) => rows,
@@ -2863,7 +2893,7 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
             for mut job in bash {
                 if !job.stop().await {
                     tracing::warn!(pid = job.pid, name = %job.name,
-                        "a deleted session's background bash did not stop");
+                    "a deleted session's background bash did not stop");
                 }
             }
             for pid in workers {
@@ -2906,7 +2936,7 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
 }
 
 async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
-    let path = args["path"].clone();
+    let path = args.word("path").unwrap_or_default().to_string();
     let rows = match d.store.list_sessions() {
         Ok(rows) => rows,
         Err(e) => return Outcome::err(format!("could not read the sessions: {e}")),
@@ -2999,7 +3029,7 @@ fn interrupt(d: &Dispatch, name: &str, why: Stop) -> (bool, usize) {
 }
 
 async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args["id"].clone();
+    let name = args.word("id").unwrap_or_default().to_string();
     // `peek`, not `get`: materialising would start shells just to stop nothing.
     if d.sessions.peek(&name).is_none() {
         return match d.store.get_session(&name) {
@@ -3109,7 +3139,7 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
     let jobs = match origin {
         Origin::Client { .. } | Origin::Tool { .. } => format!(
             "{} background job(s) keep running -- they are processes of their own, outlive \
-             this server and are adopted on the next start",
+         this server and are adopted on the next start",
             released
         ),
         Origin::Signal { .. } => format!(
@@ -3125,12 +3155,12 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         0 => "their turns are kept and the next start continues them".to_string(),
         waiting if waiting == running.len() => {
             "every one was inside `wait`: the next start continues those waits for the time \
-             that was left"
+         that was left"
                 .to_string()
         }
         waiting => format!(
             "{waiting} of them were inside `wait` and the next start continues those waits \
-             for the time that was left; the rest continue at once"
+         for the time that was left; the rest continue at once"
         ),
     };
     let said = format!(

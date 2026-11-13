@@ -61,8 +61,8 @@ pub fn run(
         "set_render" => render(client, state, args, sink),
         "set_render_session" => render_session(client, state, args, sink),
         "set_sticky" => {
-            let kind = args.get("type").cloned().unwrap_or_default();
-            let Some(value) = args.get("value").cloned() else {
+            let kind = args.word("type").unwrap_or_default().to_string();
+            let Some(value) = args.word("value").map(str::to_string) else {
                 client.say(
                     LineKind::Error,
                     &format!(
@@ -97,7 +97,7 @@ pub fn run(
             Done::Local
         }
         "del_sticky" => {
-            let kind = args.get("type").cloned().unwrap_or_default();
+            let kind = args.word("type").unwrap_or_default().to_string();
             match state.del_sticky(&kind) {
                 Ok(true) => {
                     client.say(LineKind::Result, &format!("sticky {kind} cleared"), sink);
@@ -129,8 +129,8 @@ pub fn run(
 
 /// `connect_server`: the address this window dials from now on.
 fn connect(client: &crate::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
-    let port = args.get("port").map(String::as_str).unwrap_or_default();
-    let ip = args.get("ip").map(String::as_str);
+    let port = args.word("port").unwrap_or_default();
+    let ip = args.word("ip");
     let addr = match crate::server_address(ip, port) {
         Ok(addr) => addr,
         Err(e) => {
@@ -163,8 +163,8 @@ fn connect(client: &crate::Client, state: &mut State, args: &Args, sink: &mut dy
 /// A value that does not parse saves nothing, and no argument at all is a read of
 /// the setting rather than a reset of it.
 fn render(client: &crate::Client, state: &mut State, args: &Args, sink: &mut dyn Sink) -> Done {
-    let size = args.get("block_size");
-    let edge = args.get("box_edge");
+    let size = args.word("block_size");
+    let edge = args.word("box_edge");
     if size.is_none() && edge.is_none() {
         client.say(
             LineKind::Result,
@@ -224,8 +224,8 @@ fn render_session(
     args: &Args,
     sink: &mut dyn Sink,
 ) -> Done {
-    let name = args.get("session").cloned().unwrap_or_default();
-    let Some(raw) = args.get("show") else {
+    let name = args.word("session").unwrap_or_default().to_string();
+    let Some(raw) = args.word("show") else {
         let show = state.is_shown(&name);
         client.say(LineKind::Result, &format!("render {name} = {show}"), sink);
         return Done::Local;

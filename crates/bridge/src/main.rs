@@ -505,8 +505,13 @@ fn is_stop(text: &str) -> bool {
 fn args_of(pairs: &[(&str, &str)]) -> CommandArgs {
     pairs
         .iter()
-        .map(|(key, value)| (key.to_string(), value.to_string()))
-        .collect::<BTreeMap<_, _>>()
+        .map(|(key, value)| {
+            (
+                key.to_string(),
+                serde_json::Value::String(value.to_string()),
+            )
+        })
+        .collect()
 }
 
 #[tokio::main]

@@ -132,16 +132,34 @@ impl Cmd for ExecTool {
                 }
             };
             if running.is_none() {
-                // The call's machine and directory; a session's are defaults. See
-                // `crate::session::remote_request`.
-                let remote = match args.get("remote").and_then(Value::as_str) {
-                    Some(stated) => crate::session::remote_request(stated),
-                    None => ctx.remote.clone(),
+                // SPEC's `optional[str]`: absent takes the default -- the session's own
+                // machine -- and a stated `null` is the empty value, which is no remote
+                // at all. See `crate::session::remote_request`.
+                let remote = match protocol::argtype::given(&args, "remote") {
+                    protocol::Given::Nothing => ctx.remote.clone(),
+                    protocol::Given::Null => None,
+                    protocol::Given::Value(value) => match value.as_str() {
+                        Some(name) => crate::session::remote_request(name),
+                        None => {
+                            return ToolOutcome::err(format!(
+                                "`remote` is a machine's name, and this is {value}"
+                            ));
+                        }
+                    },
                 };
-                let cwd = match args.get("cwd").and_then(Value::as_str) {
-                    Some(path) if !path.is_empty() => std::path::PathBuf::from(path),
-                    // The session's directory, when this call asked for it and it named one.
-                    _ if remote == ctx.remote && !ctx.cwd.as_os_str().is_empty() => ctx.cwd.clone(),
+                // The session's directory, when this call asked for its machine and the
+                // session named one; the machine's own otherwise.
+                let cwd = match protocol::argtype::given(&args, "cwd") {
+                    protocol::Given::Value(value)
+                        if value.as_str().is_some_and(|path| !path.is_empty()) =>
+                    {
+                        std::path::PathBuf::from(value.as_str().unwrap_or_default())
+                    }
+                    protocol::Given::Nothing
+                        if remote == ctx.remote && !ctx.cwd.as_os_str().is_empty() =>
+                    {
+                        ctx.cwd.clone()
+                    }
                     _ => std::path::PathBuf::from("."),
                 };
                 if let Err(why) = ctx

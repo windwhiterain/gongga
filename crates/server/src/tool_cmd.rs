@@ -3,7 +3,7 @@
 //! See `docs/notes/server-tool-cmd.md`.
 
 use protocol::Args;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::commands::{Dispatch, Outcome};
@@ -93,6 +93,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
         .map(|tool| {
             let row = tool.spec();
             let mut args = vec![protocol::ArgSpec {
+                type_of: "Session".into(),
                 name: "session".into(),
                 description: "The session the tool runs as; its shells, its directory.".into(),
                 required: true,
@@ -119,11 +120,12 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
             );
             for argument in ordered {
                 args.push(protocol::ArgSpec {
+                    type_of: argument.kind.clone(),
                     name: argument.name.clone(),
                     description: argument.sentence.clone().unwrap_or_default(),
                     required: argument.required,
                     positional: argument.positional.is_some(),
-                    kind: Some(argument.kind.clone()),
+                    kind: None,
                     value_hint: argument.hint.clone(),
                     completions: argument.completion.source(),
                     accepts: None,
@@ -142,63 +144,30 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
         .collect()
 }
 
-/// Types a command's string arguments by the tool's own schema.
+/// Runs one tool command: binds the caller, and answers with what the tool said.
 ///
 /// # Invariant
 ///
-/// The tunnel's point: an agent's call and an operator's line reach the same
-/// shapes, so a number is a number on both paths.
-fn coerce(tool: &dyn crate::tools::Tool, args: &Args) -> Value {
-    let properties = crate::tools::general_parameters(tool)
-        .get("properties")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    let mut out = json!({});
-    for (name, value) in args.iter() {
-        let spec = properties.get(name);
-        let kind = spec.and_then(|p| p.get("type")).and_then(Value::as_str);
-        // A list argument is written as JSON, so an operator reaches the same
-        // shape the model does.
-        if kind == Some("array")
-            && let Some(words) = serde_json::from_str::<Vec<String>>(value).ok()
-        {
-            out[name] = json!(words);
-            continue;
-        }
-        out[name] = match kind {
-            Some("boolean") => match value.parse::<bool>() {
-                Ok(parsed) => json!(parsed),
-                Err(_) => json!(value),
-            },
-            Some("integer") => value
-                .parse::<i64>()
-                .map(|n| json!(n))
-                .unwrap_or_else(|_| json!(value)),
-            Some("number") => match value.parse::<f64>() {
-                Ok(parsed) => json!(parsed),
-                Err(_) => json!(value),
-            },
-            _ => json!(value),
-        };
-    }
-    out
-}
-
-/// Runs one tool command: binds the session, coerces what remains, and answers
-/// with what the tool said.
-pub async fn dispatch_tool(d: &Dispatch, name: &str, args: &Args) -> Outcome {
-    let Some(session) = args.get("session") else {
-        return Outcome::err(format!("{name} needs the session it runs as"));
+/// SPEC's `session = caller()`: the session a tool runs for is the caller's, never an
+/// argument. The arguments that remain are the ones the tool's own schema declares.
+pub async fn dispatch_tool(d: &Dispatch, name: &str, args: &Args, caller: Option<&str>) -> Outcome {
+    let Some(session) = crate::commands::session_of(args, caller) else {
+        return Outcome::err(format!(
+            "{name} needs the session it runs as: run it from a session's shell, where `GONGGA_SESSION` names one"
+        ));
     };
-    let Some(tool) = d.agent.tools.get(name) else {
+    if d.agent.tools.get(name).is_none() {
         return Outcome::err(format!("{name} is not a tool this server carries"));
-    };
-    let rest: Args = args
-        .iter()
-        .filter(|(key, _)| key.as_str() != "session")
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    let value = coerce(tool.as_ref(), &rest);
-    run(&d.agent, &d.sessions, &d.store, session, name, value).await
+    }
+    let mut given = args.clone();
+    given.remove("session");
+    run(
+        &d.agent,
+        &d.sessions,
+        &d.store,
+        &session,
+        name,
+        given.as_json(),
+    )
+    .await
 }
