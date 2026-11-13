@@ -234,6 +234,18 @@ scripts/ship.sh --dry-run -m "..."               # 会做什么（不写不推�
 git config core.hooksPath scripts/hooks
 ```
 
+## 开发工作流：先 `cargo build`，再 `cargo run`
+
+跑新代码就这两步：`cargo build`（default-members 把 server/relay/client/tui 一次编到
+同一个 BUILD），再 `cargo run -p gongga-server`。别手动替换二进制，也别只重编单个
+crate 就指望跑着的 server 用上。
+
+机制是 SPEC「Bundled binary」那条：同目录的二进制互相 detect/validate/install。server
+启动时 `ensure_pair` 把自己和身旁的 relay 装进 `home/bin`，channel 用的就是**这份装好的
+副本**（`relay_for_channel`）——所以跑着的 server 始终用它启动时的那一对，构建树后来被
+重编也不影响它。要用新代码，就 `cargo build` + `cargo run` 起一个新进程（它装新的配对）；
+接管一个在用的 home 走 `evolve`（下节），不是手动换二进制。
+
 ## 改过服务端代码之后
 
 跑着的进程还是旧二进制，新代码要接管这个 home 才算生效。整套流程在 `evolve` skill 里
