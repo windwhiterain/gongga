@@ -346,7 +346,9 @@ live_channel() {
     grep -q '"exit":null' "$dir/status" 2>/dev/null || continue
     pid="$(sed -n 's/.*"pid":\([0-9]*\).*/\1/p' "$dir/status")"
     alive "$pid" || continue
-    probe="$HOME_DIR/channel-probe-$$-${RANDOM}"
+    # Spelled the way the shell that redirects reads it: `HOME_DIR` can be the
+    # Windows form the server exports, and `>` eats a backslash path.
+    probe="$(cygpath -u "$HOME_DIR" 2>/dev/null || printf '%s' "$HOME_DIR")/channel-probe-$$-${RANDOM}"
     rm -f "$probe"
     printf 'input %s\n' \
       "$(printf 'echo ok > %s\n' "$probe" | base64 -w0)" >>"$dir/in"
