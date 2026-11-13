@@ -115,6 +115,19 @@ The `description` is in there because a dump is read later, out of context -- a 
 keeping the full output is being able to find the right one again. `slug()` in
 `bash.rs` is what makes it safe for a path.
 
+## The wait, and the clock
+
+`waited` is the only wait: a call's work runs on a task with a token of its
+own, and the wait ends when the work answers, a message arrives, or the turn
+is interrupted. It has no clock of its own -- `exec`'s `wait` and `wait`'s
+`time` are how a call says how long it will wait, and a number here would end
+waits nobody asked to end.
+
+A timeout in this crate is therefore a tool's own: a bound it holds against an
+execution it runs, to call a hung mechanism a fault. `CALL_TIMEOUT_MS` is the
+one such number today, the skill program's. No caller sets it, no caller reads
+it, and while the harness is correct the interface is unchanged by it.
+
 ## Tool
 
 Implemented with a boxed future rather than `async_trait` so the crate keeps
