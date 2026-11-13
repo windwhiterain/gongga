@@ -398,15 +398,7 @@ fn adopt(home: &Path, link: &Link) -> anyhow::Result<()> {
     // An explicit git dir: the cache is bare, and a relative question would be
     // answered by the repository above this home.
     let git_dir = dir.join(".git");
-    let named = crate::fork::git(
-        &dir,
-        &[
-            "--git-dir",
-            &git_dir.to_string_lossy(),
-            "rev-parse",
-            "--git-dir",
-        ],
-    );
+    let named = crate::fork::git_at(&git_dir, None, &["rev-parse", "--git-dir"]);
     if !named.status.success() {
         let _ = std::fs::rename(&git_dir, &old);
         anyhow::bail!(

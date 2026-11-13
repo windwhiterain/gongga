@@ -44,22 +44,16 @@ impl Fork {
         &self.dir
     }
 
-    /// Whether there is a clone here at all: this path is the root of a repository.
+    /// Whether there is a clone here at all: a repository whose config is its own.
     ///
     /// # Invariant
     ///
-    /// Asked of git, never of a `.git` entry. A directory whose `.git` git will not
-    /// read -- a clone an interrupted run emptied -- is answered for by the repository
-    /// it sits *inside*, so every `git -C` here would read and write that one's
-    /// config: inside a project worktree, `remote set-url` renamed the project's own
-    /// origin to the content's. See `docs/notes/server-fork.md`.
+    /// `owned`, so neither an emptied `.git` nor a worktree of somebody else's
+    /// repository counts: both would have `git` read and write a config this module
+    /// does not own -- inside a project worktree that renamed the project's own
+    /// `origin` to the content's. See `docs/notes/server-fork.md`.
     pub fn exists(&self) -> bool {
-        let out = git(&self.dir, &["rev-parse", "--show-toplevel"]);
-        if !out.status.success() {
-            return false;
-        }
-        let told = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        same_path(Path::new(&told), &self.dir)
+        owned(&self.dir).is_some()
     }
 
     /// Clones it when it is absent, and leaves anything else alone.
@@ -206,7 +200,9 @@ impl Fork {
             }
         } else {
             let spec = format!("{remote}:refs/heads/{OFFICIAL}");
-            let out = git(&self.dir, &["fetch", "-q", ".", &spec]);
+            // This checkout by path, not `.`: the process's directory is no longer its.
+            let source = self.dir.to_string_lossy().to_string();
+            let out = git(&self.dir, &["fetch", "-q", &source, &spec]);
             if !out.status.success() {
                 // Somebody committed locally: leave it rather than overwrite.
                 tracing::warn!(
@@ -320,14 +316,83 @@ fn same_path(told: &Path, dir: &Path) -> bool {
     }
 }
 
-/// `git -C <dir>`, so one checkout is asked about instead of the process's directory.
-pub fn git(dir: &Path, args: &[&str]) -> std::process::Output {
-    bounded()
-        .arg("-C")
-        .arg(dir)
-        .args(args)
+/// `git` with both of its directories named, so nothing is searched for.
+///
+/// # Invariant
+///
+/// `--git-dir` and `--work-tree` are the whole context: `git -C` lets git answer for
+/// the repository a path sits *inside*, which is how a test home inside a worktree
+/// had this project's `origin` renamed. A git directory that is not readable runs
+/// nothing and fails in git's own words. See `docs/notes/server-fork.md`.
+///
+/// # Invariant
+///
+/// No argument may be a path for git to resolve against "here", `.` included: the
+/// process's directory is not the checkout's, so a relative path names the wrong tree.
+pub fn git_at(git_dir: &Path, work_tree: Option<&Path>, args: &[&str]) -> std::process::Output {
+    let mut cmd = bounded();
+    cmd.arg(format!("--git-dir={}", git_dir.display()));
+    if let Some(work_tree) = work_tree {
+        cmd.arg(format!("--work-tree={}", work_tree.display()));
+    }
+    cmd.args(args)
         .output()
         .unwrap_or_else(|e| panic!("running git {args:?}: {e}"))
+}
+
+/// `git` in a checkout this module owns, which is the only shape it will run in.
+///
+/// # Invariant
+///
+/// A directory that is not `owned` gets `<dir>/.git` named instead: git then refuses
+/// (that path is missing, empty, or a worktree pointer, never a repository) and the
+/// caller's own refusal -- "is not a clone" -- is what a person reads.
+pub fn git(dir: &Path, args: &[&str]) -> std::process::Output {
+    let named = owned(dir).unwrap_or_else(|| dir.join(".git"));
+    git_at(&named, Some(dir), args)
+}
+
+/// The git directory a checkout's own `.git` names, read rather than discovered.
+///
+/// # Invariant
+///
+/// Read, not found: a `.git` directory is itself, a `.git` file names one (resolved
+/// against the checkout), and anything else is nothing at all. Resolving a pointer is
+/// not a search upward -- the pointer is this directory's own statement.
+fn git_dir(dir: &Path) -> Option<PathBuf> {
+    let entry = dir.join(".git");
+    if std::fs::metadata(&entry).ok()?.is_dir() {
+        return Some(entry);
+    }
+    let text = std::fs::read_to_string(&entry).ok()?;
+    let named = text
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir:"))?
+        .trim();
+    let named = dir.join(named);
+    named.is_dir().then_some(named)
+}
+
+/// The git directory of a checkout whose config is its own, if this path is one.
+///
+/// # Invariant
+///
+/// Ownership is the *common* directory: a plain clone names `<dir>/.git` itself,
+/// while a worktree names the repository it belongs to, and a submodule names its
+/// superproject's. Config written through either of those is somebody else's, so they
+/// are not checkouts this module may touch.
+fn owned(dir: &Path) -> Option<PathBuf> {
+    let git = git_dir(dir)?;
+    let common = git_at(&git, None, &["rev-parse", "--git-common-dir"]);
+    if !common.status.success() {
+        return None;
+    }
+    let told = String::from_utf8_lossy(&common.stdout).trim().to_string();
+    let told = match Path::new(&told).is_absolute() {
+        true => PathBuf::from(told),
+        false => git.join(told),
+    };
+    same_path(&told, &dir.join(".git")).then_some(git)
 }
 
 /// The same, as an error when git refused.

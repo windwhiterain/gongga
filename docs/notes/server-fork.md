@@ -15,20 +15,28 @@ publisher and the reader cannot disagree about which branch is. `local` has no
 upstream by design — its commits are not meant to be pushed anywhere, and upstream
 lands on it only by rebase.
 
-## Fork::exists -- the question is asked of git
+## The rule: git is given its directories, never asked to find them
 
-`exists` answers whether this path is the root of *its own* repository, and it asks
-git (`rev-parse --show-toplevel`, resolved and compared with the path) rather than
-looking for a `.git`. The difference is not cosmetic: `git -C <dir>` inside a
-repository answers for the repository *above* it, so a `.git` directory git will not
-read -- a clone an interrupted run emptied -- makes every command here read and write
-the enclosing repository's config.
+Every command here names `--git-dir` and `--work-tree`. `git -C <dir>` lets git answer
+for the repository the path sits *inside*, so a `.git` that git will not read -- a clone
+an interrupted run emptied -- makes the command read and write the *enclosing*
+repository's config. Naming both directories removes the search, and with it the whole
+class: a `.git` entry that is not a readable git directory makes git refuse and touch
+nothing.
+
+A path is a checkout this module may write to only if its **own `.git`** names a git
+directory whose **common** directory is that same `.git` (`git_dir`, then `owned`).
+Ownership is the common directory, not `--show-toplevel`: a worktree of somebody else's
+repository has a toplevel of its own and still shares that repository's config, so
+`remote set-url` there renames *their* origin. A bare legacy cache is the one case
+asked differently -- `ship::adopt` names its git directory outright before converting
+it, because a bare repository has no worktree to ask about.
 
 That is how this project's own `origin` twice became the content repository's URL. A
-test home lives inside the worktree (AGENTS.md asks for that), so a stale
-`<home>/ship` is *inside this repository*; the old `.git`-exists test said "a clone is
-here", and `ship::point` then ran `remote set-url origin <content url>` on the project
-itself, logging `content origin follows this home's config from=<this repo's origin>`.
+test home lives inside the worktree (AGENTS.md asks for that), so a stale `<home>/ship`
+is *inside this repository*; the old `.git`-exists test said "a clone is here", and
+`ship::point` then ran `remote set-url origin <content url>` on the project itself,
+logging `content origin follows this home's config from=<this repo's origin>`.
 `Fork::exists` now answers no, `ship::resolve` stops with "is not a clone, so it is not
 the shipped content", and `scripts/ship.sh` and `scripts/tui_live.py` ask the same
 question the same way before they write anything.

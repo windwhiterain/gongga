@@ -64,6 +64,28 @@ Ask git, never a `.git` entry:
 - `cargo build`, `cargo fmt --check`, `comments-check` on fork.rs/ship.rs back at their
   pre-existing counts (2 / 1), `test-layout-check`, `skill_contract.sh`.
 
+## Follow-up (B): git is given its directories
+
+User chose B: the server must stop letting git *search*. Every command now names
+`--git-dir` and `--work-tree` (`fork::git_at`), so nothing can be answered for by an
+enclosing repository; `fork::git` refuses a directory that is not a checkout by naming
+`<dir>/.git`, which git then refuses. A path is a checkout only if its own `.git` names
+a git directory whose **common** directory is that `.git` (`fork::owned`) -- which is
+strictly stronger than the `--show-toplevel` test I first wrote: a *worktree* of this
+project has a toplevel of its own and still shares this repo's config, so the first
+test would have let `remote set-url` rename this repo's origin through `<home>/ship` as
+a worktree. Proven: with `ship/` a worktree of this repo, the new server logs no
+"content origin follows", exits "is not a clone", and `remote.origin.url` is
+unchanged. (My first run of that probe corrupted the origin again -- the binary was
+built from a *stashed* baseline, because `git stash` in this repo is shared across 36
+worktrees and I stashed while measuring warnings. Repaired with `set-url`; the fix was
+rebuilt and re-probed.)
+
+**`git stash` is shared by every worktree of this repository** -- one more shared-state
+trap of the same family. Another session's WIP (`crates/server/src/{session,tools/*}.rs`)
+is in this working tree and was swept by that stash; it was restored untouched and is
+not part of this commit.
+
 ## Still open
 The tree records no URL for this repository, so a hook can only refuse the *content*
 URL, not verify the right one. Recording the upstream somewhere (and having the hook
