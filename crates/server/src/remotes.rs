@@ -64,10 +64,8 @@ pub fn load(answer_timeout: Duration) -> Vec<RemoteConfig> {
     })
 }
 
-/// The remotes in `file`, in the order the file writes them.
-///
-/// No file is no remote. Anything else that cannot be read is the caller's to
-/// decide about: a file mid-edit must not be mistaken for a machine with no peers.
+/// The remotes in `file`, in the order the file writes them; no file is no remote,
+/// and an unreadable one is the caller's.
 pub fn read(file: &Path, answer_timeout: Duration) -> anyhow::Result<Vec<RemoteConfig>> {
     let text = match std::fs::read_to_string(file) {
         Ok(text) => text,

@@ -675,8 +675,8 @@ impl QuickEdit {
             ENABLE_EXTENDED_FLAGS, ENABLE_QUICK_EDIT_MODE, GetConsoleMode, GetStdHandle,
             STD_INPUT_HANDLE, SetConsoleMode,
         };
-        // SAFETY: `GetStdHandle` takes a constant, and the two mode calls take the
-        // handle it returned plus a word this function owns.
+        // SAFETY: `GetStdHandle` takes a constant; the mode calls take its handle and a
+        // word this function owns.
         unsafe {
             let handle = GetStdHandle(STD_INPUT_HANDLE);
             if handle.is_null() || handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
@@ -899,8 +899,8 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// The cap and margin the command layer last set: a block stops growing at
-    /// `block_size` rows (0 caps nothing), and a box gives `box_edge` columns back.
+    /// The cap and margin the command layer last set: `block_size` rows (0 caps
+    /// nothing), and `box_edge` columns back.
     pub fn set_render(&mut self, block_size: usize, box_edge: usize) {
         self.screen.panes.set_block_size(block_size);
         self.screen.panes.set_box_edge(box_edge);
@@ -1119,10 +1119,8 @@ impl Tui {
             if let Some(operation) = self.clicked.take() {
                 return Some(UiEvent::Intent(UiIntent::Operate { operation }));
             }
-            // Painted before anything is asked: a key that changed the line must be
-            // on the screen before the loop leaves for a request, or the operator
-            // types into a row that only catches up when the answer's frames let
-            // it. See `docs/notes/tui-lib.md`.
+            // Painted before anything is asked: a changed line is on the screen before
+            // the loop leaves. See `docs/notes/tui-lib.md`.
             if self.draw().is_err() {
                 return None;
             }
@@ -1150,9 +1148,8 @@ impl Tui {
                     return Some(UiEvent::Intent(UiIntent::Room { windows: rooms }));
                 }
             }
-            // A frame that could not fill its pane is the one asking: the reader is
-            // pinned at the oldest row the window holds, so that row's neighbour
-            // above is what the next frame needs.
+            // A frame that could not fill its pane is the one asking, for the row above
+            // the one the window holds.
             let pinned = self.screen.panes.pinned();
             self.wished.retain(|name| pinned.contains(name));
             let owed: Vec<String> = pinned
@@ -1401,7 +1398,7 @@ impl Tui {
         }
 
         // Alt is the terminal's: no menu of this window's is on it, so its keys are
-        // swallowed here rather than typed into a prompt.
+        // swallowed here.
         if key.modifiers.contains(KeyModifiers::ALT) {
             return None;
         }
@@ -1462,10 +1459,8 @@ impl Tui {
             }
             KeyCode::Char(c) => {
                 self.screen.input.insert(c);
-                // Typing is a frame of its own, always: while an answer streams the
-                // screen is painted for the answer's rows, and an input row that
-                // only appeared when the next of those arrived was one the operator
-                // had already typed past. See `docs/notes/tui-lib.md`.
+                // Typing is a frame of its own, always, even while an answer streams.
+                // See `docs/notes/tui-lib.md`.
                 self.dirty = true;
                 self.refresh_completion();
             }

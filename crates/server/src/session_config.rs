@@ -1,7 +1,5 @@
-//! SPEC's `SessionConfig`: the nested shape `new_session` / `set_session` take.
-//! See `SPEC.md` (`## Server Cmd`). The wire carries it as one JSON argument;
-//! this flattens it into the flat settings the session handler already reads, so
-//! there is one place that applies a setting and not a second copy of it.
+//! SPEC's `SessionConfig`, the shape `new_session` and `set_session` take: flattened
+//! into the flat settings.
 
 use protocol::Args;
 use serde::Deserialize;
@@ -15,8 +13,8 @@ pub struct ModelRef {
     pub model: Option<String>,
 }
 
-/// SPEC `ModelConfig := {model, thinking, ctx_limit, cache_tier}`. Every field is
-/// optional so a `set_session` delta keeps what it does not name.
+/// SPEC `ModelConfig := {model, thinking, ctx_limit, cache_tier}`. Fields are optional:
+/// a delta keeps what it omits.
 #[derive(Debug, Default, Deserialize)]
 pub struct ModelConfig {
     #[serde(default)]
@@ -110,8 +108,8 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The `SessionConfig` shape a client completes inside `--config`: the field
-/// names at each level and what each leaf accepts. Mirrors [`SessionConfig`].
+/// The `SessionConfig` shape a client completes inside `--config`: field names, and
+/// what each leaf accepts.
 pub fn schema(remotes: &[String]) -> protocol::StructSchema {
     use protocol::{CompletionSource, StructField, StructSchema};
     let leaf = |name: &str, description: &str, source: CompletionSource, hint: &str| StructField {

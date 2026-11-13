@@ -125,11 +125,10 @@ pub fn file_name(name: &str) -> String {
 /// # Invariant
 ///
 /// Asked, not killed: a server that receives `cancel` keeps its turn as pending
-/// work (`commands.rs`). A window or a command in flight is never touched, so a
-/// build whose clients are still up keeps its directory until they exit. `ours`
-/// is the payload of the build asking. `keeps_servers` leaves the port alone;
-/// `force` rides into the ask, so a server that refuses it is stopped by pid
-/// instead of left holding the port. See `bundle-main.md`.
+/// work, so a build whose clients are still up keeps its directory until they
+/// exit. `ours` is the payload of the build asking; `keeps_servers` leaves the
+/// port alone; `force` rides into the ask, and only a stop the server refused is
+/// stopped by pid. See `bundle-main.md`.
 pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool, force: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -170,9 +169,7 @@ fn stop_programs_in(dir: &Path, ours: &Path, keeps_servers: bool, force: bool) -
         // window that was told to use it.
         return false;
     }
-    // `force` travels with the ask instead of replacing it: the command line knows
-    // how to stop a build its own plain `cancel` cannot reach, and only a stop that
-    // was refused is a stop to kill.
+    // `force` rides into the ask: only a stop the server refused is a stop to kill.
     if !ask_to_cancel(ours, dir, server, force) {
         kill(server.pid);
         wait_until_gone(server.pid);

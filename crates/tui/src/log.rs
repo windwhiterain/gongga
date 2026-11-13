@@ -1048,8 +1048,8 @@ impl Log {
         if !entry.boxed() {
             return false;
         }
-        // The rows `box_at` measured for this box: the only bound this gesture
-        // may move within, so a notch never walks past what the frame draws.
+        // The rows `box_at` measured for this box: the only bound this gesture may move
+        // within.
         let bound = entry.travel(body);
         // The stored row is the first one shown, so a notch into the past lowers it.
         let current = entry.inner;
@@ -1154,12 +1154,8 @@ impl Log {
         if rule {
             return None;
         }
-        // A body that already fits is no scroll target: the wheel goes to the
-        // window under it, every time. What fits is the rows this frame drew for
-        // it, rule included -- never the rows a block may keep. A block drawn in
-        // full would otherwise take the wheel and scroll its own past under a body
-        // the operator can already see whole, which is how a turn made hours ago
-        // surfaces from a notch that should have moved one row.
+        // A body that already fits is no scroll target: the wheel goes to the window
+        // under it. See `docs/notes/tui-log.md`.
         let entry = self.entries.get(hit.block)?;
         let body = hit.shown.saturating_sub(2).max(1);
         (entry.rows() > body).then_some((hit.block, body))

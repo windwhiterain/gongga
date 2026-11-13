@@ -1665,8 +1665,8 @@ impl Store {
         Ok(serde_json::from_str::<ToolSet>(&display).ok())
     }
 
-    /// Writes the head once. There is no API that appends a schema: context has
-    /// two operations, append and cut, and a schema is neither.
+    /// Writes the head once. Context has two operations, append and cut, and a schema
+    /// is neither.
     ///
     /// # Invariant
     ///

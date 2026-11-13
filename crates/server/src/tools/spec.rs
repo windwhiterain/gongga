@@ -33,7 +33,7 @@ pub struct Argument {
     /// The name both the model and the operator spell.
     pub name: String,
     /// SPEC's type in SPEC's spelling: `time`, `list[str]`, `optional[...]`, or a `|`.
-    /// `protocol::argtype` is the one table that maps it to JSON.
+    /// `protocol::argtype` maps it to JSON.
     #[serde(rename = "type", default = "string_type")]
     pub kind: String,
     /// What an `array` argument's elements are. Only arrays have one.

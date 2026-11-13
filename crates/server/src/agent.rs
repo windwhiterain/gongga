@@ -641,8 +641,7 @@ impl Agent {
     /// schema is neither, so it is written when the session first asks and never
     /// again -- Store::write_head_once refuses a second write, so no caller can
     /// express one. Settings are not context: set_session may change the model,
-    /// the peer or the mode freely and none of them re-renders these bytes. Which
-    /// tools a call may reach is announced at the tail.
+    /// the peer or the mode freely and none of them re-renders these bytes.
     fn tool_set_in_force(
         &self,
         session: &SessionHandle,

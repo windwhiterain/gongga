@@ -307,8 +307,7 @@ pub async fn run(
             let closing = ui.closing();
             tokio::select! {
                 // The keyboard first, every time: a stream that never pauses would
-                // otherwise win the race, and a window that cannot read a key
-                // cannot show one either.
+                // otherwise win the race.
                 biased;
                 event = ui.next_event() => Step::Input(event),
                 bytes = open.recv() => Step::Wire(bytes),
@@ -318,8 +317,7 @@ pub async fn run(
             let closing = ui.closing();
             tokio::select! {
                 // The keyboard first, every time: a stream that never pauses would
-                // otherwise win the race, and a window that cannot read a key
-                // cannot show one either.
+                // otherwise win the race.
                 biased;
                 event = ui.next_event() => Step::Input(event),
                 outcome = pending.as_mut() => Step::Dialed(outcome),
@@ -329,8 +327,7 @@ pub async fn run(
             let closing = ui.closing();
             tokio::select! {
                 // The keyboard first, every time: a stream that never pauses would
-                // otherwise win the race, and a window that cannot read a key
-                // cannot show one either.
+                // otherwise win the race.
                 biased;
                 event = ui.next_event() => Step::Input(event),
                 _ = tokio::time::sleep_until(next_try) => Step::Dial,

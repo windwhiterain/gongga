@@ -348,8 +348,8 @@ impl Sink for PipeSink<'_> {
         self.wire.transcript(session, created, seq);
     }
     fn row(&mut self, window: &str, seq: u64, event: &gongga_client::protocol::Event) {
-        // The client's copy of the server's state: written here, where the pair
-        // exists, never by the UI -- a frame carries text and no number.
+        // The client's copy of the server's state, written here and never by the UI:
+        // a frame carries text and no number.
         self.front.journal.event(window, seq, window, event);
     }
     fn rewind(&mut self, window: &str) {
@@ -359,8 +359,8 @@ impl Sink for PipeSink<'_> {
         self.wire.older(window);
     }
     fn older_page(&mut self, window: &str, rows: &[PastRow]) {
-        // The one thing the pipe can say that a cursor message cannot: the rows go
-        // above what the window holds. See `docs/notes/client-render-wire.md`.
+        // What only the pipe can say: the rows go above what the window holds. See
+        // `docs/notes/client-render-wire.md`.
         self.wire.prepend(window, rows);
     }
     fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {

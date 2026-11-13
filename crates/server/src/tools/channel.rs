@@ -302,7 +302,7 @@ impl Channels {
                 "--relay".to_string(),
                 dir.display().to_string(),
                 // The pair's version: a relay of another build refuses to hold this
-                // channel, and names both numbers instead of failing inside it.
+                // channel and names both numbers.
                 "--build".to_string(),
                 protocol::BUILD.to_string(),
             ],
@@ -317,8 +317,8 @@ impl Channels {
                 self.server.display()
             )
         })?;
-        // In this server's tree, so a server that is killed takes the channel with it:
-        // a `cancel` is what lets them go, and it is the only thing that does.
+        // In this server's tree, so a kill takes the channel with it: only a `cancel`
+        // lets them go.
         #[cfg(windows)]
         crate::tools::job::arm(relay.pid);
         let place = Where::Here(dir);

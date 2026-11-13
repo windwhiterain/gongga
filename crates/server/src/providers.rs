@@ -49,8 +49,8 @@ pub struct Provider {
     /// field nobody documents buys nothing, and an endpoint that rejects an unknown one
     /// fails the request. It is the roster's fact, not the home's.
     pub cache_affinity: Option<bool>,
-    /// The provider-specific headers that carry a per-conversation id, by their
-    /// exact wire names (`X-Session-ID`, `x-opencode-session`, ...).
+    /// The headers that carry a per-conversation id, by exact wire name
+    /// (`X-Session-ID`, `x-opencode-session`, ...).
     ///
     /// # Invariant
     ///

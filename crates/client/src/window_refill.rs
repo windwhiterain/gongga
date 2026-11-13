@@ -193,9 +193,8 @@ pub async fn answer_older(
                 continue;
             }
         }
-        // Anchored at the row the window is short of; the pane's height is only
-        // how much history comes back with it. A fill already on its way answers
-        // it too.
+        // Anchored at the row the window is short of; the pane's height is only how
+        // much history comes back with it.
         match client.ask_older(&name, ui.room_of(&name)) {
             Some(message) => {
                 if open.send(message.clone()).await.is_err() {

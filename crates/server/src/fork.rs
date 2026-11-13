@@ -91,9 +91,8 @@ impl Fork {
         if let Some(official) = official
             && let Rebasing::Conflicted(why) = &rebased
         {
-            // An error, not a warning: the checkout is left behind, and every later
-            // start reads the content it was left at. The words are git's own, because
-            // "conflicts" and "a dirty tree refused to move" are not the same fault.
+            // An error, not a warning: the checkout stays where it is, and every later
+            // start reads that content in git's own words.
             tracing::error!(
                 fork = %self.dir.display(),
                 "the personal branch was not rebased: {why}; the commits to rebase are \
@@ -240,8 +239,8 @@ impl Fork {
         {
             return Rebasing::Settled;
         }
-        // No `--autostash`: a checkout holding work is the reader's, and moving it is
-        // not this function's to do. The refusal is reported, with git's own words.
+        // No `--autostash`: a checkout holding work is the reader's, and the refusal is
+        // reported with git's own words.
         let rebase = git(&self.dir, &["rebase", "-q", base]);
         if rebase.status.success() {
             return Rebasing::Rebased;

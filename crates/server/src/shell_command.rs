@@ -54,8 +54,8 @@ pub fn ensure_pair(home: &Path) -> Option<PathBuf> {
     if let Some(source) = server_source() {
         place(&bin, SERVER, &source);
     }
-    // Beside the server, never left out: a home whose `bin` holds the server and not
-    // the relay is a pair that looks installed and cannot start a channel.
+    // Beside the server, never left out: `bin` without the relay looks installed and
+    // cannot start a channel.
     if let Some(source) = relay_source() {
         place(&bin, RELAY, &source);
     }

@@ -609,8 +609,7 @@ pub trait Sink {
 /// A page is what has already happened, so its rows are finished when it is
 /// handed over: a call and the label its result gave it are one row, and a block
 /// is never left open. News that is not a row -- a note, the layout, the sticky
-/// session -- is not the page's: this sink records rows and drops the rest, and
-/// the sink that draws a window gets that news on its own.
+/// session -- is not the page's: this sink records rows and drops the rest.
 /// See `docs/notes/client-lib.md`.
 #[derive(Default)]
 pub(crate) struct Page {
@@ -696,8 +695,8 @@ impl Sink for Page {
         }
     }
 
-    /// A call arrives with the shape it was drawn in, and its key may be one the
-    /// page has not seen: the row is made here rather than looked for.
+    /// A call arrives with the shape it was drawn in, and its key may be unseen: the
+    /// row is made here rather than looked for.
     fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
         if self.at.contains_key(key) {
             self.relabel(window, key, &head_label(head), kind_of(head.kind));
@@ -2307,11 +2306,9 @@ impl Client {
     /// The page *ends* at `floor - 1`, the one row above the oldest the window
     /// holds: that row is the window's own fact, and it is what the request is
     /// anchored on. `history` is how much further back this page reaches -- a
-    /// prefetch, never a count of rows the pane still needs. The two are not the
-    /// same number and cannot be: one row of a transcript can draw twenty on the
-    /// screen, and a folded block draws eight of them as one. A page the render
-    /// could not fill is the render's to ask for again, which is cheaper than
-    /// translating rows into rows. See `docs/notes/client-lib.md`.
+    /// prefetch, never a count of rows the pane still needs: one row can draw
+    /// twenty on the screen, and a folded block draws eight as one. See
+    /// `docs/notes/client-lib.md`.
     pub fn ask_older(&mut self, name: &str, history: usize) -> Option<ClientMessage> {
         let sync = self.sync.get(name)?;
         if sync.fill.is_some() || sync.blocked {
@@ -2678,7 +2675,6 @@ fn title_note(session: &protocol::SessionInfo) -> String {
 /// session row, a status, a usage reading and a deletion are no part of a
 /// transcript, so an answer never carries them -- and dropping one because it was
 /// numbered before the answer would lose it for good.
-/// Whether this event draws a row of a transcript, so a window can already have it.
 fn row_of(event: &Event) -> bool {
     matches!(
         event,
@@ -3041,9 +3037,8 @@ pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
     // A best-effort goodbye lets the server tear the connection down now
     // instead of waiting out the idle timeout.
     link.goodbye().await;
-    // `--force`: the stop this process asked for is the outcome, so a refusal is
-    // not the answer -- the pid the greeting named is. Only a stop is forced: a
-    // command that is not `cancel` never asked for one.
+    // `--force`: only a stop is forced, and a refusal is not the answer -- the pid the
+    // greeting named is.
     if args.force && stops_a_server(command) {
         if crate::server::force_stop(answering.server, answering.supervisor).await {
             return Ok(());
@@ -3524,8 +3519,8 @@ fn platform_parent() -> Option<(u32, Option<String>)> {
         dw_flags: 0,
         sz_exe_file: [0; 260],
     };
-    // SAFETY: the snapshot handle is closed below, and `entry` is a live, correctly
-    // sized PROCESSENTRY32W for as long as the two calls read and write it.
+    // SAFETY: the handle is closed below, and `entry` is a live, correctly sized
+    // PROCESSENTRY32W for both calls.
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snapshot as isize == -1 {

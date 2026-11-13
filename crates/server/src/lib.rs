@@ -241,8 +241,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         reachable = installed.reachable,
         "shipped content"
     );
-    // Read again: the install may have just placed this home's config. From here
-    // the file is followed, so an edit reaches the next request, not the next start.
+    // Read again: the install may have just placed this home's config, and it is
+    // followed from here.
     let config = crate::config::Current::load(args.config.as_deref(), args.home.as_deref())?;
     let cfg = config.anchor();
     // Before any request is built: templates from this config, over the pin.
@@ -476,9 +476,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // What a greeting hands every client: the picture a change is diffed against.
     commands::prime_sessions(&dispatch);
     clock.step("prime");
-    // SPEC: this start adopts the channels the last one kept; a dead one is told.
-    // Off this thread: a remote channel's adoption asks a peer over ssh, and a start
-    // that waits for it is a start that cannot serve until the peer answers.
+    // SPEC: this start adopts the channels the last one kept; a remote adoption asks a
+    // peer over ssh.
     {
         let channels = Arc::clone(&channels);
         tokio::spawn(async move {

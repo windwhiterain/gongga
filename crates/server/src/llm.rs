@@ -22,8 +22,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// `docs/notes/server-llm.md`.
 const HARNESS_AGENT: &str = concat!("gongga-harness/", env!("CARGO_PKG_VERSION"));
 
-/// Prefix for the per-conversation id every session-id header carries; the
-/// session's database id follows, so it is stable across restarts and pure ASCII.
+/// Prefix for the per-conversation id every session-id header carries: the session's
+/// stable database id, pure ASCII.
 const SESSION_ID_PREFIX: &str = "gongga-";
 
 /// The request shape a provider is spoken in, named by the roster's endpoint.
@@ -256,8 +256,8 @@ impl LlmClient {
     ) -> mpsc::Receiver<LlmEvent> {
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
-        // One per-conversation id, the stable database id; every affinity field the
-        // roster names -- body key and headers -- carries this same value.
+        // One per-conversation id -- the stable database id -- for every affinity field:
+        // body key and headers alike.
         let session_id = format!("{SESSION_ID_PREFIX}{}", source.session_id);
         let head = self.build_head(
             instructions,
@@ -534,8 +534,8 @@ impl LlmClient {
         if let Some(tier) = directive {
             body["prompt_cache_options"] = json!({"mode": "implicit", "ttl": tier});
         }
-        // Invariant: vendors that document the key ask for session isolation, so its
-        // value is the per-conversation id, the same one the headers carry.
+        // Invariant: vendors that document the key want session isolation, so its value
+        // is the headers' per-conversation id.
         if self.cache_affinity {
             body["prompt_cache_key"] = json!(session_id);
         }

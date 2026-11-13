@@ -132,9 +132,8 @@ impl Cmd for ExecTool {
                 }
             };
             if running.is_none() {
-                // SPEC's `optional[str]`: absent takes the default -- the session's own
-                // machine -- and a stated `null` is the empty value, which is no remote
-                // at all. See `crate::session::remote_request`.
+                // SPEC's `optional[str]`: absent means the session's machine, and a
+                // stated `null` is no remote at all.
                 let remote = match protocol::argtype::given(&args, "remote") {
                     protocol::Given::Nothing => ctx.remote.clone(),
                     protocol::Given::Null => None,

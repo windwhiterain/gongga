@@ -273,9 +273,8 @@ mod platform {
                     at += 3;
                     continue;
                 }
-                // A control byte after the escape is a key, not a character: an
-                // escape then a carriage return is Alt+Enter, and typing the raw
-                // byte would put a newline inside the prompt instead of sending.
+                // A control byte after the escape is a key, not a character: escaping a
+                // carriage return is Alt+Enter.
                 match buffer.get(at + 1).copied() {
                     Some(b'\r' | b'\n') => {
                         events.push(key(KeyCode::Enter, KeyModifiers::ALT));
@@ -382,8 +381,7 @@ mod platform {
         // The button word keeps its modifiers one code below the parameter
         // `modifiers_of` reads.
         let modifiers = modifiers_of(Some(((button & 0b0001_1100) >> 2) + 1));
-        // Bit 5 is motion, so a drag and a click differ by that bit alone: a
-        // handler that only knows clicks loses the gesture that selects text.
+        // Bit 5 is motion, so a drag and a click differ by that bit alone.
         let held = button & 0b11;
         let kind = match (button & 0b1110_0011, last) {
             (64, _) => MouseEventKind::ScrollUp,
@@ -588,8 +586,8 @@ mod platform {
         }
         None
     }
-    /// The file the raw bytes go to: `GONGGA_TUI_RAW_KEYS`, else one in the temp
-    /// directory, made fresh each run so one run is one file.
+    /// The file the raw bytes go to: `GONGGA_TUI_RAW_KEYS`, else one made fresh in the
+    /// temp directory each run.
     ///
     /// # Invariant
     ///

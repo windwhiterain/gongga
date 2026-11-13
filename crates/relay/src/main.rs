@@ -1,8 +1,5 @@
-//! The relay as a program: `gongga-relay --relay <dir> [--build <hash>]`.
-//!
-//! The flag is the one a server names when it starts a channel, so a channel recorded
-//! by an older build still starts: nothing about this program is discovered by argument
-//! shape, only by the directory it is handed.
+//! The relay as a program: `gongga-relay --relay <dir> [--build <hash>]`, named by
+//! the server that starts a channel.
 //!
 //! # Invariant
 //!

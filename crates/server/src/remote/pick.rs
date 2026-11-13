@@ -27,11 +27,8 @@ pub async fn runner(endpoint: &Endpoint, answer: Duration) -> anyhow::Result<Run
         }
         Endpoint::Remote { .. } => {}
     }
-    // A named program is a preference; its greeting is what decides -- and a greeting
-    // is not the whole answer. A channel's relay is the server, started beside the
-    // runner that asks for it, so a program standing alone greets and then cannot
-    // serve a channel. Such a program is passed over, and the pair this build carries
-    // is placed instead.
+    // A named program is a preference; its greeting is not the whole answer: a
+    // standalone relay is passed over.
     let preferred = match endpoint.configured_runner() {
         Some(words) => {
             if relays(endpoint, words).await {
@@ -76,8 +73,7 @@ async fn greet(endpoint: &Endpoint, words: &str, answer: Duration) -> anyhow::Re
     }
 }
 
-/// Whether the programs a configured runner names can relay: the server a channel runs
-/// sits beside the runner, or the words name a program this build cannot inspect.
+/// Whether the programs a configured runner names can relay, or are passed over.
 ///
 /// # Invariant
 ///

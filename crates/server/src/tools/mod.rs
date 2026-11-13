@@ -747,9 +747,8 @@ impl ToolRegistry {
             "live_compact" => Box::new(live_compact::LiveCompactTool),
             // SPEC's `fn gongga_cli(cmd: Cmd)`: a call that names its own command.
             "gongga_cli" => Box::new(GonggaCli),
-            // SPEC's `fn <tool>(**args)`: a row this build has no type for is a command
-            // the command layer runs, whether the model is offered it or not. A name the
-            // catalog does not know is refused when it is called, in the command's words.
+            // SPEC's `fn <tool>(**args)`: a row with no type here runs through the
+            // command layer, offered to the model or not.
             other => Box::new(Forward {
                 name: other.to_string(),
             }),
@@ -860,7 +859,7 @@ impl ToolRegistry {
                 tunnel::Carried::Worker => {
                     let outcome = tunnel::spawn_worker(tool, name.to_string(), args, ctx).await;
                     // The worker changed the workspace the session was reading, so the
-                    // look is owed by the process that holds the watch -- this one.
+                    // watch owes a fresh look -- this process's.
                     crate::explore::after_job(ctx, name);
                     return outcome;
                 }

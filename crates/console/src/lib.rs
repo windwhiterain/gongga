@@ -37,16 +37,11 @@ pub fn apply(_command: &mut std::process::Command, _extra: u32) {}
 ///
 /// # Invariant
 ///
-/// The standard library asks Windows to hand the child every inheritable handle
-/// this process holds, so a child as detached as a server still ends up with this
-/// process's stdin and stdout. That is not a leak of resources, it is a leak of
-/// the answer "the starter is gone": a window reads the client's stdout, and a
-/// server holding the write end never lets the end arrive. See
-/// `docs/notes/console-lib.md`, "The handles a child is not owed".
-///
-/// Sealed, not closed: this process keeps reading and writing them. Called before
-/// the spawn rather than at startup, because only the program that starts a
-/// separate one needs it. Unix needs nothing: a pipe there is close-on-exec.
+/// The standard library hands a child every inheritable handle this process holds,
+/// so a detached server ends up with this process's stdin and stdout: not a leak of
+/// resources, but of the answer "the starter is gone". Sealed, not closed: this
+/// process keeps using them. Unix needs nothing (a pipe is close-on-exec there).
+/// See `docs/notes/console-lib.md`.
 #[cfg(windows)]
 pub fn seal_std_handles() {
     use windows_sys::Win32::Foundation::{
@@ -56,8 +51,8 @@ pub fn seal_std_handles() {
         GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
     };
     for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-        // A handle this process does not have is not a failure: a program started
-        // without stdio has none, and nothing can be inherited from nothing.
+        // A handle this process does not have is not a failure: nothing can be
+        // inherited from nothing.
         let handle: HANDLE = unsafe { GetStdHandle(which) };
         if handle.is_null() || handle == INVALID_HANDLE_VALUE {
             continue;

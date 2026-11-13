@@ -325,10 +325,8 @@ fn resolve(home: &Path) -> anyhow::Result<Content> {
             // Best effort: being offline is not being broken, and a checkout that
             // already holds readable content answers for itself.
             match fork.sync() {
-                // A rebase that conflicts does not heal: the checkout is left
-                // where it was, and every later start would redo the same rebase
-                // and lose. Said once, by `sync`, as an error; what is left to do
-                // here is not to call the content current.
+                // A conflict does not heal: every later start redoes it and loses, so
+                // this content is not current.
                 Ok(Sync::Conflicted) => reachable = false,
                 Ok(_) => {}
                 Err(e) => {

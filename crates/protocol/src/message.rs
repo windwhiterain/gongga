@@ -1348,14 +1348,12 @@ pub struct ArgSpec {
     /// different command.
     #[serde(default)]
     pub sticky: bool,
-    /// The shape of a structured (JSON object) value, when this argument takes
-    /// one: a client completes field names and leaf values inside it.
+    /// The shape of a structured (JSON object) value, when this argument takes one.
     #[serde(default)]
     pub structure: Option<StructSchema>,
 }
 
 impl ArgSpec {
-    /// Names the entry this one follows: SPEC's `(sticky to <kind>)`.
     /// Names the structured (JSON object) shape this argument's value takes.
     pub fn with_structure(mut self, schema: StructSchema) -> Self {
         self.structure = Some(schema);
@@ -1398,9 +1396,8 @@ impl ArgSpec {
     }
 }
 
-/// The shape of a structured (JSON object) argument value, so a client can
-/// complete inside it: the field names at each level, and what a leaf accepts.
-/// See `SPEC.md` (`SessionConfig`).
+/// The shape of a structured (JSON object) argument value, for completing inside
+/// it. See `SPEC.md` (`SessionConfig`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StructSchema {
     pub fields: Vec<StructField>,
@@ -1423,8 +1420,7 @@ pub struct StructField {
     pub accepts: Option<Accepts>,
     #[serde(default)]
     pub value_hint: Option<String>,
-    /// A model-reference leaf: the chosen `<provider>/<model>` is inserted as
-    /// `{"provider":...,"model":...}` rather than as a bare string.
+    /// A model-reference leaf: the chosen `<provider>/<model>` arrives as an object.
     #[serde(default)]
     pub model_ref: bool,
 }
