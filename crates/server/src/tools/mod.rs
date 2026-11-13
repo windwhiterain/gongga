@@ -825,7 +825,26 @@ pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
             .entry("max_output".to_string())
             .or_insert_with(|| json!({"type": "integer"}));
     }
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        for property in properties.values_mut() {
+            without_null(property);
+        }
+    }
     schema
+}
+
+/// One property without `null`: no model states it, and no provider compiles it beside a number.
+fn without_null(property: &mut Value) {
+    let Some(Value::Array(kinds)) = property.get("type") else {
+        return;
+    };
+    let mut kinds = kinds.clone();
+    kinds.retain(|kind| kind.as_str() != Some("null"));
+    if kinds.len() == 1 {
+        property["type"] = kinds.remove(0);
+    } else if !kinds.is_empty() {
+        property["type"] = Value::Array(kinds);
+    }
 }
 
 /// The JSON kind of one value, in a schema's own vocabulary.

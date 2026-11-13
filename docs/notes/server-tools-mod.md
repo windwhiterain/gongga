@@ -120,6 +120,17 @@ keeping the full output is being able to find the right one again. `slug()` in
 Implemented with a boxed future rather than `async_trait` so the crate keeps
 one fewer macro dependency; the signature is the same either way.
 
+## general_parameters
+
+The model-facing schema, and the one place it differs from what `argument_error` holds a
+call to. Two things happen here: the adapter's own arguments (`description`,
+`max_output`) are added under names the tool does not already declare, and `null` comes
+out of every kind. A provider compiles a union of kinds only when the other branch is a
+string -- handed `["integer","null"]`, `qwen4-max-preview` wrote the string `"120000"`,
+and handed `["array","object"]` it wrote the JSON text of the array. So a model is
+offered the kind itself: one that wants the default omits the argument, and `none` is how
+it names this machine. The check keeps `null`, because a client may still state it.
+
 ## argument_error
 
 Assembled from [`Tool::parameters`] rather than written per tool, so it cannot
