@@ -147,9 +147,9 @@ fn place(tokens: &mut Vec<String>, name: &str, word: String) {
 ///
 /// A value lands on a slot that is still empty, and only through the argument
 /// whose `kind` names it; what the caller typed wins. A structured argument is
-/// filled leaf by leaf, so the object the caller wrote keeps every leaf it
-/// stated. A filled value the model refuses is dropped and said: the caller never
-/// wrote it, so it is not theirs to answer for.
+/// filled leaf by leaf, so the object the caller wrote keeps every leaf it stated.
+/// A filled value the model refuses is dropped and said: the caller never wrote
+/// it, so it is not theirs to answer for.
 fn sticky_additions(
     client: &Client,
     spec: &protocol::CommandSpec,
@@ -165,81 +165,29 @@ fn sticky_additions(
             continue;
         };
         let stated = args.get(&arg.name);
-        let Some(schema) = &arg.structure else {
-            if stated.is_some() {
-                continue;
-            }
-            if refused.iter().any(|(name, _)| *name == arg.name) {
-                sink.note(
-                    LineKind::System,
-                    &format!(
-                        "sticky {} = {value} is not one this model takes; left to the model's own",
-                        arg.kind.as_deref().unwrap_or(&arg.name)
-                    ),
-                );
-                continue;
-            }
-            additions.push((arg.name.clone(), value));
-            continue;
-        };
         // A structured argument: the leaves the line left open are the entries'.
-        if stated == Some(&value) {
+        if arg.structure.is_some() {
+            if stated != Some(&value) {
+                additions.push((arg.name.clone(), value));
+            }
             continue;
         }
-        let (kept, dropped) = without_refused(schema, &value, &refused);
-        for (name, text) in &dropped {
+        if stated.is_some() {
+            continue;
+        }
+        if refused.iter().any(|(name, _)| *name == arg.name) {
             sink.note(
                 LineKind::System,
                 &format!(
-                    "sticky {name} = {text} is not one this model takes; left to the model's own"
+                    "sticky {} = {value} is not one this model takes; left to the model's own",
+                    arg.kind.as_deref().unwrap_or(&arg.name)
                 ),
             );
-        }
-        if is_empty_object(&kept) {
             continue;
         }
-        additions.push((arg.name.clone(), kept));
+        additions.push((arg.name.clone(), value));
     }
     additions
-}
-
-/// The object a line carries, without the leaves the model refuses, and what was
-/// dropped.
-fn without_refused(
-    schema: &protocol::StructSchema,
-    value: &serde_json::Value,
-    refused: &[(String, String)],
-) -> (serde_json::Value, Vec<(String, String)>) {
-    let serde_json::Value::Object(object) = value else {
-        return (value.clone(), Vec::new());
-    };
-    let mut kept = object.clone();
-    let mut dropped = Vec::new();
-    for field in &schema.fields {
-        let Some(current) = kept.get(&field.name).cloned() else {
-            continue;
-        };
-        match &field.object {
-            Some(nested) => {
-                let (inner, gone) = without_refused(nested, &current, refused);
-                kept.insert(field.name.clone(), inner);
-                dropped.extend(gone);
-            }
-            None => {
-                if refused.iter().any(|(name, _)| name == &field.name) {
-                    kept.remove(&field.name);
-                    dropped.push((field.name.clone(), crate::json_command::word(&current)));
-                }
-            }
-        }
-    }
-    (serde_json::Value::Object(kept), dropped)
-}
-
-/// Whether an object holds nothing at all: a value nobody contributed to is left
-/// out of the line instead of sent empty.
-fn is_empty_object(value: &serde_json::Value) -> bool {
-    matches!(value, serde_json::Value::Object(map) if map.is_empty())
 }
 
 /// Submits the JSON form `/name{...}`: the object's fields are the arguments,
@@ -304,7 +252,7 @@ fn submit_json(
 ///
 /// Three things, all SPEC's: a session the command names is drawn and becomes the
 /// sticky one; an accepted `set_session` or `new_session` writes back every value
-/// the line stated, by the type it names -- a structured one leaf by leaf; and
+/// the line stated that an entry could fill -- a structured one leaf by leaf; and
 /// neither is written before the answer, so a refused command writes nothing.
 pub fn follow(
     client: &Client,
@@ -351,6 +299,8 @@ pub fn follow(
             }
         }
     }
+    let fillable = crate::commands::sticky_kinds(&client.commands());
+    pairs.retain(|(kind, _)| fillable.contains(kind));
     if !pairs.is_empty() {
         pending.push((*id, pairs));
     }

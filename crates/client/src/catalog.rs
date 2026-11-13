@@ -13,7 +13,6 @@ use protocol::{
     Args, CommandSpec, CompletionSource, ModelInfo, Reference, SessionInfo, StructField,
     StructSchema,
 };
-use serde_json::{Map, Value};
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
@@ -286,23 +285,15 @@ impl Catalog {
         else {
             return Vec::new();
         };
-        // The model the filled call runs on: a sticky model is a statement too.
-        let model = model_of(args).or_else(|| model_named(&ctx, &words));
+        let model = model_named(&ctx, &words);
         spec.args
             .iter()
-            .flat_map(|a| match &a.structure {
-                Some(schema) => refused_leaves(schema, args, &a.name, model.as_deref()),
-                None => {
-                    let Some(accepts) = a.accepts.as_ref() else {
-                        return Vec::new();
-                    };
-                    let Some(value) = args.word(&a.name) else {
-                        return Vec::new();
-                    };
-                    match accepts.takes(model.as_deref(), value) {
-                        Some(false) => vec![(a.name.clone(), value.to_string())],
-                        _ => Vec::new(),
-                    }
+            .filter_map(|a| {
+                let accepts = a.accepts.as_ref()?;
+                let value = args.word(&a.name)?;
+                match accepts.takes(model.as_deref(), value) {
+                    Some(false) => Some((a.name.clone(), value.to_string())),
+                    _ => None,
                 }
             })
             .collect()
@@ -732,86 +723,6 @@ fn session_named(
         .and_then(|args| args.word(&arg.name).map(str::to_string))
         .or_else(|| flag_value(words, &arg.name).map(str::to_string))
         .or_else(|| message_session.map(str::to_string))
-}
-
-/// The leaves of one structured argument the model refuses, named by the entry
-/// that would fill them.
-///
-/// # Invariant
-///
-/// The same question as a top-level argument's: a leaf that publishes an
-/// `accepts` set is checked against the call's model, and a value the model does
-/// not take is dropped before it is sent. See `docs/notes/client-catalog.md`.
-fn refused_leaves(
-    schema: &StructSchema,
-    args: &Args,
-    argument: &str,
-    model: Option<&str>,
-) -> Vec<(String, String)> {
-    let Some(Value::Object(object)) = args.get(argument) else {
-        return Vec::new();
-    };
-    let mut refused = Vec::new();
-    refused_fields(schema, object, model, &mut refused);
-    refused
-}
-
-fn refused_fields(
-    schema: &StructSchema,
-    object: &Map<String, Value>,
-    model: Option<&str>,
-    refused: &mut Vec<(String, String)>,
-) {
-    for field in &schema.fields {
-        let Some(value) = object.get(&field.name) else {
-            continue;
-        };
-        if let Some(nested) = &field.object {
-            if let Value::Object(inner) = value {
-                refused_fields(nested, inner, model, refused);
-            }
-            continue;
-        }
-        let (Some(accepts), Some(text)) = (field.accepts.as_ref(), value.as_str()) else {
-            continue;
-        };
-        if accepts.takes(model, text) == Some(false) {
-            refused.push((field.name.clone(), text.to_string()));
-        }
-    }
-}
-
-/// The model a call's arguments name, in either spelling the config takes.
-///
-/// # Invariant
-///
-/// Read from the arguments, not from the line: a model the entries filled in is
-/// the model the new session will run on, and a check against the old one would
-/// refuse a value the roster accepts. See `docs/notes/client-catalog.md`.
-fn model_of(args: &Args) -> Option<String> {
-    args.values().find_map(model_in)
-}
-
-fn model_in(value: &Value) -> Option<String> {
-    let Value::Object(map) = value else {
-        return None;
-    };
-    if let Some(model) = map.get("model") {
-        match model {
-            Value::String(text) => return Some(text.clone()),
-            Value::Object(inner) => {
-                let provider = inner.get("provider").and_then(Value::as_str);
-                let name = inner.get("model").and_then(Value::as_str);
-                return match (provider, name) {
-                    (Some(provider), Some(name)) => Some(format!("{provider}/{name}")),
-                    (None, Some(name)) => Some(name.to_string()),
-                    _ => None,
-                };
-            }
-            _ => {}
-        }
-    }
-    map.values().find_map(model_in)
 }
 
 /// The model a line runs on: the one it names, else the one the session it names
@@ -1417,6 +1328,7 @@ fn root_schema(spec: &CommandSpec) -> StructSchema {
                 accepts: a.accepts.clone(),
                 value_hint: a.value_hint.clone(),
                 model_ref: false,
+                default: None,
             })
             .collect(),
     }

@@ -34,20 +34,23 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
     )
 }
 
-/// Every sticky type the catalog declares: an argument's `kind`, and a leaf of a
-/// structured value under its own name.
+/// Every sticky type a command can actually take.
 ///
 /// # Invariant
 ///
-/// One list for three readers -- what `set_sticky` refuses, what `--type`
-/// completes, and the leaves a structured argument fills -- so a type an entry may
-/// name is a type some argument of some command can take. See
-/// `docs/notes/client-commands.md`.
+/// A required argument's `kind`, and the name of a structured leaf with no
+/// default: the only slots a fill may reach, and so the only types an entry may
+/// name. See `docs/notes/client-commands.md`.
+///
+/// One list for three readers -- `set_sticky`'s refusal, `--type`'s completion and
+/// a command's write-back -- so an entry nobody could set is never recorded either.
 pub fn sticky_kinds(commands: &[CommandSpec]) -> Vec<String> {
     let mut kinds = BTreeSet::new();
     for command in commands {
         for arg in &command.args {
-            if let Some(kind) = &arg.kind {
+            if let Some(kind) = &arg.kind
+                && arg.required
+            {
                 kinds.insert(kind.clone());
             }
             if let Some(structure) = &arg.structure {
@@ -62,9 +65,10 @@ fn leaf_kinds(schema: &StructSchema, kinds: &mut BTreeSet<String>) {
     for field in &schema.fields {
         match &field.object {
             Some(nested) => leaf_kinds(nested, kinds),
-            None => {
+            None if field.default.is_none() => {
                 kinds.insert(field.name.clone());
             }
+            None => {}
         }
     }
 }

@@ -285,10 +285,9 @@ impl Sticky {
     ///
     /// # Invariant
     ///
-    /// A value lands only on an argument whose `kind` names it: a required one
-    /// always, an optional one only when the catalog declares it sticky. A
-    /// structured argument is filled leaf by leaf, so what the line stated stays.
-    /// See `docs/notes/tui-state.md`.
+    /// A value lands only on an argument whose `kind` names it and that has no
+    /// default: a required argument, and a leaf SPEC gives no default. What the
+    /// line stated stays. See `docs/notes/tui-state.md`.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
         for a in &spec.args {
@@ -300,8 +299,13 @@ impl Sticky {
     }
 
     /// One argument, one entry: fill when omitted and an entry names its kind.
+    ///
+    /// # Invariant
+    ///
+    /// Only a required argument is filled: an optional one has a default the type
+    /// chose, and an entry typed days ago may not stand in for it.
     fn fill_one(&self, a: &ArgSpec, args: &mut Args) {
-        if args.contains_key(&a.name) || !(a.required || a.sticky) {
+        if args.contains_key(&a.name) || !a.required {
             return;
         }
         let Some(kind) = a.kind.as_deref() else {
@@ -312,8 +316,8 @@ impl Sticky {
         }
     }
 
-    /// A structured argument, leaf by leaf: each leaf filled by the entry its name
-    /// keys.
+    /// A structured argument, leaf by leaf: each leaf without a default filled by the
+    /// entry its name keys.
     fn fill_struct(&self, a: &ArgSpec, schema: &StructSchema, args: &mut Args) {
         // A value of the wrong shape is the server's to refuse; a fill must not
         // stand in its way by rewiring it.
@@ -345,7 +349,8 @@ impl Sticky {
                 }
                 continue;
             }
-            if object.contains_key(&field.name) {
+            // A field the type gives a default is not a missing argument.
+            if object.contains_key(&field.name) || field.default.is_some() {
                 continue;
             }
             let Some(value) = self.args.get(&field.name) else {

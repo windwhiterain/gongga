@@ -103,7 +103,6 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 completions: protocol::CompletionSource::Sessions,
                 accepts: None,
                 sticky_to: None,
-                sticky: false,
                 structure: None,
             }];
             // The row's order, object first: a bare word binds the first unfilled one.
@@ -130,7 +129,6 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                     completions: argument.completion.source(),
                     accepts: None,
                     sticky_to: None,
-                    sticky: false,
                     structure: None,
                 });
             }

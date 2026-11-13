@@ -78,9 +78,9 @@ own `@skill(...)` expansion reads, since that expansion runs on the server.
 
 ## sticky_kinds
 
-One list of the types a sticky entry may name, from the two places the catalog
-declares them: an argument's `kind` (`session`, `mode`) and a leaf of a structured
-value (`model`, `thinking`, `ctx_limit`, `cache_tier`, `remote`, `cwd`,
-`keep_alive`). `set_sticky` refuses a type outside it, `--type` completes it, and
-the window fills leaves by the same names -- so a name offered is a name that
-fills something. Two readers of one walk, rather than a list kept equal by hope.
+One list of the types a sticky entry may name, and it is a list of what can
+actually fill: the `kind` of a **required** argument (`session`) and the name of a
+structured leaf that has **no default** (`model`, `keep_alive`). A defaulted
+argument is not a missing one, so an entry naming it could never apply -- and
+`set_sticky` refuses it, `--type` does not offer it, and a line that states it
+writes nothing back. Three readers of one walk, rather than a list kept equal by hope.

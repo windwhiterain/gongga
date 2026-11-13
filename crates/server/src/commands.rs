@@ -988,17 +988,14 @@ fn arg(
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
-    sticky_arg(
-        arg_spec(
-            name,
-            description,
-            required,
-            false,
-            None,
-            value_hint,
-            completions,
-        ),
+    arg_spec(
+        name,
+        description,
+        required,
         false,
+        None,
+        value_hint,
+        completions,
     )
 }
 
@@ -1010,17 +1007,14 @@ fn pos(
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
-    sticky_arg(
-        arg_spec(
-            name,
-            description,
-            required,
-            true,
-            None,
-            value_hint,
-            completions,
-        ),
-        false,
+    arg_spec(
+        name,
+        description,
+        required,
+        true,
+        None,
+        value_hint,
+        completions,
     )
 }
 
@@ -1077,7 +1071,6 @@ fn arg_spec(
         completions,
         accepts: None,
         sticky_to: None,
-        sticky: false,
         structure: None,
     }
 }
@@ -1100,12 +1093,6 @@ fn type_of(name: &str) -> &'static str {
     }
 }
 
-/// SPEC's `(sticky)`: a value the caller set once, applied to every later command.
-fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
-    spec.sticky = sticky;
-    spec
-}
-
 /// The arguments a session is created or re-tuned with: SPEC's `SessionConfig`.
 ///
 /// # Invariant
@@ -1115,7 +1102,6 @@ fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
 fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
     vec![
     // SPEC: `--id <session>(sticky)`. A sticky entry keys on the kind `session`.
-    sticky_arg(
         kind_arg(
             "id",
             "Session to create or reconfigure.",
@@ -1124,22 +1110,15 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
             Some("name"),
             CompletionSource::Sessions,
         ),
-        true,
-    ),
     // SPEC: `config: SessionConfig` -- the nested settings, one JSON object.
-        sticky_arg(
-            arg(
+        arg(
             "config",
             "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (remote, cwd), and keep_alive. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. remote and cache_tier take none to clear.",
             false,
-        Some("json"),
-        CompletionSource::None,
-            )
-            .with_structure(crate::session_config::schema(remotes)),
-            true,
-        ),
-    // SPEC does not name `mode`; it is this build's own, sticky like a level.
-    sticky_arg(
+            Some("json"),
+            CompletionSource::None,
+        )
+        .with_structure(crate::session_config::schema(remotes)),
     kind_arg(
         "mode",
         "What this session may do to the workspace. work (the default) writes as it likes; explore refuses write_file and replace outright and tells the session which paths a bash, exec, python or skill call changed when it ended. Not a jail: a program that writes is told, not stopped, so read the changed paths and put them back before answering.",
@@ -1147,8 +1126,6 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
         "mode",
         Some("work|explore"),
         CompletionSource::Static(vec!["work".into(), "explore".into()]),
-    ),
-        true,
     ),
         arg(
             "must_create",

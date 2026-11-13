@@ -1255,7 +1255,6 @@ fn spec_arg(
         completions,
         accepts: None,
         sticky_to: None,
-        sticky: false,
         structure: None,
     }
 }
@@ -1336,18 +1335,6 @@ pub struct ArgSpec {
     /// follower of a kind that never changes is never forgotten.
     #[serde(default)]
     pub sticky_to: Option<String>,
-    /// SPEC's `(sticky)`: filled from the entry when omitted, and written back
-    /// to it when the command succeeds.
-    ///
-    /// # Invariant
-    ///
-    /// A required argument fills whether or not this is set; the flag exists
-    /// for the optional ones a reader thinks of as a mode rather than a fact
-    /// about one command. Absence is still a decision everywhere else: a filter
-    /// that keeps what it had must not be overwritten by an entry meant for a
-    /// different command.
-    #[serde(default)]
-    pub sticky: bool,
     /// The shape of a structured (JSON object) value, when this argument takes one.
     #[serde(default)]
     pub structure: Option<StructSchema>,
@@ -1423,6 +1410,17 @@ pub struct StructField {
     /// A model-reference leaf: the chosen `<provider>/<model>` arrives as an object.
     #[serde(default)]
     pub model_ref: bool,
+    /// The value this field takes when nothing says otherwise, in SPEC's spelling;
+    /// `None` is no default.
+    ///
+    /// # Invariant
+    ///
+    /// Stated wherever SPEC gives the field a default (`provider_default()`, `70%`,
+    /// `none`, `.`, `false`). Only a field without one is filled from a sticky
+    /// entry: a value the type already decides must not be overwritten by one a
+    /// reader typed days ago. See `docs/notes/tui-state.md`.
+    #[serde(default)]
+    pub default: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

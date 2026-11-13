@@ -48,22 +48,28 @@ an otherwise readable file falls back to the default the type publishes.
 (which is what keeps `--must_create` out). The kinds that exist are the ones the
 published catalog declares.
 
-`fill` fills what the line left open: a **required** argument from its entry, and an
-optional one only when the catalog declares it sticky (`ArgSpec.sticky`) -- a mode a
-reader set once, never a fact about one command. An argument no entry names keeps the
-command's own initial, applied where the command runs.
+`fill` answers exactly one question: **is this a value the caller was obliged to
+supply and did not?** So a required argument is filled from its entry, and an argument
+with a default of its own is not -- whichever way that default is spelled. An argument
+no entry names keeps that default, applied where the command runs.
 
-A structured argument -- `--config`, SPEC's `SessionConfig` -- is filled leaf by
-leaf, and its leaves are the entries' names too: `model`, `thinking`, `ctx_limit`,
-`cache_tier`, `remote`, `cwd`, `keep_alive`. What the line stated stays, and the
-object is built only when an entry contributed to it. `leaf_value` reads an entry as
-the leaf's own shape: a switch is a boolean, a model is the object SPEC spells (or
-the flat `provider/model` word the server also takes), everything else stays the
-text it was stored as.
+A structured argument -- `--config`, SPEC's `SessionConfig` -- is filled leaf by leaf
+under the same rule, and the published schema states which leaves have defaults
+(`StructField.default`, SPEC's `provider_default()`, `70%`, `none`, `.`, `false`).
+Only the rest fill: `model` and `keep_alive` in today's catalog. `thinking`,
+`ctx_limit` and `cache_tier` are marked `# re-default if model change`, and `cwd`
+and `remote` have defaults of their own -- an entry typed days ago may not stand in
+for any of them. What the line stated stays, and the object is built only when an
+entry contributed to it.
 
-So one list of kinds has two sources -- an argument's `kind` and a leaf's name -- and
-`client::commands::sticky_kinds` is the only place that reads both, for `set_sticky`'s
-accept set and for the completion of its `--type`.
+`leaf_value` reads an entry as the leaf's own shape: a switch is a boolean, a model
+is the object SPEC spells (or the flat `provider/model` word the server also takes),
+everything else stays the text it was stored as.
+
+So one list of kinds has two sources -- the `kind` of a required argument, and the
+name of a leaf without a default -- and `client::commands::sticky_kinds` is the only
+place that reads both: `set_sticky` refuses a type outside it, `--type` completes it,
+and only a type inside it is written back when a line states it.
 
 ## Sticky to xxx
 

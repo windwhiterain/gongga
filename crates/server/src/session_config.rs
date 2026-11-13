@@ -127,8 +127,26 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The `SessionConfig` shape a client completes inside `--config`: field names, and
-/// what each leaf accepts.
+/// One field SPEC gives a default, spelled as SPEC spells it.
+///
+/// # Invariant
+///
+/// Every default SPEC states is marked here, and a marked field is exactly what a
+/// sticky entry may not fill: a value the type already decides is not a missing
+/// argument. See `docs/notes/server-session-config.md`.
+fn defaulted(field: protocol::StructField, spelling: &str) -> protocol::StructField {
+    protocol::StructField {
+        default: Some(spelling.to_string()),
+        ..field
+    }
+}
+
+/// The `SessionConfig` shape a client completes inside `--config`.
+///
+/// # Invariant
+///
+/// Field names, the values each leaf offers, and the default each one has: what a
+/// fill may not stand in for. See `docs/notes/server-session-config.md`.
 pub fn schema(remotes: &[String]) -> protocol::StructSchema {
     use protocol::{CompletionSource, StructField, StructSchema};
     let leaf = |name: &str, description: &str, source: CompletionSource, hint: &str| StructField {
@@ -139,6 +157,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         accepts: None,
         value_hint: Some(hint.to_string()),
         model_ref: false,
+        default: None,
     };
     let object = |name: &str, description: &str, fields: Vec<StructField>| StructField {
         name: name.to_string(),
@@ -148,9 +167,11 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         accepts: None,
         value_hint: None,
         model_ref: false,
+        default: None,
     };
     let mut remote_values = vec![protocol::NONE_VALUE.to_string()];
     remote_values.extend(remotes.iter().cloned());
+    // SPEC: `model: Model` -- no default, so an entry may fill it.
     let model = StructField {
         model_ref: true,
         ..leaf(
@@ -160,49 +181,70 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
             "provider/model",
         )
     };
-    let thinking = StructField {
-        accepts: crate::providers::level_accepts(),
-        ..leaf(
-            "thinking",
-            "How hard the model thinks.",
-            CompletionSource::None,
-            "level",
-        )
-    };
-    let ctx_limit = leaf(
-        "ctx_limit",
-        "The context level for a Context notice.",
-        CompletionSource::Static(
-            [
-                "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+    // SPEC: `Thinking = provider_default()`, re-defaulted when the model changes.
+    let thinking = defaulted(
+        StructField {
+            accepts: crate::providers::level_accepts(),
+            ..leaf(
+                "thinking",
+                "How hard the model thinks.",
+                CompletionSource::None,
+                "level",
+            )
+        },
+        "provider_default()",
+    );
+    // SPEC: `ctx_limit = 70%`.
+    let ctx_limit = defaulted(
+        leaf(
+            "ctx_limit",
+            "The context level for a Context notice.",
+            CompletionSource::Static(
+                [
+                    "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ),
+            "n%",
         ),
-        "n%",
+        "70%",
     );
-    let cache_tier = StructField {
-        accepts: crate::providers::tier_accepts(),
-        ..leaf(
-            "cache_tier",
-            "The cache tier every request sends.",
-            CompletionSource::None,
+    // SPEC: `cache_tier = provider_default()`.
+    let cache_tier = defaulted(
+        StructField {
+            accepts: crate::providers::tier_accepts(),
+            ..leaf(
+                "cache_tier",
+                "The cache tier every request sends.",
+                CompletionSource::None,
+                "name",
+            )
+        },
+        "provider_default()",
+    );
+    // SPEC: `remote: optional[Remote] = none`.
+    let remote = defaulted(
+        leaf(
+            "remote",
+            "The machine this session's shells run on; none is this machine.",
+            CompletionSource::Static(remote_values),
             "name",
-        )
-    };
-    let remote = leaf(
-        "remote",
-        "The machine this session's shells run on; none is this machine.",
-        CompletionSource::Static(remote_values),
-        "name",
+        ),
+        "none",
     );
-    let cwd = leaf(
-        "cwd",
-        "The session's directory.",
-        CompletionSource::Paths,
-        "path",
+    // SPEC: `cwd: path = "."`.
+    let cwd = defaulted(
+        leaf(
+            "cwd",
+            "The session's directory.",
+            CompletionSource::Paths,
+            "path",
+        ),
+        ".",
     );
+    // SPEC: `keep_alive: bool` -- no default, so an entry may fill it.
     let keep_alive = leaf(
         "keep_alive",
         "Whether a periodic notice keeps the prefix warm.",

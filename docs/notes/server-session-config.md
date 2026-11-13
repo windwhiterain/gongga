@@ -28,3 +28,12 @@ which completion source each leaf offers, and -- through `accepts` -- the closed
 model refuses (`thinking` levels and `cache_tier` names come per model). The leaf names
 are also the sticky entry names the window fills, so a leaf renamed here renames the
 entry that fills it.
+
+Each leaf also states its **default**, in SPEC's own spelling (`provider_default()`,
+`70%`, `none`, `.`, `false`), and a field without one states nothing. That is what the
+client reads to decide whether an entry may fill it: SPEC's `# re-default if model
+change` on `thinking`, `ctx_limit` and `cache_tier` is a promise that the type decides
+them, and a value a reader typed days ago may not pre-empt it. Only `model_config.model`
+and `keep_alive` have no default here, which is exactly the set a sticky entry may
+fill. `defaulted` is the one place a field is marked, so a default SPEC states and a
+default this schema forgets cannot drift apart unnoticed.

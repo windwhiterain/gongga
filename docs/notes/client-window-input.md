@@ -45,8 +45,5 @@ the parser refuses as given twice.
 back every leaf the line stated, under the entry its type answers to. A value the
 entries filled in is not written back, because it is already in the file.
 
-A filled leaf the model refuses (`thinking = low` where the roster publishes
-`on, off`) is dropped and said: the caller never wrote it. `without_refused` cuts
-those leaves out of the object, and `catalog::refused_leaves` decides which ones:
-the same question the catalog asks a top-level argument, asked of every leaf that
-publishes an `accepts` set.
+Only the leaves SPEC gives no default to are filled at all (`model`, `keep_alive`);
+the rest are the type's decision, not a missing argument (`docs/notes/tui-state.md`).
