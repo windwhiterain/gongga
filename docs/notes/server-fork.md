@@ -41,6 +41,13 @@ logging `content origin follows this home's config from=<this repo's origin>`.
 the shipped content", and `scripts/ship.sh` and `scripts/tui_live.py` ask the same
 question the same way before they write anything.
 
+Repairing the URL is half the repair. A fetch taken while it was wrong writes the
+*content* repository's commits into `refs/remotes/origin/*`, and since the two histories
+are unrelated, every reader compares them as "ahead 1000+, behind 100+" -- VSCode's
+graph included, across all worktrees at once. `git fetch --prune origin` after the
+`set-url` is what puts the remote-tracking refs back, and it is the step that was
+missing every time the URL was fixed before.
+
 ## Fork::ensure, Fork::sync
 
 `ensure` clones when the directory is absent and leaves anything else alone: a
