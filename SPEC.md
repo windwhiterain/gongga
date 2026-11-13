@@ -45,6 +45,7 @@ path, rendered in hierarchy.
 
 ## Tool
 all tool call have extra parameter `discription: optional[str] = none`
+`#summary` is a recursive annotation.
 
 ```python
 Channel := path
@@ -65,9 +66,13 @@ fn exec(
 fn wait(
   time: time, #summary
 ) -> time
-fn <tool>(**args):
-  # route to server cmd with caller session as extra argument
-  # extra tool's schema is not registered in tools but dynamic found via skill.
+fn gongga_cli(
+  cmd: Cmd #summary
+):
+  # route to server cmd with caller session in environment, get by `caller()`
+  # cmd schema is dynamically found via skills.
+<tool>(**args):
+  # equal to gongga_cli(Cmd{name: <tool>, args: args})
 ```
 - channel: a sub-process that can detached and adopted to live across server restart.
   - when waiting timeout without util macthed, set the channel's wait flag.
@@ -84,22 +89,25 @@ sytax:
 - `<struct>{..}`: struct update type, e.g. `{a: int, b: float}: {a: int, b: float, c: str}{..}`.
 
 ```python
-Cmd := {name: str, args: dict[str, any]}
-Session := path
-fn new_channel(id: optional[Channel] = none, name: str, session: Session):
-fn input_channel(id: Channel, input: str, session: Session)
-fn rename_channel(id: Channel, new_id: path, session: Session)
-fn ls_channel(path: path, session: Session)
-fn del_channel(path: path, session: Session)
-Model := {provider, model}
-ModelConfig := {
+Cmd := {
+  name: str, #summary
+  args: dict[str, any]
+}
+Session := path # sticky
+fn new_channel(id: optional[Channel] = none, name: str, session: Session = caller()):
+fn input_channel(id: Channel, input: str, session: Session = caller())
+fn rename_channel(id: Channel, new_id: path, session: Session = caller())
+fn ls_channel(path: path, session: Session = caller())
+fn del_channel(path: path, session: Session = caller())
+Model := {provider, model} # sticky
+ModelConfig := { # sticky
   model: Model,
   thinking: Thinking = provider_default(), # re-default if model change
   ctx_limit = 70%, # re-default if model change
   cache_tier = provider_default() # re-default if model change
 }
 Workspace := {remote: optional[Remote] = none, cwd: path = "."}
-SessionConfig := {
+SessionConfig := { # sticky
   model_config: ModelConfig,
   workspace: Workspace,
   keep_alive: bool, # if auto send message to interrup waiting when approaching the cache alive deadline.
@@ -118,10 +126,10 @@ fn interrupt_session(id: Session):
   # stop llm streaming and loop, everything received must be saved to context.
 fn trigger_event(event: Event)
 Subscription := path
-fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, session: Session):
-    # when pattern matched triggered event, run the cmd.
-fn del_subscription(path: path, session: Session)
-fn ls_subsscription(path: path, sesssion: Session)
+fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, session: Session = caller()):
+  # when pattern matched triggered event, run the cmd.
+fn del_subscription(path: path, session: Session = caller())
+fn ls_subsscription(path: path, sesssion: Session = caller())
 cancel(keep_alive: bool = false):
   # queue following notices.
   # for running sessions that are not waiting, set canceled flag to them, restart will auto continue session with cancel flag.
@@ -134,9 +142,9 @@ provided by a shipped uv python package.
 
 ```python
 Skill := path # abstract naming space
-fn ls_skill(path: path, session: Sesssion)
-fn run_skill(id: Skill, cmd: Cmd, sesssion: Session)
-fn get_ trajectory(sesssion: Sesssion, range: Range)
+fn ls_skill(path: path, session: Sesssion = caller())
+fn run_skill(id: Skill, cmd: Cmd, sesssion: Session = caller())
+fn get_trajectory(sesssion: Sesssion, range: Range)
 fn clone_session(source: path, dest: path)
 ```
 
@@ -223,6 +231,7 @@ events (vertical) :=
 - hot-key
   - Shift+Enter: new line in cmd_input.
   - PageUp/PageDown (Fn+Up/Down): scroll the sticky session.
+  - Ctrl+Down: move sticky session to bottom
   - Shift+Delete: delete sticky session.
   - Ctrl+V: paste (text/image).
   - Ctrl+C: copy the selection.
@@ -230,9 +239,10 @@ events (vertical) :=
   - Ctrl+Q: exit.
 
 ## Sticky
-stikcy argument will auto fill in missing argument in function call with corresponding type.
-use argument with certain type will set the sticky value of that type.
-use struct update type will also update the corresponding value of that type.
+sticky is a client feature for convinence.
+stikcy value will auto fill in missing required argument in cmd with corresponding type.
+use argument with certain type will set the sticky value with corresponding type.
+use struct update type will also update the sticky value with corresponding type.
 
 
 ## Client Cmd
