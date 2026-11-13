@@ -312,6 +312,6 @@ and spaces.
 rather than in a separate `wait_bash`: the call waits while the shell's job count
 is non-zero, then reads the same pending buffer it always reads. `wait_ms` is a
 ceiling on the call, not on the jobs: passing it returns the output so far and the
-jobs keep running. A read that names no number reads now, and `owns_its_wait` keeps
-the tunnel's clock off it -- waiting is the whole work. A cancelled turn stops the wait and leaves
+jobs keep running. A read that names no number reads now, and nothing else puts a
+clock on the call -- waiting is the whole work. A cancelled turn stops the wait and leaves
 them running. Background processes have no shell to wait on and are not included.

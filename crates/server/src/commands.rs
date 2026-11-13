@@ -2883,34 +2883,16 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
     if channels > 0 {
         tracing::info!(session = %name, channels, "channels ended with their session");
     }
-    // A job of this session is work it started: it goes the way its bash goes.
-    let jobs = d.store.jobs_of(name).unwrap_or_default();
-    let mut workers = Vec::new();
-    for job in jobs {
-        d.agent.jobs.stop(job);
-        // A background call runs in a process of its own, and the row names it.
-        if let Ok(Some(row)) = d.store.job(job)
-            && let Some(pid) = row.pid.and_then(|pid| u32::try_from(pid).ok())
-        {
-            workers.push(pid);
-        }
-        let _ = d.store.delete_job(job);
-    }
     // A delete waits for no process: what it cannot wait for is ended by one task.
     let bash = d.sessions.detached().detach_session(name).await;
-    let (stopping_bash, stopping_jobs) = (bash.len(), workers.len());
+    let stopping_bash = bash.len();
     let shells = session.clone();
-    if stopping_bash > 0 || stopping_jobs > 0 || shells.is_some() {
+    if stopping_bash > 0 || shells.is_some() {
         tokio::spawn(async move {
             for mut job in bash {
                 if !job.stop().await {
                     tracing::warn!(pid = job.pid, name = %job.name,
                     "a deleted session's background bash did not stop");
-                }
-            }
-            for pid in workers {
-                if !crate::tools::detached::stop_process(pid).await {
-                    tracing::warn!(pid, "a deleted session's job did not stop");
                 }
             }
             if let Some(shells) = shells {
@@ -2927,9 +2909,6 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
             let mut message = format!("deleted session {name}");
             if stopping_bash > 0 {
                 message.push_str(&format!("; stopping {stopping_bash} background bash(es)"));
-            }
-            if stopping_jobs > 0 {
-                message.push_str(&format!("; stopping {stopping_jobs} job(s)"));
             }
             if was_busy {
                 message.push_str(" (interrupted the running turn)");
@@ -3114,14 +3093,6 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         // Fire the token: a stuck call has no boundary. A waiting one gets a deadline.
         interrupt(d, session.name(), Stop::Cancel);
     }
-    // Only a protocol `cancel` lets jobs go; every other stop ends them here.
-    let (released, killed) = match origin {
-        // A tool is a person's hands: its `cancel` lets jobs go as a client's does.
-        Origin::Client { .. } | Origin::Tool { .. } => {
-            (crate::tools::detached::release_detached(), 0)
-        }
-        Origin::Signal { .. } => (0, d.sessions.detached().stop_all().await),
-    };
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
     // SPEC: without `keep_alive`, a cancel ends every channel with it.
     let channels = match keep_alive {
@@ -3136,8 +3107,6 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
             "by": by,
             "sessions": running.len(),
             "pending": pending,
-            "released": released,
-            "killed": killed,
             "channels": channels.unwrap_or(0),
             "kept_channels": keep_alive,
         }),
@@ -3148,17 +3117,6 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         tokio::time::sleep(SHUTDOWN_NOTICE).await;
         shutdown.cancel();
     });
-    let jobs = match origin {
-        Origin::Client { .. } | Origin::Tool { .. } => format!(
-            "{} background job(s) keep running -- they are processes of their own, outlive \
-         this server and are adopted on the next start",
-            released
-        ),
-        Origin::Signal { .. } => format!(
-            "{} background job(s) ended with this server: only a `cancel` lets them go",
-            killed
-        ),
-    };
     let channels = match channels {
         Some(ended) => format!("; {ended} channel(s) ended with this server"),
         None => "; every channel was kept alive, and the next start adopts them".to_string(),
@@ -3176,7 +3134,7 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         ),
     };
     let said = format!(
-        "interrupted {} session(s); {continuation}; {jobs}{channels}",
+        "interrupted {} session(s); {continuation}{channels}",
         running.len()
     );
     tracing::warn!(
@@ -3373,59 +3331,8 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
             continue;
         };
-        // A `job` row speaks through `announce_owed`; a shell's buffer is gone.
-        let mut kept = Vec::with_capacity(tasks.len());
-        let mut dropped = 0;
-        let mut lost: Vec<String> = Vec::new();
-        for task in tasks {
-            match task.payload["notice"].as_str() {
-                Some("background") => {
-                    let said = task.payload["message"].as_str().unwrap_or("").trim();
-                    if !said.is_empty() {
-                        lost.push(said.to_string());
-                    }
-                }
-                Some("job") => {}
-                _ => {
-                    kept.push(task);
-                    continue;
-                }
-            }
-            let _ = d.store.delete_pending_task(task.id);
-            dropped += 1;
-        }
-        if dropped > 0 {
-            tracing::info!(
-                session = %name, dropped,
-                "dropped notices about work the last run took with it"
-            );
-        }
-        // Said as a message, not a notice: this one has to wake the session.
-        if !lost.is_empty() {
-            let mut notices = String::new();
-            for said in &lost {
-                notices.push_str("-- ");
-                notices.push_str(said);
-                notices.push_str("\n\n");
-            }
-            let message = crate::prompts::harness_wrap(crate::prompts::shared().render(
-                crate::prompts::LOST_NOTICES,
-                &[("notices", notices.as_str())],
-            ));
-            let payload = json!({"session": name, "message": message});
-            match d.store.add_pending_task(&name, "inject", &payload) {
-                // In `kept`: what owes a turn has to be a task this pass knows about.
-                Ok(id) => kept.push(crate::store::PendingTask {
-                    id,
-                    session: name.clone(),
-                    kind: "inject".to_string(),
-                    payload,
-                }),
-                Err(e) => {
-                    tracing::warn!(session = %name, error = %e, "could not say what was lost");
-                }
-            }
-        }
+        // Every row still here is news this build wrote: none is dropped.
+        let kept = tasks;
         let owed = owes_a_turn(&kept);
         // Rows already here are the news the wait waited for; with none, the clock decides.
         if let Some((id, until)) = waiting.get(&name)

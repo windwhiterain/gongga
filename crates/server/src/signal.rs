@@ -46,8 +46,7 @@ pub fn owner() -> Option<u32> {
 /// # Invariant
 /// The handler never stops anything itself: it only nudges. The stop runs on the
 /// runtime, on the path `cancel` already takes -- every running turn is
-/// interrupted, and a signal's stop ends its background jobs rather than letting
-/// them go.
+/// interrupted, and a signal's stop ends what it started rather than letting it go.
 pub fn watch<F, Fut>(parent: Option<u32>, parent_build: Option<&str>, stop: F)
 where
     F: FnOnce() -> Fut + Send + 'static,

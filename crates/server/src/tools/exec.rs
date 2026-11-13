@@ -12,9 +12,9 @@ use crate::tools::{Cmd, ToolContext, ToolOutcome};
 ///
 /// # Invariant
 ///
-/// A default, never a ceiling: `wait: 0` is no wait at all, and the tunnel's clock
-/// does not touch this tool -- it is not tunneled, because the shared arguments
-/// (`background`, `max_output`, `description`) are what a channel already is.
+/// A default, never a ceiling: `wait: 0` is no wait at all, and the fault bound is
+/// the only thing that ends a call this tool did not ask to end.
+pub const DEFAULT_WAIT: Duration = Duration::from_secs(4);
 #[derive(Debug, Clone, Copy)]
 pub struct Wait {
     pub default: Duration,

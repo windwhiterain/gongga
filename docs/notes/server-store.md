@@ -158,7 +158,7 @@ worse than a leak: SQLite hands a freed id out again, and the dead session's
 events then pose as the new session's history.
 
 The same rule for every row keyed by the session's *name* rather than its id --
-`pending_tasks`, `detached_jobs`, `tool_jobs` -- and for `drafts`, whose id-keyed
+`pending_tasks`, `detached_jobs` -- and for `drafts`, whose id-keyed
 row would otherwise be settled at the next start into a message for a session
 that no longer exists. One transaction, because a delete that half-happened is a
 session whose name is free and whose rows are not.

@@ -58,7 +58,7 @@ pub enum Endpoint {
         ///
         /// The network clock, and the reason it is carried here: it belongs to the
         /// link, not to a tool. What it ends is a request, with an error; the clock
-        /// a call goes to the background on is the caller's own, measured locally.
+        /// a call's own wait is its own, measured locally.
         /// See `docs/notes/server-remote.md`.
         answer: Duration,
     },

@@ -41,9 +41,6 @@ struct Command {
     /// Stop whatever holds `--bind`; without it a taken port is an error.
     #[arg(long)]
     force: bool,
-    /// Run one tool call and write its answer: how a detached call outlives the server.
-    #[arg(long, value_name = "FILE", hide = true)]
-    run_tool: Option<PathBuf>,
 }
 
 impl From<Command> for Args {
@@ -96,10 +93,6 @@ fn main() -> anyhow::Result<()> {
     let matches = command().get_matches();
     let command =
         Command::from_arg_matches(&matches).expect("clap already rejected what it could not parse");
-    // Before anything of a server: this process is one call, and answers with a file.
-    if let Some(request) = &command.run_tool {
-        return gongga_server::worker::run(request);
-    }
     // A failure here is an explanation, not a crash: exit 2, which is not retried.
     match gongga_server::main(command.into()) {
         Ok(()) => Ok(()),

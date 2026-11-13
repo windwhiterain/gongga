@@ -61,7 +61,6 @@ pub fn context(
         reader: handle.reader(),
         machine: handle.owner(),
         remote: handle.remote_name(),
-        jobs: agent.jobs.clone(),
         events: None,
         cancel: CancellationToken::new(),
         store: store.clone(),
@@ -72,8 +71,6 @@ pub fn context(
             refusal: String::new(),
         },
         inbox: handle.inbox_signal(),
-        // An operator's line holds this turn the same way a model's call does.
-        holds_the_turn: true,
         stop: handle.stop_signal(),
         closing: handle.closing_signal(),
         explore: handle.explore(),
