@@ -176,10 +176,12 @@ reading", and `areas` sizes the frame from it.
 
 ## The command view
 
-`cmd` and `cmd_result` are drawn on a line of their own, under the `active_quota` row
-and above the prompt, and every block in it is one row whatever `block_size` says: it
-is a ticker of what the operator asked and what came back, not a place to read a
-transcript. Its one row cannot scroll, so `Alt+Y` copying it takes that row alone.
+`cmd` and `cmd_result` are drawn on a band of their own, under the `active_quota` row
+and above the prompt, and a block there is its own rows: SPEC gives that band no
+`(line)`, so its height is what the log says its content needs (`Chrome::command_rows`)
+and the layout only caps it at a third of the window. It is a ticker of what the
+operator asked and what came back rather than a place to read a transcript, and it has
+no scroll of its own: `Alt+Y` copies what it shows.
 
 A command that named a session is *not* drawn there: its echo, its rows and its
 result line are read in that session's view, where the transcript they came from already

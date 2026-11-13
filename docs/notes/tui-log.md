@@ -57,15 +57,40 @@ sealed.
 ## The mark, the fold, and Entry::sealed
 
 SPEC's `events` is a list of *items*, one block each, and the item that is not the
-answer folds: `abstract{symbol, reasoning|toolcall|tool_result}` is one summary row
-(two for a reasoning item, which keeps its beginning and its end) until it is clicked.
-`output`, `cmd` and `error` are their own shapes and never fold.
+answer folds: `summary{symbol, reasoning|toolcall|tool_result|harness_injection}` is
+that item's summary until it is clicked. `output`, `user message`, `cmd/cmd_result`
+and `error` are their own shapes and never fold.
 
-So a sealed block of a folding kind is an `abstract`. While it streams it shows the
+So a sealed block of a folding kind is a `summary`. While it streams it shows the
 rows it is writing -- SPEC's "streaming: currently stream, block_size" -- and sealing
 is what folds it. That is why `seal` recomputes the row count around the flip: the
 fold changes how many rows the block contributes, and a block that folded without
 telling the indexes would move everything behind it.
+
+## The summary a fold draws
+
+`Entry::fold` holds those rows, made once in `reflow` at the width the block is drawn
+at; a frame reads them and measures nothing. How many rows it holds is SPEC's own
+annotation, read literally:
+
+| SPEC | rows |
+| --- | --- |
+| `reasoning{beginning (line), ending (line)} (vertical)` | the two ends, or one when one line is both |
+| `harness_injection{beginning (line)}` | the one line it began with |
+| `toolcall{tool_name·[*summary_args]·description}` | as many as the summary wraps into |
+| `tool_result{ok, time}` | as many as the summary wraps into |
+
+`(line)` is one row and is cut with `…` when it is wider than the window -- a line is
+what SPEC asked for, so a second row would be a different shape. The two shapes with
+no `(line)` are blocks, and a block wraps: cutting them was the defect this table
+fixes, because a call's summary is its args and its description, and a description
+that ended in `…` was a row the reader could not finish. `block_size` is what caps a
+fold, and `visible` already does that for every block.
+
+The text is not the label. `layout` cuts the label to the one row it rides on -- it is
+drawn on a box's top rule and on the first body row -- so a call folds from
+`Head::summary` itself rather than from that cut label; otherwise the cut would be
+wrapping a row that had already lost its end.
 
 `expanded` is the operator's answer to the fold, and it is the only state a fold has.
 `toggle` flips it for one key -- and `toggle_at` for the block a press found -- shifting
@@ -88,7 +113,8 @@ streamed stayed open and never folded.
 
 SPEC's `reasoning{beginning (line), ending (line)}` are lines of the text
 (`Entry::ends`), and the rows of the fold are those lines cut to the window -- never
-`row(0)` and the last of `starts`.
+`row(0)` and the last of `starts`. The ending row wears `…` where the text between the
+two ends was.
 
 Reading the wrap was the wrong turn, and it showed twice. A line longer than the
 window wrapped into columns, so the "ending" was whichever column the width happened
@@ -102,9 +128,9 @@ line, or the empty row a trailing newline leaves, is not one of the two ends of 
 the model wrote. One line of prose is one row, because the second row would repeat it;
 `ends` answering the same line twice is exactly that case.
 
-The cut still applies, and that is the only place the fold measures anything: a line
-wider than the window is cut with `…`, which says the row was cut rather than that the
-line ended there.
+A line wider than the window is cut with `…`, which says the row was cut rather than
+that the line ended there -- and only a `(line)` is cut: a shape SPEC gives no
+`(line)` wraps instead, so a cut never stands where a block was asked for.
 
 ## Log::relabel
 
@@ -456,19 +482,19 @@ of its rows, so there is nothing to discard and no budget to set.
 
 `describe` replaces a call's provisional body with its structured name and fields, and
 what it does *not* keep is what the block streamed before it. A described call is drawn
-either folded -- its label, one row -- or opened -- its fields, indented under their
+either folded -- its summary, a block -- or opened -- its fields, indented under their
 names -- so the arguments spelled as one string were a second copy of the same bytes
 that nothing ever drew.
 
 That measurement is why it is gone: a call holding a 96 KiB command kept 402 KiB
 (`text`, the field's value, and the label composed from it) and needs 100 KiB, which is
 the arguments once. The label was the third copy, so it is now derived at `reflow` and
-cut to the width it will be drawn at, exactly like `sections`: one row of a summary is
-a display derivative, not a fact worth holding whole.
+cut to the width it will be drawn at, exactly like `sections`: a row of a summary is a
+display derivative, not a fact worth holding whole.
 
 What is still kept beside the fields is the name and the `summary` fields, because the
-folded row is the label and it is drawn on every frame; composing it per frame would
-trade the memory back for an allocation on each draw.
+fold is made from them and it is drawn on every frame; making it per frame would trade
+the memory back for an allocation on each draw.
 
 ## Entry::tag — derived for a described call
 

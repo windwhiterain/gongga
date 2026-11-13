@@ -401,14 +401,14 @@ this call set `name`, and `command` is detail -- because only it knows what the 
 actually passed.
 
 `description` is the one argument that is not a `Field`. It is what the call is *for*,
-in the model's own words: the folded row can afford exactly one line of prose and this
-is it, read on the name's row -- `bash·check the state`. As a field it would need a
-label the title already said, and a field is one argument among several while this is
-the row's subject. `Head::title` spells the `·` once, so the folded row and the open
-item cannot disagree about where the name ends.
+in the model's own words: it is read on the name's row -- `bash·check the state` -- and
+it is the row's subject rather than one argument among several, which is why it needs
+no label the title already said. `Head::title` spells the `·` once, so the folded row
+and the open item cannot disagree about where the name ends. A front-end may wrap that
+row: SPEC gives `toolcall` no `(line)`, so its summary is a block.
 
 So the wire carries `Field { label, value, summary }` and never a table of names. A
-front-end composes two rows from one list: the folded `abstract` is the fields marked
+front-end composes two rows from one list: the folded `summary` is the fields marked
 `summary`, the open item is all of them. Opening therefore costs no message -- both
 rows were sent, once.
 

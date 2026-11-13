@@ -70,6 +70,14 @@ struct Entry {
     ///
     /// Non-empty exactly when `source` is: a row is a `Line` of runs, drawn as it is.
     styled: Vec<Line<'static>>,
+    /// The summary this block shows while it is folded, fitted to `width`.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC's `(line)` is one row and a shape without it is a block, so the rows are
+    /// made in `reflow` from the same text a frame draws: a `(line)` is cut, a block
+    /// wraps. Nothing here is measured again per frame. See `docs/notes/tui-log.md`.
+    fold: Vec<String>,
     /// Where this block sits among the blocks of its own window.
     at: usize,
 }
@@ -103,6 +111,7 @@ impl Entry {
             call: None,
             sections: String::new(),
             styled: Vec::new(),
+            fold: Vec::new(),
             at: 0,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
@@ -114,7 +123,8 @@ impl Entry {
 
     fn rows(&self) -> usize {
         if self.folded() {
-            return self.folded_rows();
+            // Not measured yet: a summary still owes the frame its one placeholder row.
+            return self.fold.len().max(1);
         }
         match self.source {
             // Not measured yet: a block still owes the frame its one blank row.
@@ -148,13 +158,13 @@ impl Entry {
         self.inner.min(self.travel(cap))
     }
 
-    /// Whether this block is drawn as SPEC's `abstract`: one summary line.
+    /// Whether this block is drawn as SPEC's `summary`, in the rows `summary_rows` made.
     ///
     /// # Invariant
     ///
     /// Only a sealed item of a folding kind, and only until the operator opens it:
     /// a block still streaming is what "currently stream" means, and an answer,
-    /// a command or an error is not an `abstract` at all.
+    /// a command or an error is not a `summary` at all.
     fn folded(&self) -> bool {
         self.sealed && self.kind.folds() && !self.expanded
     }
@@ -182,53 +192,83 @@ impl Entry {
         Some((first, last))
     }
 
-    /// The rows a folded block shows: a reasoning item keeps its beginning and end.
+    /// The rows this item shows while it is folded: SPEC's summary, fitted to `width`.
     ///
     /// # Invariant
     ///
-    /// Two rows only when there are two ends: prose written as one line is one row,
-    /// because the same line twice is a row that says nothing new.
-    fn folded_rows(&self) -> usize {
-        if self.kind == LineKind::Reasoning
-            && let Some((first, last)) = self.ends()
-            && first != last
-        {
-            return 2;
+    /// A shape SPEC marks `(line)` is one row, cut with `…` where it is wider than the
+    /// window: a reasoning item's beginning and ending, an injection's beginning. A
+    /// shape SPEC gives no `(line)` -- a call and a result -- is a block, so its
+    /// summary wraps to the rows it needs instead of losing its end to a cut, and
+    /// `block_size` is what caps that. See `docs/notes/tui-log.md`.
+    fn summary_rows(&self) -> Vec<String> {
+        // The mark owns one column of every row, so this is what the text may use.
+        let room = self.width.max(1).saturating_sub(self.kind.mark().width());
+        match self.kind {
+            // SPEC's two `(line)`s: the ends of the text, and `…` for what lies
+            // between. One line is both ends, so it is one row.
+            LineKind::Reasoning => match self.ends() {
+                Some((first, last)) if first != last => vec![
+                    cut(&format!("{}{}", self.tag, first), room),
+                    cut(&format!("\u{2026} {last}"), room),
+                ],
+                Some((first, _)) => vec![cut(&format!("{}{}", self.tag, first), room)],
+                None => vec![self.tag.clone()],
+            },
+            // SPEC's `harness_injection{beginning (line)}`: the one line it began with.
+            LineKind::Inject => match self.beginning() {
+                Some(beginning) => vec![cut(beginning, room)],
+                None => vec![String::new()],
+            },
+            // No `(line)`: the summary is a block and reads as one.
+            _ => hanging_indent(&self.summary_text(), room)
+                .lines()
+                .map(str::to_string)
+                .collect(),
         }
-        // An item with neither a label nor text is one blank row: the mark alone.
-        1
     }
 
-    /// One row of the folded block, cut to the columns it will be drawn in.
-    fn folded_row(&self, row: usize) -> String {
-        let width = self.width.max(1);
-        let text = match (self.kind, row) {
-            // SPEC's `reasoning{beginning (line), ending (line)}`: the first line
-            // the model wrote, then the last, `…` between.
-            (LineKind::Reasoning, 0) => match self.ends() {
-                Some((first, _)) => format!("{}{}", self.tag, first),
-                None => self.tag.clone(),
-            },
-            (LineKind::Reasoning, _) => match self.ends() {
-                Some((_, last)) => format!("\u{2026} {last}"),
-                None => String::new(),
-            },
-            // A result says how it went, never what it printed: SPEC's
-            // `tool_result{ok, time (spent)}` is the whole of its summary.
-            (LineKind::ToolOutput | LineKind::ToolError, _) => self.summary(),
-            // A call's label, or its summary composed from the fields: they are
-            // the only copy kept.
-            (LineKind::ToolCall, _) => match self.tag.trim_end() {
-                "" => match &self.call {
-                    Some(call) => call.summary(),
-                    None => self.row(0).to_string(),
+    /// The first line of the text that has anything in it: what a `(line)` shows.
+    fn beginning(&self) -> Option<&str> {
+        self.text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+    }
+
+    /// The summary a shape without a `(line)` is drawn from.
+    ///
+    /// # Invariant
+    ///
+    /// A result says how it went, never what it printed: `{ok, time}` is the whole of
+    /// its summary, and the output is the click. A call says what was asked, from the
+    /// fields when the server sent them -- a streamed call that never got its head is
+    /// its own text.
+    fn summary_text(&self) -> String {
+        match self.kind {
+            LineKind::ToolOutput | LineKind::ToolError => self.summary(),
+            // The summary, not the label: `layout` cuts the label to the row it rides on.
+            _ => match &self.call {
+                Some(call) => call.summary(),
+                None => match self.tag.trim_end() {
+                    "" => self.row(0).to_string(),
+                    label => label.to_string(),
                 },
-                label => label.to_string(),
             },
-            // An item whose body is its own label: the folded row is its first row.
-            _ => self.row(0).to_string(),
+        }
+    }
+
+    /// Re-derives the summary rows at the width the block is laid out at.
+    ///
+    /// # Invariant
+    ///
+    /// Only a folding kind has a summary to make, and only a width says how many rows
+    /// it becomes: an unmeasured block keeps none and owes the frame one placeholder.
+    fn refold(&mut self) {
+        self.fold = match self.kind.folds() && self.width > 0 {
+            true => self.summary_rows(),
+            false => Vec::new(),
         };
-        cut(&text, width.saturating_sub(self.kind.mark().width()))
     }
 
     /// Outcome first: long arguments cannot hide the elapsed time.
@@ -240,8 +280,8 @@ impl Entry {
     ///
     /// # Invariant
     ///
-    /// The name and the fields marked `summary` are the folded row, and an opened
-    /// block draws that row as its label on the box's top rule. The body repeats
+    /// The name and the fields marked `summary` are the fold, and an opened block
+    /// draws that summary as its label on the box's top rule. The body repeats
     /// neither, so no argument is read twice. See `docs/notes/tui-log.md`.
     fn section_text(&self, width: usize) -> Option<String> {
         let call = self.call.as_ref()?;
@@ -272,6 +312,18 @@ impl Entry {
         }
     }
 
+    /// Recomputes the block at `width`: its body, then the summary it folds into.
+    ///
+    /// # Invariant
+    ///
+    /// The summary is made from the body this call has just laid out -- a call that
+    /// never got its head folds from its own first row -- so the two can never be one
+    /// width apart. See `docs/notes/tui-log.md`.
+    fn reflow(&mut self, width: usize) {
+        self.layout(width);
+        self.refold();
+    }
+
     /// Recomputes every body row at `width`, independently of the title.
     ///
     /// # Invariant
@@ -279,7 +331,7 @@ impl Entry {
     /// A markdown block is laid out at the width it is drawn at, so a table's columns
     /// are the window's and a run keeps its ink across a break. Every other block is
     /// wrapped from the text it already holds. See `docs/notes/tui-log.md`.
-    fn reflow(&mut self, width: usize) {
+    fn layout(&mut self, width: usize) {
         if width == 0 {
             // Not measured yet: the first draw reflows at its own width.
             self.starts = vec![0];
@@ -366,6 +418,10 @@ impl Entry {
             self.col = wrap.col;
         }
         self.text.push_str(text);
+        // A sealed block is drawn folded, so its summary follows the body it grew.
+        if self.sealed {
+            self.refold();
+        }
     }
 
     /// The text of row `row`, with the newline that ended it removed.
@@ -421,9 +477,9 @@ impl Entry {
     /// nothing: those characters start the row below it.
     fn view_row(&self, row: usize, labelled: bool) -> Cow<'_, str> {
         if self.folded() {
-            let summary = self.folded_row(row);
-            // SPEC's `abstract (horizontal)`: the mark owns one column, so the
-            // second row starts where the first one's text does.
+            // Fitted by `summary_rows`: drawn as it is, beside the mark, so a second
+            // row starts under the first one's text.
+            let summary = self.fold.get(row).map(String::as_str).unwrap_or_default();
             let label = match labelled {
                 true => self.kind.mark(),
                 false => " ".repeat(self.kind.mark().width()),
@@ -654,7 +710,7 @@ pub(crate) fn box_margin(width: usize, edge: usize) -> usize {
 
 /// The rows a block of `kind` may fill: the window's `cap`, else the log's.
 fn room(kind: LineKind, cap: usize, block_size: usize) -> usize {
-    // SPEC caps streamed abstracts, not commands, results, messages or errors.
+    // SPEC caps streamed summaries, not commands, results, messages or errors.
     if !kind.folds() {
         return NO_CAP;
     }
@@ -837,7 +893,7 @@ impl Log {
         let width = self.width_of(name);
         let mut entry = Entry::new(name, kind, text.into(), width);
         // A whole row arrives at once: nothing will stream into it, so a folding
-        // kind is an `abstract` from its first frame.
+        // kind is a `summary` from its first frame.
         entry.sealed = true;
         self.entries.push(entry);
         self.attach(self.entries.len() - 1);
@@ -1303,6 +1359,9 @@ impl Log {
     /// Seals a block's rows without touching a journal.
     fn seal_quiet(&mut self, at: usize) {
         self.trim_tail(at);
+        // Appends kept the body current and left the summary to this: what sealed is
+        // the text, not a chunk of it.
+        self.entries[at].refold();
         // Sealing can fold the block, and a fold is a row count: the indexes
         // hear about it, or the blocks behind this one shift.
         let before = self.contributions(at);
