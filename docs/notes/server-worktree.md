@@ -52,10 +52,17 @@ behind with nobody to remove it.
 ## Dying with its session
 
 `del_session` takes the worktree away before it stops anything, so a git that will not
-let go -- a peer that is not answering included -- leaves the session exactly as it was. Forced: the caller said the session is
-gone, so whatever was uncommitted in that directory goes too. The branch is deleted
-after the directory, and a refusal from either is the answer rather than a warning --
-what is left otherwise is a branch no session will ever remove.
+let go -- a peer that is not answering included -- leaves the session exactly as it was.
+Forced: the caller said the session is gone, so whatever was uncommitted in that
+directory goes too. The branch is deleted after the directory, and a refusal from either
+is the answer rather than a warning -- what is left otherwise is a branch no session will
+ever remove.
+
+Administration runs in the repository's first worktree, never inside the one being taken
+away. Being *in* the directory is enough to hold it open: git then unregisters the
+worktree, fails to delete the directory (`failed to delete ...: Permission denied`, on
+Windows), and leaves a directory nothing lists any more. Measured, and the reason the
+removal has a working directory of its own.
 
 A `cwd` that sits in no repository means the worktree went without git. The registration
 is pruned when git still lists it, the branch is deleted when it is still there, and the
