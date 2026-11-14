@@ -4,30 +4,41 @@
 
 An entry is a file, and a file is not a program: something has to read its extension or its
 `#!` line and decide what starts it. That decision used to live in the command layer, which
-was fine while `gongga-cli skill` was the only door. It stopped being fine the moment the
-server grew its own runner (SPEC's `run_skill`): the server cannot depend on the command layer, and a second copy
-of the rule is a second answer to "what runs this file".
+was fine while `gongga-cli skill` was the only door. It moved here when the server grew a
+runner of its own (SPEC's `run_skill`), so that the rule had one home instead of two.
 
-So the rule moved here, and only the rule. What it does *not* do is look for programs.
+That server has since stopped running entries at all. SPEC makes every skill the model calls a
+Python call, so `run_skill` needs `__init__.py` and refuses a directory without it -- a body by
+naming the `SKILL.md` to read, a declared entry by naming what to change. What is left here is
+the **command line's** rule, and it lives in this crate rather than in `crates/client` because
+the machine's and the community's skills are scripts: `gongga-cli skill <name>` runs them, and
+that command is not on the tool-call chain.
+
+Two functions, one caller each. `package_of` is the server's only door: a Python package, run
+by this home's contract. `runner_of` is the command line's answer to both forms -- a package
+first, because discovery beats a declared file, and then the entry's own rules. Neither looks
+for programs; that is the caller's half.
 
 ## Programs
 
-`bash`, a Python and a PowerShell arrive already resolved, and every field is an `Option`:
-the server has a configured bash and a Python from its roster, the command layer finds them
-on PATH, and neither wants to pay for the other's lookups. A `None` is "not found", and the
-error naming it is made only when an entry asks for that interpreter -- so a `.sh` entry on a
-machine with no Python still runs, and a `.py` entry on a machine with no bash says exactly
-which program is missing.
+`bash`, a Python and a PowerShell arrive already resolved, and every field is an `Option`: the
+command line finds them on PATH, and it is the only caller that builds one. The server hands
+`package_of` a single interpreter instead -- the one its config resolved -- because a package
+is Python and an entry is not the server's to start. A `None` is "not found", and the error
+naming it is made only when a form asks for that interpreter -- so a `.sh` entry on a machine
+with no Python still runs, and a `.py` entry on a machine with no bash says exactly which
+program is missing.
 
 The command layer's Python lookup is the six-times-duplicated probe the scripts carry (`for
 candidate in python3 python py; do … ; done`, because Windows' Store alias sits on `PATH` and
-exits 49). It is eager there, which costs one probe on a `run_skill` line that never needed
-Python. That was accepted rather than solved: the alternative is the command layer asking
-this module which program an entry needs, which is the rule leaking back out.
+exits 49). It is eager there: one probe is paid whether or not the skill it is about to run
+needs Python. The alternative is the command line asking this module which program an entry
+needs, which is the rule leaking back out.
 
 ## runner
 
-An entry is run by the program its extension names -- `bash` for a shell script, a Python
+Reached only by `gongga-cli skill`: `run_skill` never names a file. An entry is run by the
+program its extension names -- `bash` for a shell script, a Python
 for a `.py`, PowerShell (`-NoProfile -File`) for `.ps1`, `cmd /c` for a batch file -- and an
 entry with no extension is run by the program its own `#!` line names, because Windows does
 not honour one. That last case is not hypothetical: `transcript`, `show`, `remote` and
@@ -48,9 +59,9 @@ spelling to bash breaks the `dirname "${BASH_SOURCE[0]}"` every one of these scr
 with.
 
 `words` is the whole invocation in one place -- the program's own leading arguments
-(`-NoProfile -File`), the entry, then the caller's argv -- so the two callers cannot disagree
-about their order. Neither caller writes a command line: each hands the words to a spawn that
-provides no shell, so a word holding a space, a quote or a `$` arrives as it is.
+(`-NoProfile -File`), the entry, then the argv -- so no caller has to spell an order. The
+command line does not write a command line either: it hands the words to a spawn that provides
+no shell, so a word holding a space, a quote or a `$` arrives as it is.
 
 ## The package form
 
@@ -90,9 +101,10 @@ second answer to "what does this contract say", and the copy in the binary is th
 can edit. A home without `lib/gongga_skill.py` is refused before a process starts, naming
 the path.
 
-A package wins over a declared entry: discovery is the point of the form. Everything else
-keeps the script rule below, which stays for the skills that arrived before packages did --
-and is the fallback on a machine with no Python at all.
+A package wins over a declared entry on the command line: discovery is the point of the form.
+The server has no such choice to make -- it runs a package and nothing else, so `metadata.entry`
+is not read there at all, and a skill written as a script is one the model cannot call until it
+becomes a package.
 
 ## What a package's process is given
 

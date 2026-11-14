@@ -425,7 +425,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     ToolRegistry::settings(cfg.bash.max_output_chars)
                         .with_python(cfg.python.clone(), lib.clone())
                         .with_skills(
-                            tools::skill::programs(cfg),
+                            cfg.python.program.clone(),
                             lib.clone(),
                             std::time::Duration::from_millis(crate::config::CALL_TIMEOUT_MS),
                             cfg.bash.max_output_chars,

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub mod entry;
 
-pub use entry::{Launch, Programs, Runner, request, runner, runner_of};
+pub use entry::{Launch, Programs, Runner, is_package, package_of, request, runner, runner_of};
 
 /// The file that makes a directory a skill, and the one a reader opens.
 const SKILL: &str = "SKILL.md";
@@ -120,7 +120,8 @@ pub struct Skill {
     /// The `SKILL.md` itself, which is what a reader opens.
     pub path: PathBuf,
     pub bucket: Bucket,
-    /// The program the frontmatter names, resolved; `None` is a body and nothing to run.
+    /// The program the frontmatter names, resolved; `None` is a body, which `run_skill`
+    /// refuses.
     pub entry: Option<PathBuf>,
 }
 
