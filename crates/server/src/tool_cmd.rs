@@ -29,7 +29,7 @@ pub async fn run(
         Ok(ctx) => ctx,
         Err(why) => return Outcome::err(why),
     };
-    let outcome = agent.tools.run(tool, args, &ctx).await;
+    let outcome = agent.tools().run(tool, args, &ctx).await;
     match outcome.ok {
         true => Outcome::ok(outcome.output),
         false => Outcome::err(outcome.output),
@@ -76,6 +76,7 @@ pub fn context(
         holds_the_turn: true,
         stop: handle.stop_signal(),
         closing: handle.closing_signal(),
+        disk_low: agent.config.now().disk_low,
         explore: handle.explore(),
     })
 }
@@ -156,7 +157,7 @@ pub async fn dispatch_tool(d: &Dispatch, name: &str, args: &Args, caller: Option
             "{name} needs the session it runs as: run it from a session's shell, where `GONGGA_SESSION` names one"
         ));
     };
-    if d.agent.tools.get(name).is_none() {
+    if d.agent.tools().get(name).is_none() {
         return Outcome::err(format!("{name} is not a tool this server carries"));
     }
     let mut given = args.clone();

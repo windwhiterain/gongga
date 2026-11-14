@@ -27,9 +27,12 @@ setting, a skill, a tool, a command -- can append another schema. The row is the
 record; `store::tool_set` reads it back and a request sends those bytes.
 
 The schema is the full set for the life of the session. A remote tool and the
-`remote` argument are always declared, and the `live_compact` schema is offered for
-as long as compaction is enabled -- not only once an origin opens. Which of them a
-call may actually reach is announced at the tail, never by re-rendering this head.
+`remote` argument are always declared, and `live_compact` is declared too -- always,
+whatever a session's own switch says, because the switch is a setting and this head
+is context: a schema that followed it would have to be re-stamped at every toggle,
+and a toggle after the head was written would reach nobody. Whether a call is
+honoured is decided when it runs; a call with no checkpoint requested already
+answers as a no-op rather than an error.
 
 This is the append-only rule made structural. The schema used to be re-stamped when
 an origin opened or a session moved, and each re-stamp was a second set of bytes for

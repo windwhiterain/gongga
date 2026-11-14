@@ -35,24 +35,23 @@ async fn a_low_disk_is_reported_once_and_again_after_recovering() {
     let tiny = 1;
     let cwd = Path::new(".");
 
-    install(huge, &dir);
-    note_tool_end(&store, "work", "bash", cwd, true, None).await;
+    install(&dir);
+    note_tool_end(&store, "work", "bash", cwd, true, None, huge).await;
     assert_eq!(
         events(&store).len(),
         1,
         "a low disk reports on a call that worked"
     );
     for _ in 0..5 {
-        note_tool_end(&store, "work", "bash", cwd, false, None).await;
+        note_tool_end(&store, "work", "bash", cwd, false, None, huge).await;
     }
     assert_eq!(events(&store).len(), 1, "and not again while it stays low");
 
-    install(tiny, &dir);
-    note_tool_end(&store, "work", "bash", cwd, true, None).await;
+    note_tool_end(&store, "work", "bash", cwd, true, None, tiny).await;
     assert_eq!(events(&store).len(), 1, "an ordinary disk says nothing");
 
-    install(huge, &dir);
-    note_tool_end(&store, "work", "bash", cwd, true, None).await;
+    install(&dir);
+    note_tool_end(&store, "work", "bash", cwd, true, None, huge).await;
     assert_eq!(events(&store).len(), 2, "the next fall is a new episode");
 
     // A peer's disk is its own episode, named: one full disk must not hide the other.
@@ -63,7 +62,7 @@ async fn a_low_disk_is_reported_once_and_again_after_recovering() {
             free: Some(0),
         }],
     });
-    note_tool_end(&store, "work", "bash", cwd, true, peer.clone()).await;
+    note_tool_end(&store, "work", "bash", cwd, true, peer.clone(), huge).await;
     assert_eq!(
         events(&store).len(),
         3,
@@ -72,7 +71,7 @@ async fn a_low_disk_is_reported_once_and_again_after_recovering() {
     let peer_row: serde_json::Value =
         serde_json::from_str(&events(&store)[2].payload).expect("a payload");
     assert_eq!(peer_row["machine"], "build-box");
-    note_tool_end(&store, "work", "bash", cwd, true, peer).await;
+    note_tool_end(&store, "work", "bash", cwd, true, peer, huge).await;
     assert_eq!(events(&store).len(), 3, "and not again while it stays low");
 
     let payload: serde_json::Value =

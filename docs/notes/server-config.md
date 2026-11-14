@@ -347,7 +347,26 @@ Both live in the `sessions` row, so a restart restores them. With no declared
 tiers the window is zero and the interrupt is inert. See
 `docs/notes/server-commands.md`.
 
-## [transport] and the loopback tier
+## What is followed, and what placed the process
+
+`config.toml` is a file the machine's owner edits, not a startup argument. Two
+things come out of it, and they are not the same kind:
+
+| what | when it is read | why |
+| --- | --- | --- |
+| the model, the timeouts, the retries, the shell, the tool rows, the agent numbers, the disk threshold | at the moment they are used (`Current::now`) | an edit is meant to change the next request, not to need a restart |
+| `home`, `db_path`, `bind`, `key` | once, at startup (`Current::anchor`) | a database and a listening socket do not move |
+
+The values built *from* the file are keyed on the read that built them
+(`Config::read`): a `LlmClient` carries its base URL and timeouts, so it is rebuilt
+when the read changes, and the tool table is rebuilt the same way
+(`live::Derived`). Nothing compares the values themselves -- two reads that say the
+same thing still cost one build, and one read that says something else costs one.
+
+A file that stops parsing is an edit in flight: the last good read keeps serving,
+and `Live` records the failed read's stamps so the next edit is noticed
+(`live::Live`). The prompt templates are followed the same way, in `prompts.rs`
+(stamp-compared, and the home's `[prompts]` win over the shipped ones).
 
 `[transport]` in `config.toml` feeds `TransportConfig`, which becomes a
 `ChannelConfig` in `server/transport.rs`. A `mtu`, `window`, `keepalive` or

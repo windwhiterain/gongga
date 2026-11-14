@@ -266,7 +266,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let store = store::Store::open(&cfg.db_path)?;
     clock.step("store");
     // Read after every tool call, before a full disk takes the room to report it.
-    disk::install(cfg.disk_low, cfg.home.clone());
+    disk::install(cfg.home.clone());
     if cfg.disk_low == 0 {
         tracing::info!("no disk threshold: this home never reads the room left");
     } else {
@@ -403,21 +403,26 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         providers: providers::Handle,
         clients: std::sync::Mutex::new(std::collections::HashMap::new()),
         channels: channels.clone(),
-        tools: Arc::new(
-            ToolRegistry::settings(
-                cfg.tools.max_wait,
-                cfg.bash.timeout,
-                cfg.bash.max_output_chars,
-            )
-            .with_python(cfg.python.clone(), skill_lib.clone())
-            .with_skills(
-                tools::skill::programs(&cfg),
-                skill_lib,
-                cfg.bash.timeout,
-                cfg.bash.max_output_chars,
-            )
-            .build(&cfg.tools.rows, &cfg.tools.arguments),
-        ),
+        tools: {
+            let lib = skill_lib.clone();
+            crate::live::Derived::new(move |cfg: &config::Config| {
+                Arc::new(
+                    ToolRegistry::settings(
+                        cfg.tools.max_wait,
+                        cfg.bash.timeout,
+                        cfg.bash.max_output_chars,
+                    )
+                    .with_python(cfg.python.clone(), lib.clone())
+                    .with_skills(
+                        tools::skill::programs(cfg),
+                        lib.clone(),
+                        cfg.bash.timeout,
+                        cfg.bash.max_output_chars,
+                    )
+                    .build(&cfg.tools.rows, &cfg.tools.arguments),
+                )
+            })
+        },
         bus: bus.clone(),
         config: config.clone(),
         home: cfg.home.clone(),
@@ -574,7 +579,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         }
     });
 
-    tracing::info!(tools = ?dispatch.agent.tools.names().join(", "), "tool registry ready");
+    tracing::info!(tools = ?dispatch.agent.tools().names().join(", "), "tool registry ready");
     // Which roster was read, and whether it was readable at all: "no --model
     // worked" is nearly always this line.
     tracing::info!(

@@ -47,9 +47,10 @@ embedded file travels in every later request, and a summary is never a cache hit
 ## The schema is stored, not offered per request
 
 See `docs/notes/server-tools.md`: the tool list is a stored row written once, so
-the `live_compact` schema is offered from the first stamp for as long as compaction
-is enabled, and stays for the session's life. It is not gated on the origin opening,
-and it is not added while a request is outstanding and withdrawn after its commit --
-that entry and exit sat inside the cached prefix and invalidated the whole
-conversation at every checkpoint. Even waiting for the origin to enter was one such
-move; the head is now written once and never re-stamped.
+the `live_compact` schema is in the head of every session, always -- not gated on the
+switch, not gated on the origin, not added while a request is outstanding and
+withdrawn after its commit. That entry and exit sat inside the cached prefix and
+invalidated the whole conversation at every checkpoint. It cannot follow the switch
+either: the head is written once, so a schema that depended on it would be missing
+from every session that switched the feature on afterwards, which is exactly the
+session that asked for it.

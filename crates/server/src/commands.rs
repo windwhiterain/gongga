@@ -1132,8 +1132,7 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
         Some("work|explore"),
         CompletionSource::Static(vec!["work".into(), "explore".into()]),
     ),
-        // SPEC's `LiveCompact`: the session's own opt-in, and the threshold it
-    // measures. Unset follows the home's `[agent]`, and the document says so.
+    // SPEC's `LiveCompact`: the session's own opt-in and threshold; unset follows `[agent]`.
     arg(
         "live_compact_enabled",
         "Whether the server asks this session to write checkpoint summaries. Unset follows the home's `[agent] live_compact_enabled`; switched on, the starting checkpoint is the transcript's end.",
@@ -1245,7 +1244,7 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
         "ls_subscription" => ls_subscription(d, args, origin.session()).await,
         "trigger_event" => trigger_event(d, args).await,
         // Every tool is a command: the registry decides what exists.
-        name if d.agent.tools.get(name).is_some() => {
+        name if d.agent.tools().get(name).is_some() => {
             crate::tool_cmd::dispatch_tool(d, name, args, origin.session()).await
         }
         // Published as a server command but unhandled: a catalog bug, named.
@@ -1296,7 +1295,7 @@ impl Dispatch {
     /// Every command offered, from all three sources: the only list there is.
     pub async fn catalog(&self) -> Vec<CommandSpec> {
         let mut all = server_catalog(&self.sessions.remote_names());
-        all.extend(crate::tool_cmd::catalog(&self.agent.tools));
+        all.extend(crate::tool_cmd::catalog(&self.agent.tools()));
         all.extend(self.scripts.commands().await);
         all
     }
@@ -1750,8 +1749,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             ) {
                 return Outcome::err(format!("could not save the live compact settings: {e}"));
             }
-            // Switched on, the starting checkpoint is where the transcript is now: a
-            // session that is already running has no plan finish left to wait for.
+            // Switched on, the checkpoint starts where the transcript is now: there is
+            // no plan finish left to wait for.
             let config = d.agent.config.now();
             if tuning
                 .live_compact_enabled
@@ -2510,7 +2509,8 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
             }
         ));
     };
-    let Some(skills) = d.agent.tools.skills() else {
+    let table = d.agent.tools();
+    let Some(skills) = table.skills() else {
         return Outcome::err(
             "run_skill is not carried: this build was given no skill programs".to_string(),
         );

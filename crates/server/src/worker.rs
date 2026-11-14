@@ -173,6 +173,7 @@ async fn call(request: &Request) -> Answer {
         holds_the_turn: false,
         stop: crate::session::StopSignal::idle(),
         closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        disk_low: cfg.disk_low,
         // Its own, so a write-shaped tool is refused here too.
         explore: request.explore.then(|| {
             crate::explore::watch_of(crate::explore::Mode::Explore)

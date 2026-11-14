@@ -102,6 +102,9 @@ pub struct ToolContext {
     pub stop: crate::session::StopSignal,
     /// Set when shells end because the server is going: nothing that stops then finished.
     pub closing: Arc<std::sync::atomic::AtomicBool>,
+    /// Room left below which a finished call reports, as the config states it now;
+    /// 0 is off. See `crate::disk`.
+    pub disk_low: u64,
     /// The look this session takes after a program call, when it reads. `None` is work.
     ///
     /// # Invariant
@@ -766,15 +769,11 @@ impl ToolRegistry {
     /// # Invariant
     ///
     /// The only renderer of a schema, called only from a stored change -- never
-    /// while a request is built. See `docs/notes/server-tools.md`.
+    /// while a request is built. `live_compact` is in every head, whatever the
+    /// switch says. See `docs/notes/server-tools.md`.
     ///
     /// Every session is offered the same set, `remote` included: a call may name
     /// any machine, and one the server does not know is refused when it runs.
-    ///
-    /// `live_compact` is in the set whatever the session's switch says, because the
-    /// head is written once and never re-stamped: a schema that followed a setting
-    /// would cost a re-render of the cached prefix every time it moved, and a
-    /// setting moved after the head was written would reach nobody.
     pub fn stamp(&self) -> Vec<crate::llm::ToolDefinition> {
         self.tools
             .iter()
@@ -1431,7 +1430,16 @@ pub(crate) async fn invoke(
         }),
         _ => None,
     };
-    crate::disk::note_tool_end(&ctx.store, &ctx.session, name, &ctx.cwd, outcome.ok, peer).await;
+    crate::disk::note_tool_end(
+        &ctx.store,
+        &ctx.session,
+        name,
+        &ctx.cwd,
+        outcome.ok,
+        peer,
+        ctx.disk_low,
+    )
+    .await;
     outcome
 }
 

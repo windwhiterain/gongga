@@ -28,6 +28,44 @@ pub(crate) fn stamps(paths: &[PathBuf]) -> Vec<Option<Stamp>> {
     paths.iter().map(|path| Stamp::of(path)).collect()
 }
 
+/// Something built *from* a config file, kept until the file is read again.
+///
+/// # Invariant
+///
+/// Keyed on the read that built it ([`crate::config::Config::read`]), never on the
+/// value coming back equal: a build may touch the filesystem, so it runs once per
+/// edit rather than once per call, and a call in flight keeps the value it started
+/// with.
+pub struct Derived<C, T> {
+    build: Box<dyn Fn(&C) -> T + Send + Sync>,
+    current: RwLock<Option<(u64, T)>>,
+}
+
+impl<C, T: Clone> Derived<C, T> {
+    pub fn new(build: impl Fn(&C) -> T + Send + Sync + 'static) -> Self {
+        Self {
+            build: Box::new(build),
+            current: RwLock::new(None),
+        }
+    }
+
+    /// The value this read describes, built now if this is a read it has not seen.
+    pub fn of(&self, read: u64, config: &C) -> T {
+        if let Ok(current) = self.current.read()
+            && let Some((built, value)) = current.as_ref()
+            && *built == read
+        {
+            return value.clone();
+        }
+        // Built outside the lock: a racing pair builds the same value, which is
+        // cheaper than queueing every reader behind one.
+        let value = (self.build)(config);
+        let mut current = self.current.write().unwrap_or_else(|e| e.into_inner());
+        *current = Some((read, value.clone()));
+        value
+    }
+}
+
 /// One value, kept current with the files it was read from.
 ///
 /// # Invariant

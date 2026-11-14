@@ -234,11 +234,9 @@ pub struct Tuning {
     pub cache_tier: Option<String>,
     /// Whether a periodic time notice keeps this session's prefix warm.
     pub cache_keepalive: bool,
-    /// Whether the server asks this session for checkpoint summaries; `None`
-    /// follows the home's `[agent] live_compact_enabled`.
+    /// Whether the server asks for checkpoint summaries; `None` follows `[agent]`.
     pub live_compact_enabled: Option<bool>,
-    /// Input-token growth between this session's checkpoints; `None` follows the
-    /// home's `[agent] live_compact_interval_tokens`.
+    /// Input-token growth between checkpoints; `None` follows `[agent]`.
     pub live_compact_interval_tokens: Option<u64>,
 }
 

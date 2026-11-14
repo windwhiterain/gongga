@@ -2120,14 +2120,10 @@ impl Store {
     ///
     /// # Invariant
     ///
-    /// Only the first call opens it. The origin is the permanent prefix, so a
-    /// session switched off and on again keeps the boundary it had.
-    ///
-    /// Plan finish is the agent's own act inside its turn, so a running session is
-    /// the rule, not the error: the baseline is the last persisted measurement,
-    /// never a waited-for one, and a zero stays NULL for the usage write to fill.
-    /// Origin and baseline land in one transaction; the origin is the transcript's
-    /// end at plan finish — the explore segment is the permanent prefix (SPEC).
+    /// Only the first call opens it: the origin is the permanent prefix, so a session
+    /// switched off and on keeps the boundary it had. The baseline is the last
+    /// persisted measurement, and a zero stays NULL for the usage write to fill.
+    /// See `docs/notes/server-live-compact.md`.
     pub fn start_live_compact(&self, session_id: i64) -> anyhow::Result<()> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -2142,8 +2138,7 @@ impl Store {
             params![session_id],
             |row| row.get(0),
         )?;
-        // Zero rows is a session that has not spoken yet: nothing is held back, so
-        // the first round it writes is already the segment a checkpoint folds.
+        // Zero rows is a session that has not spoken: nothing is held back.
         tx.execute(
             "UPDATE sessions SET live_compact_origin_seq = ?2,
                     live_compact_baseline_tokens = CASE WHEN ?3 > 0 THEN ?3 ELSE NULL END,

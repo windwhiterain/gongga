@@ -536,6 +536,7 @@ fn adopted(
         holds_the_turn: false,
         stop: crate::session::StopSignal::idle(),
         closing: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        disk_low: cfg.disk_low,
         // The row a stopped run left is an answer that exists: nothing to look at.
         explore: None,
     }

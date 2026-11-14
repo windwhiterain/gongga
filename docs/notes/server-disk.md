@@ -39,6 +39,12 @@ The threshold is `[server] disk_low_mb` (default 1024, `0` turns the reading off
 or `GONGGA_DISK_LOW_MB` for a run. It is a threshold and nothing else: no budget,
 no reserve, nothing written to compare against.
 
+It is also read from the config file on the call that ends, not kept from startup:
+`disk::install` places only *where* to read -- the home's volume, which cannot move --
+and `note_tool_end` takes the threshold from the `ToolContext` the call was built
+with. So an edit to `[server] disk_low_mb` reaches the next tool call, and a call in
+flight is judged by the number that was in force when it started.
+
 Read on every call, compared on every call, **reported once**: the server keeps one
 bit of state in memory — "this disk has already been reported as low" — set when the
 reading falls below the line and cleared when a reading comes back above it. So

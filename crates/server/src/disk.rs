@@ -11,35 +11,26 @@ pub const EVENT: &str = "disk_space";
 /// The name this machine goes by in an event and in a report.
 pub const LOCAL: &str = "local";
 
-/// What this process watches: the threshold, and the home's own volume.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Watcher {
-    pub threshold: u64,
-    pub home: PathBuf,
-}
-
-/// The watched setting for this process, if any.
+/// The volume this process reads after every tool call, named once by `install`.
 ///
 /// # Invariant
 ///
-/// One home per process, so the threshold is one value per process: a field on
-/// every tool call would be the same value reached by a longer path. A lock rather
-/// than a `OnceLock` value, because a test installs its own and takes it away.
-fn slot() -> &'static RwLock<Option<Watcher>> {
-    static SLOT: OnceLock<RwLock<Option<Watcher>>> = OnceLock::new();
+/// The home cannot move, so it is placed once. The threshold can, so it is not kept
+/// here: `note_tool_end` takes it from its caller, which reads the config file on the
+/// call it marks -- a copy held here would be what the process started with. A lock
+/// rather than a `OnceLock` value, because a test installs its own and takes it away.
+fn slot() -> &'static RwLock<Option<PathBuf>> {
+    static SLOT: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
     SLOT.get_or_init(|| RwLock::new(None))
 }
 
-pub fn install(threshold: u64, home: impl Into<PathBuf>) {
+pub fn install(home: impl Into<PathBuf>) {
     if let Ok(mut slot) = slot().write() {
-        *slot = Some(Watcher {
-            threshold,
-            home: home.into(),
-        });
+        *slot = Some(home.into());
     }
 }
 
-pub fn installed() -> Option<Watcher> {
+pub fn installed() -> Option<PathBuf> {
     slot().read().ok().and_then(|slot| slot.clone())
 }
 
@@ -95,11 +86,12 @@ pub async fn note_tool_end(
     cwd: &Path,
     ok: bool,
     peer: Option<Peer>,
+    threshold: u64,
 ) {
-    let Some(watcher) = installed() else {
+    let Some(home) = installed() else {
         return;
     };
-    if watcher.threshold == 0 {
+    if threshold == 0 {
         return;
     }
     // The machine the call ran on first, then this one.
@@ -107,10 +99,10 @@ pub async fn note_tool_end(
     if let Some(peer) = peer {
         machines.push((peer.machine, peer.volumes));
     }
-    machines.push((LOCAL.to_string(), volumes(&watcher.home)));
+    machines.push((LOCAL.to_string(), volumes(&home)));
     for (machine, volumes) in machines {
         let free = volumes.iter().filter_map(|volume| volume.free).min();
-        if !low(free, watcher.threshold) {
+        if !low(free, threshold) {
             clear(&machine);
             continue;
         }
@@ -125,7 +117,7 @@ pub async fn note_tool_end(
             "tool": tool,
             "tool_ok": ok,
             "cwd": cwd.display().to_string(),
-            "threshold": watcher.threshold,
+            "threshold": threshold,
             "volumes": volumes
                 .into_iter()
                 .map(|volume| serde_json::json!({
@@ -140,7 +132,7 @@ pub async fn note_tool_end(
                 session,
                 tool,
                 event = row.id,
-                threshold = watcher.threshold,
+                threshold,
                 free = ?free,
                 "a disk is below the threshold this machine declared"
             ),

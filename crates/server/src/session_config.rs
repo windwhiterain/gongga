@@ -124,7 +124,10 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
             );
         }
         if let Some(tokens) = live_compact.interval_tokens {
-            args.insert("live_compact_interval_tokens".to_string(), tokens.to_string());
+            args.insert(
+                "live_compact_interval_tokens".to_string(),
+                tokens.to_string(),
+            );
         }
     }
     Ok(())

@@ -63,9 +63,10 @@ pub struct Agent {
     /// client carries the base URL, the key, the timeouts and the model it was built
     /// from, so one kept across a reload sends the new model to the old endpoint, and
     /// one kept across an edit sends the timeout the file no longer states.
-    pub clients:
-        std::sync::Mutex<std::collections::HashMap<String, (u64, u64, Arc<LlmClient>)>>,
-    pub tools: Arc<ToolRegistry>,
+    pub clients: std::sync::Mutex<std::collections::HashMap<String, (u64, u64, Arc<LlmClient>)>>,
+    /// The tool table the config file describes, rebuilt when the file is read again.
+    /// See `crate::live::Derived`.
+    pub tools: crate::live::Derived<crate::config::Config, Arc<ToolRegistry>>,
     /// The channels `exec` speaks to, and what a context is built with.
     pub channels: Arc<crate::tools::channel::Channels>,
     pub bus: EventBus,
@@ -81,6 +82,18 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// The tool table the config file describes now.
+    ///
+    /// # Invariant
+    ///
+    /// One table per config read: a call is looked up in the table the file stated
+    /// when the call was made, and a head is stamped from it, so a `[tool.<name>]`
+    /// edit reaches the next call and the next session without a restart.
+    pub fn tools(&self) -> Arc<ToolRegistry> {
+        let config = self.config.now();
+        self.tools.of(config.read, &config)
+    }
+
     /// Writes one row to the log and announces it, in that order.
     ///
     /// # Invariant
@@ -653,7 +666,7 @@ impl Agent {
             return Ok(kept);
         }
         let tool_set = crate::store::ToolSet {
-            tools: llm.wire_tools(&self.tools.stamp()),
+            tools: llm.wire_tools(&self.tools().stamp()),
             model: Some(model.to_string()),
             remote: session.remote_name(),
             build: protocol::BUILD.to_string(),
@@ -752,7 +765,7 @@ impl Agent {
     ) -> crate::tools::ToolOutcome {
         let fire_after = self.cache_fire_after_ms(model, tier);
         if fire_after == 0 {
-            return self.tools.run(name, args, ctx).await;
+            return self.tools().run(name, args, ctx).await;
         }
         let since = self
             .store
@@ -762,7 +775,9 @@ impl Agent {
             .map(|at| crate::store::now_millis().saturating_sub(at).max(0) as u64)
             .unwrap_or(0);
         let remaining = fire_after.saturating_sub(since);
-        let run = self.tools.run(name, args, ctx);
+        // Held for the whole run: the table a call started in is the one it finishes in.
+        let table = self.tools();
+        let run = table.run(name, args, ctx);
         tokio::pin!(run);
         if remaining == 0 {
             cancel.cancel();
@@ -1483,6 +1498,8 @@ impl Agent {
             holds_the_turn: true,
             stop: session.stop_signal(),
             closing: session.closing_signal(),
+            // The threshold the config states now, not the one this process started with.
+            disk_low: self.config.now().disk_low,
             explore: session.explore(),
         };
         let run_started = std::time::Instant::now();
@@ -1496,7 +1513,7 @@ impl Agent {
             .map(|max| max as usize);
         // Whose pictures these are: the machine the call's arguments name, if any.
         // See `docs/notes/server-remote.md`.
-        let printed_on = self.tools.machine_of(&tool, &arguments, &ctx);
+        let printed_on = self.tools().machine_of(&tool, &arguments, &ctx);
         let stated_tier = session.tuning().cache_tier;
         let outcome = self
             .run_before_cache_expiry(
@@ -2016,8 +2033,7 @@ fn notice_budget(configured: u64, fallback: u8, context: Option<u64>, percent: O
     providers::tokens_for_percent(window, percent.unwrap_or(fallback))
 }
 
-/// This machine's own lifetime for a cached prefix, in millis; `None` is no opinion,
-/// which leaves the provider's number in force.
+/// This machine's own cached-prefix lifetime, in millis; `None` leaves the provider's.
 fn cache_ttl_ms(config: &crate::config::Config) -> Option<u64> {
     (config.agent.cache_ttl_secs > 0).then(|| config.agent.cache_ttl_secs.saturating_mul(1_000))
 }
