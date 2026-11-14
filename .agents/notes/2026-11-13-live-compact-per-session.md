@@ -40,10 +40,18 @@ rewrite with the two `LiveCompact` arguments appended.
 
 ## Still open
 
-1. **Not merged into main.** `git merge --ff-only feature/live-compact-session` is the step, and
-   it is blocked by the main worktree: another session has uncommitted edits in `SPEC.md` and
-   `crates/server/src/lib.rs`, which this branch also changes. Until that lands, the running
-   server is main's old build and `/new_session` has no `--live_compact_*` to complete.
+1. **Merged into main** as a fast-forward (`f8d31384`), 2026-11-14 12:2x. The main worktree was
+   dirty in `SPEC.md` and `crates/server/src/lib.rs`, so that WIP was stashed, main was fast-
+   forwarded, and the stash was applied back: `lib.rs` came back whole (their 38 lines), and
+   `SPEC.md` had one conflicting hunk -- their `live_compact: bool = false` against this branch's
+   `live_compact: LiveCompact` -- resolved to the struct, which carries the interval and is what
+   the server implements. Their other hunks (`--check-config`, the `ls_subsscription` typo) are
+   intact. The stash is kept as `stash@{0}`.
+
+What is still missing is not a merge: the *running* server is main's older build
+   (`target/debug`, `--parent-build 707bb3712076-dirty`), so `/new_session` has no
+   `--live_compact_*` to complete until a build of this commit serves the home. That is a restart
+   of the home (evolve), which cancels its running turns.
 2. `[channel.<name>]` is still read once, when `Channels` is constructed (three processes build
    one, and it holds the channels that are running). Making it live needs `Current` threaded
    into `Channels`; doing it by hand-rolled refresh was judged worse than leaving it named.
