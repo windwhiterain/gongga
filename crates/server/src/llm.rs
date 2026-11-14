@@ -350,7 +350,7 @@ impl LlmClient {
                 while let Some(event) = once.recv().await {
                     produced |= event_produced(&event);
                     match &event {
-                        LlmEvent::Completed { usage } => {
+                        LlmEvent::Completed { usage, .. } => {
                             completed = true;
                             // What the provider measured against what was written: the
                             // only honest source for "how many tokens is an item".
@@ -742,6 +742,42 @@ pub struct ToolDefinition {
     pub parameters: Value,
 }
 
+/// When one attempt's stream began to speak, and when it stopped saying anything.
+///
+/// # Invariant
+///
+/// Both are read where the provider's events arrive, by the task that reads the
+/// socket, and never by the task that consumes them: a consumer held up by a tool
+/// for a minute would otherwise count that minute as time spent generating, which
+/// is the rate SPEC's title would then show. See `docs/notes/server-agent.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamWindow {
+    /// The first delta of any kind, in milliseconds from the attempt's request.
+    /// `None` is an attempt that streamed no content at all.
+    pub first_delta_ms: Option<u64>,
+    /// The provider's last event, in milliseconds from the same start.
+    pub end_ms: u64,
+}
+
+impl StreamWindow {
+    /// Output tokens per second this attempt generated, when both numbers exist.
+    ///
+    /// # Invariant
+    ///
+    /// The window is the provider's last event minus its first delta -- what the
+    /// stream itself took -- so a rate is a property of the stream and not of the
+    /// step it happened during. An empty window measures nothing rather than
+    /// dividing by zero.
+    pub fn tps(&self, output_tokens: Option<u64>) -> Option<f64> {
+        let first = self.first_delta_ms?;
+        let span = self.end_ms.saturating_sub(first);
+        if span == 0 {
+            return None;
+        }
+        Some(output_tokens? as f64 / (span as f64 / 1000.0))
+    }
+}
+
 /// What the model produced, one chunk at a time.
 ///
 /// # Invariant
@@ -805,6 +841,8 @@ pub enum LlmEvent {
     },
     Completed {
         usage: Option<Usage>,
+        /// Measured by the reader, so the step's own clock cannot touch it.
+        window: StreamWindow,
     },
     /// Aggregated measurements for one HTTP attempt, emitted after its last event.
     Attempt {
@@ -1225,7 +1263,7 @@ async fn read_stream_inner(
     let mut items: HashMap<String, ItemMeta> = HashMap::new();
     // The other face keeps its own running state; only one of the two is ever read.
     let mut face_state = crate::anthropic::Stream::default();
-    let mut out = Outbox::new(tx);
+    let mut out = Outbox::new(tx, started);
     // Silence of content is failure: not "time since the request started", which would
     // cut a long answer mid-sentence.
     let idle = tokio::time::sleep(idle_timeout);
@@ -1710,19 +1748,54 @@ fn provider_phase(event_name: &str) -> Option<(&str, &str)> {
 pub(crate) struct Outbox<'a> {
     tx: &'a mpsc::Sender<LlmEvent>,
     content: bool,
+    /// The attempt's own start, so the window below is on the request's clock.
+    started: Instant,
+    /// When this attempt first said anything; `None` is an attempt that said nothing.
+    first_delta_ms: Option<u64>,
 }
 
 impl<'a> Outbox<'a> {
-    pub(crate) fn new(tx: &'a mpsc::Sender<LlmEvent>) -> Self {
-        Self { tx, content: false }
+    pub(crate) fn new(tx: &'a mpsc::Sender<LlmEvent>, started: Instant) -> Self {
+        Self {
+            tx,
+            content: false,
+            started,
+            first_delta_ms: None,
+        }
     }
 
     pub(crate) async fn send(
         &mut self,
         event: LlmEvent,
     ) -> Result<(), mpsc::error::SendError<LlmEvent>> {
-        self.content |= event_content(&event);
+        let content = event_content(&event);
+        if content && self.first_delta_ms.is_none() {
+            self.first_delta_ms = Some(self.ms());
+        }
+        self.content |= content;
         self.tx.send(event).await
+    }
+
+    /// The whole response is in: what the stream took, measured here and not by the
+    /// reader's consumer.
+    ///
+    /// # Invariant
+    ///
+    /// The window is closed before the event is queued, so no wait of the task that
+    /// takes it can widen it. See [`StreamWindow`].
+    pub(crate) async fn complete(
+        &mut self,
+        usage: Option<Usage>,
+    ) -> Result<(), mpsc::error::SendError<LlmEvent>> {
+        let window = StreamWindow {
+            first_delta_ms: self.first_delta_ms,
+            end_ms: self.ms(),
+        };
+        self.send(LlmEvent::Completed { usage, window }).await
+    }
+
+    fn ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
     }
 
     /// Whether content went out since the last call, clearing the mark.
@@ -2064,7 +2137,7 @@ async fn handle(
         }
         "response.completed" => {
             let usage = serde_json::from_value(d["response"]["usage"].clone()).ok();
-            out.send(LlmEvent::Completed { usage }).await?;
+            out.complete(usage).await?;
         }
         "response.failed" | "error" => {
             let error = event_error(d);

@@ -1535,8 +1535,12 @@ impl Store {
             let trigger_advance = if context_tokens == 0 { 0 } else { 1 };
             // Cancel the trigger's conditional +1, leaving one generation rewind per checkpoint.
             tx.execute(
+                // The four measured columns go together: the transcript this request
+                // was billed for is gone, so its rate and its delay describe nothing
+                // left in this row. See `docs/notes/server-store.md`.
                 "UPDATE sessions SET live_compact_baseline_tokens = NULL,
                         live_compact_requested = 0, context_tokens = 0, cached_tokens = NULL,
+                        tps = NULL, ttft_ms = NULL,
                         context_generation = context_generation - ?2
                  WHERE id = ?1",
                 params![session_id, checkpoints + trigger_advance],
@@ -2274,9 +2278,12 @@ impl Store {
         }
 
         // Nonzero resets trigger +1; zero needs an explicit advance so old usage stays stale.
+        // The rate and the delay go with the context: they measured the transcript the
+        // checkpoint replaced.
         tx.execute(
             "UPDATE sessions SET live_compact_baseline_tokens = NULL,
-                    live_compact_requested = 0, context_tokens = 0, cached_tokens = NULL
+                    live_compact_requested = 0, context_tokens = 0, cached_tokens = NULL,
+                    tps = NULL, ttft_ms = NULL
              WHERE id = ?1",
             params![session_id],
         )?;

@@ -1001,9 +1001,10 @@ impl Agent {
         let window = source.upto_seq;
         // One number for "how long the model took": the whole stream, retries included.
         let requested = std::time::Instant::now();
-        // SPEC's ttft and tps both count from the first token: the wait for it,
-        // then what came out over the time after.
-        let mut first_token: Option<std::time::Instant> = None;
+        // SPEC's ttft and tps are the stream's own, measured by the task that reads
+        // the provider's events: this task stops reading while a tool call runs, so a
+        // clock read here would count the tool as generation. See
+        // `docs/notes/server-agent.md`.
         phases.llm_started = Some(requested);
         // One tier for the whole turn, settled before its first request.
         let tier = self.cache_tier(llm, tier);
@@ -1055,7 +1056,6 @@ impl Agent {
                     item_id,
                     text,
                 } => {
-                    first_token.get_or_insert_with(std::time::Instant::now);
                     let call_id = calls.get(&item_id).cloned();
                     began.insert((item_id.clone(), part));
                     said.insert(item_id.clone());
@@ -1216,7 +1216,10 @@ impl Agent {
                     payload["turn"] = json!(turn);
                     self.log_event(Some(id), "llm_attempt", &payload);
                 }
-                LlmEvent::Completed { usage } => {
+                LlmEvent::Completed {
+                    usage,
+                    window: stream,
+                } => {
                     saw_completion = true;
                     // The index it carried is warm again -- and only that one. The
                     // owner is the directory the prompt row states.
@@ -1227,13 +1230,11 @@ impl Agent {
                         &prompt.rooted,
                     );
                     // Outside the guard: a provider with no counts still took the time.
-                    let ttft_ms =
-                        first_token.map(|t| t.duration_since(requested).as_millis() as u64);
-                    let streamed = first_token.map(|t| t.elapsed().as_secs_f64());
-                    let tps = match (usage.as_ref().and_then(|u| u.output_tokens), streamed) {
-                        (Some(out), Some(secs)) if secs > 0.0 => Some(out as f64 / secs),
-                        _ => None,
-                    };
+                    let ttft_ms = stream.first_delta_ms;
+                    let tps = stream.tps(usage.as_ref().and_then(|u| u.output_tokens));
+                    let stream_ms = stream
+                        .first_delta_ms
+                        .map(|first| stream.end_ms.saturating_sub(first));
                     if let Some(u) = &usage {
                         let cached = u.cached_tokens();
                         // Read before this answer is stored: the last input is
@@ -1243,7 +1244,10 @@ impl Agent {
                             self.store.last_usage_at(id).ok().flatten().map(|at| {
                                 crate::store::now_millis().saturating_sub(at).max(0) as u64
                             });
-                        let hit_ratio = match (cached, expected) {
+                        // The share SPEC's title draws: what of *this* request the
+                        // provider served from cache. `expected` above is the prefix
+                        // it could have hit, which is a different question.
+                        let hit_ratio = match (cached, u.input_tokens) {
                             (Some(hit), Some(size)) if size > 0 => Some(hit as f64 / size as f64),
                             _ => None,
                         };
@@ -1268,6 +1272,7 @@ impl Agent {
                                 "model": llm.model(),
                                 "step": step,
                                 "latency_ms": requested.elapsed().as_millis() as u64,
+                                "stream_ms": stream_ms,
                                 "input": u.input_tokens,
                                 "cached": cached,
                                 "uncached": u.uncached_tokens(),
