@@ -1,4 +1,4 @@
-//! What runs an entry: the program, and what it wants before the file.
+//! What a skill runs as: this home's package contract, or an entry's program.
 //!
 //! See `docs/notes/skill-entry.md`.
 
@@ -6,14 +6,13 @@ use std::path::{Path, PathBuf};
 
 use crate::shell_path;
 
-/// The interpreters an entry may name, as each caller resolved them.
+/// The interpreters an entry may name, as the command line resolved them.
 ///
 /// # Invariant
 ///
-/// Looked up by the caller, never here: the server has a configured bash and
-/// Python, the command line finds them on PATH, and this crate keeps no opinion
-/// about where a program lives. `None` is "not found", and the error naming it is
-/// made only when an entry asks for that one.
+/// Looked up by the caller, never here: this crate keeps no opinion about where a program
+/// lives, and `None` is "not found". The server builds none of this -- it runs only a
+/// package, and needs only the one interpreter `package_of` takes.
 #[derive(Debug, Clone, Default)]
 pub struct Programs {
     pub bash: Option<PathBuf>,
@@ -40,7 +39,8 @@ impl Runner {
         }
     }
 
-    /// The words this entry is run with: the program's own, the file, then argv.
+    /// The words this entry is run with: the program's own, the file, then argv. Only
+    /// `gongga-cli skill` calls this.
     pub fn words(&self, entry: &Path, argv: &[String]) -> Vec<String> {
         let mut words = self.leading.clone();
         words.push(self.spell(entry));
@@ -49,7 +49,8 @@ impl Runner {
     }
 }
 
-/// What starts a skill: a file run with words, or this home's contract file.
+/// What starts a skill: a file with words, or this home's contract file; only
+/// `gongga-cli skill` asks this.
 ///
 /// # Invariant
 ///
@@ -72,7 +73,8 @@ const PACKAGE: &str = "__init__.py";
 /// this home's `lib/`.
 const CONTRACT: &str = "gongga_skill.py";
 
-/// What runs a skill: the package it is, or the entry it declares.
+/// What runs a skill: the package it is, or the entry it declares; only the command line
+/// asks this.
 ///
 /// # Invariant
 ///
@@ -87,8 +89,8 @@ pub fn runner_of(
     programs: &Programs,
     lib: Option<&Path>,
 ) -> Result<Launch, String> {
-    if directory.join(PACKAGE).is_file() {
-        return package(programs, lib);
+    if is_package(directory) {
+        return package_of(programs.python.as_deref(), lib).map(Launch::Package);
     }
     match declared {
         Some(entry) => runner(entry, programs).map(Launch::Entry),
@@ -100,8 +102,24 @@ pub fn runner_of(
     }
 }
 
+/// Whether a skill directory is a Python package: the file that makes one.
+///
+/// # Invariant
+///
+/// The one place that names `__init__.py`: the server refuses a directory without it and
+/// `runner_of` falls back on the entry, so both read the same file for the same reason.
+pub fn is_package(directory: &Path) -> bool {
+    directory.join(PACKAGE).is_file()
+}
+
 /// A package skill: this home's contract file reads the call off stdin.
-fn package(programs: &Programs, lib: Option<&Path>) -> Result<Launch, String> {
+///
+/// # Invariant
+///
+/// The one form the server runs. `python` is the interpreter the caller resolved, since
+/// this crate looks none up, and `lib` is this home's: the content installs the contract
+/// there, so changing it is never a rebuild.
+pub fn package_of(python: Option<&Path>, lib: Option<&Path>) -> Result<Runner, String> {
     let Some(lib) = lib else {
         return Err(
             "this home has no `lib` directory, so a package skill has no contract to run: \
@@ -116,11 +134,18 @@ fn package(programs: &Programs, lib: Option<&Path>) -> Result<Launch, String> {
             contract.display()
         ));
     }
-    Ok(Launch::Package(Runner {
-        program: python(programs)?,
+    let Some(python) = python else {
+        return Err(
+            "a package skill is Python and no Python was found: install one, or name it in \
+             the config (`GONGGA_PYTHON`, `[tools.python] program`)"
+                .to_string(),
+        );
+    };
+    Ok(Runner {
+        program: python.to_path_buf(),
         leading: vec![contract.display().to_string()],
         posix: false,
-    }))
+    })
 }
 
 /// The one line a package's runner reads on stdin.

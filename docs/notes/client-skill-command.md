@@ -45,9 +45,10 @@ is its `SKILL.md`'s `metadata.entry`, which is a line of the body a reader alrea
 `ls` hands out that `SKILL.md`.
 
 Everything after the name is argv for a skill that is an entry: `argv` is passed through to
-the runner, and `crates/skill/src/entry.rs` starts the file `metadata.entry` names with it. So
-an entry skill keeps the rule it always had, and "what does this package publish" is
-answered where a package is understood.
+the runner, and `crates/skill/src/entry.rs` starts the file `metadata.entry` names with it. An
+entry skill keeps the rule it always had *here* -- this is the command that still runs the
+machine's and the community's scripts, which the server refuses -- and "what does this package
+publish" is answered where a package is understood.
 
 ## A package is one JSON word
 
@@ -78,10 +79,13 @@ business.
 
 ## runner
 
-`runner` moved to `crates/skill/src/entry.rs` when the server grew a way to run a skill: the rule
-"which program starts this file" has one answer, and the server could not keep a second copy.
-What stayed here is the *lookup* -- `which`, the Python probe, PowerShell -- handed to the
-crate as `skill::Programs`. The paragraph below is the reasoning that moved with it.
+`runner` moved to `crates/skill/src/entry.rs` when the server grew a way to run a skill, so
+that the rule "which program starts this file" would have one home. The server no longer runs
+an entry at all -- SPEC makes every skill the model calls a Python call -- so what stayed
+in that crate is this command's rule alone, and `runner_of` says so at its own doc. What
+stayed here is the *lookup* -- `which`, the Python probe, PowerShell -- handed to the crate
+as `skill::Programs`, the one caller that still builds one. The paragraph below is the
+reasoning that moved with it.
 
 An entry is run by the program its extension names -- `bash` for a shell script, a Python
 for a `.py`, PowerShell for `.ps1`, `cmd /c` for a batch file -- and an entry with no

@@ -538,16 +538,16 @@ impl ToolRegistry {
         self
     }
 
-    /// What this build runs a skill with: the programs, the home's import, the bounds.
+    /// What this build runs a skill with: the interpreter, the home's import, the bounds.
     pub fn with_skills(
         mut self,
-        programs: ::skill::Programs,
+        python: Option<std::path::PathBuf>,
         lib: Option<std::path::PathBuf>,
         timeout: Duration,
         max: usize,
     ) -> Self {
         self.settings.skills = Some(skill::Skills {
-            programs,
+            python,
             lib,
             timeout,
             max_output_chars: max,
@@ -555,7 +555,7 @@ impl ToolRegistry {
         self
     }
 
-    /// The skills this build can run; `None` when the machine resolved no programs.
+    /// The skills this build can run; `None` before a config resolved them.
     ///
     /// # Invariant
     ///

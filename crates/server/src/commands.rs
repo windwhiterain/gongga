@@ -2534,7 +2534,7 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     Outcome::ok(serde_json::Value::Array(listed).to_string())
 }
 
-/// Runs one skill as `session`: a package's request, or an entry's words.
+/// Runs one skill as `session`: a package's request on its stdin.
 ///
 /// # Invariant
 ///
