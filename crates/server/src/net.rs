@@ -325,9 +325,9 @@ async fn handle_connection(
         tracing::warn!(%peer, error = %e, "could not greet client");
         return;
     }
-    // A measurement, not part of the greeting: told here so a window attaching
-    // between two steps still has a row.
-    if let Some(reading) = crate::quota::last() {
+    // Not part of the greeting: a window attaching between two steps is told
+    // every row, one event per provider.
+    for reading in crate::quota::readings() {
         let _ = send_event(&sink, None, Event::Quota(reading)).await;
     }
 

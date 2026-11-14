@@ -391,20 +391,28 @@ events, which are what the window is for.
 
 ## draw_command
 
-One row, under the `active_quota` row and above the prompt, and only when the command
+One row, under the `active_quota` block and above the prompt, and only when the command
 layer announced a command window. It is drawn by the same code as a pane's body, so
 its rows carry the same colours and the same clipping.
 
-## draw_quota
+## draw_quota, quota_lines, quota_rows
 
-SPEC's `active_quota` row: one line above the command line, under the windows,
-painted by the kind the command layer gave it -- a reading is dim chrome, a provider
-that could not be read is the error colour.
+SPEC's `active_quota` block: rows above the command line, under the windows, laid side
+by side and wrapped, each painted by the kind the command layer gave it -- a reading
+is dim chrome, a provider that could not be read is the error colour.
 
 Above rather than below, because the command line is SPEC's `[{cmd, cmd_result}]`
 ticker and the prompt under it is where the operator's attention sits: a balance is
 read once in a while, a command's answer every time. It is also the order SPEC lists
 them in.
+
+`quota_lines` is the one function that decides the block's rows, and both the height
+and the drawing call it: `quota_rows` is what `Chrome` hands the layout, and
+`draw_quota` draws the same lines at the same width (`command_width`, the width the
+chrome was measured at). A row is never cut in the middle -- the wrap happens between
+two providers, `QUOTA_GAP` columns apart -- so a provider whose own row is wider than
+the window is clipped by the frame rather than split. Two rows of different kinds are
+two spans on one line: a failure beside a fact keeps its own colour.
 
 No row exists before the first reading, so the frame is exactly what it was before the
 feature for a server that has nothing to report, and for a provider whose roster entry
@@ -413,8 +421,10 @@ publishes no reader.
 ## Chrome
 
 The rows that exist only when something is drawn in them -- the command line and the
-quota row -- as one value, because SPEC's rows are positional and two bare booleans
-next to each other is a call that swaps them silently.
+quota block -- as one value, because SPEC's rows are positional and two bare numbers
+next to each other is a call that swaps them silently. `command_rows` is what the log
+says its content needs; `quota_rows` is what the block wraps into. Both are measured
+at the width the frame is drawn with, and the layout gives each exactly that.
 
 ## areas
 

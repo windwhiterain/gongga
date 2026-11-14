@@ -390,8 +390,9 @@ the file says now.
 
 ## Quota
 
-SPEC's `active_quota` row on the wire: the provider, the three window shares, a
-credit, a balance, and the currency the balance is in.
+SPEC's `active_quota` rows on the wire: the provider, the three window shares, a
+credit, a balance, and the currency the balance is in -- one `Quota` per provider,
+because the block shows several of them side by side.
 
 Every figure is `Option`, and absent means "this provider did not report it" --
 a month's share and a wallet balance are different facts, and a `0.0` default
@@ -400,9 +401,17 @@ flagged something (a spent window, an unavailable account) or the reason no
 reading could be made at all, which is why the row can say why it is empty
 instead of vanishing.
 
+`request` is the ordinal of the last request this server sent to that provider,
+from one count shared by every provider. It is what says which rows are the recent
+ones, and it is *not* the event's position: an answer can arrive long after the
+request that earned it, and a slow reader must not make its provider look like the
+one that was asked last.
+
 `Event::Quota` is a delta published at a step's end rather than a field of
-`SessionInfo`: the row is about the *provider*, not a session, and a step that
-names a new provider is what makes it "active".
+`SessionInfo`: a row is about the *provider*, not a session, and a step that names a
+provider is what makes it one of the recent ones. A window that attaches between two
+steps is told every row once, in the greeting's own replay: `Event::Quota` carries no
+position, so there is no gap for one to fall into.
 
 ## Head, Field and HeadKind
 

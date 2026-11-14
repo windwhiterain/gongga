@@ -255,6 +255,11 @@ impl LlmClient {
         cache_tier: Option<&str>,
         cancel: CancellationToken,
     ) -> mpsc::Receiver<LlmEvent> {
+        // SPEC's `active_quota` is ordered by a provider's last request, so the
+        // stamp belongs here.
+        if let Some(provider) = self.provider() {
+            crate::quota::note_request(provider);
+        }
         let (tx, rx) = mpsc::channel(256);
         let build_started = Instant::now();
         // One per-conversation id -- the stable database id -- for every affinity field:

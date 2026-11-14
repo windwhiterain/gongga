@@ -102,9 +102,10 @@ the next turn, and a wallet with no window is a nominal share so it competes
 rather than being shut out. This is the same `fail_open` reading the `model_pool`
 skill uses: nothing reported is not a refusal.
 
-That comparison is why `quota` keeps a reading per provider. `quota::last()` is
-still the newest reading of any provider, which is what SPEC's `active_quota` row
-is about; `quota::of(provider)` is what a choice between providers needs.
+That comparison is why `quota` keeps a reading per provider. What SPEC's
+`active_quota` block draws is `quota::readings()`, every row ordered by its last
+request; `quota::of(provider)` is what a choice between providers needs. Both read
+the same table, so the block and the choice cannot disagree about a provider.
 
 The chosen model is written to `sessions.model` and the session's `Tuning` before
 the report is delivered, so the turn cannot start on the model that just failed.

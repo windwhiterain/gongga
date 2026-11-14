@@ -1,4 +1,4 @@
-//! SPEC's `active_quota` row: what the provider a step ran on still allows.
+//! SPEC's `active_quota` rows: what the providers asked recently still allow.
 //!
 //! See `docs/notes/server-quota.md`.
 
@@ -19,19 +19,28 @@ use crate::bus::EventBus;
 /// keep a child process alive for the life of the server.
 const READER_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The newest reading, per provider, and what each endpoint last said.
+/// Every provider's newest reading, the order they were asked in, and what each
+/// endpoint last said.
 struct Last {
-    /// The newest reading of any provider: SPEC's `active_quota` row.
-    reading: Option<Quota>,
     /// Every provider's newest reading, by roster id.
     ///
     /// # Invariant
     ///
-    /// Kept per provider because a choice between providers -- which flash model a
-    /// monitor turn runs on -- is a comparison, and the single newest reading says
-    /// nothing about the others. In memory only: a reading is a measurement of a
-    /// moment, not a fact about a home.
+    /// Kept per provider because SPEC's block is several providers at once, and
+    /// because a choice between providers -- which flash model a monitor turn runs
+    /// on -- is a comparison that one reading says nothing about. In memory only: a
+    /// reading is a measurement of a moment, not a fact about a home.
     by_provider: std::collections::HashMap<String, Quota>,
+    /// The ordinal of the last request sent to each provider, by roster id, and
+    /// the number the next request takes.
+    ///
+    /// # Invariant
+    ///
+    /// One sequence for every provider: "asked most recently" is a comparison
+    /// between providers, so their numbers have to come from the same count. In
+    /// memory only, for the same reason a reading is.
+    requested: std::collections::HashMap<String, u64>,
+    next_request: u64,
     /// Every endpoint's last answer, by `<provider>/<query id>`.
     ///
     /// # Invariant
@@ -67,8 +76,9 @@ fn state() -> &'static Mutex<Last> {
     static LAST: OnceLock<Mutex<Last>> = OnceLock::new();
     LAST.get_or_init(|| {
         Mutex::new(Last {
-            reading: None,
             by_provider: std::collections::HashMap::new(),
+            requested: std::collections::HashMap::new(),
+            next_request: 0,
             answered: std::collections::HashMap::new(),
             in_flight: std::collections::HashSet::new(),
             announced: std::collections::HashMap::new(),
@@ -76,9 +86,52 @@ fn state() -> &'static Mutex<Last> {
     })
 }
 
-/// The newest reading, for a window that has just attached.
-pub fn last() -> Option<Quota> {
-    state().lock().ok()?.reading.clone()
+/// Every provider read in this run, the one asked most recently first: what a
+/// window that has just attached is told.
+///
+/// # Invariant
+///
+/// Ordered by the request, never by the arrival: a slow endpoint's answer does not
+/// make its provider the one that was asked last. The greeting replays these one
+/// event at a time, so a window attaching between two steps holds the same block a
+/// long-lived one does.
+pub fn readings() -> Vec<Quota> {
+    let Ok(state) = state().lock() else {
+        return Vec::new();
+    };
+    let mut readings: Vec<Quota> = state.by_provider.values().cloned().collect();
+    // Newest request first; the roster id breaks ties, so two rows stamped
+    // alike never swap places between frames.
+    readings.sort_by(|a, b| {
+        b.request
+            .cmp(&a.request)
+            .then_with(|| a.provider.cmp(&b.provider))
+    });
+    readings
+}
+
+/// Records that a request has just gone to `provider`.
+///
+/// # Invariant
+///
+/// Called where the request is made, never where its answer is filed: SPEC orders
+/// the rows by the last request, and a step that took a minute is still a step that
+/// has been waiting since it started.
+pub fn note_request(provider: &str) {
+    if let Ok(mut state) = state().lock() {
+        state.next_request = state.next_request.saturating_add(1);
+        let ordinal = state.next_request;
+        state.requested.insert(provider.to_string(), ordinal);
+    }
+}
+
+/// The ordinal of the last request sent to `provider`; 0 for one never asked.
+fn requested(provider: &str) -> u64 {
+    state()
+        .lock()
+        .ok()
+        .and_then(|state| state.requested.get(provider).copied())
+        .unwrap_or(0)
 }
 
 /// What a provider last reported, if it was ever read in this run.
@@ -89,7 +142,8 @@ pub fn of(provider: &str) -> Option<Quota> {
 /// The event a provider's unreadable allowance is logged as, for the monitor.
 pub const EVENT: &str = "quota";
 
-/// Reads `provider`'s allowance and publishes it, at a step's end.
+/// Reads `provider`'s allowance and publishes it, at a step's end: one row of
+/// SPEC's block.
 ///
 /// # Invariant
 ///
@@ -116,7 +170,12 @@ pub fn publish(
         }
     }
     tokio::spawn(async move {
-        let reading = read(&provider, interval).await;
+        let mut reading = read(&provider, interval).await;
+        // This row's place in SPEC's order: when the provider was last asked, not
+        // when it answered.
+        if let Some(reading) = reading.as_mut() {
+            reading.request = requested(&provider);
+        }
         // A note with no numbers: see `docs/notes/server-monitor.md`.
         if let Some(failed) = &reading
             && let Some(note) = &failed.note
@@ -147,7 +206,6 @@ pub fn publish(
         if let Ok(mut state) = state().lock() {
             state.in_flight.remove(&provider);
             if let Some(reading) = &reading {
-                state.reading = Some(reading.clone());
                 state
                     .by_provider
                     .insert(reading.provider.clone(), reading.clone());

@@ -117,8 +117,9 @@ pub struct Chrome {
     pub command: bool,
     /// The rows that area wants, from the log; the layout decides what it gets.
     pub command_rows: u16,
-    /// SPEC's `active_quota` row: a reading has been announced.
-    pub quota: bool,
+    /// SPEC's `active_quota` block: the rows it wraps into at the width it is
+    /// measured at, and 0 when no reading has arrived.
+    pub quota_rows: u16,
 }
 
 /// The six parts of SPEC's window, in the order they are drawn.
@@ -143,11 +144,11 @@ pub fn areas(area: Rect, input_rows: u16, chrome: Chrome) -> Vec<Rect> {
         ),
     };
     let mut chunks: Vec<Rect> = Layout::vertical([
-        Constraint::Length(1),                                // header
-        Constraint::Min(1),                                   // session list | windows
-        Constraint::Length(if chrome.quota { 1 } else { 0 }), // active_quota
-        Constraint::Length(command),                          // cmd and its result
-        Constraint::Length(input_rows),                       // the prompt
+        Constraint::Length(1),                 // header
+        Constraint::Min(1),                    // session list | windows
+        Constraint::Length(chrome.quota_rows), // active_quota
+        Constraint::Length(command),           // cmd and its result
+        Constraint::Length(input_rows),        // the prompt
     ])
     .split(rest)
     .to_vec();
@@ -764,28 +765,70 @@ fn draw_pane_header(f: &mut Frame, name: &str, area: Rect, selected: bool, note:
     f.render_widget(Paragraph::new(rows), area);
 }
 
-/// SPEC's `active_quota` row: the provider, then what it says is left.
+/// SPEC's `active_quota` block: each provider, then what it says is left, side by
+/// side and wrapped at the width.
 ///
 /// # Invariant
 ///
-/// One row under the command line, present only when a reading has arrived, and
-/// painted by the row's own kind: a balance nobody could read is an error, not a
-/// fact. See `docs/notes/tui-render.md`.
+/// Under the command line, present only when a reading has arrived, and painted by
+/// each row's own kind: a balance nobody could read is an error, not a fact. The
+/// width is the one the block's height was measured at, and the two are one
+/// function ([`quota_lines`]), so the box never disagrees with what is drawn into
+/// it. See `docs/notes/tui-render.md`.
 fn draw_quota(f: &mut Frame, s: &Screen, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let Some(row) = s.panes.quota() else {
+    let lines = quota_lines(s.panes.quota(), command_width(area));
+    if lines.is_empty() {
         return;
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            row.text.clone(),
-            style_for(row.kind),
-        ))),
-        area,
-    );
+    }
+    f.render_widget(Paragraph::new(lines), area);
 }
+
+/// How many rows SPEC's `active_quota` block wraps into at `width`.
+pub fn quota_rows(rows: &[crate::QuotaRow], width: usize) -> u16 {
+    // Taller than any window is a number nobody can draw: the frame shows the
+    // rows that fit.
+    quota_lines(rows, width).len().min(u16::MAX as usize) as u16
+}
+
+/// The block's lines: providers side by side, [`QUOTA_GAP`] columns apart, a new
+/// line when the next row would not fit.
+///
+/// # Invariant
+///
+/// One function for the height and for the drawing, and a wrap happens between two
+/// providers, never inside one: a row cut in half says nothing about its provider.
+fn quota_lines(rows: &[crate::QuotaRow], width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut current: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for row in rows {
+        let len = row.text.chars().count();
+        if !current.is_empty() && used + QUOTA_GAP + len > width {
+            lines.push(Line::from(std::mem::take(&mut current)));
+            used = 0;
+        }
+        if !current.is_empty() {
+            current.push(Span::raw(QUOTA_GAP_TEXT));
+            used += QUOTA_GAP;
+        }
+        current.push(Span::styled(row.text.clone(), style_for(row.kind)));
+        used += len;
+    }
+    if !current.is_empty() {
+        lines.push(Line::from(current));
+    }
+    lines
+}
+
+/// The columns between two providers of SPEC's block.
+const QUOTA_GAP: usize = 3;
+
+/// What fills those columns.
+const QUOTA_GAP_TEXT: &str = " | ";
 
 /// One row of an item: the box's top rule with the item's label, its bottom rule, or
 /// a row of its body.

@@ -685,7 +685,39 @@ def _child_environment(extra):
     return env
 
 
-def fake_roster(port, model):
+# The allowance each stand-in provider reports, so SPEC's `active_quota` block has
+# rows that cannot be confused for one another. A provider this table does not name
+# gets the default, so a `--model` naming some other pair still has a reader.
+QUOTA_SHARES = {
+    "deepseek-official": (75, 40),
+}
+QUOTA_SHARES_DEFAULT = (12, 90)
+
+
+def quota_reader(path, month, week):
+    """Write one stand-in's allowance reader, the shape `[[provider.quota_query]]` runs.
+
+    # Invariant
+
+    Two windows with a stated capacity, so the row is SPEC's `month n%` and
+    `week n%` rather than a credit: only a reading that states a ceiling can say
+    what share is left. See `docs/notes/server-quota.md`.
+    """
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(
+            "import json\n"
+            "print(json.dumps({\n"
+            '    "remaining": %r,\n'
+            '    "windows": [\n'
+            '        {"name": "monthly", "remaining": %r, "capacity": 100.0},\n'
+            '        {"name": "weekly", "remaining": %r, "capacity": 100.0},\n'
+            "    ],\n"
+            "}))\n" % (month, month, week)
+        )
+    return path
+
+
+def fake_roster(port, model, run_dir):
     """A roster whose providers all point at the stand-in, so both names place.
 
     # Invariant
@@ -695,10 +727,21 @@ def fake_roster(port, model):
     server that cannot place a name warns and falls back to the machine's
     default, and then the run bills a real provider and every `hi-from-fake` a
     script waits for can never appear. See `docs/notes/server-config.md`.
+
+    Each provider also carries a `quota_query`, because SPEC reads the allowance of
+    the provider a step ran on: without a reader the block never exists, whatever
+    the window does. The reader is written into the run directory, so the numbers a
+    frame shows are this run's own.
     """
     provider, _, name = model.partition("/")
 
     def block(provider_id, model_id):
+        month, week = QUOTA_SHARES.get(provider_id, QUOTA_SHARES_DEFAULT)
+        reader = quota_reader(
+            os.path.join(run_dir, "quota-%s.py" % provider_id.replace("/", "-")),
+            month,
+            week,
+        )
         return (
             '[[provider]]\n'
             'id = "%s"\n'
@@ -716,7 +759,12 @@ def fake_roster(port, model):
             '  tier = "flash"\n'
             "  context = 100000\n"
             '  modalities = ["text"]\n'
-        ) % (provider_id, port, model_id)
+            "\n"
+            "  [[provider.quota_query]]\n"
+            '  id = "plan"\n'
+            '  unit = "percent-left"\n'
+            "  script = '%s'\n"
+        ) % (provider_id, port, model_id, reader)
 
     blocks = [block(provider or "fake", name or "stream-model")]
     # The default a session takes when the run names none: without it, creating
@@ -2031,7 +2079,7 @@ class Stack:
         port = self.options.server_port or free_port("udp")
         roster = os.path.join(self.run_dir, "roster.toml")
         with open(roster, "w", encoding="utf-8") as handle:
-            handle.write(fake_roster(fake_port, self.options.model))
+            handle.write(fake_roster(fake_port, self.options.model, self.run_dir))
         environment = _child_environment(
             {
                 "GONGGA_BASE_URL": "http://127.0.0.1:%d/v1" % fake_port,

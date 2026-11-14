@@ -432,8 +432,9 @@ talking the whole time" is asked after the turn.
 ## quota at a step's end
 
 SPEC puts `active_quota` in the main column and says it updates at every step's
-end, so the same branch that writes `usage` also asks the quota reader to
-publish. Which provider that is comes from the client the step ran on
+end, so the same branch that writes `usage` also asks the quota reader to publish
+-- for the provider that step ran on, which is what makes it one of the rows the
+block draws. Which provider that is comes from the client the step ran on
 (`LlmClient::provider`), not from the session's tuning: a step is what spends an
 allowance, and a session that named no `--model` spends the server's.
 

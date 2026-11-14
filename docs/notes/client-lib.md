@@ -568,7 +568,7 @@ session is drawn -- following it would undo what it says.
 
 ## QuotaRow, quota_row
 
-SPEC's `active_quota` row, spelled once for every front-end, for the same reason
+SPEC's `active_quota` rows, spelled once for every front-end, for the same reason
 `Listed::usage` is: a rate, a share and a currency are formatted in one place, and
 two front-ends cannot disagree about how many decimals a balance has.
 
@@ -585,9 +585,15 @@ exhausted" -- stays a fact, because the numbers are still true.
 
 ## Event::Quota
 
-One line, updated at every step's end, and the layout is announced again only when
-the spelled row changed: a provider that reports the same balance on two steps does
-not make the window repaint.
+One row per provider. A reading replaces the row of its own provider -- found by
+`provider`, never by position -- and the rows are then ordered by `request`, newest
+first, and cut to `QUOTA_PROVIDERS`: SPEC's block is the few providers asked most
+recently, so the one that falls out is the one whose last request is furthest back.
+That number bounds what is *drawn*: the server keeps every reading it made, and a
+provider that fell out comes back at its next step's end.
+
+The layout is announced again only when the block changed: a provider that reports
+the same balance on two steps does not make the window repaint.
 
 ## Listed::status
 
