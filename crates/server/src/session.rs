@@ -1317,6 +1317,9 @@ impl SessionManager {
                 // Born working; `set_session` moves it in the same command.
                 mode: crate::explore::Mode::Work,
                 worktree: worktree.map(str::to_string),
+                // A worktree is made at the main line's commit and touches nothing.
+                worktree_merged: worktree.map(|_| true),
+                worktree_changed: worktree.map(|_| false),
             },
             &mut live,
         )

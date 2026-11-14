@@ -609,8 +609,13 @@ than in the window for the same reason `status` is a word: a front-end
 that knows no protocol type can still draw it, and the two front-ends cannot
 disagree about how a rate is rounded.
 
-`title_note` spells it: `ctx 12345 · cached 89% · tps 41.6 · ttft 820ms · cwd
-C:/work/svc · model deepseek-official/deepseek-flash · thinking high · ctx_limit 70%`.
+`title_note` spells it: `ctx 12345 · cached 89% · tps 41.6 · ttft 820ms · C:/work/svc ·
+worktree unmerged · deepseek-official/deepseek-flash · high · 70%`.
+
+The last four carry no label: a path, a worktree state, a `provider/model`, a level and
+a share already say which is which, and a card is drawn once per session per frame --
+the labels are the first thing to give up when something has to fit. `ctx`, `cached`,
+`tps` and `ttft` keep theirs because those figures mean nothing without the word.
 
 `cached` is a share, not a count: SPEC says `in n%`, and the client is where the
 division happens because the wire carries what the provider measured (two token

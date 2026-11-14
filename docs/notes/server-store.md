@@ -173,7 +173,9 @@ is no session left to retry for. See `docs/notes/server-tools-detached.md`.
 The branch a session was born in, by name, or NULL for a session that made none. It is
 written once, by `create_session_on` in the same statement as the directory it was made
 at; `clone_session` leaves the column out on purpose, so a copy works in the same place
-and owns no branch. `server-worktree.md` has the rest.
+and owns no branch. `worktree_merged` and `worktree_changed` are what git last said
+about that branch against the main line: NULL until something asked, and rewritten by
+`set_worktree_state` at the end of a turn. `server-worktree.md` has the rest.
 
 ## Store::list_sessions
 

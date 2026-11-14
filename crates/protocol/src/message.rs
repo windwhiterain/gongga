@@ -935,6 +935,9 @@ pub struct SessionInfo {
     /// The share of the window a context notice is sent at, when this session has one.
     #[serde(default)]
     pub context_limit: Option<u8>,
+    /// The worktree this session was born in, when it has one and it has been read.
+    #[serde(default)]
+    pub worktree: Option<Worktree>,
     /// The remote this session's shells run on; `None` is this machine.
     ///
     /// # Invariant
@@ -943,6 +946,21 @@ pub struct SessionInfo {
     /// without the operator repeating `--remote`: the session already says it.
     #[serde(default)]
     pub remote: Option<String>,
+}
+
+/// What a session's own worktree holds, as the repository it was made in sees it.
+///
+/// # Invariant
+///
+/// Two facts about the main line, not about the directory: `merged` is every commit of
+/// its branch being reachable from the branch the first worktree has out; `changed` is
+/// anything that line does not have -- those commits, or work never committed. Behind
+/// only is merged and unchanged: deleting it loses nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Worktree {
+    pub name: String,
+    pub merged: bool,
+    pub changed: bool,
 }
 
 /// One model a request could run on here.

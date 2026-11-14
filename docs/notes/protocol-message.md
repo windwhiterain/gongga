@@ -89,6 +89,15 @@ number about a *session*, never a line of one: no window draws it.
 so; a window that drew them is then stale in the other direction, which is why the
 comparison is "different", not "behind".
 
+## SessionInfo — worktree
+
+`worktree` is the branch a session was born in and the two facts a card draws about it:
+`merged`, whether its commits are all reachable from the main line, and `changed`,
+whether it holds anything that line does not. Both are the server's reading, not the
+client's arithmetic -- a client has no filesystem on that machine, and a peer's is not
+its own. Absent means no worktree, or one nothing has read yet. The spelling of the
+three states is `client-lib.md`'s.
+
 ## SessionInfo — transcript
 
 `transcript` is the seq of the session's last stored row, read from the transcript

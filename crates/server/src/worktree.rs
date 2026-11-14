@@ -36,6 +36,8 @@ struct Listed {
     path: PathBuf,
     /// The branch checked out there, as git spells references: `refs/heads/<name>`.
     branch: Option<String>,
+    /// The commit it stands on, which is what a detached worktree answers with.
+    head: Option<String>,
     bare: bool,
 }
 
@@ -70,6 +72,12 @@ impl Repository {
             return Ok(None);
         };
         Ok(Some(Self { main, worktrees }))
+    }
+
+    /// What the main line is here: the first worktree's branch, or its commit.
+    fn mainline(&self) -> Option<String> {
+        let first = self.worktrees.iter().find(|entry| !entry.bare)?;
+        first.branch.clone().or_else(|| first.head.clone())
     }
 
     /// The worktree `name` is out at, when one of them has it checked out.
@@ -120,6 +128,60 @@ pub async fn create(space: &Space, start: &Path, name: &str) -> Result<PathBuf, 
         ));
     }
     Ok(target)
+}
+
+/// What one session's worktree holds, as the repository it was made in sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct State {
+    /// Whether every commit of its branch is reachable from the main line.
+    pub merged: bool,
+    /// Whether it holds anything the main line does not: those commits, or work in the
+    /// directory that was never committed.
+    pub changed: bool,
+}
+
+/// Reads what the worktree `name` at `cwd` holds, from the repository around it.
+///
+/// # Invariant
+///
+/// Asked of git, on the machine that owns the directory: a file this machine can stat is
+/// not evidence about a peer's. A branch only behind the main line is merged and
+/// unchanged -- nothing would be lost by removing it -- and anything uncommitted makes
+/// it changed, because no branch records it.
+pub async fn state(space: &Space, name: &str, cwd: &Path) -> Result<State, String> {
+    let repository = Repository::of(space, cwd).await?.ok_or_else(|| {
+        format!(
+            "the worktree {name:?} at {} sits in no repository",
+            cwd.display()
+        )
+    })?;
+    let root = &repository.main;
+    let mainline = repository.mainline().ok_or_else(|| {
+        format!(
+            "the repository at {} has no worktree to take a main line from",
+            root.display()
+        )
+    })?;
+    let branch = format!("refs/heads/{name}");
+    let ahead = git(
+        space,
+        root,
+        &["merge-base", "--is-ancestor", &branch, &mainline],
+    )
+    .await?;
+    let merged = ahead.succeeded();
+    // Anything uncommitted is the worktree's own, and the directory is what git reads.
+    let changed = !merged
+        || !git(
+            space,
+            cwd,
+            &["status", "--porcelain", "--untracked-files=normal"],
+        )
+        .await?
+        .stdout_text()
+        .trim()
+        .is_empty();
+    Ok(State { merged, changed })
 }
 
 /// Removes the worktree named `name` and its branch, from the repository `cwd` sits in.
@@ -179,18 +241,26 @@ fn parse(text: &str) -> Vec<Listed> {
     for block in text.replace("\r\n", "\n").split("\n\n") {
         let mut path = None;
         let mut branch = None;
+        let mut head = None;
         let mut bare = false;
         for line in block.lines() {
             if let Some(rest) = line.strip_prefix("worktree ") {
                 path = Some(PathBuf::from(rest.trim()));
             } else if let Some(rest) = line.strip_prefix("branch ") {
                 branch = Some(rest.trim().to_string());
+            } else if let Some(rest) = line.strip_prefix("HEAD ") {
+                head = Some(rest.trim().to_string());
             } else if line == "bare" {
                 bare = true;
             }
         }
         if let Some(path) = path {
-            list.push(Listed { path, branch, bare });
+            list.push(Listed {
+                path,
+                branch,
+                head,
+                bare,
+            });
         }
     }
     list

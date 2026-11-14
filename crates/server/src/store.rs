@@ -145,6 +145,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- that made none, and it is fixed for the life of the row: the worktree comes
     -- and goes with the session that asked for it. See `docs/notes/server-worktree.md`.
     worktree TEXT,
+    -- What that worktree holds, as the repository saw it when its turn last ended:
+    -- NULL until something asked. `merged` is its branch reachable from the main line,
+    -- `changed` is anything the main line does not have. See `docs/notes/server-worktree.md`.
+    worktree_merged INTEGER,
+    worktree_changed INTEGER,
     -- The last row of this session a monitor turn was given. A turn writes its
     -- user row before it starts, so `seq` only grows: this column is the whole
     -- record of "this failure has been reported", and it survives a restart.
@@ -491,6 +496,14 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         ("tps", "ALTER TABLE sessions ADD COLUMN tps REAL"),
         ("remote", "ALTER TABLE sessions ADD COLUMN remote TEXT"),
         ("worktree", "ALTER TABLE sessions ADD COLUMN worktree TEXT"),
+        (
+            "worktree_merged",
+            "ALTER TABLE sessions ADD COLUMN worktree_merged INTEGER",
+        ),
+        (
+            "worktree_changed",
+            "ALTER TABLE sessions ADD COLUMN worktree_changed INTEGER",
+        ),
         ("ttft_ms", "ALTER TABLE sessions ADD COLUMN ttft_ms INTEGER"),
         (
             "monitor_seq",
@@ -899,9 +912,21 @@ impl Store {
         let tx = conn.transaction()?;
         tx.execute(
             "INSERT INTO sessions (name, status, model, model_name, cwd, created_at, updated_at,
-                                   remote, worktree)
-             VALUES (?1, 'idle', ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
-            params![name, model, bare_model(model), cwd, now, remote, worktree],
+                                   remote, worktree, worktree_merged, worktree_changed)
+             VALUES (?1, 'idle', ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                name,
+                model,
+                bare_model(model),
+                cwd,
+                now,
+                remote,
+                worktree,
+                // A worktree is made at the main line's own commit and touches nothing,
+                // so this is read, not guessed.
+                worktree.map(|_| 1i64),
+                worktree.map(|_| 0i64)
+            ],
         )
         .map_err(|e| duplicate_session(name, e))?;
         let id = tx.last_insert_rowid();
@@ -1091,7 +1116,8 @@ impl Store {
                     s.context_limit, s.thinking_effort,
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote,
                     s.cache_tier, s.cache_keepalive, s.ended_at, s.mode,
-                    s.live_compact, s.live_compact_interval_tokens, s.worktree
+                    s.live_compact, s.live_compact_interval_tokens, s.worktree,
+                    s.worktree_merged, s.worktree_changed
              FROM sessions s";
 
     /// Every session in `error` because of a provider, with what a monitor turn
@@ -1228,6 +1254,8 @@ impl Store {
                 .get::<_, Option<i64>>(20)?
                 .map(|tokens| tokens.max(0) as u64),
             worktree: r.get(21)?,
+            worktree_merged: r.get::<_, Option<i64>>(22)?.map(|v| v != 0),
+            worktree_changed: r.get::<_, Option<i64>>(23)?.map(|v| v != 0),
         })
     }
 
@@ -1325,6 +1353,15 @@ impl Store {
             )?;
         }
         tx.commit()?;
+        Ok(())
+    }
+
+    /// What a session's worktree holds, as its repository answered.
+    pub fn set_worktree_state(&self, id: i64, merged: bool, changed: bool) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET worktree_merged = ?1, worktree_changed = ?2 WHERE id = ?3",
+            params![i64::from(merged), i64::from(changed), id],
+        )?;
         Ok(())
     }
 
@@ -3324,6 +3361,10 @@ pub struct SessionRow {
     pub live_compact_interval_tokens: Option<u64>,
     /// The branch, and so the worktree, this session was born in; `None` made none.
     pub worktree: Option<String>,
+    /// Whether that worktree's commits are all in the main line; `None` is unread.
+    pub worktree_merged: Option<bool>,
+    /// Whether it holds anything the main line does not; `None` is unread.
+    pub worktree_changed: Option<bool>,
 }
 
 /// What a clone wrote: the new session, its rows, and where it ends.

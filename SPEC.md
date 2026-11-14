@@ -197,7 +197,7 @@ for the first user message to a empty session, find all meta references recursiv
 - main (vertical)
   - horizontal
     - [session{name (click: toggle show, if show change to true, set sticky session, if false and sticky, del sticky session)}] (vertical scroll, tree: a prefix of a name is a group row, a click on its marker folds it away)
-    - [{session(show = true){name, context (in tokens), cached (in n%, latest), tps (latest), ttft (latest), cwd, model, thinking_effort, context_limit}(click: set sticky session), events}] (horizontal split):(vertical)
+    - [{session(show = true){name, context (in tokens), cached (in n%, latest), tps (latest), ttft (latest), cwd, worktree{merged, changed}, model, thinking_effort, context_limit}(click: set sticky session), events}] (horizontal split):(vertical)
   - [active_quota{[provider, [mouth n%] [week n%] [5h n%] [credit n] [money n¥]]} (horizontal, wrapped)]: update each step end.
     - the `k` providers asked most recently, one row each, in that order; the rows are drawn side
       by side and wrap at the window's width. `k` is the client's own number.

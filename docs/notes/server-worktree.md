@@ -69,6 +69,30 @@ is pruned when git still lists it, the branch is deleted when it is still there,
 answer says the worktree was already gone. A directory that is not registered as that
 branch's worktree is left alone: nothing here removes a directory git does not claim.
 
+## What it holds, as the card says it
+
+A session's card carries two facts about its worktree, asked of git when a turn ends:
+`merged`, whether every commit of its branch is reachable from the branch the
+repository's first worktree has out, and `changed`, whether it holds anything that main
+line does not -- those commits, or work that was never committed (`git status`).
+
+Three states, because a fourth cannot happen: merged and unchanged (nothing would be
+lost by removing it -- which is what makes it worth showing), merged and changed (only
+uncommitted work differs), and unmerged (it has commits of its own, and then `changed`
+is true by construction). A worktree that is merely *behind* the main line is merged and
+unchanged: it holds nothing the line does not have.
+
+`changed` is not `dirty`: a directory of untracked build output that git ignores is
+neither, and a branch that was committed but never merged is `changed` with a spotless
+working tree.
+
+It is a reading of a quiet worktree, not a live one: two git calls at the end of each
+turn (`read_worktree_state`), nothing on the turn's own path, and a failed reading
+leaves the last numbers standing rather than claiming either answer. Work done outside a
+turn -- a commit typed into the worktree by hand -- shows up at the next turn's end, or
+when the session is created, which writes the only answer that cannot be wrong: a fresh
+worktree is at the main line's commit and touches nothing.
+
 ## Stored, not derived
 
 The row's `worktree` column holds the name and its `cwd` the directory. `clone_session`

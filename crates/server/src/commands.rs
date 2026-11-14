@@ -186,7 +186,9 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
         agent
             .run_turn(&work.session, work.tasks, work.epoch, work.gate)
             .await;
-        // The list is ordered by when a turn ended: publish the row that moved.
+        // SPEC's card: what the worktree holds now that the turn is quiet, then the
+        // row that moved.
+        read_worktree_state(&keepalive_d, &session).await;
         publish_sessions(&keepalive_d);
         // What the turn queued behind itself is this turn's to finish, and the
         // gate is free here without being taken.
@@ -3130,6 +3132,36 @@ fn started_at(stated: Option<&str>, local: bool) -> std::path::PathBuf {
     }
 }
 
+/// Reads what a session's worktree holds and writes it down, when it owns one.
+///
+/// # Invariant
+///
+/// One git call pair at the end of a turn, and nothing on the turn's own path: the
+/// numbers a card shows are a reading of a quiet worktree, and a reading that fails
+/// leaves the last one standing rather than claiming either answer.
+async fn read_worktree_state(d: &Dispatch, session: &crate::session::SessionHandle) {
+    let name = session.name().to_string();
+    let Ok(Some(row)) = d.store.get_session(&name) else {
+        return;
+    };
+    let Some(worktree) = row.worktree.clone() else {
+        return;
+    };
+    let space = session.space();
+    match crate::worktree::state(&space, &worktree, std::path::Path::new(&row.cwd)).await {
+        Ok(state) => {
+            if let Err(e) = d
+                .store
+                .set_worktree_state(row.id, state.merged, state.changed)
+            {
+                tracing::warn!(session = %name, error = %e, "could not record the worktree state");
+            }
+        }
+        Err(e) => tracing::warn!(session = %name, worktree = %worktree, error = %e,
+            "could not read the worktree state"),
+    }
+}
+
 /// Makes a session's worktree, wherever that session's paths live.
 async fn make_worktree(
     space: &crate::space::Space,
@@ -3903,6 +3935,15 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         model,
         thinking_effort,
         remote: row.remote.clone(),
+        worktree: row
+            .worktree
+            .clone()
+            .zip(row.worktree_merged)
+            .map(|(name, merged)| protocol::Worktree {
+                name,
+                merged,
+                changed: row.worktree_changed.unwrap_or(true),
+            }),
         context_limit: tuning
             .context_limit
             .or(Some(d.agent.config.now().agent.context_limit_percent)),

@@ -2678,19 +2678,33 @@ fn title_note(session: &protocol::SessionInfo) -> String {
             _ => format!("ttft {:.1}s", ms as f64 / 1000.0),
         });
     }
+    // From here the values speak for themselves: a path, a `provider/model`, a level.
     if !session.cwd.is_empty() {
-        parts.push(format!("cwd {}", session.cwd));
+        parts.push(session.cwd.clone());
+    }
+    // SPEC's `worktree`: three states, because a fourth cannot happen.
+    if let Some(worktree) = &session.worktree {
+        parts.push(format!(
+            "worktree {}",
+            match (worktree.merged, worktree.changed) {
+                (true, false) => "merged".to_string(),
+                (true, true) => "merged, changed".to_string(),
+                (false, _) => "unmerged".to_string(),
+            }
+        ));
     }
     if let Some(model) = &session.model {
-        parts.push(format!("model {model}"));
+        parts.push(model.clone());
     }
     if let Some(level) = &session.thinking_effort {
-        parts.push(format!("thinking {level}"));
+        parts.push(level.clone());
     }
     if let Some(percent) = session.context_limit {
+        // `off` is the one share a number cannot say: SPEC's `0` is the notice switched
+        // off, not a share of zero.
         parts.push(match percent {
-            0 => "ctx_limit off".to_string(),
-            percent => format!("ctx_limit {percent}%"),
+            0 => "off".to_string(),
+            percent => format!("{percent}%"),
         });
     }
     parts.join(" · ")
