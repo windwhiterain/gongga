@@ -34,6 +34,7 @@ mod quota;
 pub use ::relay::relay;
 pub mod remote;
 pub mod remotes;
+mod retired_python;
 mod script;
 mod session;
 mod session_config;
@@ -238,6 +239,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         );
     }
     clock.step("migrate");
+    // Before the content lands: what an older build wrote here is not the reader's.
+    retired_python::retire(&cfg.home);
+    clock.step("retired python");
 
     // Installed before anything reads it: a config already here is the reader's.
     let installed = ship::install(&cfg.home)?;
