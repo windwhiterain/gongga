@@ -9,6 +9,7 @@ use std::sync::{Arc, RwLock};
 use crate::commands::installed_skills;
 use crate::complete::{Candidate, Completer, Offered, token_bounds};
 use crate::json_value::{self, Read};
+use crate::leaf::Leaf;
 use protocol::{
     Args, CommandSpec, CompletionSource, ModelInfo, Reference, SessionInfo, StructField,
     StructSchema,
@@ -1017,11 +1018,9 @@ fn schema_at<'a>(schema: &'a StructSchema, path: &[String]) -> Option<&'a Struct
 ///
 /// # Invariant
 ///
-/// A name is inserted with the colon that ends it, with the brace that opens its
-/// place when the field holds an object, and with every brace the value still
-/// owes (`closers`): accepting one leaves the text as balanced as it can be, and
-/// the caret inside the braces, so the next completion fills what was opened. A
-/// field the object already states is not offered again.
+/// A name is inserted with the colon that ends it, the brace or the quotes its
+/// value is held in, and every brace the value still owes (`closers`); the caret
+/// lands inside what it opened. A field the object already states is not offered.
 fn keys(
     object: &StructSchema,
     fragment: &str,
@@ -1043,15 +1042,22 @@ fn keys(
         .map(|field| {
             let mut insert = format!("{prefix}\"{}\":", field.name);
             let mut tail = String::new();
+            // Where the caret goes when it is not at the insertion's end: inside
+            // the brace or the quotes the name opened.
+            let mut inside = None;
             if field.object.is_some() {
                 insert.push('{');
                 tail.push('}');
+            } else if Leaf::of(field) == Leaf::Text {
+                // A string writes its own quotes, so the operator never types one.
+                insert.push_str("\"\"");
+                inside = Some(insert.len() - 1);
             }
             for _ in 0..closers {
                 tail.push('}');
             }
-            let caret = insert.len();
-            let closed = !tail.is_empty();
+            let caret = inside.unwrap_or(insert.len());
+            let closed = !tail.is_empty() || inside.is_some();
             insert.push_str(&tail);
             Candidate {
                 insert,
@@ -1067,9 +1073,10 @@ fn keys(
 ///
 /// # Invariant
 ///
-/// A model is read from the object being typed before the line is asked, because
-/// that is the model this config really names: `accepts` is keyed by model, and
-/// another model's levels are a list the server would refuse.
+/// A model is read from the object being typed before the line is asked: `accepts`
+/// is keyed by model, and another model's levels are a list the server refuses.
+/// What a value is written as is its leaf's type's decision (`Leaf`), so one list
+/// of texts offers `"70%"` and `true` without spelling either.
 fn values(
     field: &StructField,
     spot: &json_value::Spot,
@@ -1079,6 +1086,7 @@ fn values(
 ) -> Vec<Candidate> {
     let model = named_model(&spot.fields).or_else(|| model_named(ctx, words));
     let hint = field.value_hint.as_deref().unwrap_or("value");
+    let leaf = Leaf::of(field);
     let offered = published(
         &field.source,
         field.accepts.as_ref(),
@@ -1089,23 +1097,73 @@ fn values(
         model.as_deref(),
         0,
     );
+    if offered.is_empty() {
+        return owed(field, leaf, spot, ctx, closers);
+    }
     offered
         .into_iter()
         .filter_map(|candidate| {
             let mut insert = match field.model_ref {
                 true => model_value(&candidate.insert)?,
-                false => json_token(&candidate.insert),
+                false => leaf.token(&candidate.insert),
             };
             let caret = insert.len();
-            for _ in 0..closers {
-                insert.push('}');
-            }
+            insert.push_str(&"}".repeat(closers));
             Some(Candidate {
                 insert,
                 detail: candidate.detail,
                 space: false,
-                cursor: (caret < caret + closers).then_some(caret),
+                cursor: (closers > 0).then_some(caret),
             })
+        })
+        .collect()
+}
+
+/// What a leaf owes when the catalog publishes nothing for it: a string's quotes,
+/// a switch's two readings.
+///
+/// # Invariant
+///
+/// A string candidate is the operator's own fragment, closed -- never a value. It is
+/// offered only where there is nothing to choose from, and not while a listing is on
+/// its way, whose answer it would replace. See `docs/notes/client-complete.md`.
+fn owed(
+    field: &StructField,
+    leaf: Leaf,
+    spot: &json_value::Spot,
+    ctx: &Ctx,
+    closers: usize,
+) -> Vec<Candidate> {
+    if ctx.catalog.wants() {
+        return Vec::new();
+    }
+    let texts: Vec<String> = match leaf {
+        Leaf::Switch => vec!["true".to_string(), "false".to_string()],
+        // The quotes are there and nothing is inside them: the token is finished,
+        // and offering to write it again is noise.
+        Leaf::Text if spot.quoted => return Vec::new(),
+        Leaf::Text => vec![spot.fragment.clone()],
+        Leaf::Other => return Vec::new(),
+    };
+    let hint = field.value_hint.as_deref().unwrap_or("value");
+    texts
+        .into_iter()
+        .map(|text| {
+            let mut insert = leaf.token(&text);
+            // An empty string leaves the caret between its quotes, ready for the
+            // first character.
+            let caret = match (leaf, text.is_empty()) {
+                (Leaf::Text, true) => insert.len() - 1,
+                _ => insert.len(),
+            };
+            insert.push_str(&"}".repeat(closers));
+            let inside = caret < insert.len();
+            Candidate {
+                insert,
+                detail: hint.to_string(),
+                space: false,
+                cursor: inside.then_some(caret),
+            }
         })
         .collect()
 }
@@ -1153,29 +1211,6 @@ fn model_value(spelled: &str) -> Option<String> {
         None => serde_json::json!({ "model": spelled }),
     };
     Some(value.to_string())
-}
-
-/// The text as a JSON value: a literal or a number stands as itself, and
-/// anything else is a string.
-///
-/// # Invariant
-///
-/// What a candidate carries is the value, not the spelling of it, so quoting is
-/// this function's decision and not the publisher's: `keep_alive` takes `true`
-/// and `ctx_limit` takes `"70%"`, from one list of texts.
-fn json_token(text: &str) -> String {
-    if is_json_literal(text) {
-        return text.to_string();
-    }
-    serde_json::Value::String(text.to_string()).to_string()
-}
-
-/// Whether the text reads back as itself without quotes.
-fn is_json_literal(text: &str) -> bool {
-    matches!(
-        serde_json::from_str::<serde_json::Value>(text),
-        Ok(serde_json::Value::Bool(_) | serde_json::Value::Null | serde_json::Value::Number(_))
-    )
 }
 
 /// The JSON form's completion: a name opens `{}`, then fields and values complete
@@ -1328,6 +1363,7 @@ fn root_schema(spec: &CommandSpec) -> StructSchema {
                 accepts: a.accepts.clone(),
                 value_hint: a.value_hint.clone(),
                 model_ref: false,
+                type_of: Some(a.type_of.clone()),
                 kind: a.kind.clone(),
                 default: None,
             })

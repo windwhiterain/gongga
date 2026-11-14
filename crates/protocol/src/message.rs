@@ -1445,6 +1445,18 @@ pub struct StructField {
     /// A model-reference leaf: the chosen `<provider>/<model>` arrives as an object.
     #[serde(default)]
     pub model_ref: bool,
+    /// The value this leaf takes, in SPEC's spelling, as `ArgSpec::type_of` states
+    /// an argument's.
+    ///
+    /// # Invariant
+    ///
+    /// The spelling, never its JSON image: `crate::argtype` is the one table that
+    /// maps one to the other, so a value is quoted, left a literal or offered
+    /// `true`/`false` by what the type is. `None` offers nothing beyond the
+    /// published list.
+    /// See `docs/notes/client-complete.md`.
+    #[serde(rename = "type", default)]
+    pub type_of: Option<String>,
     /// The sticky type this field carries, when SPEC marks its type `# sticky`.
     ///
     /// # Invariant

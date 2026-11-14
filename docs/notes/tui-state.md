@@ -69,6 +69,13 @@ type's entry as a whole, then from the wider entry it sits in, and the line wins
 keeps an entry to the fields with no default at every depth -- an entry from an older
 build that still holds a `thinking` loses it here rather than sending it.
 
+An entry is text; what a leaf makes of it is its **type's** decision and not its
+name's (`crate::leaf::Leaf`): a switch becomes a JSON boolean, a string keeps the
+word, and a model is the object SPEC spells. The completion writes with the same
+reading, so a value filled into a partly typed object and a token the popup inserts
+are one value. Until it did, `keep_alive` was recognised by name, and any other
+switch would have travelled as the string `"true"`.
+
 `fill` fills what the line left open by that rule; an object nobody contributed to is
 left out instead of sent empty.
 

@@ -851,14 +851,19 @@ impl Tui {
     /// # Invariant
     ///
     /// A Tab pressed before the answer arrived is spent here, on the first
-    /// candidate, because a key cannot wait for a frame. An answer whose range
-    /// runs past the line is one for words that have since been edited: it is
-    /// dropped, never applied.
-    pub fn set_completion(&mut self, completion: Option<Completion>) {
-        let stale = completion
-            .as_ref()
-            .is_some_and(|popup| popup.end > self.screen.input.text().len());
-        self.screen.completion = if stale { None } else { completion };
+    /// candidate, because a key cannot wait for a frame. The answer says which line
+    /// and caret it was computed for, and one for other words is dropped, never
+    /// applied -- the keys typed while the question was out are the operator's, and
+    /// the ranges of an older answer address text that is no longer there.
+    pub fn set_completion(&mut self, completion: Completion) {
+        if completion.line != self.screen.input.text()
+            || completion.cursor != self.screen.input.cursor()
+        {
+            return;
+        }
+        // An answer with nothing in it is the popup shut, and still an answer.
+        let offered = !completion.candidates.is_empty();
+        self.screen.completion = offered.then_some(completion);
         if self.tab_asked {
             self.tab_asked = false;
             self.apply_completion();
@@ -2012,6 +2017,9 @@ fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Com
     }
     let (start, end, _) = token_bounds(input.text(), input.cursor());
     Some(Completion {
+        // This answer is for the text it was computed from, and says so.
+        line: input.text().to_string(),
+        cursor: input.cursor(),
         // A reference is replaced from its own `@`, which may sit inside the word.
         start: offered.start.unwrap_or(start),
         // A JSON value ends at its own token, not at the whitespace around it.

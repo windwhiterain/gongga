@@ -59,9 +59,19 @@ pub struct Offered {
 }
 
 /// The open completion popup: which token is replaced, and the options.
-/// See `docs/notes/cli-complete.md`.
+/// See `docs/notes/client-complete.md`.
 #[derive(Debug, Clone)]
 pub struct Completion {
+    /// The line this answers, and the caret it was asked at.
+    ///
+    /// # Invariant
+    ///
+    /// An answer belongs to the text it was computed from, and says which: a
+    /// window applies it only while its own input still reads this, so a key typed
+    /// between the question and the answer is never edited by an answer for the
+    /// words it replaced. See `docs/notes/tui-lib.md`.
+    pub line: String,
+    pub cursor: usize,
     /// Byte range of the token being replaced.
     pub start: usize,
     pub end: usize,

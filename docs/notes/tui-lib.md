@@ -581,9 +581,13 @@ cannot apply anything yet. That Tab is remembered (`tab_asked`) and spent by the
 first `Completion` that arrives, which is what keeps a fast hand from needing to
 press it twice.
 
-The flag is dropped by a line that changed since: an answer for the words that
-were there is not an answer for the words that are. An answer whose range runs
-past the line is stale for the same reason and is never applied.
+An answer carries the line and caret it was asked about, and the window compares
+them with its own before it takes anything from it: an answer for the words that
+were there is not an answer for the words that are, and its ranges would edit
+text nobody offered it. Typing between Tab and the answer therefore leaves the
+line alone; the next frame asks again for what is really typed. The flag is
+dropped by a line that changed since, for the same reason: it belongs to a
+question about other words.
 
 ## Tui::history_prev and Tui::history_next
 

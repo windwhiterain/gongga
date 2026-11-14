@@ -95,7 +95,15 @@ pub enum RenderMessage {
         version: u64,
     },
     /// The candidates for one `Complete` intent, and the token they replace.
+    ///
+    /// # Invariant
+    ///
+    /// The answer carries the line and caret it was asked about, because a window
+    /// keeps reading keys while the round trip is out: an answer for the words that
+    /// were there is not an answer for the words that are.
     Completion {
+        line: String,
+        cursor: usize,
         start: usize,
         end: usize,
         subject: Option<String>,
@@ -410,10 +418,12 @@ mod tests {
             },
             RenderMessage::Vocabulary { version: 7 },
             RenderMessage::Completion {
-                start: 2,
-                end: 5,
-                subject: Some("--model".to_string()),
-                candidates: vec![Candidate::word("flash", "a model")],
+                line: "/set_session{\"id\":\"m".to_string(),
+                cursor: 18,
+                start: 14,
+                end: 17,
+                subject: Some("id".to_string()),
+                candidates: vec![Candidate::word("main", "a session")],
             },
         ];
         for frame in frames {

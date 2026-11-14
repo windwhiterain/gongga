@@ -28,7 +28,13 @@ insertion needs no new case: `tui/input.rs` places the caret there, and a
 The `selected` index lives here rather than in the front-end because it is part
 of the same decision: a popup whose contents and whose current choice were
 tracked separately could disagree, and the disagreement would show up as the
-wrong text being inserted. `current` returns `None` rather than panicking when
+wrong text being inserted.
+
+`line` and `cursor` are the other half of that: an answer is about the text it
+was computed from, and the round trip is a frame long while keys keep arriving.
+The window compares them with its own input and drops the answer when they
+speak of other words, so a key typed between Tab and the answer is never edited
+by a range computed before it (`Tui::set_completion`). `current` returns `None` rather than panicking when
 that index no longer addresses a candidate, so the two can be replaced
 independently without the popup needing a repair step.
 
@@ -146,11 +152,24 @@ server could read if the object were closed:
 
 - a field name is `"name":`, plus `{}` when the field holds an object; a field the
   object already states is not offered again.
-- a leaf value is JSON-quoted when it is not a literal (`keep_alive` takes `true`,
-  `ctx_limit` takes `"70%"`), quoting being this layer's decision, not the
-  publisher's.
+- a name whose leaf takes a string writes the quotes too -- `"message":""` with the
+  caret between them -- so no quote is ever typed by hand. A name for a switch or a
+  count writes only its colon: its value is a token, not a string.
+- a leaf value is written by the type the schema states (`crate::leaf`), so
+  `ctx_limit` takes `"70%"` and `keep_alive` takes `true` even though both lists are
+  published as plain texts, and a string whose text reads as a number stays a
+  string. Naming the type is the server's job; writing the value is this layer's.
 - a `model_ref` leaf is the object SPEC spells `Model := {provider, model}`, split
   out of the roster's `<provider>/<model>`.
+
+**What a leaf with no list offers.** A string leaf offers the operator's own
+fragment, closed: `"hi` becomes `"hi"` and an empty value place becomes `""` with
+its caret inside. A switch leaf offers `true` and `false`. Either is a *finished*
+token rather than a choice, so it is offered only where the catalog publishes
+nothing at all, and not while a listing is on its way -- the answer would be
+replaced by a placeholder a keystroke early (`Catalog::wants`). A value already
+between two quotes owes nothing but the characters inside them, and one whose
+closing quote was deleted is finished with that quote.
 
 **Every brace a candidate opens, it closes.** A key that opens an object writes
 that object's `}`; each candidate appends what the value still owes -- the objects
@@ -160,9 +179,9 @@ the cursor stands in, less the `}` already written after it
 typed by hand is closed by the next acceptance, and no insertion ever leaves a
 bracket or a quote unmatched. A comma typed at the caret starts the next sibling.
 
-What a candidate does not do: write a comma, offer anything where an object
-field's value goes (its name wrote the brace), in a list, or after the object has
-closed.
+What a candidate does not do: write a comma, enter a list, or say anything after
+the object has closed. An object field's value place is entered by its name, so
+that is where its own candidates come from.
 
 **Which model a value belongs to.** `accepts` is keyed by model, and a config
 states its own: a value inside `model_config` reads the `model` its enclosing

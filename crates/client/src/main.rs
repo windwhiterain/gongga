@@ -231,6 +231,8 @@ impl Frontend for PipeFrontend {
     }
     fn show_completion(&mut self, completion: &gongga_client::Completion) {
         self.send(RenderMessage::Completion {
+            line: completion.line.clone(),
+            cursor: completion.cursor,
             start: completion.start,
             end: completion.end,
             subject: completion.subject.clone(),

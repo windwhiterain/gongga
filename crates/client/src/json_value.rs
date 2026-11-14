@@ -44,6 +44,15 @@ pub struct Spot {
     pub typing: Typing,
     /// What has been typed of the token, with no quote around it.
     pub fragment: String,
+    /// Whether the token has both of its quotes already.
+    ///
+    /// # Invariant
+    ///
+    /// Stated, not guessed from the fragment: `""` and an empty fragment are the
+    /// same text and not the same token, and a value between two quotes owes
+    /// nothing but the characters inside them. A quote still open is not this: it
+    /// needs its closing one, and that is what a completion can write.
+    pub quoted: bool,
     /// The fields of the enclosing object that are already written, for the
     /// values that depend on a sibling.
     pub fields: Vec<(String, Read)>,
@@ -327,9 +336,10 @@ fn place_token(
     let open = opens.last()?;
     let fields = open.fields.clone();
     if in_string {
+        let closed = quoted_end(text, quote_at);
         return Some(Spot {
             start: quote_at,
-            end: quoted_end(text, quote_at),
+            end: closed.unwrap_or(text.len()),
             path: if value_string {
                 with_field(path, open)
             } else {
@@ -341,6 +351,7 @@ fn place_token(
                 Typing::Key
             },
             fragment: between(text, quote_at + 1, cursor).to_string(),
+            quoted: closed.is_some(),
             fields,
             open: 0,
             after: 0,
@@ -355,6 +366,7 @@ fn place_token(
                 path: path.to_vec(),
                 typing: Typing::Key,
                 fragment: between(text, start, cursor).to_string(),
+                quoted: false,
                 fields,
                 open: 0,
                 after: 0,
@@ -364,17 +376,19 @@ fn place_token(
         // colon that follows.
         State::Colon => {
             let start = open.key_token.unwrap_or(cursor);
+            let end = quoted_end(text, start).unwrap_or(text.len());
             let fragment = if open.key_quoted {
-                between(text, start + 1, quoted_end(text, start).saturating_sub(1)).to_string()
+                between(text, start + 1, end.saturating_sub(1)).to_string()
             } else {
                 between(text, start, cursor).to_string()
             };
             Some(Spot {
                 start,
-                end: quoted_end(text, start),
+                end,
                 path: path.to_vec(),
                 typing: Typing::Key,
                 fragment,
+                quoted: open.key_quoted,
                 fields,
                 open: 0,
                 after: 0,
@@ -388,6 +402,7 @@ fn place_token(
                 path: with_field(path, open),
                 typing: Typing::Value,
                 fragment: between(text, start, cursor).to_string(),
+                quoted: false,
                 fields,
                 open: 0,
                 after: 0,
@@ -428,8 +443,9 @@ fn close_bare(open: &mut Open, text: &str, at: usize) {
     }
 }
 
-/// The offset just past the closing quote of the string opening at `quote`.
-fn quoted_end(text: &str, quote: usize) -> usize {
+/// The offset just past the closing quote of the string opening at `quote`, or
+/// `None` while it is still open.
+fn quoted_end(text: &str, quote: usize) -> Option<usize> {
     let from = floor(text, quote.saturating_add(1));
     let mut escaped = false;
     for (at, c) in text[from..].char_indices() {
@@ -439,11 +455,11 @@ fn quoted_end(text: &str, quote: usize) -> usize {
         }
         match c {
             '\\' => escaped = true,
-            '"' => return from + at + 1,
+            '"' => return Some(from + at + 1),
             _ => {}
         }
     }
-    text.len()
+    None
 }
 
 /// The end of the bare token beginning at `from`: the space or delimiter that
