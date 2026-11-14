@@ -107,7 +107,7 @@ ModelConfig := { # sticky
   ctx_limit = 70%, # re-default if model change
   cache_tier = provider_default() # re-default if model change
 }
-Workspace := {remote: optional[Remote] = none, cwd: path = "."}
+Workspace := {remote: optional[Remote] = none, cwd: path = ".", worktree: optional[str] = none}
 SessionConfig := { # sticky
   model_config: ModelConfig,
   workspace: Workspace,
@@ -227,7 +227,7 @@ events (vertical) :=
       |toolcall{tool_name·[*summary_args]·description}
       |tool_result{ok, time}
       |harness_injection{beginning (line)}
-    } (horizontal, click fold/unfold(show all non-summary information), block_size, inner scroll, horizontal_scroll_margin)
+    } (horizontal, click fold/unfold(show all information), block_size, inner scroll, horizontal_scroll_margin)
     | output: colored markdown
     | user message: symbol (colored), content (white)
     | cmd/cmd_result: symbol (colored), content (gray)
