@@ -442,11 +442,12 @@ pub struct Layout {
     pub shown: Vec<String>,
     /// The window `cmd` and `cmd_result` are drawn in.
     pub command: String,
-    /// SPEC's `active_quota` row, when the last step measured one.
-    pub quota: Option<QuotaRow>,
+    /// SPEC's `active_quota` rows: the providers asked most recently, the newest
+    /// request first.
+    pub quota: Vec<QuotaRow>,
 }
 
-/// SPEC's `active_quota` row, spelled once for every front-end.
+/// SPEC's `active_quota` rows, spelled once for every front-end.
 ///
 /// # Invariant
 ///
@@ -455,10 +456,23 @@ pub struct Layout {
 /// See `docs/notes/client-lib.md`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QuotaRow {
+    /// The roster provider this row is about: a newer reading replaces this row and
+    /// no other.
+    pub provider: String,
+    /// The ordinal of that provider's last request; higher is more recent.
+    pub request: u64,
     pub text: String,
     /// Where the row is drawn: a fact, or the reason there is no fact.
     pub kind: LineKind,
 }
+
+/// How many of SPEC's `active_quota` rows are drawn.
+///
+/// # Invariant
+///
+/// The block's own number, never a budget on what the server keeps: a provider that
+/// falls out is published again at its next step's end.
+pub const QUOTA_PROVIDERS: usize = 3;
 
 /// What the command line's window is called.
 pub const COMMAND_WINDOW: &str = "cmd";
@@ -828,8 +842,9 @@ pub struct Client {
     /// Another build or home: part of the facts, which no note can wipe.
     build_note: Option<String>,
     home_note: Option<String>,
-    /// SPEC's `active_quota` row, as the last step's reading spelled it.
-    quota: Option<QuotaRow>,
+    /// SPEC's `active_quota` rows, newest request first, at most
+    /// [`QUOTA_PROVIDERS`] of them.
+    quota: Vec<QuotaRow>,
     /// Per session: where the server's transcript stands, and what this client
     /// has drawn of it. See [`Sync`].
     sync: HashMap<String, Sync>,
@@ -1276,7 +1291,7 @@ impl Client {
             server_changed: false,
             build_note: None,
             home_note: None,
-            quota: None,
+            quota: Vec::new(),
             sync: HashMap::new(),
             cursor: None,
             holed: false,
@@ -1673,12 +1688,23 @@ impl Client {
                 }
                 self.refresh(sink);
             }
-            // SPEC's `active_quota` row: one line under the command line, told
-            // again at every step's end.
+            // SPEC's `active_quota` rows: a reading replaces its own provider's
+            // row, and the oldest request leaves.
             Event::Quota(quota) => {
                 let row = quota_row(&quota);
-                if self.quota.as_ref() != Some(&row) {
-                    self.quota = Some(row);
+                let mut rows = std::mem::take(&mut self.quota);
+                match rows.iter_mut().find(|held| held.provider == row.provider) {
+                    Some(held) => *held = row,
+                    None => rows.push(row),
+                }
+                rows.sort_by(|a, b| {
+                    b.request
+                        .cmp(&a.request)
+                        .then_with(|| a.provider.cmp(&b.provider))
+                });
+                rows.truncate(QUOTA_PROVIDERS);
+                let replaced = std::mem::replace(&mut self.quota, rows);
+                if replaced != self.quota {
                     self.refresh(sink);
                 }
             }
@@ -2706,7 +2732,7 @@ fn newest_turn_first(a: &SessionInfo, b: &SessionInfo) -> std::cmp::Ordering {
     ended(b).cmp(&ended(a)).then_with(|| b.name.cmp(&a.name))
 }
 
-/// SPEC's `active_quota` row: the provider, then the figures it reported.
+/// One of SPEC's `active_quota` rows: the provider, then the figures it reported.
 ///
 /// # Invariant
 ///
@@ -2744,7 +2770,12 @@ fn quota_row(quota: &protocol::Quota) -> QuotaRow {
         (Some(_), 1) => LineKind::Error,
         _ => LineKind::System,
     };
-    QuotaRow { text, kind }
+    QuotaRow {
+        provider: quota.provider.clone(),
+        request: quota.request,
+        text,
+        kind,
+    }
 }
 
 /// A money or credit figure: two decimals when the cents matter, none when the

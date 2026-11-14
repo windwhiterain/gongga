@@ -132,8 +132,9 @@ pub struct Panes {
     /// and a name that is gone leaves its entry here as one string that matches
     /// nothing.
     unseen: std::collections::BTreeSet<String>,
-    /// SPEC's `active_quota` row, as the command layer spelled it.
-    quota: Option<crate::QuotaRow>,
+    /// SPEC's `active_quota` rows, as the command layer spelled them: newest
+    /// request first.
+    quota: Vec<crate::QuotaRow>,
     /// Windows the operator asked to read above what they hold.
     wants: BTreeSet<String>,
 }
@@ -147,7 +148,7 @@ impl Panes {
             list_rows: Vec::new(),
             folded: std::collections::BTreeSet::new(),
             unseen: std::collections::BTreeSet::new(),
-            quota: None,
+            quota: Vec::new(),
             wants: BTreeSet::new(),
         }
     }
@@ -174,6 +175,8 @@ impl Panes {
     /// `command_rows` is how many rows the command area's content needs at `width`,
     /// asked of the log: SPEC gives that area no `(line)`, so its height is its
     /// content's, and only the log knows what that is. The layout clamps it.
+    /// `quota_rows` is asked of the block the same way: SPEC gives it one line per
+    /// provider and wraps it, so its height is what its rows wrap into at `width`.
     pub fn chrome(&mut self, width: usize) -> crate::render::Chrome {
         let command = self.command().map(|pane| pane.name.clone());
         let command_rows = match &command {
@@ -184,13 +187,13 @@ impl Panes {
         crate::render::Chrome {
             command: command.is_some(),
             command_rows,
-            quota: self.quota.is_some(),
+            quota_rows: crate::render::quota_rows(&self.quota, width),
         }
     }
 
-    /// SPEC's `active_quota` row, when the last step's reading arrived.
-    pub fn quota(&self) -> Option<&crate::QuotaRow> {
-        self.quota.as_ref()
+    /// SPEC's `active_quota` rows, when a reading has arrived.
+    pub fn quota(&self) -> &[crate::QuotaRow] {
+        &self.quota
     }
 
     /// The rows the session list draws, in its order.

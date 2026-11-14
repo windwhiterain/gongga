@@ -514,17 +514,30 @@ impl Event {
     }
 }
 
-/// SPEC's `active_quota` row: what the provider the last step ran on still allows.
+/// SPEC's `active_quota` rows: what one of the recently asked providers still
+/// allows.
 ///
 /// # Invariant
 ///
 /// Every figure is optional and absent means "this provider did not report it":
 /// a month's share is not the same fact as a wallet balance, and a zero would
-/// claim the allowance was spent. See `docs/notes/protocol-message.md`.
+/// claim the allowance was spent. `request` is what orders the rows, and it is the
+/// provider's last request, never when a reading arrived. See
+/// `docs/notes/protocol-message.md`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Quota {
     /// Roster provider id, e.g. `deepseek-official`.
     pub provider: String,
+    /// The ordinal of the last request this server sent to this provider, counted
+    /// over the life of the run.
+    ///
+    /// # Invariant
+    ///
+    /// It orders the rows and nothing else: SPEC draws the few providers asked most
+    /// recently, and "most recent" is a comparison of these numbers -- never of when
+    /// an answer came back, because a slow reader that answered last was not asked
+    /// last.
+    pub request: u64,
     /// Shares left of the three windows SPEC names, as percentages.
     pub month_percent: Option<f64>,
     pub week_percent: Option<f64>,

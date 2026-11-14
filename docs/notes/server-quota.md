@@ -2,8 +2,8 @@
 
 ## quota.rs
 
-SPEC's `active_quota` row says what the provider the last step ran on still
-allows, and says it gets updated at every step's end. The numbers are not this
+SPEC's `active_quota` block says what the few most recently asked providers still
+allow, and says it gets updated at every step's end. The numbers are not this
 server's to compute: a provider knows its own balance, and the roster already
 knows how to ask it -- `[[provider.quota_query]]` in `providers.toml`, with a
 `script` that prints one JSON reading. This module is the part that runs that
@@ -23,8 +23,12 @@ than the turn it hangs behind.
 
 ## Last
 
-The reading is one row, so it is one value: the newest measurement, the same by
-provider, and what each endpoint last answered.
+A reading is filed by provider, because SPEC's block is several providers at once,
+and because a choice between providers is a comparison. `requested` is the other
+half of the block: the ordinal of the last request sent to each provider, with
+`next_request` handing the ordinals out. One counter for every provider on purpose
+-- "asked most recently" is a comparison *between* providers, so two providers'
+numbers have to come from the same sequence.
 
 `in_flight` is what keeps a fast turn from starting one child per step: two steps'
 ends inside one slow read are one question about the same provider, and the second
@@ -37,12 +41,28 @@ about one URL. Minimax lists three readers for one provider, and a provider-leve
 clock would let the M Plan reader -- the one that answers -- decide how often the
 pay-as-you-go wallet may be asked.
 
-## last
+## readings
 
-A window that attaches between two steps must be told the number that is already
-known, or the row is blank until the session happens to spend something. The
-greeting carries the sessions and the catalog; this is the same idea for the one
-measurement that is not part of either.
+A window that attaches between two steps must be told the rows that are already
+known, or the block is blank until the session happens to spend something. The
+greeting carries the sessions and the catalog; this is the same idea for the
+measurements that are not part of either: `readings` hands back every row this run
+has, ordered by `request`, and the greeting sends them one event at a time.
+
+The order is computed, never inherited from the arrival: an endpoint that took ten
+seconds to answer belongs where its request put it, which is why `readings` sorts
+instead of reusing the order the answers landed in.
+
+## note_request, requested
+
+`note_request` is called where the request is made -- `llm::stream` -- and never
+where the answer is filed. SPEC orders the block by the last request, and a step
+that has been waiting a minute has still been waiting since it started: stamping at
+its end would put a slow provider behind one that was asked later and answered
+sooner.
+
+`requested` is the lookup `publish` uses to stamp the row it is about to publish;
+0 means no request has gone to that provider in this run.
 
 ## publish
 
@@ -56,7 +76,7 @@ for. The step goes on; the row arrives when the answer does.
 every step end). A step end is seconds apart from the one before it, and a balance
 is not: asking a billing endpoint once per step
 is a request per step per provider, which is what a provider rate-limits, and the
-one row SPEC asks for does not change in between.
+rows SPEC asks for do not change in between.
 
 ## read, read_in
 
@@ -161,11 +181,11 @@ is also what says which symbol the money is in. `cny-left` is `¥`, `usd-left` i
 
 ## Every provider, not only the last one
 
-`last()` is the newest reading of any provider, which is what SPEC's `active_quota`
-row is about. `of(provider)` is the same reading kept by roster id, and it exists
-because choosing between providers is a comparison: SPEC's monitor picks a flash
-model by what each provider still allows (`server-monitor.md`), and a single
-"newest" reading says nothing about the others.
+`readings()` is every provider read in this run, ordered by its last request, which
+is what SPEC's `active_quota` block draws from. `of(provider)` is one of those rows
+looked up by roster id, and it exists because choosing between providers is a
+comparison: SPEC's monitor picks a flash model by what each provider still allows
+(`server-monitor.md`), and one reading says nothing about the others.
 
 The table is in memory only. A reading is a measurement of a moment, not a fact
 about a home, so it is not written anywhere and a restarted server learns them

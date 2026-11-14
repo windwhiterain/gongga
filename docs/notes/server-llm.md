@@ -37,6 +37,11 @@ its own id back.
 The request's own items are the transcript's rows; the start card, when there is
 one, is the only item built here rather than read from a row.
 
+The entry also stamps the request for SPEC's `active_quota`: `quota::note_request`
+takes that provider's ordinal here, before anything is built or sent, because the
+block is ordered by when a provider was asked and never by when it answered. The
+retry loop below is one request, so it stamps nothing further.
+
 A request that fails, times out, or completes with nothing in it is retried
 with a doubling delay, because all three look identical from here and all
 three are the provider's bad minute rather than ours. The caller sees one

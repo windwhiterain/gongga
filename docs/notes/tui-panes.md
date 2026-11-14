@@ -166,13 +166,15 @@ the only thing that reads a window.
 
 ## Panes::quota, Panes::chrome
 
-The allowance row is the second thing here that comes from the announcement rather
-than from the log -- the list is the first -- so it is held the same way: cloned by
-`layout`, with no history behind it.
+The allowance rows are the second thing here that comes from the announcement rather
+than from the log -- the list is the first -- so they are held the same way: cloned by
+`layout`, with no history behind it. Their order is the client's (newest request
+first) and this view never re-sorts it.
 
 `chrome` exists so the frame's caller does not have to know which rows are
-conditional: it is the one place that asks "is there a command window, is there a
-reading", and `areas` sizes the frame from it.
+conditional: it is the one place that asks "is there a command window, how tall is the
+quota block at this width", and `areas` sizes the frame from it. The height is
+`render::quota_rows`, the same function that draws the rows.
 
 ## The command view
 
