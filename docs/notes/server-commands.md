@@ -123,7 +123,8 @@ but unlike every other setting it is not re-tuned later: the branch and the dire
 made before the row (`worktree::create`), so a refused session leaves no branch behind,
 and a session the row does not record cannot own one. An existing session refusing it is
 `session::refuse_worktree_on_existing`, and a session that owns one refuses both a `cwd`
-and a `remote` that would move it away. A remote session cannot ask for one at all.
+and a `remote` that would move it away. Which machine the branch is made on is the
+session's own `Space`, never this process's -- see `server-worktree.md`.
 
 The created directory becomes the session's `cwd`. What was stated as `cwd` named the
 checkout to make the branch in, and resolving that here -- rather than at the next start

@@ -105,12 +105,17 @@ text are JSON fields; no shell or Python source parses them. Each call starts a
 fresh driver and stops it afterwards -- file state is the file, so a persistent
 process buys nothing and a long-running interpreter must not block an edit.
 
-The driver runs on this machine, or on the session's remote when the call's
-`remote` names it -- the same choice `remote_python` makes, and the same one
-machine: a session's directory is on one peer, so a second name is refused. The
-remote driver is started by name there,
-exactly as `remote_python` starts it, so a peer without Python refuses the call
-rather than writing on this machine.
+The driver runs in the session's [`Space`](server-space.md) -- this machine, or the peer
+the session's directory is on -- and there is no second way to start it. The driver is a
+one-shot: it answers one request and ends, so a caller waits for a program that exits by
+itself on either machine, and `Space::run` needs no conversational mode. Which
+interpreter answers is the space's business too: this machine's is found on `PATH` (or
+the configured `[tools.python]` program), and a peer's candidate is believed only after
+it answers `print(1)`, because a name that resolves to the Windows Store stub exits
+having run nothing. A peer without Python refuses the call rather than writing here.
+
+What used to sit between the two -- `RemoteRepl`, a peer interpreter kept alive for a
+probe and then a request -- is gone with the fork it existed for.
 
 `remote` is offered only to a session that has a remote -- `definitions` drops the
 argument otherwise, so a session on one machine is never shown a machine it does not

@@ -41,6 +41,7 @@ mod session_config;
 mod shell_command;
 mod ship;
 mod signal;
+mod space;
 mod store;
 mod subscriptions;
 pub mod supervise;

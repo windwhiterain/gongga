@@ -140,25 +140,27 @@ impl FileRemote {
             return None;
         }
         let host = self.host.unwrap_or_default();
+        let runner = self.runner.unwrap_or_default();
+        // No host is a machine this machine starts: the runner is the peer. See
+        // `docs/notes/server-remotes.md`.
         if host.trim().is_empty() {
-            tracing::warn!(%name, "a remote needs a `host`");
-            return None;
+            if runner.trim().is_empty() {
+                tracing::warn!(%name, "a remote needs a `host`, or a `runner` to start here");
+                return None;
+            }
+            return Some(RemoteConfig {
+                name,
+                endpoint: Endpoint::Direct {
+                    runner: PathBuf::from(runner.trim()),
+                },
+            });
         }
         // Absent means this build's own, placed on the peer and greeted.
-        if self
-            .runner
-            .as_ref()
-            .is_some_and(|runner| runner.trim().is_empty())
-        {
-            tracing::warn!(%name, "a remote's `runner` is empty; leave it out instead");
-            return None;
-        }
-        let runner = self.runner.unwrap_or_default();
         Some(RemoteConfig {
             name,
             endpoint: Endpoint::Remote {
                 transport: Reach::Ssh {
-                    host,
+                    host: host.trim().to_string(),
                     port: self.port,
                     identity: self.identity,
                 },

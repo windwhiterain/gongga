@@ -16,17 +16,24 @@ happens to be. A session created inside a linked worktree therefore starts on th
 commit as one created in the main checkout, and its new worktree lands beside the
 repository's own rather than beside the caller's.
 
-## Which repository
+## Which repository, and on which machine
 
-The nearest checkout at or above the session's stated `cwd`: `fork::git_dir` reads a
-directory's own `.git` (a directory, or a file naming one) and the walk goes upward from
-there. Nothing is handed to `git -C`, for the reason `server-fork.md` records: git asked
-about a directory answers for the repository *outside* it, and the answer was somebody
-else's config. A `cwd` inside no checkout is refused by name.
+Every git call runs on the session's own [`Space`](server-space.md), standing in the
+session's directory: this machine for a local session, the peer for a remote one. There
+is no second implementation, so a remote session's worktree is made by the git that
+machine has, and the path recorded is that machine's spelling.
+
+The repository is whatever git answers for from that directory -- the nearest checkout
+at or above it. This is asked deliberately, and it is the one place in the server where
+"which repository does this directory sit in" is the question being asked, so it is git
+that answers it (nothing writes a config here; `server-fork.md`'s `--git-dir` rule exists
+because a config write once landed in the enclosing repository). A `cwd` inside no
+checkout is refused in git's own words.
 
 `Workspace.cwd` still says where to look. A session born in a worktree works at the
 worktree's root: the stated directory named the checkout the branch was made in, not a
-subdirectory of the new tree.
+subdirectory of the new tree. A peer's directory is passed as written; an unstated one
+is that machine's own starting directory.
 
 ## One session per name
 
@@ -42,19 +49,18 @@ one is not moved -- neither to another directory nor to another machine. A workt
 place, and the session that asked for it stays in it; moving away would leave the branch
 behind with nobody to remove it.
 
-A remote session cannot ask for one: git runs here, on the machine the server runs on.
-
 ## Dying with its session
 
 `del_session` takes the worktree away before it stops anything, so a git that will not
-let go leaves the session exactly as it was. Forced: the caller said the session is
+let go -- a peer that is not answering included -- leaves the session exactly as it was. Forced: the caller said the session is
 gone, so whatever was uncommitted in that directory goes too. The branch is deleted
 after the directory, and a refusal from either is the answer rather than a warning --
 what is left otherwise is a branch no session will ever remove.
 
 A `cwd` that sits in no repository means the worktree went without git. The registration
 is pruned when git still lists it, the branch is deleted when it is still there, and the
-answer says the worktree was already gone.
+answer says the worktree was already gone. A directory that is not registered as that
+branch's worktree is left alone: nothing here removes a directory git does not claim.
 
 ## Stored, not derived
 

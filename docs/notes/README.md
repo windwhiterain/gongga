@@ -148,6 +148,7 @@ The Python files are the content repository's `python/` tree, installed under
 | [`server-tools-job.md`](server-tools-job.md) | `crates/server/src/tools/job.rs` |
 | [`server-transcript.md`](server-transcript.md) | `crates/server/src/transcript.rs` |
 | [`server-worktree.md`](server-worktree.md) | `crates/server/src/worktree.rs` |
+| [`server-space.md`](server-space.md) | `crates/server/src/space.rs` |
 
 ### client
 

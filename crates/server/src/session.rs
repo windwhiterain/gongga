@@ -703,6 +703,26 @@ impl SessionHandle {
             .cwd()
     }
 
+    /// The path space this session's paths live in: the machine its directory is on.
+    ///
+    /// # Invariant
+    ///
+    /// The space is the session's own machine, never the caller's: a tool that touches
+    /// a path touches it there, and asks nothing about which machine that is.
+    /// `owner()` is `Remote` only while the workspace holds a peer, so this never falls
+    /// back to this machine for a session that has one.
+    pub fn space(&self) -> crate::space::Space {
+        let workspace = self
+            .inner
+            .workspace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match workspace.endpoint(workspace.owner()) {
+            Some(endpoint) => crate::space::Space::of(endpoint),
+            None => crate::space::Space::local(),
+        }
+    }
+
     /// The connection this session's references are read through, when its
     /// directory is on a remote.
     pub fn reader(&self) -> Option<Arc<crate::remote::Reader>> {
@@ -1500,6 +1520,33 @@ impl SessionManager {
             );
         }
         Ok(())
+    }
+
+    /// The path space a session on `remote` lives in; `None` is this machine.
+    ///
+    /// # Invariant
+    ///
+    /// An unknown name is refused here, before anything is made on the wrong machine:
+    /// a worktree is built where the session's directory will be, never here by default.
+    pub fn space_on(&self, remote: Option<&str>) -> anyhow::Result<crate::space::Space> {
+        match remote {
+            None => Ok(crate::space::Space::local()),
+            Some(remote) => Ok(crate::space::Space::of(self.endpoint_for(Some(remote))?)),
+        }
+    }
+
+    /// The path space a session already recorded lives in, without waking its workspace.
+    ///
+    /// # Invariant
+    ///
+    /// A live handle is asked first: a move swaps the machine under it, and the row is
+    /// only what a restart would hand back.
+    pub fn space(&self, name: &str) -> anyhow::Result<crate::space::Space> {
+        if let Some(live) = self.peek(name) {
+            return Ok(live.space());
+        }
+        let remote = self.recorded_remote(name);
+        self.space_on(remote.as_deref())
     }
 
     /// What a session's workspace run on, as its row records it.

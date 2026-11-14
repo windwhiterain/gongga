@@ -8,7 +8,10 @@ The machines this server may run a session's shells on, and where that list is k
 
 A remote is made of three facts about this machine: a `host`, an `identity` — the path
 of a private key — and, optionally, a `runner`, one program on the peer preferred over
-the one this build places there. What a runner *says* is what chooses it, so a path
+the one this build places there. A table with a `runner` and no `host` is a runner this
+machine starts itself: that program *is* the peer, and nothing is reached over the
+network. It is the shape a test uses to exercise a peer's paths without an ssh server,
+and the only way `Endpoint::Direct` is built. What a runner *says* is what chooses it, so a path
 that names another build's distribution is run past rather than obeyed; see
 `docs/notes/server-remote.md`.
 None of them belongs in `<home>/config.toml`, which is the **pinned content's**: the

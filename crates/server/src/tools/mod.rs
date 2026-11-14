@@ -24,7 +24,6 @@ pub mod file;
 #[cfg(windows)]
 pub mod job;
 pub mod live_compact;
-pub mod python_remote;
 pub mod skill;
 pub mod spec;
 pub mod spill;
@@ -117,6 +116,21 @@ impl ToolContext {
     /// The connection this session's references are read through, if any.
     pub(crate) fn reader(&self) -> Option<Arc<crate::remote::Reader>> {
         self.reader.clone()
+    }
+
+    /// The path space this call's paths live in: where the session stands.
+    ///
+    /// # Invariant
+    ///
+    /// One space per session, because a session works on one machine: a tool takes a
+    /// path in this space and asks nothing about whether it is a peer. See
+    /// `docs/notes/server-space.md`.
+    pub(crate) fn space(&self) -> crate::space::Space {
+        let workspace = self.workspace.lock().unwrap_or_else(|e| e.into_inner());
+        match workspace.endpoint(workspace.owner()) {
+            Some(endpoint) => crate::space::Space::of(endpoint),
+            None => crate::space::Space::local(),
+        }
     }
 
     /// Where `machine` starts: the session's directory, empty on the other machine.

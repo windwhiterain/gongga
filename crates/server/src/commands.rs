@@ -1725,31 +1725,24 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 crate::session::RemoteAsk::Keep => None,
                 crate::session::RemoteAsk::Machine(named) => named.clone(),
             };
-            // SPEC's `Workspace.worktree`: made before the row, so a refusal leaves nothing.
-            let born = match asked_worktree {
+            // SPEC's `Workspace.worktree`: made in the session's own space, and before
+            // its row, so a refusal leaves nothing behind.
+            let space = match asked_worktree {
                 None => None,
-                Some(asked) => {
-                    if let Some(remote) = lands.as_deref() {
-                        return Outcome::err(format!(
-                            "the worktree {asked:?} would be made on this machine, and session \
-                             {name} is asked for on remote {remote:?}; a worktree is this \
-                             machine's, so name a repository here"
-                        ));
-                    }
-                    // The repository is looked up from the stated directory, not from here.
-                    let start = match stated_cwd {
-                        Some(stated) => crate::session::placed_directory(
-                            stated,
-                            None,
-                            &std::env::current_dir().unwrap_or_default(),
-                        ),
-                        None => std::env::current_dir().unwrap_or_default(),
-                    };
-                    match make_worktree(&start, asked).await {
+                Some(_) => match d.sessions.space_on(lands.as_deref()) {
+                    Ok(space) => Some(space),
+                    Err(e) => return Outcome::err(e.to_string()),
+                },
+            };
+            let born = match (asked_worktree, &space) {
+                (Some(asked), Some(space)) => {
+                    let start = started_at(stated_cwd, space.is_local());
+                    match make_worktree(space, &start, asked).await {
                         Ok(path) => Some((asked.to_string(), path)),
                         Err(e) => return Outcome::err(e),
                     }
                 }
+                _ => None,
             };
             if born.is_none()
                 && let Some(stated) = stated_cwd
@@ -1781,8 +1774,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             ) {
                 Ok(session) => (session, None),
                 Err(e) => {
-                    if let Some((worktree, path)) = &born
-                        && let Err(left) = remove_worktree(worktree, path).await
+                    if let (Some((worktree, path)), Some(space)) = (&born, &space)
+                        && let Err(left) = remove_worktree(space, worktree, path).await
                     {
                         tracing::warn!(
                             session = %name, worktree = %worktree, error = %left,
@@ -3057,26 +3050,42 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
     }))
 }
 
-/// Makes a session's worktree without holding a runtime thread: git checks a tree out.
-async fn make_worktree(start: &std::path::Path, name: &str) -> Result<std::path::PathBuf, String> {
-    let (start, made) = (start.to_path_buf(), name.to_string());
-    match tokio::task::spawn_blocking(move || crate::worktree::create(&start, &made)).await {
-        Ok(result) => result,
-        // The task itself did not finish, so nothing here knows what git made.
-        Err(e) => Err(format!("the worktree {name:?} was not made: {e}")),
+/// Where a worktree's repository is looked up: the stated directory, in the spelling
+/// of the machine that owns it.
+///
+/// # Invariant
+///
+/// This machine reads an absolute path, expanded against this process's directory when
+/// it was relative; a peer's directory is passed as written, because only that machine
+/// can expand it, and nothing stated is its own default.
+fn started_at(stated: Option<&str>, local: bool) -> std::path::PathBuf {
+    if !local {
+        return std::path::PathBuf::from(stated.unwrap_or_default().trim());
     }
+    match stated {
+        Some(stated) => {
+            crate::session::stated_directory(stated, &std::env::current_dir().unwrap_or_default())
+        }
+        None => std::env::current_dir().unwrap_or_default(),
+    }
+}
+
+/// Makes a session's worktree, wherever that session's paths live.
+async fn make_worktree(
+    space: &crate::space::Space,
+    start: &std::path::Path,
+    name: &str,
+) -> Result<std::path::PathBuf, String> {
+    crate::worktree::create(space, start, name).await
 }
 
 /// Takes a session's worktree away the same way, and answers what went with it.
 async fn remove_worktree(
+    space: &crate::space::Space,
     name: &str,
     cwd: &std::path::Path,
 ) -> Result<crate::worktree::Removed, String> {
-    let (taken, cwd) = (name.to_string(), cwd.to_path_buf());
-    match tokio::task::spawn_blocking(move || crate::worktree::remove(&taken, &cwd)).await {
-        Ok(result) => result,
-        Err(e) => Err(format!("the worktree {name:?} was not removed: {e}")),
-    }
+    crate::worktree::remove(space, name, cwd).await
 }
 
 /// Takes away the worktree a session owns, if it owns one.
@@ -3096,7 +3105,8 @@ async fn remove_worktree_of(
     let Some(worktree) = row.worktree else {
         return Ok(None);
     };
-    let removed = remove_worktree(&worktree, std::path::Path::new(&row.cwd)).await?;
+    let space = d.sessions.space(name).map_err(|e| e.to_string())?;
+    let removed = remove_worktree(&space, &worktree, std::path::Path::new(&row.cwd)).await?;
     Ok(Some((worktree, removed)))
 }
 

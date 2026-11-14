@@ -117,12 +117,17 @@ def _run(request):
         sys.__stdout__.write(json.dumps({"ok": ok, "stdout": out.getvalue(), "stderr": err.getvalue()}) + "\n")
         sys.__stdout__.flush()
 
+# One request, one answer, then the end: a file call is one shot, and the program
+# ending by itself is what a caller on either machine waits for.
 for line in sys.stdin:
+    if not line.strip():
+        continue
     try:
         request = json.loads(line)
     except Exception:
         continue
     _run(request)
+    break
 "#;
 
 #[derive(Debug, serde::Deserialize)]
@@ -156,52 +161,119 @@ pub(crate) fn reply_text(reply: &Reply) -> String {
 
 /// One file operation: a fresh driver, one request, one answer. File state is
 /// the file, not a namespace.
+///
+/// # Invariant
+///
+/// The request is answered where the call's path lives: the driver is started by the
+/// space, so this machine and a peer are one code path. The answer is the last line the
+/// driver wrote on its own standard output, because everything before it is the
+/// program's own noise, and a call whose interpreter never started is an error naming
+/// that program -- never a request sent a second time.
 async fn one_shot(
-    program: Option<&Path>,
+    space: &crate::space::Space,
+    program: &str,
     args: &[String],
     cwd: &Path,
     request: Value,
     timeout: Duration,
 ) -> anyhow::Result<Reply> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let program = match program {
-        Some(path) => path.to_path_buf(),
-        None => detect()?,
-    };
-    let mut child = tokio::process::Command::new(&program)
-        .args(args)
-        .arg("-u")
-        .arg("-c")
-        .arg(DRIVER)
-        .current_dir(crate::tools::standing_dir(cwd))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| anyhow::anyhow!("spawning {}: {e}", program.display()))?;
-    let mut stdin = child.stdin.take().expect("stdin piped");
-    let mut stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
-    let line = request.to_string();
-    stdin
-        .write_all(format!("{line}\n").as_bytes())
-        .await
-        .map_err(|e| anyhow::anyhow!("writing to the Python driver: {e}"))?;
-    stdin.flush().await.ok();
-    let mut answer = String::new();
-    let read = tokio::time::timeout(timeout, stdout.read_line(&mut answer)).await;
-    let reply = match read {
-        Err(_) => Err(anyhow::anyhow!(
+    let mut line = request.to_string();
+    line.push('\n');
+    let run = match tokio::time::timeout(
+        timeout,
+        space.run(cwd, program, args, Some(line.into_bytes())),
+    )
+    .await
+    {
+        Err(_) => anyhow::bail!(
             "the Python call did not finish within {}s",
             timeout.as_secs()
-        )),
-        Ok(Ok(0)) => Err(anyhow::anyhow!("the Python interpreter exited")),
-        Ok(Ok(_)) => serde_json::from_str::<Reply>(answer.trim())
-            .map_err(|e| anyhow::anyhow!("a malformed Python reply: {e}")),
-        Ok(Err(e)) => Err(anyhow::anyhow!("reading from the Python driver: {e}")),
+        ),
+        Ok(Err(e)) => anyhow::bail!("{e}"),
+        Ok(Ok(run)) => run,
     };
-    let _ = child.kill().await;
-    reply
+    let printed = run.stdout_text();
+    let answer = printed.lines().rev().find(|line| !line.trim().is_empty());
+    let said = match run.stderr.is_empty() {
+        true => String::new(),
+        false => format!(
+            "; the interpreter said: {}",
+            String::from_utf8_lossy(&run.stderr).trim()
+        ),
+    };
+    match answer.map(|line| serde_json::from_str::<Reply>(line.trim())) {
+        Some(Ok(reply)) => Ok(reply),
+        Some(Err(e)) => anyhow::bail!("a malformed Python reply: {e}{said}"),
+        None => anyhow::bail!(
+            "the Python driver printed no answer and exited with {}{said}",
+            match run.exit {
+                Some(code) => format!("status {code}"),
+                None => "no status".to_string(),
+            }
+        ),
+    }
+}
+
+/// One request, answered by the interpreter on the machine the call's paths are on.
+async fn answer(
+    ctx: &ToolContext,
+    configured: Option<&Path>,
+    args: &[String],
+    machine: Machine,
+    request: Value,
+    timeout: Duration,
+) -> anyhow::Result<Reply> {
+    let space = ctx.space();
+    let cwd = ctx.dir(machine);
+    let program = interpreter(&space, configured, &cwd).await?;
+    one_shot(&space, &program, args, &cwd, request, timeout).await
+}
+
+/// The interpreter a file request is answered by, on the machine the paths are on.
+///
+/// # Invariant
+///
+/// A configured program is this machine's: it is a path the operator wrote here, and a
+/// path this machine holds is not evidence about a peer's `PATH`. A peer's candidate is
+/// believed only after it answers, because a name that resolves to the Windows Store's
+/// stub exits having run nothing at all.
+async fn interpreter(
+    space: &crate::space::Space,
+    configured: Option<&Path>,
+    cwd: &Path,
+) -> anyhow::Result<String> {
+    if space.is_local() {
+        if let Some(path) = configured {
+            return Ok(path.to_string_lossy().into_owned());
+        }
+        return Ok(detect()?.to_string_lossy().into_owned());
+    }
+    let mut tried = Vec::new();
+    for candidate in ["python3", "python"] {
+        let probe = space
+            .run(
+                cwd,
+                candidate,
+                &["-c".to_string(), "print(1)".to_string()],
+                None,
+            )
+            .await;
+        match probe {
+            Ok(run) if run.exit == Some(0) && run.stdout_text().trim() == "1" => {
+                return Ok(candidate.to_string());
+            }
+            Ok(run) => tried.push(format!(
+                "{candidate}: it answered {:?}",
+                run.stdout_text().trim()
+            )),
+            Err(e) => tried.push(format!("{candidate}: {e}")),
+        }
+    }
+    anyhow::bail!(
+        "{} has no Python to start: {}. Install one on that machine, or run this on the machine that has it",
+        space.describe(),
+        tried.join("; ")
+    )
 }
 
 /// The remote a file call's `remote` names, when it names one.
@@ -215,7 +287,7 @@ fn stated_remote(args: &Value) -> Option<String> {
     crate::session::remote_request(stated)
 }
 
-/// The machine a file call runs on: the session's remote when its `remote` names it.
+/// The machine a file call's paths belong to.
 ///
 /// # Invariant
 ///
@@ -228,58 +300,27 @@ fn file_machine(args: &Value, ctx: &ToolContext) -> Machine {
     }
 }
 
-/// Whether a file call runs on the session's remote, and the refusal when its
-/// `remote` names another machine.
+/// The refusal when a file call names a machine the session has no directory on.
 ///
 /// # Invariant
 ///
 /// A session works on one machine: its directory is on the remote it names, and a
 /// second peer would have no directory to be in. See `docs/notes/server-remote.md`.
-fn file_remote(args: &Value, ctx: &ToolContext, tool: &str) -> Result<bool, String> {
+fn file_remote(args: &Value, ctx: &ToolContext, tool: &str) -> Result<(), String> {
     let Some(stated) = stated_remote(args) else {
-        return Ok(false);
+        return Ok(());
     };
     if ctx.remote.as_deref() == Some(stated.as_str()) {
-        return Ok(true);
+        return Ok(());
     }
     Err(match &ctx.remote {
         Some(here) => format!(
-            "`{tool}` ran nothing: this session's directory is on remote {here:?}, and its \
-             files are there -- {stated:?} is another machine, which this session has no \
-             directory on. A session works on one machine: `set_session --remote {stated}` \
-             moves it there, and ends these shells first."
+            "`{tool}` ran nothing: this session's directory is on remote {here:?}, and its files are there -- {stated:?} is another machine, which this session has no directory on. A session works on one machine: `set_session --remote {stated}` moves it there, and ends these shells first."
         ),
         None => format!(
-            "`{tool}` ran nothing: this session names no remote, so it has no peer to work \
-             on, and {stated:?} is not one it can reach from here."
+            "`{tool}` ran nothing: this session names no remote, so it has no peer to work on, and {stated:?} is not one it can reach from here."
         ),
     })
-}
-
-/// The endpoint of the session's remote, for a file call that named it.
-fn remote_endpoint(ctx: &ToolContext) -> Option<crate::remote::Endpoint> {
-    ctx.workspace
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .endpoint(Machine::Remote)
-}
-
-/// One file operation on the session's remote, through an interpreter there.
-///
-/// # Invariant
-///
-/// The same driver as this machine's, started by name on the peer: a path this
-/// machine holds is not evidence about one the peer has.
-async fn one_shot_remote(
-    endpoint: &crate::remote::Endpoint,
-    cwd: &Path,
-    request: Value,
-    timeout: Duration,
-) -> anyhow::Result<Reply> {
-    let mut repl = crate::tools::python_remote::RemoteRepl::spawn(endpoint, cwd, DRIVER).await?;
-    let reply = repl.run_request(&request, timeout).await;
-    repl.kill().await;
-    reply
 }
 
 /// The `remote` argument the file tools take: the session's remote, or this machine.
@@ -312,10 +353,9 @@ impl Cmd for ReadFileTool {
             let Some(path) = args["path"].as_str() else {
                 return ToolOutcome::err("read_file requires a string `path`");
             };
-            let on_remote = match file_remote(&args, ctx, "read_file") {
-                Ok(on_remote) => on_remote,
-                Err(why) => return ToolOutcome::err(why),
-            };
+            if let Err(why) = file_remote(&args, ctx, "read_file") {
+                return ToolOutcome::err(why);
+            }
             let description = args
                 .get("description")
                 .and_then(Value::as_str)
@@ -327,30 +367,16 @@ impl Cmd for ReadFileTool {
                 "offset": args["offset"].as_u64().unwrap_or(0),
                 "limit": args["limit"].as_u64().unwrap_or(0),
             });
-            let wait = self.timeout;
-            let outcome = if on_remote {
-                let Some(endpoint) = remote_endpoint(ctx) else {
-                    return ToolOutcome::err(
-                        "read_file ran nothing: this session names a remote, but it has no \
-                         endpoint to reach",
-                    );
-                };
-                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, wait).await
-            } else {
-                one_shot(
-                    self.program.as_deref(),
-                    &self.args,
-                    &ctx.dir(Machine::Local),
-                    request,
-                    wait,
-                )
-                .await
-            };
-            let machine = if on_remote {
-                Machine::Remote
-            } else {
-                Machine::Local
-            };
+            let machine = file_machine(&args, ctx);
+            let outcome = answer(
+                ctx,
+                self.program.as_deref(),
+                &self.args,
+                machine,
+                request,
+                self.timeout,
+            )
+            .await;
             match outcome {
                 Ok(reply) if reply.ok => {
                     let text = if reply.stdout.is_empty() {
@@ -397,40 +423,25 @@ impl Cmd for WriteFileTool {
             else {
                 return ToolOutcome::err("write_file requires string `path` and `content`");
             };
-            let on_remote = match file_remote(&args, ctx, "write_file") {
-                Ok(on_remote) => on_remote,
-                Err(why) => return ToolOutcome::err(why),
-            };
+            if let Err(why) = file_remote(&args, ctx, "write_file") {
+                return ToolOutcome::err(why);
+            }
             let description = args
                 .get("description")
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|s| !s.is_empty());
             let request = json!({"op": "write", "path": path, "content": content});
-            let wait = self.timeout;
-            let outcome = if on_remote {
-                let Some(endpoint) = remote_endpoint(ctx) else {
-                    return ToolOutcome::err(
-                        "write_file ran nothing: this session names a remote, but it has no \
-                         endpoint to reach",
-                    );
-                };
-                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, wait).await
-            } else {
-                one_shot(
-                    self.program.as_deref(),
-                    &self.args,
-                    &ctx.dir(Machine::Local),
-                    request,
-                    wait,
-                )
-                .await
-            };
-            let machine = if on_remote {
-                Machine::Remote
-            } else {
-                Machine::Local
-            };
+            let machine = file_machine(&args, ctx);
+            let outcome = answer(
+                ctx,
+                self.program.as_deref(),
+                &self.args,
+                machine,
+                request,
+                self.timeout,
+            )
+            .await;
             match outcome {
                 Ok(reply) if reply.ok => ToolOutcome::ok(ctx.cap(
                     machine,
@@ -476,10 +487,9 @@ impl Cmd for ReplaceTool {
             if old.is_empty() {
                 return ToolOutcome::err("replace requires a non-empty `old`");
             }
-            let on_remote = match file_remote(&args, ctx, "replace") {
-                Ok(on_remote) => on_remote,
-                Err(why) => return ToolOutcome::err(why),
-            };
+            if let Err(why) = file_remote(&args, ctx, "replace") {
+                return ToolOutcome::err(why);
+            }
             let description = args
                 .get("description")
                 .and_then(Value::as_str)
@@ -492,30 +502,16 @@ impl Cmd for ReplaceTool {
                 "new": new,
                 "all": args["all"].as_bool().unwrap_or(false),
             });
-            let wait = self.timeout;
-            let outcome = if on_remote {
-                let Some(endpoint) = remote_endpoint(ctx) else {
-                    return ToolOutcome::err(
-                        "replace ran nothing: this session names a remote, but it has no \
-                         endpoint to reach",
-                    );
-                };
-                one_shot_remote(&endpoint, &ctx.dir(Machine::Remote), request, wait).await
-            } else {
-                one_shot(
-                    self.program.as_deref(),
-                    &self.args,
-                    &ctx.dir(Machine::Local),
-                    request,
-                    wait,
-                )
-                .await
-            };
-            let machine = if on_remote {
-                Machine::Remote
-            } else {
-                Machine::Local
-            };
+            let machine = file_machine(&args, ctx);
+            let outcome = answer(
+                ctx,
+                self.program.as_deref(),
+                &self.args,
+                machine,
+                request,
+                self.timeout,
+            )
+            .await;
             match outcome {
                 Ok(reply) if reply.ok => ToolOutcome::ok(ctx.cap(
                     machine,
