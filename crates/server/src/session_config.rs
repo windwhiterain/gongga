@@ -41,13 +41,15 @@ pub struct ModelConfig {
     pub cache_tier: Option<String>,
 }
 
-/// SPEC `Workspace := {remote, cwd}`.
+/// SPEC `Workspace := {remote, cwd, worktree}`.
 #[derive(Debug, Default, Deserialize)]
 pub struct Workspace {
     #[serde(default)]
     pub remote: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub worktree: Option<String>,
 }
 
 /// SPEC `LiveCompact := {enabled, interval_tokens}`: a session's own opt-in.
@@ -127,6 +129,9 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
         }
         if let Some(cwd) = workspace.cwd {
             args.insert("cwd".to_string(), cwd);
+        }
+        if let Some(worktree) = workspace.worktree {
+            args.insert("worktree".to_string(), worktree);
         }
     }
     if let Some(keep_alive) = config.keep_alive {
@@ -273,6 +278,16 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         ),
         ".",
     );
+    // SPEC: `worktree: optional[str] = none`.
+    let worktree = defaulted(
+        leaf(
+            "worktree",
+            "A branch and worktree made with this session, in the repository its cwd sits in.",
+            CompletionSource::None,
+            "name",
+        ),
+        "none",
+    );
     // SPEC: `keep_alive: bool` -- no default, so an entry may fill it.
     let keep_alive = leaf(
         "keep_alive",
@@ -303,7 +318,11 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
                     vec![model, thinking, ctx_limit, cache_tier],
                 )
             },
-            object("workspace", "Where the session works.", vec![remote, cwd]),
+            object(
+                "workspace",
+                "Where the session works.",
+                vec![remote, cwd, worktree],
+            ),
             keep_alive,
             object(
                 "live_compact",

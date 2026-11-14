@@ -994,7 +994,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
 fn config_arg(remotes: &[String], update: bool) -> protocol::ArgSpec {
     let mut spec = arg(
         "config",
-        "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (remote, cwd), and keep_alive. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. remote and cache_tier take none to clear.",
+        "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (remote, cwd, worktree), keep_alive and live_compact. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. remote and cache_tier take none to clear. worktree is read when the session is created and never after: it makes a branch and a worktree of that name in the repository the cwd sits in, and the session works in it.",
         false,
         Some("json"),
         CompletionSource::None,
@@ -1522,6 +1522,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(refusal) = crate::session::checked_name(&name) {
         return Outcome::err(refusal);
     }
+    // SPEC's `Workspace.worktree`, spelled `none` for a session that makes none.
+    let asked_worktree = crate::worktree::requested(args.word("worktree"));
     // A caller that means to start its own session says so: a name collision
     // must never select another one's transcript.
     match flag_of(args, "must_create") {
@@ -1636,6 +1638,19 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     };
     let (session, moved) = match d.store.get_session(&name).ok().flatten() {
         Some(row) => {
+            if let Some(asked) = asked_worktree {
+                let recorded = row.worktree.as_deref();
+                if recorded != Some(asked) {
+                    return Outcome::err(format!(
+                        "session {name} was created with {}, and nothing here changes that: a \
+                         worktree is made with the session that asked for it",
+                        match recorded {
+                            Some(worktree) => format!("the worktree {worktree:?}"),
+                            None => "no worktree".to_string(),
+                        }
+                    ));
+                }
+            }
             let live = d.sessions.peek(&name);
             let here = live
                 .as_ref()
@@ -1663,6 +1678,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             let cwd_moves = wanted_dir
                 .as_deref()
                 .is_some_and(|asked| !same_directory(asked, &here));
+            if let Some(worktree) = &row.worktree
+                && (remote_moves || cwd_moves)
+            {
+                return Outcome::err(format!(
+                    "session {name} works in the worktree {worktree:?}, which is made with it \
+                     and removed with it: it can be neither moved nor left on its own"
+                ));
+            }
             let session = match live {
                 Some(session) => session,
                 None => match d.sessions.get(&name) {
@@ -1702,7 +1725,35 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 crate::session::RemoteAsk::Keep => None,
                 crate::session::RemoteAsk::Machine(named) => named.clone(),
             };
-            if let Some(stated) = stated_cwd {
+            // SPEC's `Workspace.worktree`: made before the row, so a refusal leaves nothing.
+            let born = match asked_worktree {
+                None => None,
+                Some(asked) => {
+                    if let Some(remote) = lands.as_deref() {
+                        return Outcome::err(format!(
+                            "the worktree {asked:?} would be made on this machine, and session \
+                             {name} is asked for on remote {remote:?}; a worktree is this \
+                             machine's, so name a repository here"
+                        ));
+                    }
+                    // The repository is looked up from the stated directory, not from here.
+                    let start = match stated_cwd {
+                        Some(stated) => crate::session::placed_directory(
+                            stated,
+                            None,
+                            &std::env::current_dir().unwrap_or_default(),
+                        ),
+                        None => std::env::current_dir().unwrap_or_default(),
+                    };
+                    match make_worktree(&start, asked).await {
+                        Ok(path) => Some((asked.to_string(), path)),
+                        Err(e) => return Outcome::err(e),
+                    }
+                }
+            };
+            if born.is_none()
+                && let Some(stated) = stated_cwd
+            {
                 let directory = crate::session::placed_directory(
                     stated,
                     lands.as_deref(),
@@ -1716,12 +1767,30 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                     return Outcome::err(e.to_string());
                 }
             }
-            match d
-                .sessions
-                .ensure_on(&name, stated_cwd, Some(&entry.model), lands.as_deref())
-            {
+            // A session born in a worktree works at its root: what it stated is the
+            // checkout the branch was made in.
+            let directory = born
+                .as_ref()
+                .map(|(_, path)| path.to_string_lossy().into_owned());
+            match d.sessions.ensure_on(
+                &name,
+                directory.as_deref().or(stated_cwd),
+                Some(&entry.model),
+                lands.as_deref(),
+                asked_worktree,
+            ) {
                 Ok(session) => (session, None),
-                Err(e) => return Outcome::err(e.to_string()),
+                Err(e) => {
+                    if let Some((worktree, path)) = &born
+                        && let Err(left) = remove_worktree(worktree, path).await
+                    {
+                        tracing::warn!(
+                            session = %name, worktree = %worktree, error = %left,
+                            "a refused session's worktree was left behind"
+                        );
+                    }
+                    return Outcome::err(e.to_string());
+                }
             }
         }
     };
@@ -2988,6 +3057,49 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
     }))
 }
 
+/// Makes a session's worktree without holding a runtime thread: git checks a tree out.
+async fn make_worktree(start: &std::path::Path, name: &str) -> Result<std::path::PathBuf, String> {
+    let (start, made) = (start.to_path_buf(), name.to_string());
+    match tokio::task::spawn_blocking(move || crate::worktree::create(&start, &made)).await {
+        Ok(result) => result,
+        // The task itself did not finish, so nothing here knows what git made.
+        Err(e) => Err(format!("the worktree {name:?} was not made: {e}")),
+    }
+}
+
+/// Takes a session's worktree away the same way, and answers what went with it.
+async fn remove_worktree(
+    name: &str,
+    cwd: &std::path::Path,
+) -> Result<crate::worktree::Removed, String> {
+    let (taken, cwd) = (name.to_string(), cwd.to_path_buf());
+    match tokio::task::spawn_blocking(move || crate::worktree::remove(&taken, &cwd)).await {
+        Ok(result) => result,
+        Err(e) => Err(format!("the worktree {name:?} was not removed: {e}")),
+    }
+}
+
+/// Takes away the worktree a session owns, if it owns one.
+///
+/// # Invariant
+///
+/// Run before anything of the session is stopped, so a worktree git will not let go
+/// leaves the session exactly as it was: interrupted and then not deleted is worse
+/// than not deleted, and a branch left behind is one no delete will ever own.
+async fn remove_worktree_of(
+    d: &Dispatch,
+    name: &str,
+) -> Result<Option<(String, crate::worktree::Removed)>, String> {
+    let Some(row) = d.store.get_session(name).ok().flatten() else {
+        return Ok(None);
+    };
+    let Some(worktree) = row.worktree else {
+        return Ok(None);
+    };
+    let removed = remove_worktree(&worktree, std::path::Path::new(&row.cwd)).await?;
+    Ok(Some((worktree, removed)))
+}
+
 fn prepare_delete(d: &Dispatch, name: &str) -> (bool, usize) {
     // A delete drops the turn even when it was waiting: nothing of it is kept.
     let interrupted = interrupt(d, name, Stop::Delete);
@@ -2997,7 +3109,13 @@ fn prepare_delete(d: &Dispatch, name: &str) -> (bool, usize) {
     interrupted
 }
 
-async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize) -> Outcome {
+async fn finish_delete(
+    d: &Dispatch,
+    name: &str,
+    was_busy: bool,
+    dropped: usize,
+    taken: Option<(String, crate::worktree::Removed)>,
+) -> Outcome {
     let session = d.sessions.peek(name);
     let _gate = match &session {
         Some(session) => Some(session.claim().await),
@@ -3044,6 +3162,21 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
             if forgotten > 0 {
                 message.push_str(&format!("; dropped {forgotten} subscription(s)"));
             }
+            if let Some((worktree, gone)) = &taken {
+                match (&gone.path, gone.branch) {
+                    (Some(path), true) => message.push_str(&format!(
+                        "; its worktree at {} and the branch {worktree:?} went too",
+                        path.display()
+                    )),
+                    (Some(path), false) => message.push_str(&format!(
+                        "; its worktree at {} went too, and the branch {worktree:?} was                          already gone",
+                        path.display()
+                    )),
+                    (None, _) => {
+                        message.push_str(&format!("; its worktree {worktree:?} was already gone"))
+                    }
+                }
+            }
             Outcome::ok(message)
         }
         Ok(false) => Outcome::err(format!("no session named {name:?}")),
@@ -3066,21 +3199,44 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
         return Outcome::err(format!("no session named {path:?}"));
     };
     if below.is_empty() {
+        // SPEC's `Workspace.worktree` goes first: a git that will not take it keeps the
+        // session whole.
+        let taken = match remove_worktree_of(d, one).await {
+            Ok(taken) => taken,
+            Err(e) => return Outcome::err(format!("session {one} was not deleted: {e}")),
+        };
         let (was_busy, dropped) = prepare_delete(d, one);
-        return finish_delete(d, one, was_busy, dropped).await;
+        return finish_delete(d, one, was_busy, dropped, taken).await;
     }
     // A path takes what is under it; each delete keeps its own cleanup, so one by one.
     let mut deleted = 0;
+    let mut refused = Vec::new();
     for name in &doomed {
+        let taken = match remove_worktree_of(d, name).await {
+            Ok(taken) => taken,
+            Err(e) => {
+                refused.push(format!("{name}: {e}"));
+                continue;
+            }
+        };
         let (was_busy, dropped) = prepare_delete(d, name);
-        if finish_delete(d, name, was_busy, dropped).await.ok {
-            deleted += 1;
+        match finish_delete(d, name, was_busy, dropped, taken).await {
+            outcome if outcome.ok => deleted += 1,
+            outcome => refused.push(format!("{name}: {}", outcome.message)),
         }
     }
-    Outcome::ok(format!(
+    let mut message = format!(
         "deleted {deleted} session(s) under {path:?}: {}",
         doomed.join(", ")
-    ))
+    );
+    if !refused.is_empty() {
+        message.push_str(&format!(
+            "; {} session(s) were left in place: {}",
+            refused.len(),
+            refused.join("; ")
+        ));
+    }
+    Outcome::ok(message)
 }
 
 /// Which verb stopped a turn, and what it leaves behind.

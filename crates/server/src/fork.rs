@@ -329,14 +329,26 @@ fn same_path(told: &Path, dir: &Path) -> bool {
 /// No argument may be a path for git to resolve against "here", `.` included: the
 /// process's directory is not the checkout's, so a relative path names the wrong tree.
 pub fn git_at(git_dir: &Path, work_tree: Option<&Path>, args: &[&str]) -> std::process::Output {
+    try_git_at(git_dir, work_tree, args).unwrap_or_else(|e| panic!("running git {args:?}: {e}"))
+}
+
+/// The same, for a caller that has an answer for a git that will not start.
+///
+/// # Invariant
+///
+/// One construction, two ways to answer it: the arguments a checkout is read through
+/// are written once, so no caller can name a different pair of directories.
+pub fn try_git_at(
+    git_dir: &Path,
+    work_tree: Option<&Path>,
+    args: &[&str],
+) -> std::io::Result<std::process::Output> {
     let mut cmd = bounded();
     cmd.arg(format!("--git-dir={}", git_dir.display()));
     if let Some(work_tree) = work_tree {
         cmd.arg(format!("--work-tree={}", work_tree.display()));
     }
-    cmd.args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("running git {args:?}: {e}"))
+    cmd.args(args).output()
 }
 
 /// `git` in a checkout this module owns, which is the only shape it will run in.
@@ -358,7 +370,7 @@ pub fn git(dir: &Path, args: &[&str]) -> std::process::Output {
 /// Read, not found: a `.git` directory is itself, a `.git` file names one (resolved
 /// against the checkout), and anything else is nothing at all. Resolving a pointer is
 /// not a search upward -- the pointer is this directory's own statement.
-fn git_dir(dir: &Path) -> Option<PathBuf> {
+pub fn git_dir(dir: &Path) -> Option<PathBuf> {
     let entry = dir.join(".git");
     if std::fs::metadata(&entry).ok()?.is_dir() {
         return Some(entry);
@@ -382,16 +394,25 @@ fn git_dir(dir: &Path) -> Option<PathBuf> {
 /// are not checkouts this module may touch.
 fn owned(dir: &Path) -> Option<PathBuf> {
     let git = git_dir(dir)?;
-    let common = git_at(&git, None, &["rev-parse", "--git-common-dir"]);
-    if !common.status.success() {
+    same_path(&common_dir(&git)?, &dir.join(".git")).then_some(git)
+}
+
+/// The directory a repository registers its worktrees in, as git names it.
+///
+/// # Invariant
+///
+/// Git's own answer, resolved against the git directory that was asked: a relative
+/// answer names a path inside that directory, never one inside the process's.
+pub fn common_dir(git: &Path) -> Option<PathBuf> {
+    let out = try_git_at(git, None, &["rev-parse", "--git-common-dir"]).ok()?;
+    if !out.status.success() {
         return None;
     }
-    let told = String::from_utf8_lossy(&common.stdout).trim().to_string();
-    let told = match Path::new(&told).is_absolute() {
+    let told = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Some(match Path::new(&told).is_absolute() {
         true => PathBuf::from(told),
         false => git.join(told),
-    };
-    same_path(&told, &dir.join(".git")).then_some(git)
+    })
 }
 
 /// The same, as an error when git refused.

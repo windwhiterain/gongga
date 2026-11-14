@@ -48,6 +48,7 @@ mod tool_cmd;
 mod tools;
 mod transcript;
 mod transport;
+mod worktree;
 
 use std::path::PathBuf;
 use std::sync::Arc;

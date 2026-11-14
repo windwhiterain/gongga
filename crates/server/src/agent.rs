@@ -2152,7 +2152,7 @@ mod tests {
         let store =
             crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
         let id = store
-            .create_session_on("s", "m", ".", None)
+            .create_session_on("s", "m", ".", None, None)
             .expect("a session");
         let first = crate::store::Prompt {
             instructions: "prose".to_string(),

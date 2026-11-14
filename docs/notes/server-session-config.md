@@ -13,6 +13,11 @@ names `workspace.cwd` and nothing else changes the directory and nothing else.
 A stated `null` is a value, not an absence, for the two fields that take it: `remote`
 and `cache_tier` are cleared by saying `none` (the one string spelling) or `null`.
 
+`workspace.worktree` is the one setting here that is not a preference of the session but
+a thing made for it: it is read when the session is created and refused afterwards, and
+`none` -- its default, so a delta that says nothing says none -- makes nothing. What the
+name becomes is `server-worktree.md`.
+
 ## A model is spelled two ways
 
 SPEC spells `Model := {provider, model}`. The session's row, and the sticky entry a

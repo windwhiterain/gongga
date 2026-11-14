@@ -141,6 +141,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- The endpoint this session's shells run on, as a named remote from the
     -- server's config. NULL is this machine, and it is fixed once the session has run.
     remote TEXT,
+    -- The branch and worktree this session was born in, by name. NULL is a session
+    -- that made none, and it is fixed for the life of the row: the worktree comes
+    -- and goes with the session that asked for it. See `docs/notes/server-worktree.md`.
+    worktree TEXT,
     -- The last row of this session a monitor turn was given. A turn writes its
     -- user row before it starts, so `seq` only grows: this column is the whole
     -- record of "this failure has been reported", and it survives a restart.
@@ -486,6 +490,7 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         ),
         ("tps", "ALTER TABLE sessions ADD COLUMN tps REAL"),
         ("remote", "ALTER TABLE sessions ADD COLUMN remote TEXT"),
+        ("worktree", "ALTER TABLE sessions ADD COLUMN worktree TEXT"),
         ("ttft_ms", "ALTER TABLE sessions ADD COLUMN ttft_ms INTEGER"),
         (
             "monitor_seq",
@@ -868,8 +873,7 @@ impl Store {
 
     // -- sessions ----------------------------------------------------------
 
-    /// Creates a session on `model`, which is `provider/model_name` whenever the
-    /// roster can place the name.
+    /// Creates a session on a model, on a machine, in the worktree it was born in.
     ///
     /// # Invariant
     ///
@@ -877,13 +881,15 @@ impl Store {
     /// its provider. A renamed column keeps its `NOT NULL`, so a row that named
     /// only one of them could not be inserted at all -- and a bare name is right
     /// for a row the roster cannot place.
-    /// Creates a session on `remote`, which `None` spells this machine.
+    ///
+    /// The worktree is written with the directory it was made at, in one statement.
     pub fn create_session_on(
         &self,
         name: &str,
         model: &str,
         cwd: &str,
         remote: Option<&str>,
+        worktree: Option<&str>,
     ) -> anyhow::Result<i64> {
         if name.trim().is_empty() {
             anyhow::bail!("session name must not be empty");
@@ -892,9 +898,10 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
-            "INSERT INTO sessions (name, status, model, model_name, cwd, created_at, updated_at, remote)
-             VALUES (?1, 'idle', ?2, ?3, ?4, ?5, ?5, ?6)",
-            params![name, model, bare_model(model), cwd, now, remote],
+            "INSERT INTO sessions (name, status, model, model_name, cwd, created_at, updated_at,
+                                   remote, worktree)
+             VALUES (?1, 'idle', ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
+            params![name, model, bare_model(model), cwd, now, remote, worktree],
         )
         .map_err(|e| duplicate_session(name, e))?;
         let id = tx.last_insert_rowid();
@@ -910,6 +917,8 @@ impl Store {
     /// placement and last measurement. One transaction, so a copy taken while a turn
     /// writes holds every row or none. The target must be a free name and the source
     /// must exist. See `docs/notes/server-store.md`.
+    ///
+    /// It owns no worktree even when the source does: a branch has one session.
     pub fn clone_session(&self, source: &str, name: &str) -> anyhow::Result<CloneReport> {
         if name.trim().is_empty() {
             anyhow::bail!("session name must not be empty");
@@ -1082,7 +1091,7 @@ impl Store {
                     s.context_limit, s.thinking_effort,
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote,
                     s.cache_tier, s.cache_keepalive, s.ended_at, s.mode,
-                    s.live_compact, s.live_compact_interval_tokens
+                    s.live_compact, s.live_compact_interval_tokens, s.worktree
              FROM sessions s";
 
     /// Every session in `error` because of a provider, with what a monitor turn
@@ -1218,6 +1227,7 @@ impl Store {
             live_compact_interval_tokens: r
                 .get::<_, Option<i64>>(20)?
                 .map(|tokens| tokens.max(0) as u64),
+            worktree: r.get(21)?,
         })
     }
 
@@ -3312,6 +3322,8 @@ pub struct SessionRow {
     pub live_compact_enabled: Option<bool>,
     /// Its own interval; `None` follows the home's `[agent]`.
     pub live_compact_interval_tokens: Option<u64>,
+    /// The branch, and so the worktree, this session was born in; `None` made none.
+    pub worktree: Option<String>,
 }
 
 /// What a clone wrote: the new session, its rows, and where it ends.

@@ -116,6 +116,19 @@ a session already standing in `<its dir>/sub`. Resolving before storing is what 
 the row meaningful later: it is handed to a shell at the next start, and a relative
 path there would mean wherever that shell happened to be.
 
+## set_session — worktree
+
+SPEC's `Workspace.worktree` is applied here because this is where a session is created,
+but unlike every other setting it is not re-tuned later: the branch and the directory are
+made before the row (`worktree::create`), so a refused session leaves no branch behind,
+and a session the row does not record cannot own one. An existing session refusing it is
+`session::refuse_worktree_on_existing`, and a session that owns one refuses both a `cwd`
+and a `remote` that would move it away. A remote session cannot ask for one at all.
+
+The created directory becomes the session's `cwd`. What was stated as `cwd` named the
+checkout to make the branch in, and resolving that here -- rather than at the next start
+-- is what makes the row a directory that exists.
+
 ## set_session — must_create
 ## set_session — mode
 
@@ -430,6 +443,11 @@ the interrupt it is the length of the turn.
 Deleting a session is the one thing that means "the work it started is not wanted
 either". `cancel` disagrees on purpose: background jobs exist to outlive a cancel,
 and a delete is not one.
+
+A session's own worktree goes first, before the turn is interrupted: git is asked for a
+forced removal and the branch's deletion, and a git that will not let go answers instead
+of the delete, leaving the session whole. The other way round leaves a session
+interrupted and not deleted, with a branch nothing will ever remove.
 
 Nothing in a delete waits for a process. What a session owned is taken out of its
 hands -- its tool jobs cancelled, its detached bash taken off the registry, its

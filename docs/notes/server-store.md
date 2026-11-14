@@ -168,6 +168,13 @@ session drops that handle before the process is confirmed gone: the stop carries
 the job in hand instead, and a job whose stop fails is only a warning now. There
 is no session left to retry for. See `docs/notes/server-tools-detached.md`.
 
+## sessions.worktree
+
+The branch a session was born in, by name, or NULL for a session that made none. It is
+written once, by `create_session_on` in the same statement as the directory it was made
+at; `clone_session` leaves the column out on purpose, so a copy works in the same place
+and owns no branch. `server-worktree.md` has the rest.
+
 ## Store::list_sessions
 
 The order is the turn that ended last, newest first: `COALESCE(ended_at, created_at)`

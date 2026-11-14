@@ -201,6 +201,22 @@ pub fn checked_name(name: &str) -> Option<String> {
     })
 }
 
+/// Refuses a worktree for a session that is already there.
+///
+/// # Invariant
+///
+/// A worktree is made with the session that asked for it and never adopted by one, so
+/// a caller that means to make another branch cannot land in somebody's session.
+fn refuse_worktree_on_existing(name: &str, worktree: Option<&str>) -> anyhow::Result<()> {
+    let Some(worktree) = worktree else {
+        return Ok(());
+    };
+    anyhow::bail!(
+        "a session named {name:?} already exists, and the worktree {worktree:?} is made with a \
+         new session, never added to one; pick a name of your own"
+    )
+}
+
 /// What asking for a move came to.
 #[derive(Debug)]
 pub enum MoveOutcome {
@@ -1196,16 +1212,17 @@ impl SessionManager {
     /// # Invariant
     ///
     /// Never moves an existing session: a move ends workspace, and only
-    /// [`SessionManager::relocate`] may do that, under the gate. This refuses a
-    /// different remote and names the command that does move one, so the two paths
-    /// cannot disagree about what "the same session" means. See
-    /// `docs/notes/server-remote.md`.
+    /// [`SessionManager::relocate`] may do that, under the gate, so the two paths cannot
+    /// disagree about what "the same session" means. See `docs/notes/server-remote.md`.
+    ///
+    /// A `worktree` is made with a session, never added to one.
     pub fn ensure_on(
         &self,
         name: &str,
         cwd: Option<&str>,
         model: Option<&str>,
         remote: Option<&str>,
+        worktree: Option<&str>,
     ) -> anyhow::Result<SessionHandle> {
         // Resolved before anything is created: an unknown name must not make a session.
         let recorded = remote.and_then(remote_request);
@@ -1214,10 +1231,12 @@ impl SessionManager {
         // materialise and then overwrite one name.
         let mut live = self.live();
         if let Some(h) = live.get(name) {
+            refuse_worktree_on_existing(name, worktree)?;
             self.check_same_remote(name, recorded.as_deref())?;
             return Ok(h.clone());
         }
         if let Some(row) = self.store.get_session(name)? {
+            refuse_worktree_on_existing(name, worktree)?;
             self.check_same_remote(name, recorded.as_deref())?;
             let _ = endpoint;
             return self.materialise_locked(row, &mut live);
@@ -1242,9 +1261,9 @@ impl SessionManager {
             .map(str::to_owned)
             .unwrap_or_else(|| current.model.model());
         let source = source.as_str();
-        let id = self
-            .store
-            .create_session_on(name, source, &stored, recorded.as_deref())?;
+        let id =
+            self.store
+                .create_session_on(name, source, &stored, recorded.as_deref(), worktree)?;
         // Pin the model itself: reasoning blobs replay only where they were produced.
         let pinned = crate::providers::roster().place(source).map(|e| e.model);
         if let Some(pinned) = &pinned {
@@ -1277,6 +1296,7 @@ impl SessionManager {
                 live_compact_interval_tokens: None,
                 // Born working; `set_session` moves it in the same command.
                 mode: crate::explore::Mode::Work,
+                worktree: worktree.map(str::to_string),
             },
             &mut live,
         )
