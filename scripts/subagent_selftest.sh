@@ -112,8 +112,11 @@ description: A skill only a later message names.
 LATE skill body marker.
 EOF
 # The skill under test, installed the way a home installs it: `entry` runs from here.
-mkdir -p "$home/skills"
-cp -r "$skill" "$home/skills/subagent"
+# The home reads its content from the checkout in the home: make it before the
+# fixtures below are written into it.
+[[ -d "$home/ship/.git" ]] || git clone -q "${GONGGA_SHIP_URL:-$root/ship}" "$home/ship"
+mkdir -p "$home/ship/skills"
+cp -r "$skill" "$home/ship/skills/subagent"
 cp -r "$root/ship/config/config.toml" "$home/config.toml" 2>/dev/null
 
 port=$(free_port); fake_port=$(free_port); wait_port=$(free_port)

@@ -217,7 +217,8 @@ pub fn roots(project: Option<&Path>) -> skill::Roots {
     let roots = crate::ship::roots();
     skill::Roots::new(
         project.map(|cwd| cwd.join(".agents").join("skills")),
-        roots.home.join("skills"),
+        // The content's own tree in the checkout: the files a home reads, not copies.
+        crate::ship::skills(&roots.home),
         Some(roots.machine.join("skills")),
     )
 }

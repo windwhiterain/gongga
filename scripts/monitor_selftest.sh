@@ -113,9 +113,12 @@ git clone --quiet --no-hardlinks "$ship" "$home/ship"
 cp "$ship/config/config.toml" "$home/config.toml"
 # The skill this checkout carries, installed where a home resolves it: publishing
 # does the same thing through the content repository, which this run does not reach.
-mkdir -p "$home/skills"
-rm -rf "$home/skills/providers"
-cp -r "$root/ship/skills/providers" "$home/skills/providers"
+# The home reads its content from the checkout in the home: make it before the
+# fixtures below are written into it.
+[[ -d "$home/ship/.git" ]] || git clone -q "${GONGGA_SHIP_URL:-$root/ship}" "$home/ship"
+mkdir -p "$home/ship/skills"
+rm -rf "$home/ship/skills/providers"
+cp -r "$root/ship/skills/providers" "$home/ship/skills/providers"
 python - "$home/config.toml" <<'PY'
 import sys
 path = sys.argv[1]

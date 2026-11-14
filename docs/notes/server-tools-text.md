@@ -54,9 +54,9 @@ So `missing` is `#[cfg(test)]`, and the check lives where a build is checked:
 `ship/config/config.toml` off the working tree, so a sentence added there but not yet
 committed is enough for a commit to pass.
 
-A home that predates a section is still served: `ship::install` merges the shipped
-config into the home's at every start, so the words arrive with the content, and a
-home without them sends what it has.
+A home that predates a section is still served: the content's config is the file the
+home reads, so the words arrive with the content, and a home whose content says nothing
+sends what it has.
 
 ## What a config cannot do
 

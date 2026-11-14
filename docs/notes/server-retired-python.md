@@ -8,17 +8,12 @@ went away; the files it had already written did not. The content repository now 
 three names through its `python` mapping, so a home whose `lib/` still holds the old copies is
 in a half state that cannot resolve itself.
 
-Why it cannot: `ship::reconcile` treats a file with no entry in `.ship-base/` as the reader's
-own, and keeps it (`Decision::Keep`). That rule is right -- it is what stops an install from
-overwriting a module somebody edited -- and it is exactly why a build artifact masquerades as
-one forever. Where the shipped bytes had not moved the two happen to be equal and the file is
-adopted silently; where they had not moved, the home keeps its old copy and reports it as the
-reader's on every start -- which is the state `~/.gongga/lib` was in on 2026-11-14, with
-`gongga_skill.py` differing and the other two equal.
-
-So the old files are retired before the content lands: `lib.rs` calls `retire` after `migrate`
-and before `ship::install`, which is the only window where the paths still hold nothing but
-what a build wrote.
+Why it cannot by itself: a copy and a reader's file are the same bytes on disk, and the
+only honest test is whether they are *this build's*. `ship::tidy`, which takes away what an
+older build installed, compares a file with the content's own copy -- but these three names
+were a build's, not the content's, so their bytes are nowhere in the checkout to compare
+against. `retire` therefore runs inside `tidy`, first, with the bytes an older build wrote
+compiled into this binary.
 
 ## why whole bytes, not a hash
 
@@ -38,7 +33,7 @@ the path, not the old bytes.
 
 A file at one of these paths whose bytes differ is left exactly as it is. It can be the
 reader's own module, or a newer content revision; either way it is not this build's artifact
-and this build has no business deciding. The content's reconcile reports it as kept, and the
+and this build has no business deciding. `ship::tidy` reports it as kept, and the
 one log line says which names were kept and why.
 
 The whole step is one `read` per name on every start: no directory walk, nothing to remember

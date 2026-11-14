@@ -276,16 +276,21 @@ takes. It was `[llm]`, then `[provider]`, and the second name was the mistake: a
 provider is the company, not the brain, and a table called `[provider]` holding a
 `model` was the same confusion one level down. Both older spellings are still read
 -- `[llm]` fell back to the roster, `[provider]` is a serde alias -- so an old home
-keeps working and the next install merges the new table in.
+keeps working and the next content change brings the new table in.
 
-## who writes config.toml
+## where the file is, and who writes it
 
-Not this module. The install in `ship.rs` places the pinned file into a home that
-has none and merges into one that does, so "absent means write, anything else is
-the reader's" is enforced by the same rule that governs the skills. The historical
-qualifier -- a first start minted a key into config.toml, so the file that had to
-explain the fields always looked already-answered -- died with the key moving next
-door to `server.key`.
+Not this module either way. A home's config is the content's own file, read in the
+checkout the home keeps (`<home>/ship/...`, see `server-ship.md`): nothing copies it into
+the home, so `--config` is the only thing that reads a different file, and an edit to the
+content's file is read at the next request. A home whose checkout has no such file is
+refused at start, naming the path; `config_path` is that path made absolute, so the prompt
+templates and the values are always the same file.
+
+`[server] home` is the one key a config cannot decide when it is read from inside the home:
+the file would have to be found before the home it names was known. It is still read for a
+config outside the home (`--config`), and a config inside a home that names another one is
+warned about and ignored.
 
 ## cache_tier / cache_affinity
 

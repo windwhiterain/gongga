@@ -15,26 +15,52 @@ const SERVER: &str = "gongga-server";
 const RELAY: &str = "gongga-relay";
 
 /// The POSIX name: bash runs this file by its `#!`, which a `.cmd` cannot be.
-const SH: &str = "#!/bin/sh\n\
-# gongga-cli: the harness's command line, in Python. The server writes this file.\n\
-here=$(dirname \"$0\")\n\
-home=${GONGGA_HOME:-$(cd \"$here/..\" && pwd)}\n\
-for candidate in python3 python py; do\n\
-  if command -v \"$candidate\" >/dev/null 2>&1; then\n\
-    exec \"$candidate\" \"$home/lib/gongga_cli.py\" \"$@\"\n\
-  fi\n\
-done\n\
-echo \"gongga-cli: no Python on this machine's PATH\" >&2\n\
-exit 3\n";
+///
+/// # Invariant
+///
+/// The file it runs is named relative to `GONGGA_HOME`: the shim is written into the
+/// home's `bin`, so it expands the home itself, and where the Python surface sits is the
+/// content's answer, asked once here rather than spelled twice.
+fn sh(contract: &str) -> String {
+    let mut text = String::new();
+    text.push_str("#!/bin/sh\n");
+    text.push_str(
+        "# gongga-cli: the harness's command line, in Python. The server writes this file.\n",
+    );
+    text.push_str("here=$(dirname \"$0\")\n");
+    text.push_str("home=${GONGGA_HOME:-$(cd \"$here/..\" && pwd)}\n");
+    text.push_str("for candidate in python3 python py; do\n");
+    text.push_str("  if command -v \"$candidate\" >/dev/null 2>&1; then\n");
+    text.push_str(&format!(
+        "    exec \"$candidate\" \"$home/{contract}\" \"$@\"\n"
+    ));
+    text.push_str("  fi\n");
+    text.push_str("done\n");
+    text.push_str("echo \"gongga-cli: no Python on this machine's PATH\" >&2\n");
+    text.push_str("exit 3\n");
+    text
+}
 
 /// The native name: `CreateProcess` knows nothing of `#!`.
-const CMD: &str = "@echo off\r\n\
-if \"%GONGGA_HOME%\"==\"\" set GONGGA_HOME=%~dp0..\r\n\
-python \"%GONGGA_HOME%\\lib\\gongga_cli.py\" %*\r\n\
-exit /b %ERRORLEVEL%\r\n";
+fn cmd(contract: &str) -> String {
+    let windows = contract.replace('/', &char::from(92).to_string());
+    let mut text = String::new();
+    text.push_str("@echo off\r\n");
+    text.push_str("if \"%GONGGA_HOME%\"==\"\" set GONGGA_HOME=%~dp0..\r\n");
+    text.push_str(&format!("python \"%GONGGA_HOME%\\{windows}\" %*\r\n"));
+    text.push_str("exit /b %ERRORLEVEL%\r\n");
+    text
+}
 
-/// The two names a shell may start the command line by, and what each holds.
-const SHIM: [(&str, &str); 2] = [(CLI, SH), ("gongga-cli.cmd", CMD)];
+/// What the shim runs, relative to the home it starts in.
+fn contract(home: &Path) -> String {
+    let python = crate::ship::python(home);
+    let relative = python.strip_prefix(home).unwrap_or(&python);
+    relative
+        .join("gongga_cli.py")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
 
 /// Puts this server and its command layer in this home's `bin`, and says where
 /// the command landed.
@@ -57,9 +83,9 @@ pub fn ensure_pair(home: &Path) -> Option<PathBuf> {
     // No relay in `bin` is no channel: a copy it could not replace is asked again.
     refresh_relay(home);
     // The command line is this home's Python: what a shell needs is a name for it.
-    for (name, body) in SHIM {
-        let _ = write(&bin, name, body);
-    }
+    let contract = contract(home);
+    let _ = write(&bin, CLI, &sh(&contract));
+    let _ = write(&bin, "gongga-cli.cmd", &cmd(&contract));
     Some(bin.join(CLI))
 }
 

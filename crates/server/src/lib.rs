@@ -140,9 +140,8 @@ pub enum LogFormat {
 ///
 /// # Invariant
 ///
-/// Read once before the shipped content is installed, for the home alone, and
-/// once after, for everything else: a value read from a file that had not
-/// arrived yet is the loader's default, not this home's.
+/// Read once, from the file the content itself keeps: a home has no config of its own
+/// any more, so there is no second read to wait for.
 fn config_from(args: &Args) -> anyhow::Result<Config> {
     Config::load_with_home(args.config.as_deref(), args.home.as_deref())
 }
@@ -212,6 +211,14 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // must not travel into what it starts.
     supervise::remember();
     let mut clock = Clock::new();
+    // The content comes first: this home's config is one of its files.
+    let home = args.home.clone().unwrap_or_else(crate::config::home_dir);
+    let content = if args.check_config {
+        ship::inspect(&home)?
+    } else {
+        ship::prepare(&home)?
+    };
+    clock.step("ship content");
     let cfg = config_from(&args)?;
     clock.step("config");
     if args.check_config {
@@ -224,14 +231,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let _instance = home_lock::HomeLock::acquire(&cfg.home, "server.lock", "gongga server")?;
     instance::record_dir(&cfg.home);
     clock.step("home lock");
-    // Before anything resolves: the lookup is memoized, one content per server.
-    ship::remember_url(cfg.ship_url.clone());
-    // One fetch for this start, in flight while the home is claimed and opened.
-    ship::start_fetch(&cfg.home);
-    // The live content for migrator, install and prompts. It waits for the fetch
-    // only when no protocol here can be read.
-    ship::prepare(&cfg.home);
-    clock.step("ship prepare");
+    // The one fetch this start makes, from the repository the config names.
+    ship::follow(&cfg.home, cfg.ship_url.as_deref());
+    clock.step("ship follow");
     let migrated = migrate::bring_forward(&cfg.home, &cfg.db_path)?;
     if !migrated.steps.is_empty() {
         tracing::info!(
@@ -242,26 +244,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         );
     }
     clock.step("migrate");
-    // Before the content lands: what an older build wrote here is not the reader's.
-    retired_python::retire(&cfg.home);
-    clock.step("retired python");
-
-    // Installed before anything reads it: a config already here is the reader's.
-    let installed = ship::install(&cfg.home)?;
-    clock.step("ship install");
-    tracing::info!(
-        content = %installed.pin.get(..10).unwrap_or(installed.pin.as_str()),
-        written = installed.written,
-        updated = installed.updated,
-        merged = installed.merged,
-        removed = installed.removed,
-        conflicts = ?installed.conflicts,
-        reachable = installed.reachable,
-        "shipped content"
-    );
-    // Read again: the install may have just placed this home's config, and it is
-    // followed from here.
-    let config = crate::config::Current::load(args.config.as_deref(), args.home.as_deref())?;
+    // Followed from here: an edit to that file is read at the next request.
+    let config = crate::config::Current::load(Some(&cfg.config_path), args.home.as_deref())?;
     let cfg = config.anchor();
     // Before any request is built: templates from this config, over the pin.
     let missing = prompts::install(&cfg.config_path);
@@ -270,7 +254,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             "{} says nothing about {missing:?}, and the pinned ship content (pin {}) \
              cannot answer either; the server would send an empty prompt",
             cfg.config_path.display(),
-            installed.pin,
+            content.commit,
         );
     }
     let overridden = prompts::shared().overridden();
@@ -342,9 +326,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
     let bus = EventBus::new(4096);
 
-    // Where a session's Python imports the contract and the client: the content's
-    // `python` tree lands here.
-    let skill_lib = Some(cfg.home.join("lib"));
+    // The Python surface a session imports, read in the checkout.
+    let skill_lib = Some(ship::python(&cfg.home));
 
     // A provider's own picture is kept beside the home, not in the transcript.
     blobs::install(&cfg.home.join("blobs"));
@@ -639,7 +622,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tokio::task::spawn_blocking(move || match ship::refresh(&home) {
             Ok(Some(commit)) => tracing::info!(
                 content = %commit.get(..10).unwrap_or(commit.as_str()),
-                "the content moved while this server ran; reconciled the increment"
+                "the content moved while this server ran; the checkout is on it, and this home reads it"
             ),
             Ok(None) => tracing::debug!("content: this home holds what the repository has"),
             Err(e) => tracing::warn!(error = %e, "cannot refresh the shipped content"),

@@ -26,7 +26,7 @@ pub fn is_package(directory: &Path) -> bool {
 pub struct Package {
     /// The interpreter, as the caller's config resolved it.
     pub python: PathBuf,
-    /// This home's `lib/gongga_skill.py`, which reads the call.
+    /// The content's `gongga_skill.py`, in the checkout a home reads, which reads the call.
     pub contract: PathBuf,
 }
 

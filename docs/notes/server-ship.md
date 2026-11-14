@@ -2,206 +2,126 @@
 
 ## module doc
 
-The harness ships three kinds of thing a user should be able to edit: the config,
-the skills that speak about the server, and the skills that speak about the
-machine. None of them belongs in this repository, because a file in the working
-tree is a file a project's own edits and the harness's updates fight over. They
-live in a content repository of their own, which a home keeps as a checkout and
-installs into itself.
+The harness ships three kinds of thing a user should be able to edit: the config, the
+skills that speak about the server, and the Python surface a skill imports. None of them
+belongs in this repository, because a file in the working tree is a file a project's own
+edits and the harness's updates fight over. They live in a content repository, which a home
+keeps as a checkout and **reads in place**: there is no install step, no copy beside the
+checkout, and therefore no base, no merge and no conflict to converge.
+
+That is the whole design. A home's config is `<checkout>/<declared config>`, its own skills
+are `<checkout>/<declared skills>/<name>`, and `GONGGA_SKILL_LIB` names
+`<checkout>/<declared python>`. An edit in the checkout is an edit here.
 
 ## MANIFEST, link
 
-`ship.toml` is compiled in, and it names no commit. A pin meant a content edit cost a
-commit here plus a rebuild, and the two names for one commit drifted the moment
-somebody forgot the second half; instead the URL and the protocol this build reads are
-what the binary carries, and the commit is whatever the branch says today.
+`ship.toml` is compiled in, and it names no commit: the newest one that speaks `protocol` is
+read, so content moves by a restart rather than by a rebuild. `protocol` is the one number
+that can force a rebuild, so it moves only when the *shape* of the content changes. A
+manifest that does not parse is a build bug, so `link()` panics instead of degrading into a
+server that reads nothing.
 
-`protocol` is the one number that can force a rebuild, so it moves only when the
-*shape* of the content changes: a new required key in the content's declaration, a
-different layout. A wording fix, a new skill or a retired path is content, and content
-never needs a new build.
+Two answers, most specific first: `GONGGA_SHIP_URL` (one run: a test, a shell) and the
+compiled URL. A home may name its own repository too, in `[ship] url`; that one cannot be an
+answer here, because the config that holds it lives *inside* the checkout the URL would have
+to name first. It is applied at the fetch instead (`follow`), and a change to it lands on the
+same start: point `origin`, fetch, `refresh`.
 
-A manifest that does not parse is a build bug, so `link()` panics instead of degrading
-into a server that installs nothing.
+## Roots, checkout
 
-## which repository, and whose answer it is
+Two roots, because the two kinds of content have different lifetimes. This repository owns
+the config, the skills that describe *this server* and the Python surface: they are the
+checkout in the home (`<home>/ship`). The machine's skills -- `proxy`, `remote`,
+`computer_use`, `web-search` -- are the community clone's, which `agents::link_skills` puts in
+`~/.agents/skills`. Installing those into a home would give one machine five copies of the
+same procedure, so they are not here at all.
 
-Three answers, most specific first, and one of them is a fact about a home rather than
-about a build:
-
-| written where | who it is for | how it is spelled |
-| --- | --- | --- |
-| the environment | one run: a test, a shell, a throwaway repository | `GONGGA_SHIP_URL` |
-| this home's config | a machine developing the content | `[ship] url = "C:/work/gongga-ship"` |
-| this build | everybody else | `[ship] url` in `crates/server/ship.toml` |
-
-The middle one is what a developer needs and the environment cannot give: the URL
-belongs to the *home*, so a window started tomorrow installs from the same place, and
-two homes on one machine may install from two checkouts. `adopt` follows the change --
-it re-points the home's `origin` -- so switching a home between the published content
-and a local checkout is a restart, and switching back is the same edit removed.
-
-A local path costs nothing to fetch and needs no push: the working tree a person edits
-*is* the remote. What it does not change is which commit is installed: the protocol
-still decides that, and a local `main` that has not moved still installs what it said
-yesterday. In practice a development loop advances `main` in the local content
-repository (`git -C ship merge --ff-only local`) and a running server's refresh
-installs it -- one local fetch, no network, no restart.
-
-One home per process, and one URL: `CONTENT` is live, so a fetch that moved the
-checkout replaces the answer for every later reader. `remember_url` is called from
-`lib.rs` immediately after the config is read, before `prepare` can resolve anything
--- a URL arriving after a resolve would be a second content for one server, which is
-the shape of bug that shows up as "some sessions read the new skill and some the old".
-
-## Roots, machine_root, checkout
-
-Two roots, because the two kinds of content have different lifetimes. What this
-repository owns -- the config, and the skills that describe *this server*
-(`handoff`, `image`, `self-control`, `subagent`) -- belongs beside the database and
-follows the home. The machine's skills -- `proxy`, `remote`, `computer_use`,
-`web-search`, `latency` -- are the community clone's, which `agents::link_skills`
-puts in `~/.agents/skills` beside `providers.toml`. This repository does not ship
-them: installing them into a home would give one machine five copies of the same
-procedure and five chances to edit them apart, and installing them into `~/.agents`
-would fight the clone for the same names.
-
-A home keeps its copy at `<home>/ship`: a checkout, kept the way the community roster
-is (`fork`) — official `main`, personal `local`, rebased. A person can therefore edit
-what this machine installs, and the edit survives an upstream change. `ship.git` was
-the old bare cache, and `adopt` turns one into the other without a network.
+The checkout is kept the way the community roster is (`fork`): official `main`, personal
+`local`, rebased. `ship.git` was the old bare cache, and `adopt` turns one into the other
+without a network.
 
 ## Declared, declared_at
 
-What the content says about itself, read from the commit it is installed from: the
-protocol it speaks, which path is the config, where the skills live, which path is the
-Python surface, which paths an earlier commit left on the machine. It is parsed rather than copied into this binary
-because a mapping is a fact about *that* repository's history — moving a skill or
-retiring a path must not need a rebuild, which is the whole point of resolving by
-protocol.
+What the content says about itself, read from the commit it is read from: the protocol it
+speaks, which path is the config, where the skills live, which path is the Python surface,
+which paths an earlier commit left on the machine. It is parsed rather than copied into this
+binary because a mapping is a fact about *that* repository's history: moving a skill or
+retiring a path must not need a rebuild.
 
-`commands` is the one entry that does not place a file anywhere: it names the functions
-this content publishes as commands of the home's own (see `server-content-commands.md`).
-A commit that declares none is read as one that has none, which is why the list defaults
--- and why raising the protocol is what keeps a server that cannot read these lines on
-the commit that does not have them.
+`commands` is the one entry that places nothing anywhere: it names the functions this content
+publishes as commands of the home's own (see `server-content-commands.md`).
 
-## plans
+## resolve, settle
 
-`config.toml` is mapped from one repository file to one home file; a skill bucket is
-mapped from a repository *tree* spread under `skills/`; the Python surface is a tree
-spread under `lib/`. The difference matters for `collect`, which yields one entry per
-file either way, and for what gets removed when upstream drops a path. The tag on each
-entry names that root's copy of the merge base.
+`resolve` reads the checkout's tip as it is and names the newest commit, walking first
+parents *back* until one speaks this build's protocol. Walking back rather than forward is
+the invariant: content that has moved to a protocol this build cannot read still serves this
+build the last commit it could.
 
-`lib/` is what made the package contract editable: `gongga_skill.py`, `gongga.py` and
-`gongga_cli.py` used to sit in this repository and reach the home through three
-`include_str!`s, so editing the contract was a `cargo build` and every reader of it was
-a copy of one commit. As a tree mapping it is content: the same reconcile, the same base,
-a restart to take effect.
+`settle` is what makes that commit the one on disk, because nothing is copied: the files a
+home reads are the checkout's own working tree, so the tree has to *be* the content this
+build reads. In the normal start it already is, and `settle` runs no git at all. When the
+walk-back named an older commit, git moves the tree there -- onto the branch that names that
+commit, or detached when no branch does -- and logs it. Work in the tree that would have to
+go is a refusal: it is the reader's, and discarding it is not the server's to do.
 
-## reconcile
+## prepare, inspect, follow, refresh
 
-Three versions per file: the disk (ours), the content (theirs), and the bytes this
-root last installed (the base). The base is why a content edit lands on a file nobody
-touched and does *not* land on one somebody did: without it, "differs from upstream"
-and "the reader edited this" look identical.
+`prepare` is the start's first half, before any config is read: adopt the old cache, clone if
+the home has none, resolve, settle, check the three paths, and tidy what an older build left.
+A checkout missing a declared path is refused, naming it: the home is no longer
+self-contained, and a server that started anyway would have no config to say where anything
+esle is.
 
-The base lives in `<home>/.ship-base/<root>` rather than in git history, because the
-personal branch is rebased and a rewritten commit is no longer a base. It is a copy of
-what was placed, so it also says exactly what the last install did rather than what
-some commit said.
+`inspect` is the same question asked without writing anything -- no clone, no fetch, no
+checkout. It is what `--check-config` runs before a handover cancels the server whose config
+it is asking about: a refusal there costs a home its server, and a cancel cannot be taken
+back.
 
-`Report` is shared by both roots, so this root counts only what it added before
-deciding whether to advance its pin. Without that, one kept file in the machine root
-would freeze the home root's pin and repeat a merge that already resolved.
+`follow` points `origin` at the repository this home names and starts the one fetch the
+start makes. `refresh`, behind the port, waits for that fetch, resolves again, settles again,
+and replaces the live answer; a moved checkout therefore reaches a running server without a
+restart. `ship::content` is a `RwLock`, so one call gets one `Content` and no reader holds a
+reference into state another thread may replace.
 
-A conflict or a kept file leaves the pin where it was, so the next start repeats the
-same three-way merge against the same base. Advancing the pin past an unresolved file
-would silently adopt the unmerged result as the new truth.
+## Paths, and what reads them
 
-## seed_base, remember
+`paths_of` is the only place the mapping becomes paths, and it refuses a declared path that
+climbs out of the checkout (`safe_relpath`) or that is not there. `skills(home)`, `python(home)`
+and `config(home)` are the same answer for a caller that holds only the home:
+`tools::skill::roots` for the harness bucket, `GONGGA_SKILL_LIB` and the `gongga-cli` shim for
+the Python surface, and `config::load_with_home` for the config.
 
-`seed_base` copies the old pin's tree into the base directory, once, for a home
-installed by an older build that recorded a pin and no base of its own. It happens
-only when no base exists: a base that is there is what the last install placed, and
-re-seeding it from a commit would silently adopt that commit as the truth for every
-local edit.
+## tidy
 
-`remember` is the other half — every file placed is recorded, which is what makes the
-next merge three-way rather than a guess.
+An older build installed copies: `<home>/config.toml`, `<home>/skills/<name>`,
+`<home>/lib/*.py`, and the `.ship-base/` it merged them against. They are no longer read, and
+`tidy` takes them away on every start. Its rule is bytes, because provenance is not on disk:
 
-## Decision
+| path | goes when | stays when |
+| --- | --- | --- |
+| `<home>/config.toml` | its bytes are the content's config | it differs: kept, and named in the log |
+| `<home>/skills/<name>` | `<name>` is a skill the content ships and every file in it is that skill's | any file differs, or the content never shipped that name (never looked at) |
+| `<home>/lib/<file>` | the content's `python` tree has that name and the bytes are its | it differs, or the name is not the content's |
+| `<home>/.ship-base`, `<home>/.ship-pin` | always: a record of a merge that no longer happens | -- |
+| `<machine>/<retired path>` | always: the content dropped a path an earlier commit installed there | -- |
 
-Six outcomes, and the sixth is the reason the tool exists: `Keep` is a file the reader
-authored where the content also has one. What `decide` sees is ours, base and theirs,
-and nothing else: "these bytes are the last install" is already computed, because the
-base is a copy rather than a commit lookup.
+A copy that differs -- an older protocol's, or one somebody edited -- stays exactly where it
+is and is named in the log. That is a cleanup, not a decision about whose work a file is, and
+a stale copy is no longer read by anything.
 
-`Adopt` exists for the other side: a file already byte-identical to the content counts
-as current, not written, so a restart logs `written=0` and the log line means "this
-start changed nothing".
-
-## merge_text
-
-`git merge-file -p` with the base as `--local`'s neighbour: three real files in a
-temporary directory and stdout as the answer. Doing the merge by hand would mean
-shipping a diff3 implementation for the one operation git already does well and that
-users already know how to resolve. `-p` keeps the base file untouched, which matters
-because the base is on disk only as a temporary convenience.
-
-## collect, listed, blob, config_text
-
-Paths come from `ls-tree -r --long`, so a shipped file's mode is known before it is
-written -- a skill script has to stay executable, and a `config.toml` that is not.
-Content comes from `git show <commit>:<path>`. `config_text` is the same read for one
-path, and it is what makes the resolved commit the source of the prompt defaults:
-nothing copies that prose into this binary.
+`retired_python::retire` runs first, for the three names an older *build* wrote into
+`<home>/lib` from its own bytes: those are not the content's bytes, so only that module can
+recognise them.
 
 ## safe_relpath
 
-A repository path becomes a path under a root, and a path like `../../server.key`
-would otherwise write outside it. Refusing on `..`, on an absolute path and on a
-drive letter, and accepting only `Normal` components, is cheaper than trusting the
-content repository, which is a third party by definition.
-
-## resolve, newest_for, protocol_at
-
-`resolve` reads the checkout's tip as it is and returns one `Content`. The live
-answer is kept under a `RwLock` and replaced when a fetch moves the checkout; a
-caller gets one consistent `Content` per read, never a reference into state another
-thread may replace.
-
-It reads the checkout, while one fetch per start is already in flight. `start_fetch`
-settles `adopt` and `point` first and then runs `fork.sync()` on a thread; a window
-still waits for a socket, not for a network (`docs/notes/server-start.md`). `resolve`
-takes one tip and thereafter reads commits by sha, so a rebase finishing mid-start
-Live tracked, per SPEC's `ALL Config File Must Be Live Tracked`: a protocol this
-build can read resolves immediately, and a fetch that moved the checkout resolves
-again. `refresh`, behind the port, waits for the same fetch, calls `install_at` for
-the increment against `.ship-base`, and only then replaces the live answer. Skills
-changing under a live turn is now the intended behaviour, not a next-start promise;
-`install_at` merges only changed files, so an untouched local edit stays put.
-
-The one reader that waits is a build whose checkout declares nothing it can read:
-`wait_for_fetch` joins the fetch already in flight and walks the history it brought.
-Without it a build whose protocol moved would never reach the port where `refresh`
-runs, so neither would ever install the new content. A personal branch that failed to
-rebase keeps its old history, and the refusal says so rather than silently installing
-the official branch over it. A home with no checkout at all still waits for `ensure`
-to clone on that first start.
-
-`newest_for` walks back through first parents until it finds a commit that speaks this
-build's protocol. Walking *back* rather than forward is the invariant: content that
-has moved to a protocol this build cannot read still serves this build the last commit
-it could read. The alternative is a machine that cannot start because somebody else's
-repository advanced — and a build whose content has no such commit refuses, naming
-both numbers.
+A repository path becomes a path under the checkout, and a path like `../../server.key` would
+otherwise write outside it. Refusing on `..`, on an absolute path and on a drive letter, and
+accepting only `Normal` components, is cheaper than trusting the content repository.
 
 ## Report
 
-The counters exist for the log line; the lists exist because they name files a human has
-to open. `written` and `updated` on a start that should have changed nothing is the signal
-that the content moved under a home. `reachable` says whether a commit could be taken
-from the repository at all: a start that read its checkout answers true, and a fetch
-that cannot reach it is reported by `refresh` instead of changing the install.
+There is none any more. What a start has to say is one line -- the commit, the config, the
+skills and the Python surface it reads -- plus a line per file `tidy` took away and a line
+per copy it left because it was not the content's.

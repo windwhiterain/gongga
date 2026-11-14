@@ -61,7 +61,8 @@ skill is a directory this server can open -- the checkout of a peer session is n
 roots at all, so a `remote` session runs the home's and the machine's skills and is
 never handed a path it cannot read. The package is handed `GONGGA_SKILL_LIB`, so a
 skill's own `import gongga` resolves against the home's client; its contract file is
-`<home>/lib/gongga_skill.py`, which the content repository installs.
+the content repository's `gongga_skill.py`, read in the checkout
+(`<home>/ship/python/gongga_skill.py` under the shipped mapping).
 
 A session whose own directory is on a peer has none *here*, so the process stands in this
 server's own directory (`tools::standing_dir`): a package takes no `cwd` argument, so a

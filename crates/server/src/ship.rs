@@ -1,4 +1,4 @@
-//! What the harness ships, and how a home gets it from the content repository.
+//! What the harness ships, and how a home reads it from the content repository.
 //!
 //! See `docs/notes/server-ship.md`.
 
@@ -13,24 +13,33 @@ use crate::fork::{Fork, Sync};
 ///
 /// # Invariant
 ///
-/// No commit is named here: the newest one that speaks `protocol` is installed, so
-/// content moves by a restart rather than by a rebuild.
+/// No commit is named here: the newest one that speaks `protocol` is read, so content
+/// moves by a restart rather than by a rebuild.
 const MANIFEST: &str = include_str!("../ship.toml");
 
 /// The file the content declares itself in, at the commit it is read from.
 const DECLARATION: &str = "ship.toml";
 
-/// The file naming the content commit a root was last reconciled against.
-const PIN_FILE: &str = ".ship-pin";
-
-/// Where a home keeps the content checkout: editable, and offline after one fetch.
+/// Where a home keeps the content checkout: the files it reads, and nothing else.
 const CHECKOUT: &str = "ship";
 
 /// What an older build kept the content in: a bare cache, adopted into a checkout.
 const LEGACY: &str = "ship.git";
 
-/// The bytes this home last installed, which are the base of the next merge.
+/// What an older build merged its own copies against; this build keeps no copies.
 const BASE: &str = ".ship-base";
+
+/// The commit those copies came from, recorded beside them.
+const PIN_FILE: &str = ".ship-pin";
+
+/// Where an older build installed the content's config in the home.
+const OLD_CONFIG: &str = "config.toml";
+
+/// Where it installed the content's skills.
+const OLD_SKILLS: &str = "skills";
+
+/// Where it installed the Python surface.
+const OLD_LIB: &str = "lib";
 
 #[derive(Debug, Deserialize)]
 struct Manifest {
@@ -46,21 +55,21 @@ pub struct Link {
     pub protocol: u32,
 }
 
-/// What the content says about itself: which protocol it is, and where its parts
-/// belong in a home.
+/// What the content says about itself: which protocol it is, and where its parts sit
+/// in the checkout a home reads.
 ///
 /// # Invariant
 ///
 /// The mapping is content, not code. A retired path or a renamed skills root is a
-/// fact about this repository's own history, and keeping it in the binary would
-/// mean a rebuild for exactly the kind of edit this design exists to make free.
+/// fact about this repository's own history, and keeping it in the binary would mean a
+/// rebuild for exactly the kind of edit this design exists to make free.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Declared {
     /// The protocol this content speaks, which is how a commit is chosen.
     pub protocol: u32,
-    /// The repository path that becomes a home's `config.toml`.
+    /// The repository path that is a home's config.
     pub config: String,
-    /// The repository path whose files become the home's `lib/`.
+    /// The repository path whose files are the Python surface.
     pub python: String,
     #[serde(default)]
     skills: SkillRoots,
@@ -69,7 +78,7 @@ pub struct Declared {
     /// # Invariant
     ///
     /// Absent from a commit that declares none, which is why the list defaults: the
-    /// mapping a protocol-12 commit carries is still this build's to install. The key is
+    /// mapping a protocol-12 commit carries is still this build's to read. The key is
     /// `[[command]]` -- one table per command, the way a TOML declares a list.
     #[serde(default, rename = "command")]
     pub commands: Vec<Command>,
@@ -96,10 +105,8 @@ pub struct Command {
 /// One commit of the content, with what it declares.
 #[derive(Debug, Clone)]
 pub struct Content {
-    /// The full sha a home reconciles against, and what `.ship-pin` records.
+    /// The full sha a home reads, and the commit log lines name.
     pub commit: String,
-    /// Whether the repository answered this start.
-    pub reachable: bool,
     declared: Declared,
 }
 
@@ -110,17 +117,18 @@ impl Content {
     }
 }
 
-/// Where each bucket of skills belongs.
+/// Where each bucket of skills lives in the content.
 #[derive(Debug, Clone, Default, Deserialize)]
 struct SkillRoots {
     /// Where this repository keeps the skills it owns, one dir per skill.
     harness: String,
-    /// Paths an older commit installed and this one does not, so their copies go.
+    /// Paths an older commit installed on the machine and this one does not, so their
+    /// copies go.
     ///
     /// # Invariant
     ///
-    /// Each one still names the root it was installed under, because that is
-    /// where its files have to be found to be recognised as ours.
+    /// Each one still names the path it was installed at, because that is where its
+    /// files have to be found to be recognised as ours.
     #[serde(default)]
     retired: Vec<Retired>,
 }
@@ -140,38 +148,23 @@ enum RetiredRoot {
     Machine,
 }
 
-/// The repository a home named in its own config, kept until the first lookup.
-static NAMED: OnceLock<Option<String>> = OnceLock::new();
-
-/// Tells the lookup which repository this home installs from.
-///
-/// # Invariant
-///
-/// Called before the first [`link`]: the resolve is memoized for the process, so a
-/// URL arriving after it would be a second content for one server. `lib.rs` calls
-/// this straight after the config is read and before anything resolves.
-pub fn remember_url(url: Option<String>) {
-    let _ = NAMED.set(url);
-}
-
 /// The manifest this build carries. A manifest that does not parse is a build bug,
 /// not a runtime condition.
 ///
 /// # Invariant
 ///
-/// Three answers, most specific first: `GONGGA_SHIP_URL` (one run, one shell, what a
-/// script and a test speak), then `[ship] url` in this home's config (a machine
-/// developing the content points it at its own checkout), then the compiled one.
+/// Two answers, most specific first: `GONGGA_SHIP_URL` (one run, one shell, what a
+/// script and a test speak), then the compiled one. A home may name its own repository
+/// as well, in its config; that one is applied where the fetch happens
+/// (`follow`), because the config lives *inside* the checkout it would have to be
+/// known before.
 pub fn link() -> &'static Link {
     static LINK: OnceLock<Link> = OnceLock::new();
     LINK.get_or_init(|| {
         let mut link = match toml::from_str::<Manifest>(MANIFEST) {
-            Ok(m) => m.ship,
+            Ok(manifest) => manifest.ship,
             Err(e) => panic!("crates/server/ship.toml does not parse: {e}"),
         };
-        if let Some(url) = NAMED.get().and_then(|url| url.clone()) {
-            link.url = url;
-        }
         if let Some(url) = std::env::var_os("GONGGA_SHIP_URL") {
             link.url = url.to_string_lossy().into_owned();
         }
@@ -179,8 +172,33 @@ pub fn link() -> &'static Link {
     })
 }
 
-/// Where content lands: a home owns the config and its skills. The machine's skills
-/// are the community clone's.
+/// Where this home's checkout fetches from: the repository its config names, else the
+/// one this build carries.
+fn url(named: Option<&str>) -> String {
+    named
+        .map(str::to_string)
+        .unwrap_or_else(|| link().url.clone())
+}
+
+/// Where a home reads the content, and which commit it is reading.
+///
+/// # Invariant
+///
+/// Paths into the checkout, never copies: the files a home reads are the content's own,
+/// so an edit there is an edit here, with nothing to install and nothing to converge.
+#[derive(Debug, Clone)]
+pub struct Paths {
+    /// The file this home's config is: `<checkout>/<declared config>`.
+    pub config: PathBuf,
+    /// The directory holding one directory per skill: `<checkout>/<declared skills>`.
+    pub skills: PathBuf,
+    /// What `GONGGA_SKILL_LIB` names: `<checkout>/<declared python>`.
+    pub python: PathBuf,
+    /// The content commit the checkout is on.
+    pub commit: String,
+}
+
+/// Where the machine's own skills are: the community clone's bucket.
 #[derive(Debug, Clone)]
 pub struct Roots {
     pub home: PathBuf,
@@ -199,51 +217,23 @@ impl Roots {
 /// The machine's own agent directory.
 fn machine_root() -> PathBuf {
     dirs::home_dir()
-        .map(|h| h.join(".agents"))
+        .map(|home| home.join(".agents"))
         .unwrap_or_else(|| PathBuf::from(".agents"))
 }
 
-/// One repository path and where it belongs on disk.
-struct Mapping {
-    source: String,
-    /// Where it lands under the root: the file itself, or the directory its
-    /// contents are spread into.
-    target: PathBuf,
-    /// Whether the source is a tree rather than a single file.
-    tree: bool,
-}
+/// The live answer; `None` until the first resolve.
+static CONTENT: RwLock<Option<Result<Content, String>>> = RwLock::new(None);
 
-/// What one install pass did, for the log line and for whoever has to act on it.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Report {
-    /// Files placed because nothing local claimed the path.
-    pub written: usize,
-    /// Files the content moved and nobody locally had touched.
-    pub updated: usize,
-    /// Files whose local edits and content changes merged cleanly.
-    pub merged: usize,
-    /// Files already identical to the installed content.
-    pub current: usize,
-    /// Files the content dropped that nobody had edited.
-    pub removed: usize,
-    /// Files left exactly as they are, because the merge would have had to choose.
-    pub conflicts: Vec<String>,
-    /// Files the reader authored where the content also has one: not ours to
-    /// touch, and no root with one counts reconciled.
-    pub kept: Vec<String>,
-    /// The content commit the roots are now reconciled against.
-    pub pin: String,
-    /// Whether the repository answered this start.
-    pub reachable: bool,
-}
-
-/// The content this process installs now, re-resolved when the checkout moves.
+/// The one fetch a start makes, and its answer, shared by resolve and refresh.
+static FETCH: OnceLock<Mutex<Option<mpsc::Receiver<Result<Sync, String>>>>> = OnceLock::new();
+static FETCHED: OnceLock<Result<Sync, String>> = OnceLock::new();
+/// The content this process reads, re-resolved when the checkout moves.
 ///
 /// # Invariant
 ///
-/// Live tracked: a resolve reads the tip as it is, and a fetch that moved it
-/// resolves again and reconciles the increment. One call gets one `Content`, so no
-/// reader holds a reference into state another thread may replace.
+/// Live tracked: a resolve reads the tip as it is, and a fetch that moved it resolves
+/// again. One call gets one `Content`, so no reader holds a reference into state another
+/// thread may replace.
 pub fn content(home: &Path) -> anyhow::Result<Content> {
     let held = CONTENT.read().unwrap_or_else(|e| e.into_inner());
     if let Some(cached) = held.as_ref() {
@@ -257,7 +247,7 @@ pub fn content(home: &Path) -> anyhow::Result<Content> {
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-/// The commit this process installs now, when it resolved one.
+/// The commit this process reads, when it resolved one.
 pub fn resolved_commit() -> Option<String> {
     CONTENT
         .read()
@@ -267,89 +257,131 @@ pub fn resolved_commit() -> Option<String> {
         .map(|content| content.commit.clone())
 }
 
-/// Replaces the live answer after its increment has been reconciled.
+/// Replaces the live answer after the checkout has been moved to it.
 fn set_content(fresh: Content) {
     *CONTENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Ok(fresh));
 }
 
-/// The checkout this build installs from, for a home.
+/// The checkout this build reads from, for a home.
 pub fn checkout(home: &Path) -> PathBuf {
     home.join(CHECKOUT)
 }
 
-/// The live answer; `None` until the first resolve.
-static CONTENT: RwLock<Option<Result<Content, String>>> = RwLock::new(None);
+/// Where this home's own skills are read: the content's tree, in place.
+pub fn skills(home: &Path) -> PathBuf {
+    mapped(home, |declared| &declared.skills.harness, "skills")
+}
 
-/// The one fetch a start makes, and its answer, shared by resolve and refresh.
-static FETCH: OnceLock<Mutex<Option<mpsc::Receiver<Result<Sync, String>>>>> = OnceLock::new();
-static FETCHED: OnceLock<Result<Sync, String>> = OnceLock::new();
+/// What `GONGGA_SKILL_LIB` names: the content's Python surface, in place.
+pub fn python(home: &Path) -> PathBuf {
+    mapped(home, |declared| &declared.python, "python")
+}
 
-/// Makes this home answerable to a lookup before anything is installed.
+/// The file this home's config is.
+pub fn config(home: &Path) -> PathBuf {
+    mapped(home, |declared| &declared.config, "config/config.toml")
+}
+
+/// One path the content declares, under the checkout.
 ///
 /// # Invariant
 ///
-/// The resolve is best effort here, and that is the point: a migrator has to be
-/// findable before the content that ships beside it is installed, so a network
-/// that answers nothing must not be what strands a home's data. Whatever it could
-/// not find is `install`'s to report, in the terms of what a home needs.
-pub fn prepare(home: &Path) {
+/// The declaration is read while the content resolves, so a home that never resolved
+/// answers with the name this mapping has always had: nothing can be copied out of a
+/// content that was never read, and a path that is wrong is refused by `paths_of`
+/// before any of it is used.
+fn mapped(home: &Path, of: fn(&Declared) -> &str, otherwise: &str) -> PathBuf {
+    let declared = content(home)
+        .map(|content| of(&content.declared).to_string())
+        .unwrap_or_else(|_| otherwise.to_string());
+    let rel = safe_relpath(&declared).unwrap_or_else(|| PathBuf::from(otherwise));
+    checkout(home).join(rel)
+}
+
+/// The start's first half: this home's checkout, on the commit this build reads.
+///
+/// # Invariant
+///
+/// Nothing is copied into the home. The checkout is cloned if the home has none, moved
+/// to the commit this build reads (usually it is already there, and no git runs), and
+/// from then on every reader opens the checkout's own files.
+pub fn prepare(home: &Path) -> anyhow::Result<Paths> {
     let _ = ROOTS.set(Roots::of(home));
-    let _ = content(home);
-}
-
-/// Fetches the content and reconciles it into both roots.
-pub fn install(home: &Path) -> anyhow::Result<Report> {
+    let fork = Fork::at(&checkout(home));
+    let named = url(None);
+    adopt(home, &named)?;
+    if !fork.exists() {
+        match fork.ensure(&[named.clone()])? {
+            Sync::Foreign => anyhow::bail!(
+                "{} is not a clone, so it is not the shipped content; move it away and \
+                 start again",
+                fork.dir().display()
+            ),
+            _ => tracing::info!("content: this home had no checkout, and one is cloned into it"),
+        }
+    }
     let content = content(home)?;
-    install_at(&Roots::of(home), &content)
+    settle(&fork, &content.commit)?;
+    let paths = paths_of(&fork, &content)?;
+    tidy(home, &paths, &content);
+    tracing::info!(
+        content = %paths.commit.get(..10).unwrap_or(paths.commit.as_str()),
+        config = %paths.config.display(),
+        skills = %paths.skills.display(),
+        python = %paths.python.display(),
+        "content: this home reads the checkout in place"
+    );
+    Ok(paths)
 }
 
-/// Resolves the fetched checkout again and reconciles the increment into both roots.
+/// The same, for a question: read what this home holds, and write nothing.
 ///
 /// # Invariant
 ///
-/// Live tracked: `resolve` reads the tip as it is, `install_at` merges only what
-/// changed against `.ship-base`, and the live answer moves only after that merge
-/// succeeded. A start with nothing new does no work; protocol drift still walks back.
-pub fn refresh(home: &Path) -> anyhow::Result<Option<String>> {
+/// A handover asks this with the successor's binary *before* it cancels the server the
+/// config belongs to, so no clone, no fetch and no move happens here: a checkout that
+/// speaks no protocol this build reads answers with its own refusal, and nothing that
+/// was there has changed.
+pub fn inspect(home: &Path) -> anyhow::Result<Paths> {
     let fork = Fork::at(&checkout(home));
     if !fork.exists() {
-        return Ok(None);
+        anyhow::bail!(
+            "this home reads its content from {}, and there is no checkout there",
+            fork.dir().display()
+        );
     }
-    let state = fetched()
-        .as_ref()
-        .map_err(|why| anyhow::anyhow!("the content fetch failed: {why}"))?;
-    if *state != Sync::Fetched {
-        return Ok(None);
-    }
-    let fresh = resolve(home)?;
-    if fresh.commit == content(home)?.commit {
-        return Ok(None);
-    }
-    install_at(&Roots::of(home), &fresh)?;
-    let commit = fresh.commit.clone();
-    set_content(fresh);
-    Ok(Some(commit))
+    let tip = fork.content().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} holds no branch to take content from",
+            fork.dir().display()
+        )
+    })?;
+    let link = link();
+    let commit = newest_for(&fork, &tip, link)?;
+    let declared = declared_at(&fork, &commit)?;
+    let content = Content { commit, declared };
+    paths_of(&fork, &content)
 }
 
-/// Starts the one fetch every start makes, before anything resolves.
+/// Points this home's checkout at the repository its config names, and starts the one
+/// fetch this start makes.
 ///
 /// # Invariant
 ///
-/// One fetch per process: `resolve` waits for it only when the checkout says nothing
-/// this build can read, and `refresh` reuses the answer behind the port. The origin
-/// and an adopted cache are settled first, so neither races the fetch; a resolve
-/// takes one tip and thereafter reads commits by sha, so a fetch landing mid-start
-/// cannot make its readers disagree.
-pub fn start_fetch(home: &Path) {
-    let link = link();
+/// The repository is the home's answer, not a property of the clone: a home whose
+/// config moved from the published content to a local checkout fetches from there at
+/// this start, and moving back is the same edit removed. Only `origin` moves -- the
+/// commits, the personal branch and the working tree are this home's own. One fetch per
+/// process, reused by every later `refresh`.
+pub fn follow(home: &Path, named: Option<&str>) {
+    let url = url(named);
     let fork = Fork::at(&checkout(home));
     let (tx, rx) = mpsc::sync_channel(1);
     if FETCH.set(Mutex::new(Some(rx))).is_err() {
         return;
     }
-    if adopt(home, link).is_err() || point(home, &fork, link).is_err() || !fork.exists() {
-        // `resolve` reports an adoption failure in its own words.
-        // A fresh clone is at the tip: neither needs a fetch.
+    if point(home, &fork, &url).is_err() || !fork.exists() {
+        // `prepare` reported what is wrong with this checkout; nothing to fetch.
         let _ = tx.send(Ok(Sync::Current));
         return;
     }
@@ -378,83 +410,49 @@ fn fetched() -> &'static Result<Sync, String> {
     })
 }
 
-/// The same, with the roots and the content named: what a test drives, so it never
-/// writes into a real `~/.agents`.
-pub fn install_at(roots: &Roots, content: &Content) -> anyhow::Result<Report> {
-    let fork = Fork::at(&checkout(&roots.home));
-    // Ask for the object, not for a fetch's exit status: see the note.
-    if fork.blob(&content.commit, DECLARATION).is_none() {
-        anyhow::bail!(
-            "the content commit {} is not in {}, so nothing can be installed from it",
-            content.commit,
-            fork.dir().display()
-        );
-    }
-    let mut report = Report {
-        pin: content.commit.clone(),
-        reachable: content.reachable,
-        ..Default::default()
-    };
-    for (tag, root, mappings, retired) in plans(roots, content) {
-        let base = roots.home.join(BASE).join(tag);
-        reconcile(
-            &fork,
-            &base,
-            &root,
-            &mappings,
-            &retired,
-            content,
-            &mut report,
-        )?;
-    }
-    Ok(report)
-}
-
-/// The content's own config, as the resolved commit has it.
+/// Resolves the moved checkout again and moves the roots' readers onto it.
 ///
 /// # Invariant
 ///
-/// This is where the prompt defaults come from: the prose is not copied into this
-/// binary, so a home whose config never mentions `[prompts]` still gets the
-/// shipped text, and one whose content was never resolved gets nothing and says
-/// so.
-pub fn config_text() -> Option<String> {
-    let home = &roots().home;
-    let content = content(home).ok()?;
-    Fork::at(&checkout(home))
-        .blob(&content.commit, &content.declared.config)
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+/// Live tracked: `resolve` reads the tip as it is, the checkout is moved to the commit
+/// it names, and the live answer moves only after that. A start with nothing new runs
+/// no git; protocol drift still walks back.
+pub fn refresh(home: &Path) -> anyhow::Result<Option<String>> {
+    let fork = Fork::at(&checkout(home));
+    if !fork.exists() {
+        return Ok(None);
+    }
+    let state = fetched()
+        .as_ref()
+        .map_err(|why| anyhow::anyhow!("the content fetch failed: {why}"))?;
+    if *state != Sync::Fetched {
+        return Ok(None);
+    }
+    let fresh = resolve(home)?;
+    if fresh.commit == content(home)?.commit {
+        return Ok(None);
+    }
+    settle(&fork, &fresh.commit)?;
+    let commit = fresh.commit.clone();
+    set_content(fresh);
+    Ok(Some(commit))
 }
 
-/// Resolves this home's checkout to the newest commit that speaks this build's
-/// protocol.
+/// Reads this home's checkout and names the commit this build reads from it.
 ///
 /// # Invariant
 ///
 /// Protocol drift walks *back*, never forward: content that has moved to a protocol
-/// this build cannot read still serves this build the last commit it could read.
-/// The alternative is a machine that cannot start because somebody else's
-/// repository advanced. A checkout with no readable declaration waits for the
-/// fetch this start already made, then walks the history it brought.
+/// this build cannot read still serves this build the last commit it could read. The
+/// alternative is a machine that cannot start because somebody else's repository
+/// advanced. A checkout whose history holds nothing readable waits for the fetch this
+/// start already made, then walks the history it brought.
 fn resolve(home: &Path) -> anyhow::Result<Content> {
-    if FETCH.get().is_none() {
-        start_fetch(home);
-    }
-    let link = link();
     let fork = Fork::at(&checkout(home));
-    adopt(home, link)?;
-    point(home, &fork, link)?;
-    match fork.ensure(&[link.url.clone()])? {
-        Sync::Foreign => anyhow::bail!(
-            "{} is not a clone, so it is not the shipped content; move it away and start again",
-            fork.dir().display()
-        ),
-        // A fresh clone is at the remote's tip, with the personal branch in it.
-        _ => {}
-    }
+    let link = link();
     let tip = fork.content().ok_or_else(|| {
         anyhow::anyhow!(
-            "{} holds no branch to take content from, so protocol {} cannot be installed",
+            "{} holds no branch to take content from, so protocol {} cannot be read",
             fork.dir().display(),
             link.protocol
         )
@@ -464,21 +462,18 @@ fn resolve(home: &Path) -> anyhow::Result<Content> {
         Err(why) => wait_for_fetch(&fork, &tip, link, why)?,
     };
     let declared = declared_at(&fork, &commit)?;
-    Ok(Content {
-        commit,
-        reachable: true,
-        declared,
-    })
+    Ok(Content { commit, declared })
 }
 
-/// Waits for the fetch already in flight when a checkout says nothing this build
-/// can read.
+/// Waits for the fetch this start already made when the checkout's own history says
+/// nothing this build can read.
 ///
 /// # Invariant
 ///
-/// A build whose content moved has no next start until this one can read content,
-/// and `refresh` runs behind the port. The fetch is shared, so waiting costs no
-/// second round trip; one resolve still names one commit.
+/// The fetch is shared, so waiting costs no second round trip; one resolve still names
+/// one commit. `refresh` runs behind the port, which is why a checkout the fetch was
+/// about to move can still be read: without it a build whose content moved would never
+/// reach the port where the fetch is collected.
 fn wait_for_fetch(
     fork: &Fork,
     tip: &str,
@@ -487,7 +482,7 @@ fn wait_for_fetch(
 ) -> anyhow::Result<String> {
     let state = match fetched() {
         Ok(state) => state.clone(),
-        Err(why) => anyhow::bail!("{first:#}; the content fetch this start waited for: {why}"),
+        Err(why) => anyhow::bail!("{first:#}; the content fetch this start makes: {why}"),
     };
     let after = fork.content().unwrap_or_else(|| tip.to_string());
     if after == tip {
@@ -500,40 +495,93 @@ fn wait_for_fetch(
         .map_err(|again| anyhow::anyhow!("{first:#}; after the content fetch: {again:#}"))
 }
 
-/// Points an existing checkout's `origin` at the repository this home names.
+/// Where this home reads the content this commit describes, refusing a checkout that
+/// cannot serve one part of it.
 ///
 /// # Invariant
 ///
-/// The repository is the home's answer, not a property of the clone: a home whose
-/// config moved from the published content to a local checkout fetches from there at
-/// its next start, and moving back is the same edit removed. Only `origin` moves --
-/// the commits, the personal branch and the pin are this home's own.
-fn point(home: &Path, fork: &Fork, link: &Link) -> anyhow::Result<()> {
-    if !fork.exists() {
+/// A home is no longer self-contained: its prose, its skills and its Python surface are
+/// the checkout's files. So a checkout missing any of them is a refusal that names the
+/// path -- never a server that starts and cannot say where its config went.
+fn paths_of(fork: &Fork, content: &Content) -> anyhow::Result<Paths> {
+    let declared = &content.declared;
+    let config = inside(fork, &declared.config, "config")?;
+    let skills = inside(fork, &declared.skills.harness, "skills")?;
+    let python = inside(fork, &declared.python, "python")?;
+    for (what, at) in [
+        ("config", &config),
+        ("skills", &skills),
+        ("python", &python),
+    ] {
+        if std::fs::symlink_metadata(at).is_err() {
+            anyhow::bail!(
+                "the content at {} declares its {what} at {}, and nothing is there: this \
+                 home has no {what} to read",
+                content.commit,
+                at.display()
+            );
+        }
+    }
+    Ok(Paths {
+        config,
+        skills,
+        python,
+        commit: content.commit.clone(),
+    })
+}
+
+/// One declared path, under the checkout, refusing one that climbs out of it.
+fn inside(fork: &Fork, declared: &str, what: &str) -> anyhow::Result<PathBuf> {
+    let rel = safe_relpath(declared).ok_or_else(|| {
+        anyhow::anyhow!(
+            "the content declares its {what} at {declared:?}, which is not a path inside the \
+             checkout {}",
+            fork.dir().display()
+        )
+    })?;
+    Ok(fork.dir().join(rel))
+}
+
+/// Puts the checkout's working tree on the commit this build reads.
+///
+/// # Invariant
+///
+/// Nothing is copied, so the checkout *is* what a home reads, and it has to stand on the
+/// commit the walk-back named. A start that finds it already there runs no git; when it
+/// does not, git moves the tree, onto the branch that names that commit or detached when
+/// none does. Work in the tree that would have to go is a refusal: it is the reader's.
+fn settle(fork: &Fork, commit: &str) -> anyhow::Result<()> {
+    if fork.head().as_deref() == Some(commit) {
         return Ok(());
     }
-    let current = crate::fork::git(fork.dir(), &["remote", "get-url", "origin"]);
-    let named = String::from_utf8_lossy(&current.stdout).trim().to_string();
-    if current.status.success() && named == link.url {
-        return Ok(());
+    let branch = [crate::fork::PERSONAL, crate::fork::OFFICIAL]
+        .into_iter()
+        .find(|name| fork.branch_commit(name).as_deref() == Some(commit));
+    let out = crate::fork::git(fork.dir(), &["checkout", "-q", branch.unwrap_or(commit)]);
+    if !out.status.success() {
+        anyhow::bail!(
+            "the checkout {} is not on commit {commit}, which is the content this build reads, \
+             and moving it there failed: {}",
+            fork.dir().display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     tracing::info!(
-        home = %home.display(),
-        from = %named,
-        to = %link.url,
-        "content origin follows this home's config"
+        checkout = %fork.dir().display(),
+        commit = %commit,
+        branch = ?branch,
+        "content: the checkout moved to the commit this build reads"
     );
-    crate::fork::git_ok(fork.dir(), &["remote", "set-url", "origin", &link.url])
+    Ok(())
 }
 
 /// Turns the bare cache an older build kept into this home's checkout.
 ///
 /// # Invariant
 ///
-/// An upgrade must not need the network: the cache already holds every commit it
-/// did, so a home installed before this build can still start on a machine that is
-/// offline, and the fetch below only adds what is newer.
-fn adopt(home: &Path, link: &Link) -> anyhow::Result<()> {
+/// An upgrade must not need the network: the cache already holds every commit it did,
+/// so a home installed before this build can still start on a machine that is offline.
+fn adopt(home: &Path, url: &str) -> anyhow::Result<()> {
     let dir = checkout(home);
     let old = home.join(LEGACY);
     if Fork::at(&dir).exists() || !old.is_dir() {
@@ -564,9 +612,9 @@ fn adopt(home: &Path, link: &Link) -> anyhow::Result<()> {
         .status
         .success()
     {
-        crate::fork::git_ok(&dir, &["remote", "set-url", "origin", &link.url])?;
+        crate::fork::git_ok(&dir, &["remote", "set-url", "origin", url])?;
     } else {
-        crate::fork::git_ok(&dir, &["remote", "add", "origin", &link.url])?;
+        crate::fork::git_ok(&dir, &["remote", "add", "origin", url])?;
     }
     // Best effort: the old refspec named `refs/heads/ship/*`.
     let _ = crate::fork::git(
@@ -592,7 +640,7 @@ fn adopt(home: &Path, link: &Link) -> anyhow::Result<()> {
         Some(format!("refs/remotes/origin/{official}"))
     } else {
         anyhow::bail!(
-            "{} holds no {official} to adopt, so this home has no content to install",
+            "{} holds no {official} to adopt, so this home has no content to read",
             old.display()
         );
     };
@@ -602,6 +650,30 @@ fn adopt(home: &Path, link: &Link) -> anyhow::Result<()> {
     crate::fork::git_ok(&dir, &["checkout", "-q", "-f", official])?;
     tracing::info!(checkout = %dir.display(), "the old content cache is now a checkout");
     Ok(())
+}
+
+/// Points an existing checkout's `origin` at the repository this home names.
+///
+/// # Invariant
+///
+/// The commits, the personal branch and the working tree stay this home's own; only
+/// where the next fetch reads from moves. Nothing is written when it already agrees.
+fn point(home: &Path, fork: &Fork, url: &str) -> anyhow::Result<()> {
+    if !fork.exists() {
+        return Ok(());
+    }
+    let current = crate::fork::git(fork.dir(), &["remote", "get-url", "origin"]);
+    let named = String::from_utf8_lossy(&current.stdout).trim().to_string();
+    if current.status.success() && named == url {
+        return Ok(());
+    }
+    tracing::info!(
+        home = %home.display(),
+        from = %named,
+        to = %url,
+        "content: the checkout's origin follows this home's config"
+    );
+    crate::fork::git_ok(fork.dir(), &["remote", "set-url", "origin", url])
 }
 
 /// The newest commit from `tip` back, following first parents, that speaks the
@@ -615,7 +687,7 @@ fn newest_for(fork: &Fork, tip: &str, link: &Link) -> anyhow::Result<String> {
     if !out.status.success() {
         anyhow::bail!(
             "cannot read the history of {}: {}",
-            link.url,
+            fork.dir().display(),
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -636,14 +708,12 @@ fn newest_for(fork: &Fork, tip: &str, link: &Link) -> anyhow::Result<String> {
     };
     tracing::warn!(
         commit = %tip,
-        "walked {} commits and found no protocol {} declaration: the newest one {}",
         walked,
-        link.protocol,
-        why
+        "walked the history and found no declaration of this build's protocol: the newest one {why}"
     );
     anyhow::bail!(
-        "no commit on {} speaks protocol {}; the newest one {} and this build reads \
-         {}. Build a server that reads the new protocol, or publish content for this one",
+        "no commit on {} speaks protocol {}; the newest one {} and this build reads {}. Build \
+         a server that reads the new protocol, or publish content for this one",
         crate::fork::OFFICIAL,
         link.protocol,
         why,
@@ -667,362 +737,196 @@ fn declared_at(fork: &Fork, commit: &str) -> anyhow::Result<Declared> {
         anyhow::anyhow!(
             "commit {commit} of {} does not carry {DECLARATION}, so it cannot say where its \
              content belongs",
-            link().url
+            fork.dir().display()
         )
     })?;
     toml::from_str(&String::from_utf8_lossy(&bytes))
         .map_err(|e| anyhow::anyhow!("{DECLARATION} at {commit} does not parse: {e}"))
 }
 
-/// Each root's mappings, old and new, tagged by where its merge base lives.
-fn plans(
-    roots: &Roots,
-    content: &Content,
-) -> Vec<(&'static str, PathBuf, Vec<Mapping>, Vec<Mapping>)> {
-    let declared = &content.declared;
-    let home = vec![
-        Mapping {
-            source: declared.config.clone(),
-            target: PathBuf::from("config.toml"),
-            tree: false,
-        },
-        Mapping {
-            source: declared.skills.harness.clone(),
-            target: PathBuf::from("skills"),
-            tree: true,
-        },
-        // The Python surface: a tree, so adding a module to the content lands here
-        // without a rebuild of this binary.
-        Mapping {
-            source: declared.python.clone(),
-            target: PathBuf::from("lib"),
-            tree: true,
-        },
-    ];
-    // Nothing lands on the machine now; the retired paths still reconcile.
-    let retired = declared
+/// Takes away what an older build copied into this home.
+///
+/// # Invariant
+///
+/// Bytes are the test, because provenance is not on disk: a file goes only when it is
+/// the content's own copy, and a skill directory only when every file in it is. A copy
+/// that differs -- an older protocol's, or one somebody edited -- stays where it is and
+/// is named in the log. A name the content never shipped is never looked at at all.
+fn tidy(home: &Path, paths: &Paths, content: &Content) {
+    // An older build's own three names: not the content's bytes to compare with.
+    crate::retired_python::retire(home);
+    // The two records an older build merged its copies against: nothing reads them now.
+    let (base, pin) = (home.join(BASE), home.join(PIN_FILE));
+    let recorded =
+        std::fs::symlink_metadata(&base).is_ok() || std::fs::symlink_metadata(&pin).is_ok();
+    let _ = std::fs::remove_dir_all(&base);
+    let _ = std::fs::remove_file(&pin);
+    if recorded {
+        tracing::info!(
+            home = %home.display(),
+            "content: the merge base an older build kept is gone; a home's files are the \
+             checkout's own"
+        );
+    }
+    let copy = home.join(OLD_CONFIG);
+    if let Ok(found) = std::fs::read(&copy) {
+        if same_bytes(&paths.config, &found) {
+            let _ = std::fs::remove_file(&copy);
+            tracing::info!(
+                removed = %copy.display(),
+                config = %paths.config.display(),
+                "content: the config an older build copied here is gone"
+            );
+        } else {
+            tracing::warn!(
+                kept = %copy.display(),
+                config = %paths.config.display(),
+                "an older build copied a config here and it differs from the content's, so it \
+                 is kept and read by nobody: this home's config is the content's own file"
+            );
+        }
+    }
+    let lib = home.join(OLD_LIB);
+    if let Ok(entries) = std::fs::read_dir(&lib) {
+        for entry in entries.flatten() {
+            let at = entry.path();
+            let Some(name) = at.file_name() else {
+                continue;
+            };
+            let theirs = paths.python.join(name);
+            let Ok(found) = std::fs::read(&at) else {
+                continue;
+            };
+            if same_bytes(&theirs, &found) {
+                let _ = std::fs::remove_file(&at);
+                tracing::info!(removed = %at.display(), "content: the copy an older build put here is gone");
+            } else if std::fs::symlink_metadata(&theirs).is_ok() {
+                tracing::warn!(
+                    kept = %at.display(),
+                    python = %paths.python.display(),
+                    "an older build put a file here that differs from the content's, so it is \
+                     kept and read by nobody: the Python surface is the content's own directory"
+                );
+            }
+        }
+        // Only an empty `lib` goes: whatever else is there is somebody's.
+        let _ = std::fs::remove_dir(&lib);
+    }
+    let bucket = home.join(OLD_SKILLS);
+    if let Ok(entries) = std::fs::read_dir(&bucket) {
+        for entry in entries.flatten() {
+            let at = entry.path();
+            let Some(name) = at.file_name() else {
+                continue;
+            };
+            let theirs = paths.skills.join(name);
+            if !at.is_dir() || std::fs::symlink_metadata(&theirs).is_err() {
+                continue;
+            }
+            if same_tree(&at, &theirs) {
+                let _ = std::fs::remove_dir_all(&at);
+                tracing::info!(
+                    removed = %at.display(),
+                    skill = %theirs.display(),
+                    "content: the copy of this skill an older build installed is gone"
+                );
+            } else {
+                tracing::warn!(
+                    kept = %at.display(),
+                    skill = %theirs.display(),
+                    "an older build installed this skill here and it differs from the content's, \
+                     so it is kept and read by nobody"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir(&bucket);
+    }
+    // A path an earlier commit installed on the machine, which this content dropped.
+    for old in content
+        .declared
         .skills
         .retired
         .iter()
         .filter(|old| old.root == RetiredRoot::Machine)
-        .map(|old| Mapping {
-            source: old.path.clone(),
-            target: PathBuf::from("skills"),
-            tree: true,
-        })
-        .collect();
-    vec![
-        ("home", roots.home.clone(), home, Vec::new()),
-        ("machine", roots.machine.clone(), Vec::new(), retired),
-    ]
+    {
+        retire(&machine_root(), &old.path);
+    }
 }
 
-/// Reconciles one root against the content.
+/// Whether a file holds exactly these bytes, which is what makes it a copy of ours.
+fn same_bytes(at: &Path, bytes: &[u8]) -> bool {
+    std::fs::read(at).ok().as_deref() == Some(bytes)
+}
+
+/// Whether two directories hold the same files, byte for byte.
+fn same_tree(left: &Path, right: &Path) -> bool {
+    match (tree(left, Path::new("")), tree(right, Path::new(""))) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Every file under `dir`, by its path within it and its bytes, in one order.
 ///
 /// # Invariant
 ///
-/// A file is never overwritten while it differs from the content that installed
-/// it: the bytes this root last installed are the merge base, the disk is our side,
-/// and a conflict leaves the reader's file and the base alone, so the next start
-/// repeats that merge.
-fn reconcile(
-    fork: &Fork,
-    base_dir: &Path,
-    root: &Path,
-    mappings: &[Mapping],
-    retired: &[Mapping],
-    content: &Content,
-    report: &mut Report,
-) -> anyhow::Result<()> {
-    // The report is shared by both roots, so this root judges only what it adds.
-    let conflicts_at = report.conflicts.len();
-    let old = read_pin(root);
-    // Paths this root already kept from its reader: still theirs, and no longer
-    // holding the content back.
-    let mut kept: Vec<String> = read_kept(root);
-    // Already at this content, so nothing upstream can have moved: one file read
-    // replaces a `git` per installed file.
-    if old.as_deref() == Some(content.commit.as_str()) {
-        return Ok(());
-    }
-    // An older build's home has a pin and no base: the pin's tree is the base.
-    seed_base(fork, base_dir, root, mappings, retired, old.as_deref())?;
-    let new = collect(fork, &content.commit, mappings, root);
-    // Retired paths come from the old content only: this one has no such tree.
-    let before = match old.as_deref() {
-        Some(pin) => {
-            let mut everything: Vec<&Mapping> = mappings.iter().chain(retired).collect();
-            everything.sort_by_key(|m| m.source.len());
-            collect_refs(fork, pin, &everything, root)
-        }
-        None => Vec::new(),
-    };
-
-    for file in &new {
-        let Some(theirs) = fork.blob(&content.commit, &file.source) else {
-            continue;
-        };
-        let ours = std::fs::read(&file.dest).ok();
-        let base = std::fs::read(base_dir.join(&file.rel)).ok();
-        let settled = kept.contains(&file.source);
-        let decision = decide(ours.as_deref(), base.as_deref(), &theirs);
-        match decision {
-            Decision::Place => {
-                put(&file.dest, &theirs, file.exec)?;
-                remember(base_dir, &file.rel, &theirs)?;
-                report.written += 1;
-            }
-            Decision::Update => {
-                put(&file.dest, &theirs, file.exec)?;
-                remember(base_dir, &file.rel, &theirs)?;
-                report.updated += 1;
-            }
-            Decision::Adopt => {
-                put(&file.dest, &theirs, file.exec)?;
-                remember(base_dir, &file.rel, &theirs)?;
-                report.current += 1;
-            }
-            Decision::Merge(text) => {
-                put(&file.dest, &text, file.exec)?;
-                remember(base_dir, &file.rel, &text)?;
-                report.merged += 1;
-            }
-            Decision::Conflict => {
-                report.conflicts.push(file.source.clone());
-            }
-            // A path already recorded as the reader's: reported again, not re-recorded.
-            _ if settled => report.kept.push(file.source.clone()),
-            Decision::Keep => {
-                report.kept.push(file.source.clone());
-                kept.push(file.source.clone());
-            }
-        }
-    }
-
-    for file in &before {
-        if new.iter().any(|planned| planned.source == file.source) {
-            continue;
-        }
-        let base = std::fs::read(base_dir.join(&file.rel)).ok();
-        match (std::fs::read(&file.dest).ok(), base) {
-            (Some(ours), Some(base)) if ours == base => {
-                let _ = std::fs::remove_file(&file.dest);
-                let _ = std::fs::remove_file(base_dir.join(&file.rel));
-                prune_dirs(root, &file.dest);
-                report.removed += 1;
-            }
-            (Some(_), _) => {
-                report
-                    .kept
-                    .push(format!("{} (kept: removed upstream)", file.source));
-                if !kept.contains(&file.source) {
-                    kept.push(file.source.clone());
-                }
-            }
-            (None, _) => {}
-        }
-    }
-
-    // A conflict holds the base and asks again. A kept file is written down, so
-    // it does not freeze the content.
-    if report.conflicts.len() == conflicts_at {
-        write_pin(root, &content.commit, &kept)?;
-    }
-    Ok(())
-}
-
-/// Copies the bytes the pin names into the base directory, once.
-///
-/// # Invariant
-///
-/// Only when this root has no base of its own: a base that exists is what the last
-/// install placed, and re-seeding it from a commit would silently adopt that commit
-/// as the truth for every local edit.
-fn seed_base(
-    fork: &Fork,
-    base_dir: &Path,
-    root: &Path,
-    mappings: &[Mapping],
-    retired: &[Mapping],
-    pin: Option<&str>,
-) -> anyhow::Result<()> {
-    let Some(pin) = pin else {
-        return Ok(());
-    };
-    if base_dir.is_dir() {
-        return Ok(());
-    }
-    let mut everything: Vec<&Mapping> = mappings.iter().chain(retired).collect();
-    everything.sort_by_key(|m| m.source.len());
-    for file in collect_refs(fork, pin, &everything, root) {
-        let Some(bytes) = fork.blob(pin, &file.source) else {
-            continue;
-        };
-        remember(base_dir, &file.rel, &bytes)?;
-    }
-    Ok(())
-}
-
-/// Records what was placed at one path, which is the base of the next merge.
-fn remember(base_dir: &Path, rel: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    put(&base_dir.join(rel), bytes, false)
-}
-
-/// Takes away the directories a removal left empty, up to `root`.
-///
-/// # Invariant
-///
-/// A directory left behind is a name that still exists, and `agents::link_skills`
-/// never replaces a name it finds -- so an empty `<machine>/skills/remote` would
-/// shadow the community skill of the same name forever, which is worse than the
-/// stale files this removal just took away. `root` itself stays: it is the
-/// install's own destination, not a skill.
-fn prune_dirs(root: &Path, removed: &Path) {
-    let mut dir = removed.parent();
-    while let Some(here) = dir {
-        if here == root || !here.starts_with(root) {
-            return;
-        }
-        if std::fs::remove_dir(here).is_err() {
-            return;
-        }
-        dir = here.parent();
-    }
-}
-
-/// One installed file: where it came from and where it sits.
-struct Planned {
-    source: String,
-    /// The path under the root, which is also its path under the base directory.
-    rel: PathBuf,
-    dest: PathBuf,
-    exec: bool,
-}
-
-/// Every installed file a set of mappings accounts for, as a path under `root`.
-fn collect(fork: &Fork, commit: &str, mappings: &[Mapping], root: &Path) -> Vec<Planned> {
-    let refs: Vec<&Mapping> = mappings.iter().collect();
-    collect_refs(fork, commit, &refs, root)
-}
-
-/// The same, for a set assembled from more than one list.
-fn collect_refs(fork: &Fork, commit: &str, mappings: &[&Mapping], root: &Path) -> Vec<Planned> {
+/// A directory that cannot be read answers nothing, so it is never equal to another:
+/// an unreadable tree is not a copy this install may delete.
+fn tree(dir: &Path, under: &Path) -> Option<Vec<(PathBuf, Vec<u8>)>> {
     let mut out = Vec::new();
-    for mapping in mappings {
-        for (path, exec) in listed(fork, commit, &mapping.source) {
-            let rel = if mapping.tree {
-                let Some(rel) = under(&mapping.source, &path).and_then(|r| safe_relpath(&r)) else {
-                    tracing::warn!(path = %path, "an installed path is not installable; skipped");
-                    continue;
-                };
-                mapping.target.join(rel)
-            } else {
-                mapping.target.clone()
-            };
-            out.push(Planned {
-                source: path,
-                dest: root.join(&rel),
-                rel,
-                exec,
-            });
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let rel = under.join(entry.file_name());
+        let at = entry.path();
+        if at.is_dir() {
+            out.extend(tree(&at, &rel)?);
+        } else {
+            out.push((rel, std::fs::read(&at).ok()?));
         }
     }
-    out
+    out.sort();
+    Some(out)
 }
 
-/// The files one repository path holds at a commit, which may be a file or a tree.
-fn listed(fork: &Fork, commit: &str, path: &str) -> Vec<(String, bool)> {
-    let out = crate::fork::git(fork.dir(), &["ls-tree", "-r", "--long", commit, "--", path]);
-    if !out.status.success() {
-        return Vec::new();
+/// Takes away a path an earlier commit installed, which this content no longer has.
+///
+/// # Invariant
+///
+/// The directory goes whole, at the path the content named: there is nothing to compare
+/// its files with, and a copy left behind shadows the community clone's skill of the same
+/// name forever, since `agents::link_skills` never replaces a name it finds. A link goes
+/// as a link: the directory behind it is not this install's.
+fn retire(root: &Path, path: &str) {
+    let Some(rel) = safe_relpath(path) else {
+        tracing::warn!(path = %path, "a retired path is not a path under a root; skipped");
+        return;
+    };
+    let at = root.join(rel);
+    if std::fs::symlink_metadata(&at).is_err() {
+        return;
     }
-    // "<mode> <type> <object> <size>	<path>", one line each.
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| {
-            let (head, path) = line.split_once('\t')?;
-            let exec = head.split(' ').next()? == "100755";
-            Some((path.to_string(), exec))
-        })
-        .collect()
-}
-
-/// What to do with one file, given its three sides.
-enum Decision {
-    /// Nothing local claims it: place the content.
-    Place,
-    /// The content moved it and the local copy still matched what installed it.
-    Update,
-    /// Identical already, so only the executable bit may need settling.
-    Adopt,
-    /// Both sides moved and git joined them.
-    Merge(Vec<u8>),
-    /// The reader's file stands, and the root keeps its base.
-    Conflict,
-    /// A file the reader made at a path the content also has: not ours to touch.
-    Keep,
-}
-
-fn decide(ours: Option<&[u8]>, base: Option<&[u8]>, theirs: &[u8]) -> Decision {
-    match (ours, base) {
-        (None, _) => Decision::Place,
-        (Some(ours), _) if ours == theirs => Decision::Adopt,
-        // No merge base: the reader wrote this file, and the content has one at the
-        // same path. Neither may overwrite the other.
-        (Some(_), None) => Decision::Keep,
-        (Some(ours), Some(base)) if ours == base => Decision::Update,
-        (Some(ours), Some(base)) => match merge_text(ours, base, theirs) {
-            Some(merged) => Decision::Merge(merged),
-            None => Decision::Conflict,
-        },
+    let outcome = std::fs::remove_dir(&at)
+        .or_else(|_| std::fs::remove_dir_all(&at))
+        .or_else(|_| std::fs::remove_file(&at));
+    match outcome {
+        Ok(()) => tracing::info!(
+            removed = %at.display(),
+            "content: an earlier commit installed this and the content no longer has it, so \
+             its copies go"
+        ),
+        Err(error) => tracing::warn!(
+            path = %at.display(),
+            %error,
+            "content: a retired path could not be removed"
+        ),
     }
-}
-
-/// `git merge-file` across three temp files; `None` is a conflict or a failure, and
-/// both keep the reader's file.
-fn merge_text(ours: &[u8], base: &[u8], theirs: &[u8]) -> Option<Vec<u8>> {
-    let dir = std::env::temp_dir().join(format!(
-        "gongga-ship-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    if std::fs::create_dir_all(&dir).is_err() {
-        return None;
-    }
-    let (o, b, t) = (dir.join("ours"), dir.join("base"), dir.join("theirs"));
-    let _ = std::fs::write(&o, ours);
-    let _ = std::fs::write(&b, base);
-    let _ = std::fs::write(&t, theirs);
-    let merged = crate::fork::bounded()
-        .args(["merge-file", "-p"])
-        .arg(&o)
-        .arg(&b)
-        .arg(&t)
-        .output()
-        .ok()
-        .filter(|out| out.status.code().is_some_and(|c| c == 0))
-        .map(|out| out.stdout);
-    let _ = std::fs::remove_dir_all(&dir);
-    merged
-}
-
-/// The path one file sits at inside a mapped directory, if it is under it.
-fn under(prefix: &str, path: &str) -> Option<String> {
-    let prefix = prefix.trim_end_matches('/');
-    path.strip_prefix(prefix)
-        .map(|rest| rest.trim_matches('/').to_string())
-        .filter(|rest| !rest.is_empty())
 }
 
 /// Where one repository path belongs under a root, refusing anything that climbs.
 ///
 /// # Safety
 ///
-/// The path is read out of a repository someone else pushed to, so `..`, an
-/// absolute root and a drive prefix are refused rather than joined.
+/// The path is read out of a repository someone else pushed to, so `..`, an absolute
+/// root and a drive prefix are refused rather than joined.
 fn safe_relpath(path: &str) -> Option<PathBuf> {
     let mut out = PathBuf::new();
     let normal = Path::new(path);
@@ -1040,75 +944,16 @@ fn safe_relpath(path: &str) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
-/// The pin a root was last reconciled against.
-fn read_pin(root: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(root.join(PIN_FILE)).ok()?;
-    text.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(str::to_string)
-}
-
-/// The paths this root kept from its reader: recorded under the pin.
-///
-/// # Invariant
-///
-/// Without this the pin could never advance past a root holding one file of the
-/// reader's own -- and a root with no pin has no merge base, so *every* later
-/// update reads as "the reader wrote this" and the content freezes at whatever
-/// was installed first. See `docs/notes/server-ship.md`.
-fn read_kept(root: &Path) -> Vec<String> {
-    std::fs::read_to_string(root.join(PIN_FILE))
-        .map(|text| {
-            text.lines()
-                .skip(1)
-                .map(|line| line.trim().to_string())
-                .filter(|line| !line.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn write_pin(root: &Path, commit: &str, kept: &[String]) -> anyhow::Result<()> {
-    std::fs::create_dir_all(root)?;
-    let mut text = format!("{commit}\n");
-    for path in kept {
-        text.push_str(path);
-        text.push('\n');
-    }
-    std::fs::write(root.join(PIN_FILE), text)
-        .map_err(|e| anyhow::anyhow!("recording the content in {}: {e}", root.display()))
-}
-
-/// Writes a file whole, keeping the mode the repository recorded for it.
-fn put(dest: &Path, bytes: &[u8], exec: bool) -> anyhow::Result<()> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(dest, bytes).map_err(|e| anyhow::anyhow!("writing {}: {e}", dest.display()))?;
-    #[cfg(unix)]
-    if exec {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(dest)
-            .map(|m| m.permissions().mode())
-            .unwrap_or(0o644);
-        let _ = std::fs::set_permissions(dest, std::fs::Permissions::from_mode(mode | 0o111));
-    }
-    #[cfg(not(unix))]
-    let _ = exec;
-    Ok(())
-}
-
-/// The roots this process installed into.
+/// The roots this process read content from.
 static ROOTS: OnceLock<Roots> = OnceLock::new();
 
-/// Where the skills are: the roots of the last install, or the home this process
-/// would have used if it had installed.
+/// Where the skills are: the roots of the last resolve, or the home this process would
+/// have used if it resolved none.
 pub fn roots() -> &'static Roots {
     ROOTS.get_or_init(|| {
         let home = std::env::var_os("GONGGA_HOME")
             .map(PathBuf::from)
-            .or_else(|| dirs::home_dir().map(|h| h.join(".gongga")))
+            .or_else(|| dirs::home_dir().map(|home| home.join(".gongga")))
             .unwrap_or_else(|| PathBuf::from(".gongga"));
         Roots::of(&home)
     })

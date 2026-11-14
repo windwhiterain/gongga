@@ -149,7 +149,7 @@ wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; sed
 say "server log: $log"
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
-[[ -f "$home/lib/gongga_skill.py" && -f "$home/lib/gongga.py" ]]
+[[ -f "$home/ship/python/gongga_skill.py" && -f "$home/ship/python/gongga.py" ]]
 ok "the content installs the package contract and the client into lib/" $?
 
 created=$("${cli[@]}" '{"name":"set_session","args":{"id":"reader","model":"fake/flash-fake","cwd":"'"$(native "$checkout")"'"}}' 2>&1)
@@ -166,7 +166,7 @@ ok "a package's function is called with keyword arguments and its output returne
 # answer travels as a JSON line, so a separator is an escape there and a slash in the
 # path: the comparison drops separators rather than normalising them.
 flat=$(compact "$out")
-want=$(compact "$(native "$home/lib/gongga.py")")
+want=$(compact "$(native "$home/ship/python/gongga.py")")
 imported=1
 [[ "$flat" == *"$want"* ]] && imported=0
 [[ $imported == 0 ]] || say "want=$want got=${flat:0:400}"

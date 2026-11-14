@@ -194,8 +194,11 @@ say "$probe"
 # 15. `run_skill` is a server command (SPEC's `## Python Cmd`): a skill is a package and
 #     runs; anything else is refused with the sentence that says what to make. No tool
 #     row is involved.
-mkdir -p "$home/skills/entry-only" "$home/skills/body-only"
-cat > "$home/skills/entry-only/SKILL.md" <<'MD'
+# The home reads its content from the checkout in the home: make it before the
+# fixtures below are written into it.
+[[ -d "$home/ship/.git" ]] || git clone -q "${GONGGA_SHIP_URL:-$root/ship}" "$home/ship"
+mkdir -p "$home/ship/skills/entry-only" "$home/ship/skills/body-only"
+cat > "$home/ship/skills/entry-only/SKILL.md" <<'MD'
 ---
 name: entry-only
 description: Declares an entry, which this build does not read.
@@ -204,12 +207,12 @@ metadata:
 ---
 # entry only
 MD
-cat > "$home/skills/entry-only/probe.sh" <<'SH'
+cat > "$home/ship/skills/entry-only/probe.sh" <<'SH'
 #!/usr/bin/env bash
 for word in "$@"; do printf '[%s]\n' "$word"; done
 exit 3
 SH
-cat > "$home/skills/body-only/SKILL.md" <<'MD'
+cat > "$home/ship/skills/body-only/SKILL.md" <<'MD'
 ---
 name: body-only
 description: A body and nothing to run.
@@ -218,14 +221,14 @@ description: A body and nothing to run.
 MD
 # A skill is a Python package: the callable is a public function, its call arrives as
 # keyword arguments, and the same contract is callable in-process.
-mkdir -p "$home/skills/echo-pkg"
-cat > "$home/skills/echo-pkg/SKILL.md" <<'MD'
+mkdir -p "$home/ship/skills/echo-pkg"
+cat > "$home/ship/skills/echo-pkg/SKILL.md" <<'MD'
 ---
 name: echo-pkg
 description: A skill that is a Python package, not a script.
 ---
 MD
-cat > "$home/skills/echo-pkg/__init__.py" <<'PY'
+cat > "$home/ship/skills/echo-pkg/__init__.py" <<'PY'
 def echo(first="", second=""):
     return "argv: " + " | ".join([first, second]) + "\n"
 
@@ -240,9 +243,9 @@ say "$packed"
 
 inproc=$(python -c "
 import sys
-sys.path.insert(0, r'$(cygpath -m "$home")/lib')
+sys.path.insert(0, r'$(cygpath -m "$home")/ship/python')
 import gongga_skill
-print(gongga_skill.run(r'$(cygpath -m "$home")/skills/echo-pkg', 'echo',
+print(gongga_skill.run(r'$(cygpath -m "$home")/ship/skills/echo-pkg', 'echo',
                        {'first': 'in', 'second': 'process'}), end='')
 " 2>&1)
 [[ "$inproc" == *"argv: in | process"* ]]
@@ -251,7 +254,7 @@ ok "the contract is importable: no process, no command line" $?
 # The Python client: one function per command the server publishes, no process and
 # no command line. It is installed beside the home like the skill contract.
 client=$(GONGGA_SERVER="127.0.0.1:$port" GONGGA_HOME="$home" python -c "
-import sys; sys.path.insert(0, r'$(cygpath -m "$home")/lib')
+import sys; sys.path.insert(0, r'$(cygpath -m "$home")/ship/python')
 import gongga
 s = gongga.connect()
 s.set_session(id='from-python', model='fake/flash-fake')
