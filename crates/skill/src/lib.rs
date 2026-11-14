@@ -4,9 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
-pub mod entry;
+pub mod package;
 
-pub use entry::{Launch, Programs, Runner, is_package, package_of, request, runner, runner_of};
+pub use package::{Package, is_package, package_of, request};
 
 /// The file that makes a directory a skill, and the one a reader opens.
 const SKILL: &str = "SKILL.md";
@@ -104,7 +104,7 @@ impl Roots {
             .collect()
     }
 
-    /// The skill `@skill(<name>)` and `skill <name>` both read.
+    /// The skill `@skill(<name>)` reads, when a name opens more than one.
     pub fn find(&self, name: &str) -> Option<Skill> {
         self.named(name).into_iter().next()
     }
@@ -120,13 +120,10 @@ pub struct Skill {
     /// The `SKILL.md` itself, which is what a reader opens.
     pub path: PathBuf,
     pub bucket: Bucket,
-    /// The program the frontmatter names, resolved; `None` is a body, which `run_skill`
-    /// refuses.
-    pub entry: Option<PathBuf>,
 }
 
 impl Skill {
-    /// The directory the skill's files live in, which its entry is resolved against.
+    /// The directory the skill's files live in: where `package.rs` finds its package.
     pub fn dir(&self) -> &Path {
         self.path.parent().unwrap_or(Path::new("."))
     }
@@ -150,7 +147,6 @@ fn declared(bucket: Bucket, dir: &Path) -> Skill {
     Skill {
         name: meta.name.unwrap_or_else(|| dir_name(dir)),
         description: meta.description,
-        entry: meta.entry.map(|entry| dir.join(entry)),
         path,
         bucket,
     }
@@ -162,21 +158,20 @@ fn dir_name(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// What the header block declares: the two fields the index needs, and the entry.
+/// What the header block declares: the two fields the index needs.
 #[derive(Debug, Default)]
 struct Meta {
     name: Option<String>,
     description: String,
-    entry: Option<PathBuf>,
 }
 
 /// `---`, then top-level `key: value` lines, then `---`.
 ///
 /// # Invariant
 ///
-/// An indented line belongs to the top-level key above it, which is how the one
-/// machine-read field this harness adds is spelled: `metadata:` / `entry: <file>`.
-/// Everything else is the reader's, not this function's.
+/// Only top-level keys are read, and only these two: an indented line belongs to the key
+/// above it (`metadata:` and its fields), which is the reader's or another harness's, not
+/// this function's.
 fn frontmatter(file: &Path) -> Meta {
     let Ok(text) = std::fs::read_to_string(file) else {
         return Meta::default();
@@ -186,23 +181,15 @@ fn frontmatter(file: &Path) -> Meta {
         return Meta::default();
     }
     let mut meta = Meta::default();
-    // The top-level key the lines being read belong to, while one holds them.
-    let mut section: Option<String> = None;
     for line in lines.by_ref().take_while(|line| line.trim() != "---") {
-        let indented = line.len() != line.trim_start().len();
-        let body = line.trim();
-        let Some((key, value)) = body.split_once(':') else {
-            continue;
-        };
-        let (key, value) = (key.trim(), value.trim().trim_matches('"'));
-        if indented {
-            if section.as_deref() == Some("metadata") && key == "entry" && !value.is_empty() {
-                meta.entry = Some(PathBuf::from(value));
-            }
+        if line.len() != line.trim_start().len() {
             continue;
         }
-        section = value.is_empty().then(|| key.to_string());
-        match key {
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"');
+        match key.trim() {
             "name" if !value.is_empty() => meta.name = Some(value.to_string()),
             "description" => meta.description = value.to_string(),
             _ => {}

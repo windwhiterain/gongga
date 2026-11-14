@@ -28,10 +28,9 @@ impl Skills {
     /// # Invariant
     ///
     /// One form, one door: a skill is a Python package, and its call is one JSON line on its
-    /// stdin. A directory without `__init__.py` is refused before a process starts -- a body
-    /// naming its `SKILL.md`, a declared entry naming what to change -- because SPEC makes
-    /// every skill the model calls a Python call, and `crates/skill/src/entry.rs` keeps the
-    /// entry rule for the command line alone.
+    /// stdin. A directory without `__init__.py` is refused before a process starts, because
+    /// SPEC makes every skill the model calls a Python call: there is no second form for a
+    /// script to be, and no shell door that would run one.
     pub async fn run(&self, skill: &Skill, cmd: Option<&Value>, ctx: &ToolContext) -> ToolOutcome {
         if !::skill::is_package(skill.dir()) {
             return ToolOutcome::err(refusal(skill));
@@ -40,8 +39,8 @@ impl Skills {
             Ok(call) => call,
             Err(why) => return ToolOutcome::err(why),
         };
-        let runner = match ::skill::package_of(self.python.as_deref(), self.lib.as_deref()) {
-            Ok(runner) => runner,
+        let package = match ::skill::package_of(self.python.as_deref(), self.lib.as_deref()) {
+            Ok(package) => package,
             Err(why) => return ToolOutcome::err(why),
         };
         // The contract and the package are this machine's files, whatever machine the
@@ -55,7 +54,7 @@ impl Skills {
                 lib.to_string_lossy().into_owned(),
             ));
         }
-        // A function's arguments are keyword arguments: position was the entry's rule.
+        // A function's arguments are keyword arguments: a call has a shape, not position.
         let arguments = match &call.args {
             Value::Object(table) => Value::Object(table.clone()),
             Value::Null => Value::Object(serde_json::Map::new()),
@@ -68,9 +67,11 @@ impl Skills {
             }
         };
         let request = ::skill::request(skill.dir(), &call.function, &arguments);
+        // The contract is the interpreter's one word: the call itself arrives on stdin.
+        let leading = [package.contract.display().to_string()];
         let outcome = match words::run(
-            &runner.program,
-            &runner.leading,
+            &package.python,
+            &leading,
             Some(&request),
             &at,
             &env,
@@ -117,26 +118,19 @@ impl Skills {
 ///
 /// # Invariant
 ///
-/// Two shapes, two answers, and neither is about a file being missing: a body is prose the
-/// reader opens, and a declared entry is a program the command line runs -- so the sentence
-/// names the change that makes the skill callable, which is what a model can act on.
+/// One shape, one answer, and it is not about a file being missing: the sentence names the
+/// change that makes the skill callable -- a package, whose public functions are the names
+/// `run_skill` takes -- which is what a model can act on. An implementation that is not
+/// Python goes inside one of those functions, because a skill has no other door.
 fn refusal(skill: &Skill) -> String {
-    match skill.entry.as_deref() {
-        None => format!(
-            "{} is a body and nothing to run: read {} and do what it says",
-            skill.name,
-            skill.path.display()
-        ),
-        Some(entry) => format!(
-            "{} declares the entry {}, and this server runs a skill only as a Python call: \
-             make it a package -- a directory holding `__init__.py`, whose public functions \
-             are the names `run_skill` takes (SPEC's `## Skill`) -- or run the entry from a \
-             shell with `gongga-cli skill {}`",
-            skill.name,
-            entry.display(),
-            skill.name
-        ),
-    }
+    format!(
+        "{} runs only as a Python call: make it a package -- a directory holding \
+         `__init__.py`, whose public functions are the names `run_skill` takes (SPEC's \
+         `## Skill`) -- and put an implementation that is not Python inside one of those \
+         functions. {} is the prose that describes it.",
+        skill.name,
+        skill.path.display()
+    )
 }
 
 /// One `run_skill` call, as SPEC's `Cmd := {name, args}` names it.

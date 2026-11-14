@@ -10,7 +10,6 @@ pub mod json_value;
 pub mod render_wire;
 pub mod runtime;
 pub mod server;
-pub mod skill_command;
 pub mod window_cache;
 pub mod window_command;
 pub mod window_index;
@@ -128,10 +127,6 @@ impl Args {
             return Ok(());
         };
         let serves = command.first().map(String::as_str) == Some("serve");
-        // A skill's argv is the entry's: `skill remote add --home x` is the script's flag.
-        if command.first().map(String::as_str) == Some("skill") {
-            return Ok(());
-        }
         // Every command flag takes one value, which may itself look like a flag:
         // walk pairs rather than match every token.
         let mut i = 1;
@@ -2880,16 +2875,6 @@ const CANCEL_ID: u64 = u64::MAX;
 ///
 /// `serve` is decided before a runtime exists: it leaves nothing of the client
 /// behind, and the server builds the runtime it wants to be stopped in.
-/// The first Python that runs on this machine, by the crate's own rule.
-///
-/// # Invariant
-///
-/// One probe, shared: the Python a command line runs on and the one a skill entry
-/// runs on are the same answer, or a `skill` that works here fails there.
-pub fn python_program() -> anyhow::Result<std::path::PathBuf> {
-    crate::skill_command::python()
-}
-
 pub fn main(args: Args) -> anyhow::Result<()> {
     if let Some(Sub::Cmd(tokens)) = &args.command
         && tokens.first().map(String::as_str) == Some("serve")
@@ -2902,132 +2887,9 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     runtime.block_on(async {
         match &args.command {
             None => list_commands(&args).await,
-            Some(Sub::Cmd(command)) if command.first().map(String::as_str) == Some("skill") => {
-                skill(&args, command).await
-            }
             Some(Sub::Cmd(command)) => run(&args, command).await,
         }
     })
-}
-
-/// `skill`: the entry itself, run here; `ls` asks the server when a shell names one.
-///
-/// # Invariant
-///
-/// The words after `skill` belong to the entry -- `skill remote add --home x` is the
-/// script's flag -- so this layer claims only `ls`, whose answer is the session's.
-/// Running stays here: SPEC's `run_skill` takes an `id`, which this machine resolves.
-async fn skill(args: &Args, tokens: &[String]) -> anyhow::Result<()> {
-    let local = || crate::skill_command::dispatch(&home_of(args), &tokens[1..]);
-    if tokens.get(1).map(String::as_str) != Some("ls") {
-        return local();
-    }
-    let Some(session) = calling_session() else {
-        return local();
-    };
-    let Ok((mut client, mut link)) = connect(args).await else {
-        return local();
-    };
-    let result = match ask_table(&mut client, &mut link, &session).await {
-        Ok(()) => Ok(()),
-        // A shell of another server's session still has a machine to list: the
-        // refusal is said, and the local walk answers.
-        Err(why) => {
-            eprintln!("note: {session} is not a session this server knows ({why})");
-            local()
-        }
-    };
-    link.goodbye().await;
-    result
-}
-
-/// `skill ls` through the server: the table, printed as the same four columns.
-///
-/// # Invariant
-///
-/// One walk answers both readers: SPEC's `ls_skill` is what `@skill(...)` expansion and
-/// `run_skill` read, so the columns here are its rows and not a second listing.
-async fn ask_table(client: &mut Client, link: &mut Link, session: &str) -> anyhow::Result<()> {
-    let asked = vec![
-        "ls_skill".to_string(),
-        "--session".to_string(),
-        session.to_string(),
-    ];
-    let (ok, message) = ask(client, link, &asked).await?;
-    if !ok {
-        anyhow::bail!(message);
-    }
-    // Nothing installed is a sentence rather than an empty table, and it is the
-    // answer: print it as it came.
-    let Ok(table) = serde_json::from_str::<serde_json::Value>(&message) else {
-        println!("{message}");
-        return Ok(());
-    };
-    let mut lines = String::new();
-    for row in table.as_array().into_iter().flatten() {
-        let field = |name: &str| row.get(name).and_then(|v| v.as_str()).unwrap_or_default();
-        lines.push_str(&format!(
-            "{}\t{}\t{}\t{}\n",
-            field("name"),
-            field("bucket"),
-            field("description").replace(['\t', '\n'], " "),
-            field("path")
-        ));
-    }
-    print!("{lines}");
-    Ok(())
-}
-
-/// One command asked quietly: its own answer, and nothing printed on the way.
-///
-/// # Invariant
-///
-/// Only the `cmd_result` this command was sent with ends the wait; every other event
-/// is fed to the client and dropped, so a table never carries a session's news.
-async fn ask(
-    client: &mut Client,
-    link: &mut Link,
-    tokens: &[String],
-) -> anyhow::Result<(bool, String)> {
-    let mut printer = NullSink::default();
-    let msg = match client.command(tokens.to_vec(), &mut printer) {
-        Submission::Send(msg) => msg,
-        Submission::Local => anyhow::bail!("{} was not sent", tokens.join(" ")),
-        Submission::Rejected => anyhow::bail!(
-            "{}",
-            printer
-                .take_error()
-                .unwrap_or_else(|| "not a command".to_string())
-        ),
-        Submission::Offline => anyhow::bail!("not connected to the server"),
-    };
-    let id = match &msg {
-        ClientMessage::Command { id, .. } => *id,
-        other => anyhow::bail!("{other:?} is not a command"),
-    };
-    link.send(msg)
-        .await
-        .map_err(|e| anyhow!("send failed: {e}"))?;
-    loop {
-        let Some(bytes) = link.recv().await else {
-            anyhow::bail!("server disconnected");
-        };
-        let event = match decode_server(&bytes)? {
-            ServerMessage::Event { event, .. } | ServerMessage::Row { event, .. } => event,
-            _ => continue,
-        };
-        client.handle_event(event.clone(), &mut printer);
-        if let Event::CmdResult {
-            id: rid,
-            ok,
-            message,
-            ..
-        } = &event
-            && *rid == id
-        {
-            return Ok((*ok, message.clone()));
-        }
-    }
 }
 
 /// What a command row says about lines the server never answered.

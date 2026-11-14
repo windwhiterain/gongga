@@ -40,7 +40,6 @@ console**:
 | --- | --- |
 | `server::supervise` | the supervisor, itself console-less in the usual case |
 | `server::remote::runner` | ssh, on the peer's machine |
-| `cli::skill_command` | the command layer, on a pipeline |
 | `bundle::payload_impl` | the distribution's head |
 
 ## Why `flags` and not the constant alone

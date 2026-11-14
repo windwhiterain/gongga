@@ -44,7 +44,7 @@ pub async fn run(
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| spawn_error(program, &e))?;
+        .map_err(|e| format!("could not run {}: {e}", program.display()))?;
 
     // The request, on its own task: a slow child must not block the write, and the
     // dropped pipe is its EOF.
@@ -113,19 +113,4 @@ async fn drain_both(
         None => String::new(),
     };
     (stdout, stderr)
-}
-
-/// Why the program did not start, in words a reader acts on.
-fn spawn_error(program: &Path, error: &std::io::Error) -> String {
-    let program = program.display();
-    match error.kind() {
-        std::io::ErrorKind::NotFound => format!(
-            "no program named {program:?} could be started: a name is looked up on PATH, \
-             and a word with a directory in it is run as it is written"
-        ),
-        std::io::ErrorKind::PermissionDenied => {
-            format!("running {program:?} was not allowed")
-        }
-        _ => format!("could not run {program:?}: {error}"),
-    }
 }
