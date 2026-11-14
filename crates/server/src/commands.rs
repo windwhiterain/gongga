@@ -604,8 +604,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
                 kind_arg(
                     "session",
-                    "Session whose subscriptions to list.",
-                    true,
+                    "Session whose subscriptions to list. Omitted is the caller's own session.",
+                    false,
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
@@ -675,8 +675,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
                 kind_arg(
                     "session",
-                    "Session that owns it.",
-                    true,
+                    "Session that owns it. Omitted is the caller's own session.",
+                    false,
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
@@ -706,8 +706,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
                 kind_arg(
                     "session",
-                    "Session that owns it.",
-                    true,
+                    "Session that owns it. Omitted is the caller's own session.",
+                    false,
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
@@ -748,8 +748,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
                 kind_arg(
                     "session",
-                    "Session whose channels to list.",
-                    true,
+                    "Session whose channels to list. Omitted is the caller's own session.",
+                    false,
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
@@ -773,8 +773,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
                 kind_arg(
                     "session",
-                    "Session that owns it.",
-                    true,
+                    "Session that owns it. Omitted is the caller's own session.",
+                    false,
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
@@ -804,8 +804,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
                 kind_arg(
                     "session",
-                    "Session that owns it.",
-                    true,
+                    "Session that owns it. Omitted is the caller's own session.",
+                    false,
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
@@ -832,8 +832,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
                 kind_arg(
                     "session",
-                    "Session to read.",
-                    true,
+                    "Session to read. Omitted is the caller's own session.",
+                    false,
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
@@ -928,8 +928,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 kind_pos(
                     "session",
                     "Whose skills: its directory is the `project` layer, and the machine \
-                     it stands on decides whether that layer is read at all.",
-                    true,
+                     it stands on decides whether that layer is read at all. Omitted is the caller's own session.",
+                    false,
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
@@ -969,8 +969,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 kind_pos(
                     "session",
                     "The session it runs as: its directory is where it runs, and the call \
-                     is that session's work.",
-                    true,
+                     is that session's work. Omitted is the caller's own session.",
+                    false,
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
@@ -1346,6 +1346,24 @@ pub(crate) fn session_of(args: &Args, caller: Option<&str>) -> Option<String> {
     named
         .or_else(|| caller.map(str::trim).filter(|name| !name.is_empty()))
         .map(str::to_string)
+}
+
+/// The session a command acts on, or the sentence a call that has none gets.
+///
+/// # Invariant
+///
+/// SPEC's `session = caller()`: a call that names one acts on that one, and a call that
+/// names none acts on the session it runs from. One that has neither -- a window with
+/// no shell behind it, a signal -- is told so, rather than acting on the empty name.
+/// See `docs/notes/server-commands.md`.
+fn caller_session(name: &str, args: &Args, caller: Option<&str>) -> Result<String, Outcome> {
+    match session_of(args, caller) {
+        Some(session) => Ok(session),
+        None => Err(Outcome::err(format!(
+            "{name} acts on a session, and neither the call nor its client named one: \
+             name one, or run it from a session's shell, where `$GONGGA_SESSION` is set"
+        ))),
+    }
 }
 
 async fn send_message(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
@@ -2058,7 +2076,10 @@ fn under(name: &str, path: &str) -> bool {
 }
 
 async fn ls_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let session = session_of(args, caller).unwrap_or_default();
+    let session = match caller_session("ls_channel", args, caller) {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
     let prefix = args.word("path").map(str::to_string).unwrap_or_default();
     match d.agent.channels.list(&session).await {
         Ok(rows) => {
@@ -2076,7 +2097,10 @@ async fn ls_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome 
 }
 
 async fn del_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let session = session_of(args, caller).unwrap_or_default();
+    let session = match caller_session("del_channel", args, caller) {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
     let id = args.word("id").unwrap_or_default().to_string();
     // SPEC: a path takes what is under it, so a name in the middle of one ends
     // every channel below it as well.
@@ -2109,7 +2133,10 @@ async fn del_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
 }
 
 async fn rename_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let session = session_of(args, caller).unwrap_or_default();
+    let session = match caller_session("rename_channel", args, caller) {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
     let path = args.word("id").unwrap_or_default().to_string();
     let new_path = args.word("new_id").unwrap_or_default().to_string();
     match d.agent.channels.rename(&session, &path, &new_path) {
@@ -2119,7 +2146,10 @@ async fn rename_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outc
 }
 
 async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let session = session_of(args, caller).unwrap_or_default();
+    let session = match caller_session("new_channel", args, caller) {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
     let id = args.word("id").unwrap_or_default().to_string();
     let name = args.word("name").unwrap_or_default().to_string();
     let handle = match d.sessions.get(&session) {
@@ -2149,7 +2179,10 @@ async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
 }
 
 async fn input_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let session = session_of(args, caller).unwrap_or_default();
+    let session = match caller_session("input_channel", args, caller) {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
     let id = args.word("id").unwrap_or_default().to_string();
     let input = args.word("input").unwrap_or_default().to_string();
     let wait = match count_of(args, "wait") {
@@ -2209,7 +2242,10 @@ async fn ls_session(d: &Dispatch, args: &Args) -> Outcome {
 }
 
 async fn ls_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let session = session_of(args, caller).unwrap_or_default();
+    let session = match caller_session("ls_subscription", args, caller) {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
     let prefix = args.word("path").map(str::to_string).unwrap_or_default();
     let rows = match d.store.subscriptions() {
         Ok(rows) => rows,
@@ -2234,7 +2270,10 @@ async fn ls_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Out
 }
 
 async fn get_messages(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let name = session_of(args, caller).unwrap_or_default();
+    let name = match caller_session("get_messages", args, caller) {
+        Ok(name) => name,
+        Err(refusal) => return refusal,
+    };
     let session = match d.sessions.get(&name) {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
@@ -2473,7 +2512,10 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
 /// path this lists is a path `run_skill` takes. `path` is matched by component
 /// (`under`), which is what makes `harness` a subtree and `har` nothing.
 async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let session = session_of(args, caller).unwrap_or_default();
+    let session = match caller_session("ls_skill", args, caller) {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
     let path = args.word("path").unwrap_or("").trim().to_string();
     let handle = match d.sessions.get(&session) {
         Ok(handle) => handle,
@@ -2499,7 +2541,10 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
 /// a path names one root where a name may name two, and what a skill *is* is decided in
 /// one place, [`skill::Skills::run`].
 async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let session = session_of(args, caller).unwrap_or_default();
+    let session = match caller_session("run_skill", args, caller) {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
     let id = args.word("id").unwrap_or_default().trim().to_string();
     let words = match crate::tools::skill::call_words(args.value("cmd")) {
         Ok(words) => words,
