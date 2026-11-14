@@ -11,7 +11,9 @@ config        config.toml read; the roster file read. No script is joined here -
               unless the file cannot place the model, and then it is, on purpose:
               a home whose default model only a script names has no other answer.
 home lock     one server per home, before the db is opened.
-ship prepare  resolve the content commit from the checkout. No fetch (see below).
+ship start_fetch  the content fetch, on its own thread. Nobody joins it here.
+ship prepare  resolve the content commit from the checkout. Waits for that fetch
+              only when the checkout declares no protocol this build can read.
 migrate       the db is brought forward before anything opens it.
 ship install  reconcile the content into the roots. Local git reads and copies.
 prompts       templates from this config, over the pin.
@@ -20,12 +22,14 @@ store         the db.
 bind          the port answers. Everything above is what a client waits for.
 --- behind the port ---
 agents::start      the community clone's fetch + rebase, on its own thread.
-ship::refresh      the content fetch; names the commit the next start installs.
+ship::refresh      waits for the start's content fetch; resolves again and
+                   reconciles the increment into the roots.
 (model scripts)    spawned by the roster read; their models merge in and bump a
                    generation, which is what republishes the roster.
 ```
 
-Measured on 2026-11-14, live home (`~/.gongga`, 233 MB db, 14 providers):
+Measured on 2026-11-14, live home (`~/.gongga`, 233 MB db, 14 providers), on the
+build that started the content fetch entirely behind the port:
 
 | | before | after |
 | --- | --- | --- |
@@ -35,23 +39,28 @@ Measured on 2026-11-14, live home (`~/.gongga`, 233 MB db, 14 providers):
 
 ## The invariant
 
-**A network is never in front of the port.** Three things are a network away --
-the content repository, the community clone, and the provider scripts -- and none of
-them is what a window waits for. Each is started after the socket answers, and none of
-them refuses the start when it fails: an offline machine starts in the same time as an
-online one, and says in one warning what it could not refresh.
+**A window never waits for a network.** Three things are a network away -- the
+content repository, the community clone, and the provider scripts. The content fetch
+starts on its own thread as soon as the home is claimed, so the socket is bound
+without joining it; the community clone and provider scripts start behind the port.
+None of them refuses the start when it fails: an offline machine starts in the same
+time as an online one, and says in one warning what it could not refresh.
 
-The one exception is written down rather than hidden: a home with **no content
-checkout at all** clones on that first start, and that clone waits. There is nothing
-on disk to serve, so there is nothing to be early for.
+Two readers do wait, both written down rather than hidden. `ship::resolve` waits for
+the fetch already in flight when the checkout declares no protocol this build can
+read -- a build whose content moved cannot reach the port otherwise, and waiting for
+one fetch is not a second round trip. A home with **no content checkout at all**
+clones on that first start, and that clone waits; there is nothing on disk to serve,
+so there is nothing to be early for.
 
-## What refresh must not do
+## What refresh does
 
-It answers with a commit and installs nothing. A start's install is the commit every
-reader in that start already agreed on (`ship::content`); rewriting skills under a live
-turn is a file a tool may be reading, and a transcript that disagrees with the roots it
-was built against. So the fetched commit is a name for the **next** start, logged when
-it differs.
+It waits for the fetch this start made, resolves the checkout again and reconciles
+the increment into both roots. Content is live tracked (SPEC: `ALL Config File Must
+Be Live Tracked`), so a moved checkout is installed now rather than promised to the
+next start. `install_at` merges against `.ship-base` and writes only what changed: a
+local edit nobody upstream touched is left alone. `ship::content` is a `RwLock`, so
+the new commit is the answer for every later reader in this process.
 
 ## The other half: the client's poll window
 

@@ -89,7 +89,8 @@ fn fetch(home: &Path, from: u32) -> anyhow::Result<PathBuf> {
                 "this home is at version {from} and needs `{path}`, which is neither in the \
                  shipped content ({}) nor anywhere else this server can reach: start the server \
                  where the content repository answers, or ship the step",
-                crate::ship::resolved_commit().unwrap_or("nothing resolved this start")
+                crate::ship::resolved_commit()
+                    .unwrap_or_else(|| "nothing resolved this start".to_string())
             )
         })?;
     if let Some(parent) = target.parent() {
@@ -110,7 +111,7 @@ fn blob(home: &Path, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     if !fork.exists() {
         return Ok(None);
     }
-    Ok(fork.blob(commit, path))
+    Ok(fork.blob(&commit, path))
 }
 
 /// The path as the newest commit in the cache has it: a home behind needs the

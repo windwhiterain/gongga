@@ -3,7 +3,7 @@
 //! See `docs/notes/server-ship.md`.
 
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, RwLock, mpsc};
 
 use serde::Deserialize;
 
@@ -203,27 +203,39 @@ pub struct Report {
     pub reachable: bool,
 }
 
-/// The content this start installs, resolved once for the whole process.
+/// The content this process installs now, re-resolved when the checkout moves.
 ///
 /// # Invariant
 ///
-/// One answer for one start: the migrator, the install and the prompt defaults
-/// all read this commit, so a fetch landing mid-start cannot make them disagree
-/// about what "the content" is.
-pub fn content(home: &Path) -> anyhow::Result<&'static Content> {
-    match CONTENT.get_or_init(|| resolve(home, false).map_err(|e| format!("{e:#}"))) {
-        Ok(content) => Ok(content),
-        // The failure is cached too: one answer per start, for every caller.
-        Err(e) => anyhow::bail!("{e}"),
+/// Live tracked: a resolve reads the tip as it is, and a fetch that moved it
+/// resolves again and reconciles the increment. One call gets one `Content`, so no
+/// reader holds a reference into state another thread may replace.
+pub fn content(home: &Path) -> anyhow::Result<Content> {
+    let held = CONTENT.read().unwrap_or_else(|e| e.into_inner());
+    if let Some(cached) = held.as_ref() {
+        return cached.clone().map_err(|e| anyhow::anyhow!("{e}"));
     }
+    drop(held);
+    let fresh = resolve(home).map_err(|e| format!("{e:#}"));
+    let mut held = CONTENT.write().unwrap_or_else(|e| e.into_inner());
+    held.get_or_insert(fresh)
+        .clone()
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
-/// The commit this start resolved, when it resolved one.
-pub fn resolved_commit() -> Option<&'static str> {
+/// The commit this process installs now, when it resolved one.
+pub fn resolved_commit() -> Option<String> {
     CONTENT
-        .get()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
         .and_then(|resolved| resolved.as_ref().ok())
-        .map(|content| content.commit.as_str())
+        .map(|content| content.commit.clone())
+}
+
+/// Replaces the live answer after its increment has been reconciled.
+fn set_content(fresh: Content) {
+    *CONTENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Ok(fresh));
 }
 
 /// The checkout this build installs from, for a home.
@@ -231,8 +243,12 @@ pub fn checkout(home: &Path) -> PathBuf {
     home.join(CHECKOUT)
 }
 
-/// One resolve per process, kept even when it failed.
-static CONTENT: OnceLock<Result<Content, String>> = OnceLock::new();
+/// The live answer; `None` until the first resolve.
+static CONTENT: RwLock<Option<Result<Content, String>>> = RwLock::new(None);
+
+/// The one fetch a start makes, and its answer, shared by resolve and refresh.
+static FETCH: OnceLock<Mutex<Option<mpsc::Receiver<Result<Sync, String>>>>> = OnceLock::new();
+static FETCHED: OnceLock<Result<Sync, String>> = OnceLock::new();
 
 /// Makes this home answerable to a lookup before anything is installed.
 ///
@@ -250,38 +266,82 @@ pub fn prepare(home: &Path) {
 /// Fetches the content and reconciles it into both roots.
 pub fn install(home: &Path) -> anyhow::Result<Report> {
     let content = content(home)?;
-    install_at(&Roots::of(home), content)
+    install_at(&Roots::of(home), &content)
 }
 
-/// Fetches what the repository has now, behind the port, and names the commit the
-/// next start will install.
+/// Resolves the fetched checkout again and reconciles the increment into both roots.
 ///
 /// # Invariant
 ///
-/// It installs nothing. A start installs the one commit every reader in that start
-/// agreed on (`content`); rewriting skills under a live turn would be a file a tool
-/// may be reading, and the transcript would then disagree with the roots it was
-/// built against. So the answer here is a name, and the next start is what takes it.
+/// Live tracked: `resolve` reads the tip as it is, `install_at` merges only what
+/// changed against `.ship-base`, and the live answer moves only after that merge
+/// succeeded. A start with nothing new does no work; protocol drift still walks back.
 pub fn refresh(home: &Path) -> anyhow::Result<Option<String>> {
-    let link = link();
     let fork = Fork::at(&checkout(home));
     if !fork.exists() {
         return Ok(None);
     }
-    // `Current` is the common answer: the checkout already had everything.
-    if !matches!(fork.sync()?, Sync::Fetched) {
+    let state = fetched()
+        .as_ref()
+        .map_err(|why| anyhow::anyhow!("the content fetch failed: {why}"))?;
+    if *state != Sync::Fetched {
         return Ok(None);
     }
-    let tip = fork.content().ok_or_else(|| {
-        anyhow::anyhow!(
-            "{} holds no branch to take content from, so protocol {} cannot be installed",
-            fork.dir().display(),
-            link.protocol
-        )
-    })?;
-    let commit = newest_for(&fork, &tip, &link)?;
-    let running = content(home)?.commit.clone();
-    Ok((commit != running).then_some(commit))
+    let fresh = resolve(home)?;
+    if fresh.commit == content(home)?.commit {
+        return Ok(None);
+    }
+    install_at(&Roots::of(home), &fresh)?;
+    let commit = fresh.commit.clone();
+    set_content(fresh);
+    Ok(Some(commit))
+}
+
+/// Starts the one fetch every start makes, before anything resolves.
+///
+/// # Invariant
+///
+/// One fetch per process: `resolve` waits for it only when the checkout says nothing
+/// this build can read, and `refresh` reuses the answer behind the port. The origin
+/// and an adopted cache are settled first, so neither races the fetch; a resolve
+/// takes one tip and thereafter reads commits by sha, so a fetch landing mid-start
+/// cannot make its readers disagree.
+pub fn start_fetch(home: &Path) {
+    let link = link();
+    let fork = Fork::at(&checkout(home));
+    let (tx, rx) = mpsc::sync_channel(1);
+    if FETCH.set(Mutex::new(Some(rx))).is_err() {
+        return;
+    }
+    if adopt(home, link).is_err() || point(home, &fork, link).is_err() || !fork.exists() {
+        // `resolve` reports an adoption failure in its own words.
+        // A fresh clone is at the tip: neither needs a fetch.
+        let _ = tx.send(Ok(Sync::Current));
+        return;
+    }
+    let started = std::thread::Builder::new()
+        .name("ship-fetch".to_string())
+        .spawn(move || {
+            let _ = tx.send(fork.sync().map_err(|e| format!("{e:#}")));
+        });
+    if let Err(e) = started {
+        tracing::warn!(error = %e, "the content fetch could not start");
+    }
+}
+
+/// The answer of that fetch, waiting for it if it has not finished.
+fn fetched() -> &'static Result<Sync, String> {
+    FETCHED.get_or_init(|| {
+        let Some(slot) = FETCH.get() else {
+            return Err("the content fetch was never started".to_string());
+        };
+        let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(rx) = held.take() else {
+            return Err("the content fetch was already taken".to_string());
+        };
+        rx.recv()
+            .unwrap_or_else(|_| Err("the content fetch ended without an answer".to_string()))
+    })
 }
 
 /// The same, with the roots and the content named: what a test drives, so it never
@@ -340,37 +400,23 @@ pub fn config_text() -> Option<String> {
 /// Protocol drift walks *back*, never forward: content that has moved to a protocol
 /// this build cannot read still serves this build the last commit it could read.
 /// The alternative is a machine that cannot start because somebody else's
-/// repository advanced.
-fn resolve(home: &Path, online: bool) -> anyhow::Result<Content> {
+/// repository advanced. A checkout with no readable declaration waits for the
+/// fetch this start already made, then walks the history it brought.
+fn resolve(home: &Path) -> anyhow::Result<Content> {
+    if FETCH.get().is_none() {
+        start_fetch(home);
+    }
     let link = link();
     let fork = Fork::at(&checkout(home));
     adopt(home, link)?;
     point(home, &fork, link)?;
-    let mut reachable = true;
     match fork.ensure(&[link.url.clone()])? {
         Sync::Foreign => anyhow::bail!(
             "{} is not a clone, so it is not the shipped content; move it away and start again",
             fork.dir().display()
         ),
         // A fresh clone is at the remote's tip, with the personal branch in it.
-        Sync::Cloned(_) => {}
-        // Not this start's work: the fetch runs behind the port; a start installs
-        // what its own checkout holds.
-        _ if !online => {}
-        _ => {
-            // Best effort: being offline is not being broken, and a checkout that
-            // already holds readable content answers for itself.
-            match fork.sync() {
-                // A conflict does not heal: every later start redoes it and loses, so
-                // this content is not current.
-                Ok(Sync::Conflicted) => reachable = false,
-                Ok(_) => {}
-                Err(e) => {
-                    tracing::warn!(error = %e, "cannot refresh the shipped content; using what is here");
-                    reachable = false;
-                }
-            }
-        }
+        _ => {}
     }
     let tip = fork.content().ok_or_else(|| {
         anyhow::anyhow!(
@@ -379,13 +425,45 @@ fn resolve(home: &Path, online: bool) -> anyhow::Result<Content> {
             link.protocol
         )
     })?;
-    let commit = newest_for(&fork, &tip, link)?;
+    let commit = match newest_for(&fork, &tip, link) {
+        Ok(commit) => commit,
+        Err(why) => wait_for_fetch(&fork, &tip, link, why)?,
+    };
     let declared = declared_at(&fork, &commit)?;
     Ok(Content {
         commit,
-        reachable,
+        reachable: true,
         declared,
     })
+}
+
+/// Waits for the fetch already in flight when a checkout says nothing this build
+/// can read.
+///
+/// # Invariant
+///
+/// A build whose content moved has no next start until this one can read content,
+/// and `refresh` runs behind the port. The fetch is shared, so waiting costs no
+/// second round trip; one resolve still names one commit.
+fn wait_for_fetch(
+    fork: &Fork,
+    tip: &str,
+    link: &Link,
+    first: anyhow::Error,
+) -> anyhow::Result<String> {
+    let state = match fetched() {
+        Ok(state) => state.clone(),
+        Err(why) => anyhow::bail!("{first:#}; the content fetch this start waited for: {why}"),
+    };
+    let after = fork.content().unwrap_or_else(|| tip.to_string());
+    if after == tip {
+        anyhow::bail!(
+            "{first:#}; the content fetch left the checkout at {tip} ({state:?}). A personal \
+             branch that did not rebase keeps its own history: resolve that rebase before starting again"
+        );
+    }
+    newest_for(fork, &after, link)
+        .map_err(|again| anyhow::anyhow!("{first:#}; after the content fetch: {again:#}"))
 }
 
 /// Points an existing checkout's `origin` at the repository this home names.
@@ -507,23 +585,34 @@ fn newest_for(fork: &Fork, tip: &str, link: &Link) -> anyhow::Result<String> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
+    let mut walked = 0usize;
     for commit in String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
     {
+        walked += 1;
         if protocol_at(fork, commit)? == Some(link.protocol) {
             return Ok(commit.to_string());
         }
     }
+    let why = match declared_at(fork, tip) {
+        Ok(declared) => format!("speaks {}", declared.protocol),
+        Err(e) => format!("does not parse: {e}"),
+    };
+    tracing::warn!(
+        commit = %tip,
+        "walked {} commits and found no protocol {} declaration: the newest one {}",
+        walked,
+        link.protocol,
+        why
+    );
     anyhow::bail!(
-        "no commit on {} speaks protocol {}; the newest one speaks {} and this build reads \
+        "no commit on {} speaks protocol {}; the newest one {} and this build reads \
          {}. Build a server that reads the new protocol, or publish content for this one",
         crate::fork::OFFICIAL,
         link.protocol,
-        protocol_at(fork, tip)?
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "nothing this build can parse".to_string()),
+        why,
         link.protocol
     )
 }
@@ -533,13 +622,9 @@ fn protocol_at(fork: &Fork, commit: &str) -> anyhow::Result<Option<u32>> {
     let Some(bytes) = fork.blob(commit, DECLARATION) else {
         return Ok(None);
     };
-    match toml::from_str::<Declared>(&String::from_utf8_lossy(&bytes)) {
-        Ok(declared) => Ok(Some(declared.protocol)),
-        Err(e) => {
-            tracing::warn!(commit = %commit, error = %e, "the content declaration does not parse; skipped");
-            Ok(None)
-        }
-    }
+    Ok(toml::from_str::<Declared>(&String::from_utf8_lossy(&bytes))
+        .ok()
+        .map(|declared| declared.protocol))
 }
 
 /// What one commit declares about itself.

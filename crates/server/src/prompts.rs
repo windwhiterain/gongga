@@ -320,7 +320,8 @@ pub fn install(config: &Path) -> Vec<&'static str> {
         Some(text) => read_table(&text).0,
         None => {
             tracing::warn!(
-                content = crate::ship::resolved_commit().unwrap_or("nothing resolved"),
+                content = %crate::ship::resolved_commit()
+                    .unwrap_or_else(|| "nothing resolved".to_string()),
                 protocol = crate::ship::link().protocol,
                 "the shipped config is not readable here; only this home's [prompts] stand"
             );

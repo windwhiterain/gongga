@@ -45,14 +45,14 @@ A local path costs nothing to fetch and needs no push: the working tree a person
 *is* the remote. What it does not change is which commit is installed: the protocol
 still decides that, and a local `main` that has not moved still installs what it said
 yesterday. In practice a development loop advances `main` in the local content
-repository (`git -C ship merge --ff-only local`) and the next start installs it --
-one local fetch, no network.
+repository (`git -C ship merge --ff-only local`) and a running server's refresh
+installs it -- one local fetch, no network, no restart.
 
-One home per process, and one URL: the resolve is memoized (`CONTENT`), so the first
-answer is the server's answer. `remember_url` is therefore called from `lib.rs`
-immediately after the config is read, before `prepare` can resolve anything -- a URL
-arriving later would be a second content for one server, which is the shape of bug
-that shows up as "some sessions read the new skill and some the old".
+One home per process, and one URL: `CONTENT` is live, so a fetch that moved the
+checkout replaces the answer for every later reader. `remember_url` is called from
+`lib.rs` immediately after the config is read, before `prepare` can resolve anything
+-- a URL arriving after a resolve would be a second content for one server, which is
+the shape of bug that shows up as "some sessions read the new skill and some the old".
 
 ## Roots, machine_root, checkout
 
@@ -161,19 +161,29 @@ content repository, which is a third party by definition.
 
 ## resolve, newest_for, protocol_at
 
-`resolve` is the whole answer for one start, kept in a `OnceLock`: the migrator, the
-install and the prompt defaults all read one commit, so a fetch landing mid-start
-cannot make them disagree about what "the content" is.
+`resolve` reads the checkout's tip as it is and returns one `Content`. The live
+answer is kept under a `RwLock` and replaced when a fetch moves the checkout; a
+caller gets one consistent `Content` per read, never a reference into state another
+thread may replace.
 
-It reads the checkout and **never fetches**. What the repository has now is
-`refresh`'s question, asked behind the port (`docs/notes/server-start.md`): a window
-waits for a socket, not for a network, and a home whose checkout already holds content
-can answer for itself. `refresh` installs nothing either — it names the commit the next
-start will install — because rewriting skills under a live turn is a file a tool may be
-reading and a transcript that disagrees with the roots it was built against.
+It reads the checkout, while one fetch per start is already in flight. `start_fetch`
+settles `adopt` and `point` first and then runs `fork.sync()` on a thread; a window
+still waits for a socket, not for a network (`docs/notes/server-start.md`). `resolve`
+takes one tip and thereafter reads commits by sha, so a rebase finishing mid-start
+Live tracked, per SPEC's `ALL Config File Must Be Live Tracked`: a protocol this
+build can read resolves immediately, and a fetch that moved the checkout resolves
+again. `refresh`, behind the port, waits for the same fetch, calls `install_at` for
+the increment against `.ship-base`, and only then replaces the live answer. Skills
+changing under a live turn is now the intended behaviour, not a next-start promise;
+`install_at` merges only changed files, so an untouched local edit stays put.
 
-The exception is a home with no checkout at all: `ensure` clones on that first start,
-and that one does wait.
+The one reader that waits is a build whose checkout declares nothing it can read:
+`wait_for_fetch` joins the fetch already in flight and walks the history it brought.
+Without it a build whose protocol moved would never reach the port where `refresh`
+runs, so neither would ever install the new content. A personal branch that failed to
+rebase keeps its old history, and the refusal says so rather than silently installing
+the official branch over it. A home with no checkout at all still waits for `ensure`
+to clone on that first start.
 
 `newest_for` walks back through first parents until it finds a commit that speaks this
 build's protocol. Walking *back* rather than forward is the invariant: content that
@@ -187,5 +197,5 @@ both numbers.
 The counters exist for the log line; the lists exist because they name files a human has
 to open. `written` and `updated` on a start that should have changed nothing is the signal
 that the content moved under a home. `reachable` says whether a commit could be taken
-from the repository at all — a start that read its checkout answers true even though the
-fetch ran later, and `false` means what is installed is not the content's own answer.
+from the repository at all: a start that read its checkout answers true, and a fetch
+that cannot reach it is reported by `refresh` instead of changing the install.

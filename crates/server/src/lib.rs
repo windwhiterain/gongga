@@ -222,8 +222,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     clock.step("home lock");
     // Before anything resolves: the lookup is memoized, one content per server.
     ship::remember_url(cfg.ship_url.clone());
-    // One commit for migrator, install and prompts. Read, not fetched: see
-    // `ship::refresh`.
+    // One fetch for this start, in flight while the home is claimed and opened.
+    ship::start_fetch(&cfg.home);
+    // The live content for migrator, install and prompts. It waits for the fetch
+    // only when no protocol here can be read.
     ship::prepare(&cfg.home);
     clock.step("ship prepare");
     let migrated = migrate::bring_forward(&cfg.home, &cfg.db_path)?;
@@ -618,15 +620,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // tasks it never started.
     let socket = std::sync::Arc::new(net::bind_address(cfg.bind, args.force).await?);
 
-    // Behind the port: the community clone, the content fetch and the
-    // provider scripts. None of them is on a budget.
+    // Behind the port: the community clone, the fetch's answer, provider scripts.
+    // None of them is on a budget.
     agents::start();
     {
         let home = cfg.home.clone();
         tokio::task::spawn_blocking(move || match ship::refresh(&home) {
             Ok(Some(commit)) => tracing::info!(
                 content = %commit.get(..10).unwrap_or(commit.as_str()),
-                "the content moved while this server ran; the next start installs it"
+                "the content moved while this server ran; reconciled the increment"
             ),
             Ok(None) => tracing::debug!("content: this home holds what the repository has"),
             Err(e) => tracing::warn!(error = %e, "cannot refresh the shipped content"),
