@@ -553,6 +553,13 @@ took, and `ttft_ms` is the wait for its first token. A session that has never
 completed a request has 0 context and no rate, and SPEC's title says nothing
 rather than zero.
 
+One measurement means they are cleared as one: a transcript cut and a committed
+checkpoint both reset `context_tokens` to zero, and they reset `cached_tokens`,
+`tps` and `ttft_ms` with it. Keeping the rate of a request whose transcript no
+longer exists would put a number in a title that reads as one sentence about one
+request. The rate and the delay are the reader's clock, not the provider's -- see
+`docs/notes/server-agent.md`.
+
 ## MessageRow
 
 Deliberately not the request's view of the same row: a caller that only wants

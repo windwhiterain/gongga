@@ -434,6 +434,16 @@ the stream. SPEC puts the latest pair in a `full` pane's title, and they belong
 in the ledger for the same reason as the tokens -- "was it slow, or was it
 talking the whole time" is asked after the turn.
 
+Both are read by the task that reads the provider's socket, and closed before the
+completion event is queued (`llm::StreamWindow`, taken by `Outbox::complete`).
+That is the whole point of them: a step runs a tool call the moment its call
+arrives, so the loop that takes the events stops taking them for as long as the
+tool runs -- a clock read there counted a ninety-second build as ninety seconds of
+generation, and the rate it produced was a property of the tool, not of the model.
+The ledger keeps both readings apart: `latency_ms` is still the step's own wall
+time around the request, `stream_ms` is the reader's window, and `tps` divides by
+the window.
+
 ## quota at a step's end
 
 SPEC puts `active_quota` in the main column and says it updates at every step's

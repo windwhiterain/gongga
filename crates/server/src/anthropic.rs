@@ -445,9 +445,12 @@ impl Stream {
                 }
             }
             "message_stop" => {
-                out.send(LlmEvent::Completed {
-                    usage: Some(usage(self.input, self.cached, self.output, self.created)),
-                })
+                out.complete(Some(usage(
+                    self.input,
+                    self.cached,
+                    self.output,
+                    self.created,
+                )))
                 .await?;
             }
             "error" => {
