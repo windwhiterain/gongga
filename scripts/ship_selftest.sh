@@ -117,8 +117,12 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 # then one that speaks a protocol no build here does.
 seed_content() {
   local repo=$1
-  mkdir -p "$repo/config" "$repo/skills/marker"
+  mkdir -p "$repo/config" "$repo/skills/marker" "$repo/python"
   cp "$reference/config/config.toml" "$repo/config/config.toml"
+  # The declaration below names a Python surface, and a home refuses a checkout that
+  # declares one and has none: the fixture ships the real contract, so what a home reads
+  # there is a file rather than a name.
+  cp "$reference"/python/*.py "$repo/python/"
   git -C "$repo" init -q -b main
 }
 
@@ -211,10 +215,17 @@ wait_log() { # file, text
   return 1
 }
 
-wait_pin() { # home, previous pin -> 0 once the pin has moved off it
+# Waits for the state a start owes: the checkout standing on a commit this build reads.
+# It is not enough to wait for the checkout to *move* -- a fetch moves it onto the newer
+# protocol first, and `settle` is what puts it back on the last commit this build can
+# read, so the moved state is the one on the way, not the one to assert on.
+wait_pin() { # home, previous -> 0 once the checkout reads this build's protocol
   local for_=0
   while [[ $for_ -lt 150 ]]; do
-    [[ "$(installed_commit "$1")" != "$2" ]] && return 0
+    if [[ "$(installed_commit "$1")" != "$2" ]] &&
+      git -C "$1/ship" show HEAD:ship.toml 2>/dev/null | grep -q "^protocol = $proto$"; then
+      return 0
+    fi
     sleep 0.2
     for_=$((for_ + 1))
   done

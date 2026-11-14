@@ -429,10 +429,11 @@ pub fn refresh(home: &Path) -> anyhow::Result<Option<String>> {
         return Ok(None);
     }
     let fresh = resolve(home)?;
+    // Settled before the comparison: a fetch can move the tree, and not the commit.
+    settle(&fork, &fresh.commit)?;
     if fresh.commit == content(home)?.commit {
         return Ok(None);
     }
-    settle(&fork, &fresh.commit)?;
     let commit = fresh.commit.clone();
     set_content(fresh);
     Ok(Some(commit))
