@@ -158,6 +158,16 @@ content repository, which is a third party by definition.
 install and the prompt defaults all read one commit, so a fetch landing mid-start
 cannot make them disagree about what "the content" is.
 
+It reads the checkout and **never fetches**. What the repository has now is
+`refresh`'s question, asked behind the port (`docs/notes/server-start.md`): a window
+waits for a socket, not for a network, and a home whose checkout already holds content
+can answer for itself. `refresh` installs nothing either — it names the commit the next
+start will install — because rewriting skills under a live turn is a file a tool may be
+reading and a transcript that disagrees with the roots it was built against.
+
+The exception is a home with no checkout at all: `ensure` clones on that first start,
+and that one does wait.
+
 `newest_for` walks back through first parents until it finds a commit that speaks this
 build's protocol. Walking *back* rather than forward is the invariant: content that
 has moved to a protocol this build cannot read still serves this build the last commit
@@ -169,5 +179,6 @@ both numbers.
 
 The counters exist for the log line; the lists exist because they name files a human has
 to open. `written` and `updated` on a start that should have changed nothing is the signal
-that the content moved under a home. `reachable` says whether the repository answered
-this start, which is the one thing a log line has to distinguish from "nothing changed".
+that the content moved under a home. `reachable` says whether a commit could be taken
+from the repository at all — a start that read its checkout answers true even though the
+fetch ran later, and `false` means what is installed is not the content's own answer.

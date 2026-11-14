@@ -209,7 +209,7 @@ pub struct Report {
 /// all read this commit, so a fetch landing mid-start cannot make them disagree
 /// about what "the content" is.
 pub fn content(home: &Path) -> anyhow::Result<&'static Content> {
-    match CONTENT.get_or_init(|| resolve(home).map_err(|e| format!("{e:#}"))) {
+    match CONTENT.get_or_init(|| resolve(home, false).map_err(|e| format!("{e:#}"))) {
         Ok(content) => Ok(content),
         // The failure is cached too: one answer per start, for every caller.
         Err(e) => anyhow::bail!("{e}"),
@@ -249,6 +249,37 @@ pub fn prepare(home: &Path) {
 pub fn install(home: &Path) -> anyhow::Result<Report> {
     let content = content(home)?;
     install_at(&Roots::of(home), content)
+}
+
+/// Fetches what the repository has now, behind the port, and names the commit the
+/// next start will install.
+///
+/// # Invariant
+///
+/// It installs nothing. A start installs the one commit every reader in that start
+/// agreed on (`content`); rewriting skills under a live turn would be a file a tool
+/// may be reading, and the transcript would then disagree with the roots it was
+/// built against. So the answer here is a name, and the next start is what takes it.
+pub fn refresh(home: &Path) -> anyhow::Result<Option<String>> {
+    let link = link();
+    let fork = Fork::at(&checkout(home));
+    if !fork.exists() {
+        return Ok(None);
+    }
+    // `Current` is the common answer: the checkout already had everything.
+    if !matches!(fork.sync()?, Sync::Fetched) {
+        return Ok(None);
+    }
+    let tip = fork.content().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} holds no branch to take content from, so protocol {} cannot be installed",
+            fork.dir().display(),
+            link.protocol
+        )
+    })?;
+    let commit = newest_for(&fork, &tip, &link)?;
+    let running = content(home)?.commit.clone();
+    Ok((commit != running).then_some(commit))
 }
 
 /// The same, with the roots and the content named: what a test drives, so it never
@@ -308,7 +339,7 @@ pub fn config_text() -> Option<String> {
 /// this build cannot read still serves this build the last commit it could read.
 /// The alternative is a machine that cannot start because somebody else's
 /// repository advanced.
-fn resolve(home: &Path) -> anyhow::Result<Content> {
+fn resolve(home: &Path, online: bool) -> anyhow::Result<Content> {
     let link = link();
     let fork = Fork::at(&checkout(home));
     adopt(home, link)?;
@@ -321,6 +352,9 @@ fn resolve(home: &Path) -> anyhow::Result<Content> {
         ),
         // A fresh clone is at the remote's tip, with the personal branch in it.
         Sync::Cloned(_) => {}
+        // Not this start's work: the fetch runs behind the port; a start installs
+        // what its own checkout holds.
+        _ if !online => {}
         _ => {
             // Best effort: being offline is not being broken, and a checkout that
             // already holds readable content answers for itself.

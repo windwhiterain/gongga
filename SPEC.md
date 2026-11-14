@@ -12,7 +12,8 @@ all crates has name "gongga-xxx", alias with name "xxx" in workspace manifest, l
 - [bundle]: binary, bundle server/cli/tui's binary, route the cmd.
   - `tui [--client_only]`: `bundle server` and connected to it, kill/exit will cancel the server it spawn.
     - `--client_only`: suppress auto spawn server.
-  - `server (route to server: [--home <path>])`: extract server/cli into `<home>/bin/`, if previous binary exists and are running and version does not match, cancel server, skill cli, then replace.
+  - `server (route to server: [--home <path>] [--check-config])`: extract server/cli into `<home>/bin/`, if previous binary exists and are running and version does not match, cancel server, skill cli, then replace.
+    - `--check-config`: read the home's config the way a start would, print the file it read, and exit 0; a config this build cannot read is a refusal, exit 2. Nothing is claimed, bound or opened — no home lock, no db, no port, no ship install. A handover asks this with the successor's binary *before* it cancels the server that config belongs to: a config the old build wrote and the new one dropped is a home left with no server, and a cancel cannot be taken back.
 - [...]: more crates may be added, with the same naming and layout.
 
 ## Client
@@ -134,13 +135,14 @@ Subscription := path
 fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, session: Session = caller()):
   # when pattern matched triggered event, run the cmd.
 fn del_subscription(path: path, session: Session = caller())
-fn ls_subsscription(path: path, sesssion: Session = caller())
+fn ls_subsscription(path: path, session: Session = caller())
 cancel(keep_alive: bool = false):
   # queue following notices.
   # for running sessions that are not waiting, set canceled flag to them, restart will auto continue session with cancel flag.
   # for running sessions that are waiting, set waiting flag to them, restart will continue their waiting for the lefting time.
   # interrupt every running session, then quit, by default kill all channel, if keep_alive, make every channel detached, retart will adopt them.
   # killing channel/failed to adopting channel will produce channel end notice.
+live_compact(settled: str, next: str, session: Session = caller())
 ```
 ## Python Cmd
 provided by a shipped uv python package.
@@ -248,7 +250,7 @@ events (vertical) :=
 
 ## Sticky
 sticky is a client feature for convinence.
-stikcy value will auto fill in missing required argument in cmd with corresponding type.
+stikcy value will auto fill in missing argument without default value in cmd with corresponding type.
 use argument with certain type will set the sticky value with corresponding type.
 use struct update type will also update the sticky value with corresponding type.
 

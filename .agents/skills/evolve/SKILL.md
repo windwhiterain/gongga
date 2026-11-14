@@ -17,7 +17,7 @@ S="$SKILL_DIR/evolve.sh"
 $S stage              # 编译检查 + 构建 + 暂存 + 生成 launcher（会先报磁盘余量）
 $S stage --clean      # 同上，并让继任者在旧服务端退出后、绑定端口前跑 cargo clean
 $S launch <stamp>     # 把 launcher 交给一条活着的 channel 去起（不在本回合的 job 里）
-$S swap <stamp>       # 确认继任者真在等、且不是本回合孵出来的，再发 cancel
+$S swap <stamp>       # 确认继任者真在等、不是本回合孵出来的、并且**读得懂这个 home 当前的 config**，再发 cancel
 $S status             # 当前 stamp、谁在等、端口与锁、租约在谁手里；`successors:` 为空才算干净
 $S clean              # 收掉没人会 swap 的旧继任者（--artifacts 连旧暂存件）
                       # 输出 "N killed, M left, K kept"：kept 那几行要说清为什么留
@@ -117,6 +117,20 @@ stage → 起继任者 → swap(cancel) → 旧进程退出 → 继任者绑端�
 反过来（先 cancel 再起），一旦新二进制起不来，home 就空着，没人 resume——回合真的丢了。
 `swap` 的守卫就是为此存在（stamp 必须是 current + launcher pid 活着 + 心跳 10s 内 +
 老服务端还在）。**不要绕过它手动 `cancel`。**
+
+这些守卫回答的都是「有没有人在等」，没有一条回答「它起不起得来」。2026-11-14 补上的是最后
+这一条：`swap` 在 cancel 之前拿**继任者自己的二进制**去读**这个 home 当前的 config**
+（`server --check-config`，解析完就退出，不 lock、不建 db、不 bind），拒绝就 `die`，旧服务端
+照常握着 home、回合照常跑。
+
+为什么要用「当前的」：活着的服务端会重写自己的 `config.toml`，`stage` 那一刻看到的内容不是
+swap 这一刻的内容——这一次事故就是旧构建写进去的 `tunneled` / `timeout_ms` / `carrier` /
+`owns_its_wait`，而新构建已经不认这些字段了。为什么要用「继任者自己的」：认不认字段是二进制
+决定的，脚本读不懂 schema，抄一份 config 去试启会被 ship、路径之类的无关原因误判。
+
+还有一个坑：**别用 `$( ... )` 捕获它的输出**。读 config 会读 provider roster，读 roster 会
+spawn 发现模型的脚本，那些脚本继承了 stdout；命令替换等的是句柄，不是进程，于是它卡在脚本上
+而不是卡在答案上。写文件、读文件、看退出码。
 
 ## 磁盘：为什么 clean 必须由继任者做
 

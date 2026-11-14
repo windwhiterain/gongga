@@ -757,6 +757,40 @@ its launcher has already left the queue -- run stage again if you meant the newe
   [ -f "$RUN/evolve-$stamp-launch.outside" ] || die "successor pid $launch_pid was not \
 started by '$0 launch'; a shell of this turn is in the server's job, and a cancel takes \
 a successor started from one with it -- run '$0 launch $stamp' and swap again"
+
+  # Every guard above answers "is somebody still waiting to take the home". None
+  # of them answers "can it". A build that cannot read this home's config -- a
+  # field the old build wrote and the new one dropped -- passes all of them and
+  # then dies the moment the cancel lands, because the config is parsed after the
+  # `exec`, exactly when there is no old server left to keep the home. The check
+  # asks the successor itself, against the *live* config, which is the only
+  # version that matters: the running server rewrites config.toml while it lives,
+  # so what `stage` saw minutes ago is not it.
+  #
+  # A refusal costs nothing: the old server still holds the home and this turn is
+  # still running. A cancel that lands on a successor which cannot start costs
+  # the home and the turn.
+  #
+  # Written to a file, never captured with `$( ... )`: the check reads a roster,
+  # and reading a roster spawns the discovery scripts, which inherit this
+  # process's stdout. A command substitution waits for everyone holding that
+  # handle, so it would hang on a script rather than on the answer.
+  local check_log code
+  check_log="$RUN/.config-check.log"
+  "$exe" server --home "$HOME_DIR" --check-config >"$check_log" 2>&1
+  code=$?
+  if [ "$code" -ne 0 ]; then
+    cat "$check_log" >&2
+    if grep -q "unexpected argument '--check-config'" "$check_log"; then
+      die "the staged bundle $stamp predates --check-config, so it cannot be asked \
+whether it can read this home; stage again from a tree that has it"
+    fi
+    die "the successor cannot read $HOME_DIR/config.toml (exit $code, above); not \
+cancelling -- the old server keeps the home and this turn keeps running"
+  fi
+  grep -m1 '^config ok' "$check_log" || true
+  rm -f "$check_log"
+
   disk_line "disk before:"
   echo "old server pid $pid; successor $exe (pid $launch_pid) is waiting"
   echo "cancelling: this turn is cancelled and preserved, the successor resumes it"

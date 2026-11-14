@@ -41,6 +41,17 @@ struct Command {
     /// Stop whatever holds `--bind`; without it a taken port is an error.
     #[arg(long)]
     force: bool,
+    /// Read the config the way a start would, say whether it parses, and exit.
+    ///
+    /// # Invariant
+    ///
+    /// A handover's question, not a user's: `evolve.sh swap` runs this with the
+    /// successor's binary against this home's config *before* it cancels the
+    /// server that config belongs to. A field one build writes and the next one
+    /// dropped is not a bad build -- it is a home left with no server, and a
+    /// cancel cannot be taken back.
+    #[arg(long)]
+    check_config: bool,
 }
 
 impl From<Command> for Args {
@@ -56,6 +67,7 @@ impl From<Command> for Args {
             parent: c.parent,
             parent_build: c.parent_build,
             force: c.force,
+            check_config: c.check_config,
         }
     }
 }

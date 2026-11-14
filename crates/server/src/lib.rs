@@ -90,6 +90,14 @@ pub struct Args {
     /// Stop whatever holds `--bind` and listen anyway. Without it a taken port
     /// is an error: see `net::bind_address`.
     pub force: bool,
+    /// Read the config the way a start would and exit, claiming nothing.
+    ///
+    /// # Invariant
+    ///
+    /// The check answers one question -- can this binary read this home's
+    /// config -- and stops before the home lock, the database, the port or the
+    /// ship install, so running it against a live home touches nothing.
+    pub check_config: bool,
 }
 
 /// The same as an empty command line: every value comes from the home's config.
@@ -106,6 +114,7 @@ impl Default for Args {
             parent: None,
             parent_build: None,
             force: false,
+            check_config: false,
         }
     }
 }
@@ -202,18 +211,20 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     let mut clock = Clock::new();
     let cfg = config_from(&args)?;
     clock.step("config");
+    if args.check_config {
+        // A handover's question: answered before the home is claimed, so asking
+        // a live home costs it nothing.
+        println!("config ok: {}", cfg.config_path.display());
+        return Ok(());
+    }
     // Claim the home before opening the database: one server per home.
     let _instance = home_lock::HomeLock::acquire(&cfg.home, "server.lock", "gongga server")?;
     instance::record_dir(&cfg.home);
     clock.step("home lock");
-    // Off this thread before anything reads a roster: no start waits for a
-    // network. See `docs/notes/server-agents.md`.
-    agents::start();
-    clock.step("agents");
     // Before anything resolves: the lookup is memoized, one content per server.
     ship::remember_url(cfg.ship_url.clone());
-    // Before anything reads this home: the content this start installs and the
-    // migrator, resolved once so they agree.
+    // One commit for migrator, install and prompts. Read, not fetched: see
+    // `ship::refresh`.
     ship::prepare(&cfg.home);
     clock.step("ship prepare");
     let migrated = migrate::bring_forward(&cfg.home, &cfg.db_path)?;
@@ -612,6 +623,21 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // Before the shutdown path: a server that never listened must not wait on
     // tasks it never started.
     let socket = std::sync::Arc::new(net::bind_address(cfg.bind, args.force).await?);
+
+    // Behind the port: the community clone, the content fetch and the
+    // provider scripts. None of them is on a budget.
+    agents::start();
+    {
+        let home = cfg.home.clone();
+        tokio::task::spawn_blocking(move || match ship::refresh(&home) {
+            Ok(Some(commit)) => tracing::info!(
+                content = %commit.get(..10).unwrap_or(commit.as_str()),
+                "the content moved while this server ran; the next start installs it"
+            ),
+            Ok(None) => tracing::debug!("content: this home holds what the repository has"),
+            Err(e) => tracing::warn!(error = %e, "cannot refresh the shipped content"),
+        });
+    }
 
     // A signal, or a dead window: a stop request, on the path `cancel` takes.
     let signalled = dispatch.clone();

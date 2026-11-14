@@ -209,8 +209,15 @@ pub fn watch() -> i32 {
 /// `--version` and `--help` answer without a home, a config or a child. A
 /// supervisor in front of them would build a process to print one line and die.
 pub fn answers_alone() -> bool {
-    std::env::args_os()
-        .any(|arg| arg == "--help" || arg == "-h" || arg == "--version" || arg == "-V")
+    std::env::args_os().any(|arg| {
+        arg == "--help"
+            || arg == "-h"
+            || arg == "--version"
+            || arg == "-V"
+            // A config check answers by exiting: a supervisor around it would
+            // restart the refusal, and the one asking reads a code.
+            || arg == "--check-config"
+    })
 }
 
 /// Keeps a console's Ctrl-C from reaching this process: the child answers it.
