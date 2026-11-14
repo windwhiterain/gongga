@@ -472,7 +472,14 @@ pub fn completes(name: &str) -> bool {
     name == "message_stop"
 }
 
-/// Whether this event's text is the provider naming its own refusal.
+/// Whether this event names a bad minute rather than a refusal.
+///
+/// # Invariant
+///
+/// This allowlist is the same decision `status_retryable` makes for a status line: only
+/// an overloaded provider, a rate limit and an internal error are asked again. A type
+/// this code has not heard of -- `invalid_request_error` among them -- ends the turn
+/// with the provider's words. See `docs/notes/server-llm.md`.
 pub fn retryable(d: &Value) -> bool {
     matches!(
         d["error"]["type"].as_str().unwrap_or_default(),

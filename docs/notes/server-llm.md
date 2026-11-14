@@ -53,16 +53,23 @@ request and then said nothing, which is what an overloaded or truncated
 response looks like. So is a stream that stopped without completing.
 
 A *refusal* is not asked again. The event carries `retryable`, and a 4xx other
-than `408`/`429` -- or a streamed `invalid_request_error`,
+than `408`/`429` -- or a streamed error that names the request invalid,
 `context_length_exceeded`, and the like -- says the request itself is wrong, so
 every retry would get the same answer, forever, with `max_retries == 0`. That
 is the shape a too-long transcript used to take: an endless "retrying" warning
 and no failure, so nothing reached the operator. It now fails the turn at once
 with the provider's words, and a size refusal gains the one instruction the
 provider leaves out -- the `transcript.py collapse` command that makes it fit.
-An unknown streamed error kind stays retryable: providers invent their own
-spellings, and giving up on one this code has not heard of is worse than one
-extra try.
+
+A streamed failure has no status line to read -- the `200` went out before the
+provider changed its mind -- so the same rule is reached by other evidence (see
+`error_retryable`): a kind whose name starts with `invalid` whatever its case,
+or a status the provider states itself, as `{"code": "InvalidParameter"}` beside
+`<400> ...` in the message spells it. A request carrying a picture the provider
+cannot decode is exactly that shape, and unrecognized it went out again every
+thirty seconds for as long as the turn lived. An error with neither piece of
+evidence stays retryable: providers invent their own spellings, and giving up on
+one this code has not heard of is worse than one extra try.
 
 A panic is one attempt's failure, not the stream's end. Reading a response runs
 inside `catch_unwind`, so a beat this code cannot survive arrives as a retryable
@@ -170,6 +177,13 @@ all. Never empty, and there is a test for each of the three.
 The three parts of "was that a bad minute or a refusal": an HTTP status, the
 kind a streamed `error` event names, and the sentence a size refusal needs
 added because the provider stops at "too long".
+
+`stated_status` is the bridge between the first two. A streamed failure has no
+status of its own, so the one a provider writes inside it -- `code` as a number,
+or a `400` opening the message -- is read out and handed to `status_retryable`:
+the streamed face is then judged by the very rule the status line gets, and only
+a status written where a status belongs counts. A number further into the prose
+is prose, and treating it as a refusal ends a turn a retry would have saved.
 
 ## stream_once
 
