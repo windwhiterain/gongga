@@ -3477,9 +3477,15 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         interrupt(d, session.name(), Stop::Cancel);
     }
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
-    // SPEC: without `keep_alive`, a cancel ends every channel with it.
+    // SPEC: `keep_alive` detaches every channel -- a job, not a row (`tools::job::arm`).
     let channels = match keep_alive {
-        true => None,
+        true => {
+            let released = crate::tools::detached::release_detached();
+            if released > 0 {
+                tracing::info!(released, "cancel: every background tree was let go");
+            }
+            None
+        }
         false => Some(d.agent.channels.stop_every().await),
     };
     let by = origin.describe();
