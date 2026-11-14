@@ -22,17 +22,40 @@ and make every config file live tracked (an edit applies without a restart).
   per use, and a cached `LlmClient` is keyed on the config read (`Config::read`) that
   built it.
 
-## Left
+## Landed after the first two commits: `04729c5`, and the merge `1ca7e82`
 
-1. The tool registry (`[tool.*]`, `[channel.*]`, `[bash]`, `[python]`, `[skills]`,
-   `max_wait`) is still built once at startup. Rebuild it when the config read
-   changes (`Arc::ptr_eq` on `Current::now()`), not per call.
-2. `disk::install(cfg.disk_low, ...)` holds a process-wide threshold; read it at use.
-3. `prompts::shared()` returns `&'static Prompts` from a `OnceLock`. Prompt rows are
-   written once per session, so templates only have to be current when a row is
-   written: install them from `Current::now()` on the read that changed.
-4. Gates not yet run on this branch: `cargo fmt --check`, `comments-check`,
-   `test-layout-check`, `scripts/skill_contract.sh`, `scripts/ship.sh --check`.
+- The tool table is `live::Derived<Config, Arc<ToolRegistry>>`, keyed on `Config::read`:
+  rebuilt on an edit, not per call. `Agent::tools()` is the one accessor.
+- The disk threshold is not kept in the process: `disk::install` places only the home, and
+  `note_tool_end` takes the threshold from the `ToolContext` the call was built with.
+- Prompt templates needed nothing: `prompts.rs` already re-reads the home's `[prompts]` on a
+  stamp change. The shipped half comes from the content checkout, not from a config file.
+- `quota_interval` (main's, `[server] quota_interval_secs`) is read at the step end too, so it
+  joined the same list in the merge.
+
+The merge with main took six conflicts: `tools/tunnel.rs` and `worker.rs` were deleted on main
+(so those edits went with them), the tool table had to build main's new
+`ToolRegistry::settings(max_output_chars)`, and the argument list kept main's `config_arg`
+rewrite with the two `LiveCompact` arguments appended.
+
+## Still open
+
+1. **Not merged into main.** `git merge --ff-only feature/live-compact-session` is the step, and
+   it is blocked by the main worktree: another session has uncommitted edits in `SPEC.md` and
+   `crates/server/src/lib.rs`, which this branch also changes. Until that lands, the running
+   server is main's old build and `/new_session` has no `--live_compact_*` to complete.
+2. `[channel.<name>]` is still read once, when `Channels` is constructed (three processes build
+   one, and it holds the channels that are running). Making it live needs `Current` threaded
+   into `Channels`; doing it by hand-rolled refresh was judged worse than leaving it named.
+
+## Gates, all run on this branch
+
+`cargo check -p gongga-server` (0), `--tests` (0), `cargo build` (0), `cargo fmt --check` (0),
+`cargo test -p gongga-server --lib -- disk:: agent::` (13 passed), `comments-check` (0),
+`test-layout-check` (0 violations), `scripts/skill_contract.sh` (PASS), `scripts/ship.sh
+--check --local` (0, protocol 11 = 11; a fresh worktree needs `git submodule update --init` and
+`git -C ship merge --ff-only origin/main` first, or the hook refuses with a stale content
+protocol).
 
 ## Machine note worth keeping
 

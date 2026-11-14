@@ -1313,7 +1313,7 @@ impl Agent {
                         self.bus.clone(),
                         self.store.clone(),
                         attempt.llm.provider().map(str::to_string),
-                        self.quota_interval,
+                        self.config.now().quota_interval,
                     );
                     // A delta, not a whole list: republishing that every step
                     // would cost every view its scroll.
