@@ -1,5 +1,10 @@
 # 2026-11-10 — SPEC's `## Python Cmd`: skills get a path, and two commands
 
+> Superseded 2026-11-14: the `python/` tree moved to the content repository and is
+> installed at `<home>/lib`, and a package is run as `python <home>/lib/gongga_skill.py`
+> with one JSON line on stdin -- no `include_str!`, no `python -c`. The reasoning below
+> stands; the paths in it are the ones that were current when it was written.
+
 The last pass left this section as Q6, "not started ... a package-shaped change (a wheel,
 discovery, the `ServerScript` door) and wants its own session". This is that session, and
 the finding is that most of the package was already there: `python/gongga.py` is a

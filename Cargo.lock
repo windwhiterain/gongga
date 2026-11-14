@@ -921,6 +921,9 @@ dependencies = [
 [[package]]
 name = "gongga-skill"
 version = "0.2.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "gongga-tui"

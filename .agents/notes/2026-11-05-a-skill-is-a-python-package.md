@@ -1,5 +1,9 @@
 # 一个 skill 是一个 Python 包，公开 API 就是它的函数
 
+> Superseded 2026-11-14: the contract is the content repository's `python/gongga_skill.py`,
+> installed at `<home>/lib` and fed one JSON line on stdin; this repository carries
+> neither the file nor an `include_str!` of it.
+
 2026-11-05。用户的判定：**Python 是一等公民**——`gongga_skill` 跑入口，`gongga` 是客户端，
 `gongga-cli` 只是 wrapper。上一版把入口固定成「一个文件 + 扩展名/`#!` 决定谁来跑它」，于是
 每个 skill 都得先写一个脚本、再在正文里教人怎么调它的命令行；要复用其中一步，就得再写一层

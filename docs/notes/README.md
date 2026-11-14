@@ -40,9 +40,10 @@ commands. The crate rename has landed:
 
 - `[client]` = `crates/client` (`gongga-client`), renamed from `crates/link`;
   `[tui]` = `crates/tui`. The `link-*.md` notes became `client-*.md`.
-- `rpc` is not a crate: `client::commands`, `Catalog`, `parse_args`, `python/gongga_cli.py`.
-- `[cli]: python` = `python/gongga.py` / `python/gongga_cli.py`, embedded by
-  `crates/server/src/pylib.rs`.
+- `rpc` is not a crate: `client::commands`, `Catalog`, `parse_args`, `gongga_cli.py`.
+- `[cli]: python` = the content repository's `python/` tree (`gongga.py`,
+  `gongga_cli.py`, `gongga_skill.py`), installed into `<home>/lib`. This repository
+  carries none of it: see `server-ship.md`, "plans".
 - `cli` was kept where it is a name, not a crate: `gongga-cli` (argv0 and
   command name), the `cli` clap layer word, and `cli-bin-gongga.md`. The window
   state file has had three names: `cli.toml` -> `tui.toml` -> `client.toml`
@@ -75,10 +76,13 @@ commands. The crate rename has landed:
 
 ### python
 
+The Python files are the content repository's `python/` tree, installed under
+`<home>/lib`; their notes stay here because what they implement is this server's contract.
+
 | note | source |
 | --- | --- |
-| [`python-client.md`](python-client.md) | `python/gongga.py` |
-| [`skill-entry.md`](skill-entry.md) | `python/gongga_skill.py`, `crates/skill/src/entry.rs` |
+| [`python-client.md`](python-client.md) | `ship/python/gongga.py` |
+| [`skill-entry.md`](skill-entry.md) | `crates/skill/src/entry.rs`, `ship/python/gongga_skill.py` |
 
 ### console
 
@@ -138,7 +142,6 @@ commands. The crate rename has landed:
 | [`server-tools-detached.md`](server-tools-detached.md) | `crates/server/src/tools/detached.rs` |
 | [`server-tools-text.md`](server-tools-text.md) | `crates/server/src/tools/text.rs` |
 | [`server-tools-skill.md`](server-tools-skill.md) | `crates/server/src/tools/skill.rs` |
-| [`server-pylib.md`](server-pylib.md) | `crates/server/src/pylib.rs` |
 | [`server-tools-words.md`](server-tools-words.md) | `crates/server/src/tools/words.rs` |
 | [`server-tools-job.md`](server-tools-job.md) | `crates/server/src/tools/job.rs` |
 | [`server-transcript.md`](server-transcript.md) | `crates/server/src/transcript.rs` |

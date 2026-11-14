@@ -939,14 +939,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "run_skill".into(),
-            description: "Run one skill: `cmd` gives it its words, the way `subscribe` \
-                      names the command a match runs. An entry skill starts the file its 
-                      frontmatter declares, with those words as its argv; a skill that is 
-                      a Python package runs the function its first word names, and binds 
-                      the rest to that function's parameters by name. It runs on this 
-                      machine in the session's directory, and its output and exit code are 
-                      the answer. A skill that is only a body is refused, naming the file 
-                      to read instead."
+            description: "Run one skill: `cmd` gives it its call, the way `subscribe` \
+                      names the command a match runs. A skill that is a Python package \
+                      runs the function `cmd.name` publishes, with `cmd.args` as that \
+                      function's keyword arguments; an entry skill starts the file its \
+                      frontmatter declares, with the call as its argv. It runs on this \
+                      machine in the session's directory, and its output and exit code \
+                      are the answer. A skill that is only a body is refused, naming the \
+                      file to read instead."
                 .into(),
             args: vec![
                 pos(
@@ -958,10 +958,11 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
                 pos(
                     "cmd",
-                    "The words the skill runs with: a bare word, or the whole call as an \
-                     object, `{\"name\": \"fetch\", \"args\": {\"url\": \"https://example.com\"}}`. 
-                     An `args` object reaches the skill as `--key value` words; an `args` 
-                     list reaches it as the words it spells.",
+                    "The call the skill runs with: a bare word, or the whole call as an \
+                     object, `{\"name\": \"fetch\", \"args\": {\"url\": \"https://example.com\"}}`. \
+                     A package's function takes `args` as keyword arguments, an object of \
+                     named ones; an entry takes it as words, an object as `--key value` and \
+                     a list as written.",
                     true,
                     Some("cmd"),
                     CompletionSource::None,
@@ -2533,7 +2534,7 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     Outcome::ok(serde_json::Value::Array(listed).to_string())
 }
 
-/// Runs one skill as `session`: an entry with the call's words, or a package's function.
+/// Runs one skill as `session`: a package's request, or an entry's words.
 ///
 /// # Invariant
 ///
@@ -2546,10 +2547,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Err(refusal) => return refusal,
     };
     let id = args.word("id").unwrap_or_default().trim().to_string();
-    let words = match crate::tools::skill::call_words(args.value("cmd")) {
-        Ok(words) => words,
-        Err(why) => return Outcome::err(why),
-    };
+    let cmd = args.value("cmd");
     let handle = match d.sessions.get(&session) {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
@@ -2577,7 +2575,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(ctx) => ctx,
         Err(why) => return Outcome::err(why),
     };
-    let outcome = skills.run(skill, words, &ctx).await;
+    let outcome = skills.run(skill, cmd, &ctx).await;
     match outcome.ok {
         true => Outcome::ok(outcome.output),
         false => Outcome::err(outcome.output),

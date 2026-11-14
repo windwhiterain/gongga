@@ -7,6 +7,8 @@ license.workspace = true
 authors.workspace = true
 description = "What a skill is on disk: the roots a session reads, the frontmatter, the entry"
 
-# No dependency at all: the skill contract is directories and one header block, and
-# the server, the command layer and the bundle all read the same three roots.
+# Directories and one header block, read by the server, the command layer and the
+# bundle alike. The one dependency is the request a package's runner reads, and it is
+# built here so both callers write the same bytes.
 [dependencies]
+serde_json = { workspace = true }

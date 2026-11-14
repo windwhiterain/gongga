@@ -49,36 +49,49 @@ impl Runner {
     }
 }
 
-/// The module a package skill publishes its callable through.
+/// What starts a skill: a file run with words, or this home's contract file.
 ///
 /// # Invariant
 ///
-/// One file, two readers: this crate runs it as the process form
-/// (`python -c <source> <dir> <argv...>`), and a Python caller imports it. It is the
-/// contract for "what a package skill runs", so nothing here re-states it.
-pub const PACKAGE_RUNNER: &str = include_str!("../../../python/gongga_skill.py");
+/// Two forms, two shapes of call. An entry is a file the command line names, so the
+/// call arrives as argv. A package is discovered rather than named, and its call is one
+/// JSON line on the process's stdin: nothing a caller wrote is a command-line word, so
+/// a request holding a whole config is not limited by what a command line can carry.
+#[derive(Debug, Clone)]
+pub enum Launch {
+    /// The program's own words, then the entry, then the call's argv.
+    Entry(Runner),
+    /// The interpreter, then `leading` (this home's `gongga_skill.py`) and no other word.
+    Package(Runner),
+}
 
 /// The file that makes a skill directory a package.
 const PACKAGE: &str = "__init__.py";
+
+/// The contract a package's runner is: the content's `python` tree, installed under
+/// this home's `lib/`.
+const CONTRACT: &str = "gongga_skill.py";
 
 /// What runs a skill: the package it is, or the entry it declares.
 ///
 /// # Invariant
 ///
-/// A package wins: a directory with `__init__.py` is a Python skill whose callable is
-/// discovered, whether or not `SKILL.md` also names an entry, because discovery is the
-/// point of the form. Everything else is the declared entry's own rules -- extension
-/// first, then `#!` -- which stay for the scripts that arrived before packages did.
+/// A package wins: `__init__.py` makes a Python skill whose callable is discovered,
+/// entry or not, because discovery is the point of the form. Everything else is the
+/// declared entry's own rules -- extension first, then `#!` -- which stay for the
+/// scripts that arrived before packages did. `lib` is this home's: the contract is
+/// installed by the content, so changing it is never a rebuild.
 pub fn runner_of(
     directory: &Path,
     declared: Option<&Path>,
     programs: &Programs,
-) -> Result<Runner, String> {
+    lib: Option<&Path>,
+) -> Result<Launch, String> {
     if directory.join(PACKAGE).is_file() {
-        return package(programs);
+        return package(programs, lib);
     }
     match declared {
-        Some(entry) => runner(entry, programs),
+        Some(entry) => runner(entry, programs).map(Launch::Entry),
         None => Err(format!(
             "{} is not a Python package (no {PACKAGE}) and declares no entry: there is \
              nothing to run",
@@ -87,13 +100,49 @@ pub fn runner_of(
     }
 }
 
-/// A package skill: Python imports it and calls the callable it publishes.
-fn package(programs: &Programs) -> Result<Runner, String> {
-    Ok(Runner {
+/// A package skill: this home's contract file reads the call off stdin.
+fn package(programs: &Programs, lib: Option<&Path>) -> Result<Launch, String> {
+    let Some(lib) = lib else {
+        return Err(
+            "this home has no `lib` directory, so a package skill has no contract to run: \
+             the content's `python` tree lands there at startup"
+                .to_string(),
+        );
+    };
+    let contract = lib.join(CONTRACT);
+    if !contract.is_file() {
+        return Err(format!(
+            "{} is not there: this home's content install did not place the skill contract",
+            contract.display()
+        ));
+    }
+    Ok(Launch::Package(Runner {
         program: python(programs)?,
-        leading: vec!["-c".to_string(), PACKAGE_RUNNER.to_string()],
+        leading: vec![contract.display().to_string()],
         posix: false,
+    }))
+}
+
+/// The one line a package's runner reads on stdin.
+///
+/// # Invariant
+///
+/// Three keys and no command line: the skill's directory, the function it publishes, and
+/// the arguments as an object of named ones. Written here so the server and the command
+/// line feed the contract the same bytes; `args` is `{}` when a call names none.
+pub fn request(directory: &Path, function: &str, args: &serde_json::Value) -> String {
+    let args = match args {
+        serde_json::Value::Null => serde_json::Value::Object(serde_json::Map::new()),
+        other => other.clone(),
+    };
+    let mut line = serde_json::json!({
+        "skill": directory.display().to_string(),
+        "function": function,
+        "args": args,
     })
+    .to_string();
+    line.push('\n');
+    line
 }
 
 /// An entry is a program of its own, or a script whose first line names one.

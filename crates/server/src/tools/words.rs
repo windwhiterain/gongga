@@ -19,14 +19,15 @@ pub struct RunOutcome {
 ///
 /// # Invariant
 ///
-/// The program is spawned with its words as arguments and no shell between them,
-/// so what it receives is what the caller wrote. Both streams are read while it
-/// runs, so a chatty program cannot fill a pipe and stop; a run that passes the
-/// deadline is stopped, not left behind. The directory is `standing_dir`'s: one this
-/// machine does not have is this server's own, never a failed spawn.
+/// The program is spawned with its words as arguments and no shell between them, so
+/// what it receives is what the caller wrote. `stdin` is the call itself when a
+/// program reads one, written while it runs so a long request cannot deadlock.
+/// Both streams are read while it runs; a run past the deadline is stopped.
+/// The directory is `standing_dir`'s: a missing one is this server's own.
 pub async fn run(
     program: &Path,
     args: &[String],
+    stdin: Option<&str>,
     cwd: &Path,
     env: &[(String, String)],
     timeout: Duration,
@@ -35,12 +36,25 @@ pub async fn run(
         .args(args)
         .current_dir(crate::tools::standing_dir(cwd))
         .envs(env.iter().map(|(name, value)| (name, value)))
-        .stdin(Stdio::null())
+        .stdin(match stdin {
+            Some(_) => Stdio::piped(),
+            None => Stdio::null(),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| spawn_error(program, &e))?;
+
+    // The request, on its own task: a slow child must not block the write, and the
+    // dropped pipe is its EOF.
+    if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
+        let text = text.to_string();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let _ = pipe.write_all(text.as_bytes()).await;
+        });
+    }
 
     let out_task = child
         .stdout

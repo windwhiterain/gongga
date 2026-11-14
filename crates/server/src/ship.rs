@@ -60,6 +60,8 @@ pub struct Declared {
     pub protocol: u32,
     /// The repository path that becomes a home's `config.toml`.
     pub config: String,
+    /// The repository path whose files become the home's `lib/`.
+    pub python: String,
     #[serde(default)]
     skills: SkillRoots,
 }
@@ -568,6 +570,13 @@ fn plans(
         Mapping {
             source: declared.skills.harness.clone(),
             target: PathBuf::from("skills"),
+            tree: true,
+        },
+        // The Python surface: a tree, so adding a module to the content lands here
+        // without a rebuild of this binary.
+        Mapping {
+            source: declared.python.clone(),
+            target: PathBuf::from("lib"),
             tree: true,
         },
     ];

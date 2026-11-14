@@ -53,15 +53,26 @@ seed_content() {
   git -C "$content" config user.name selftest
   mkdir -p "$content/config"
   # A manifest as the real content writes one: the protocol it speaks, which file
-  # is the home's config, and where the skills are.
+  # is the home's config, where the skills are, and the tree the contract is read from.
   cat > "$content/ship.toml" <<TOML
 protocol = $protocol
 
 config = "config/config.toml"
 
+python = "python"
+
 [skills]
 harness = "skills"
 TOML
+  # The Python surface, as the content ships it: a home installs this tree into `lib/`,
+  # so none of it is embedded in the binary. The reference checkout has the real files;
+  # a stand-in keeps the fixture runnable without one.
+  mkdir -p "$content/python"
+  if [[ -d "$from/python" ]]; then
+    cp "$from"/python/*.py "$content/python/"
+  else
+    echo 'PACKAGE = "__init__.py"' > "$content/python/gongga_skill.py"
+  fi
   cp "$from/config/config.toml" "$content/config/config.toml"
   for n in 1 2 3 4; do
     version alpha "v$n handoff" "body $n" > "$content/skills/alpha/SKILL.md"

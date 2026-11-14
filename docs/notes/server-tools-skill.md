@@ -18,28 +18,31 @@ runs. `Skills::run` is the one place that decides:
 | --- | --- | --- |
 | **body** | only a `SKILL.md` | nothing: refused, naming the path to read. A body is prose, and prose is read. |
 | **entry** | `metadata.entry:` names a file in that directory | that file, with the call's words as its argv |
-| **package** | an `__init__.py` in that directory | `gongga_skill.py` imports it and binds the words to the function the first one names |
+| **package** | an `__init__.py` in that directory | the home's `gongga_skill.py` imports it and calls the function the call names, with its keyword arguments |
 
 Both an entry and an `__init__.py` can be present. The package wins there, and
 `crates/skill/src/entry.rs` says why: discovering the functions is the point of that
 form. A skill that wants one answer declares one form.
 
-## The words
+## The call
 
-`tools::skill::call_words` reads SPEC's `Cmd := {name, args}` into argv, and nothing
-there is a command line: no shell stands between the call and the program, so a word
-holding a space, a quote or a `$` arrives whole. Two spellings of `args` end in the
-same argv:
+`run_skill`'s `cmd` is SPEC's `Cmd := {name, args}`, and what `args` *is* depends on the
+form the skill has -- so this module reads the call once and hands each form its own
+reading, instead of flattening everything into one list of words:
 
-- an **object**, `{"tier": "flash"}`, is `--tier flash` -- two words per entry. That is
-  the contract `gongga_skill.py` binds to a parameter by name, which is why the order of
-  the object does not matter.
-- a **list**, `["pick_config", "--tier", "flash"]`, is those words as written -- how an
-  entry takes a subcommand and its flags, and how a package takes its arguments by
-  position.
+| form | `name` | `args` | what the skill receives |
+| --- | --- | --- | --- |
+| **package** | the function it publishes | keyword arguments, an object | one JSON line on stdin, `{"skill": ..., "function": ..., "args": ...}` |
+| **entry** | its first word | an object as `--key value`, or a list as written | the call as argv |
 
-The name comes first, then the args. For a package that is the function's name; for an
-entry it is just the first word the script sees.
+An `args` list on a package is refused, naming the shape: a function's arguments are
+keyword arguments, and position was the entry form's rule. Nothing there is a shell
+command line: for an entry no shell stands between the call and the program, so a word
+holding a space, a quote or a `$` arrives whole; for a package nothing a caller wrote is
+on the command line at all.
+
+A bare word is the whole call, and a string starting with `{` is an object, because an
+operator's line spells `cmd` as text.
 
 ## What it answers
 
@@ -58,7 +61,8 @@ On this machine, in the session's directory, whatever machine the session works 
 entry is a file this server can open -- the checkout of a peer session is not in the
 roots at all, so a `remote` session runs the home's and the machine's skills and is
 never handed a path it cannot read. The package form is handed `GONGGA_SKILL_LIB`, so a
-skill's own `import gongga` resolves against the home's client.
+skill's own `import gongga` resolves against the home's client; its contract file is
+`<home>/lib/gongga_skill.py`, which the content repository installs.
 
 A session whose own directory is on a peer has none *here*, so the entry stands in this
 server's own directory (`tools::standing_dir`): an entry skill has no `cwd` argument, so a

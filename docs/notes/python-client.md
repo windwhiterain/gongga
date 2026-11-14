@@ -1,4 +1,8 @@
-# `python/gongga.py`
+# `ship/python/gongga.py`
+
+This file lives in the content repository and is installed at `<home>/lib/gongga.py` by the
+content step. The note stays in this repository because what the module implements is this
+server's wire, and because the lessons below are about the wire, not about git.
 
 ## module doc
 

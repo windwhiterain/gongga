@@ -14,8 +14,9 @@ window that speaks the protocol and never becomes a separate thing to install or
 name a person has to type. The relay is the third program a channel starts beside
 the server. See `DESIGN.md` §1, shape 2.
 
-The command line is not one of them any more: it is `python/gongga_cli.py`, which
-a server writes into `<home>/lib` and names in `<home>/bin` (`server-shell-command.md`).
+The command line is not one of them any more: it is `gongga_cli.py`, which the content
+repository installs into `<home>/lib` and a server names in `<home>/bin`
+(`server-shell-command.md`).
 A head that carried a copy would be asking with a build the operator may have
 replaced -- and the layer moved once already, which is exactly why the head does
 not know where it lives.
