@@ -48,14 +48,16 @@ so they are `RenderMessage` variants rather than a second protocol:
 | `Server { label, ours }` | `set_server` | draw the header's own / not own label |
 | `Repoint { endpoint }` | `repoint` | drop the old endpoint's window rows |
 | `Vocabulary { version }` | `refresh_completion` | re-ask for the current line's words |
-| `Completion { start, end, subject, candidates }` | `show_completion` | open the popup |
+| `Completion { line, cursor, start, end, subject, candidates }` | `show_completion` | open the popup, if it is still about this line |
 
 `UiIntent::Complete { line, cursor }` is the request behind the last two. The
 loop clamps a byte cursor to a character boundary, asks the client's own
 `SharedCompleter`, and hands a `Completion` to `Frontend::show_completion`: the
 catalog never crosses to the UI, so command syntax stays in the client. The pipe
 front-end encodes that answer as the `Completion` frame; the window keeps no
-vocabulary of its own, so Tab applies what the client last sent.
+vocabulary of its own, so Tab applies what the client last sent. The frame names
+the line and caret it answers, because the window keeps reading keys while the
+round trip is out and an answer about other words must not edit this line.
 `Vocabulary` carries the client's real `paths_version`, so a UI can dedupe
 refreshes. `Candidate` gained serde derives for this.
 

@@ -93,19 +93,22 @@ pub(crate) fn apply_frame(tui: &mut Tui, frame: RenderMessage) -> Option<UiInten
         // The words changed: ask again for the line the operator is on.
         RenderMessage::Vocabulary { .. } => Some(complete_intent(tui)),
         RenderMessage::Completion {
+            line,
+            cursor,
             start,
             end,
             subject,
             candidates,
         } => {
-            let popup = (!candidates.is_empty()).then_some(client::Completion {
+            tui.set_completion(client::Completion {
+                line,
+                cursor,
                 start,
                 end,
                 subject,
                 candidates,
                 selected: 0,
             });
-            tui.set_completion(popup);
             None
         }
         RenderMessage::StickySession { name } => {

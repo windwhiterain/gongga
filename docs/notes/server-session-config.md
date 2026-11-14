@@ -34,14 +34,20 @@ model refuses (`thinking` levels and `cache_tier` names come per model). The lea
 are also the sticky entry names the window fills, so a leaf renamed here renames the
 entry that fills it.
 
+Each leaf states its **type** too, in SPEC's spelling (`str`, `bool`, `int`, `path`,
+`Model`, `optional[Remote]`): a client writes a leaf's value from that -- quoting a
+string, writing `true` for a switch -- instead of guessing it from the text it is
+about to insert. A type left off is a shape whose values have to be typed by hand,
+so a leaf added here states its type.
+
 `schema` also names the sticky types in it: the argument's own `kind` is `config`
 (`SessionConfig`), the `model_config` field carries `model_config` (`ModelConfig`) and
 its `model` leaf carries `model` (`Model`). `workspace` and `keep_alive` carry none:
 SPEC marks neither, so the client neither fills them from an entry nor writes one.
 
-`new_session` as a value and for `set_session` as a
-struct update (`ArgSpec::update`): a value may be filled from a sticky entry, an
-update may only write the entries it stated. `config_arg` is the one place that
+`ArgSpec::update` separates `new_session` as a value and for `set_session` as a
+struct update: a value may be filled from a sticky entry, an update may only write
+the entries it stated. `config_arg` is the one place that
 decides which, so the two commands cannot disagree about what `--config` is.
 
 Each leaf also states its **default**, in SPEC's own spelling (`provider_default()`,

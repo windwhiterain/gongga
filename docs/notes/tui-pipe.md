@@ -35,7 +35,7 @@ view state:
 | `Server` | `set_server_text` (the header's own / not own label) |
 | `Repoint` | `drop_windows` |
 | `Vocabulary` | answer with one `Complete` intent |
-| `Completion` | `set_completion` (the client's candidates) |
+| `Completion` | `set_completion` (the client's candidates, for the line they name) |
 | `StickySession` | `set_sticky_session` |
 
 `RenderMessage::StickySession` has no `Sink` method in this front-end, so it is

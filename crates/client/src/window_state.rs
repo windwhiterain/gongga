@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use serde_json::{Map, Value};
 
+use crate::leaf::Leaf;
 use crate::protocol::{self, ArgSpec, Args, CommandSpec, StructField, StructSchema};
 
 /// How many wrapped rows one block may fill. Client-side only.
@@ -531,19 +532,15 @@ fn overlay(into: &mut Map<String, Value>, from: &Map<String, Value>) {
 ///
 /// # Invariant
 ///
-/// The leaf's shape decides what its text is on the wire: a switch is a boolean, a
-/// model is the object SPEC spells (or its flat `provider/model` word, which the
-/// server reads as the same value), and everything else keeps the word itself.
+/// The stated type decides what the text is on the wire, through the reading the
+/// completion writes with (`Leaf`): a switch is a boolean, a string keeps the word.
+/// A model is the object SPEC spells, or its flat `provider/model` word.
 /// See `docs/notes/tui-state.md`.
 fn leaf_value(field: &StructField, text: &str) -> Value {
-    match (field.name.as_str(), text) {
-        ("keep_alive", "true") => Value::Bool(true),
-        ("keep_alive", "false") => Value::Bool(false),
-        _ if field.model_ref => {
-            serde_json::from_str(text).unwrap_or(Value::String(text.to_string()))
-        }
-        _ => Value::String(text.to_string()),
+    if field.model_ref {
+        return serde_json::from_str(text).unwrap_or(Value::String(text.to_string()));
     }
+    Leaf::of(field).value(text)
 }
 
 /// A sticky value an accepted command writes back, by kind.

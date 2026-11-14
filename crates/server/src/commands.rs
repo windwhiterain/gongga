@@ -1108,10 +1108,18 @@ fn arg_spec(
 ///
 /// One table for the whole catalog: a name means one argument wherever it appears, the
 /// same way a `kind` means one sticky entry. `protocol::argtype` maps the spelling.
+/// Every boolean or count argument is named here: the fallback is a string, and a
+/// missed name publishes a type the command refuses.
 fn type_of(name: &str) -> &'static str {
     match name {
-        "keep_alive" | "must_create" | "persistant" => "bool",
-        "since" | "limit" | "wait" | "block_size" | "box_edge" | "time" => "int",
+        "keep_alive" | "must_create" | "persistant" | "live_compact_enabled" | "replay" => "bool",
+        "since"
+        | "limit"
+        | "wait"
+        | "block_size"
+        | "box_edge"
+        | "time"
+        | "live_compact_interval_tokens" => "int",
         "cmd" => "Cmd",
         "config" => "SessionConfig",
         "event" => "Event",
@@ -2364,7 +2372,11 @@ async fn get_messages(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcom
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let replay = matches!(args.word("replay"), Some("true") | Some("1"));
+    // The one boolean reader: a JSON `true`, or the word a script's line spells.
+    let replay = match flag_of(args, "replay") {
+        Ok(flags) => flags.unwrap_or(false),
+        Err(e) => return Outcome::err(format!("--replay: {e}")),
+    };
     if replay {
         return replay_transcript(d, &name, &session, args);
     }

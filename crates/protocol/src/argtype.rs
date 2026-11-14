@@ -127,10 +127,13 @@ fn base(spec: &str) -> Result<Vec<&'static str>, String> {
     let types: Vec<&'static str> = match name {
         "str" | "string" | "path" | "name" => vec!["string"],
         "Channel" | "Session" | "Skill" | "Subscription" | "Pattern" | "Range" => vec!["string"],
+        // SPEC's own names for the values a `SessionConfig` holds.
+        "Thinking" | "Remote" => vec!["string"],
         "int" | "integer" | "time" => vec!["integer"],
         "float" | "number" => vec!["number"],
         "bool" | "boolean" => vec!["boolean"],
         "dict" | "dict[str, any]" | "object" | "Cmd" | "Event" | "SessionConfig" => vec!["object"],
+        "Model" | "ModelConfig" | "Workspace" | "LiveCompact" => vec!["object"],
         other if other.starts_with("list[") || other == "array" => vec!["array"],
         other if other.starts_with("dict[") => vec!["object"],
         other => {

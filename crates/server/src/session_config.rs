@@ -179,28 +179,35 @@ fn defaulted(field: protocol::StructField, spelling: &str) -> protocol::StructFi
 /// fill may not stand in for. See `docs/notes/server-session-config.md`.
 pub fn schema(remotes: &[String]) -> protocol::StructSchema {
     use protocol::{CompletionSource, StructField, StructSchema};
-    let leaf = |name: &str, description: &str, source: CompletionSource, hint: &str| StructField {
-        name: name.to_string(),
-        description: description.to_string(),
-        object: None,
-        source,
-        accepts: None,
-        value_hint: Some(hint.to_string()),
-        model_ref: false,
-        kind: None,
-        default: None,
-    };
-    let object = |name: &str, description: &str, fields: Vec<StructField>| StructField {
-        name: name.to_string(),
-        description: description.to_string(),
-        object: Some(Box::new(StructSchema { fields })),
-        source: CompletionSource::None,
-        accepts: None,
-        value_hint: None,
-        model_ref: false,
-        kind: None,
-        default: None,
-    };
+    // `spelling` is SPEC's type: from it a client writes `true` and quotes a string.
+    let leaf =
+        |name: &str, description: &str, spelling: &str, source: CompletionSource, hint: &str| {
+            StructField {
+                name: name.to_string(),
+                description: description.to_string(),
+                object: None,
+                source,
+                accepts: None,
+                value_hint: Some(hint.to_string()),
+                model_ref: false,
+                type_of: Some(spelling.to_string()),
+                kind: None,
+                default: None,
+            }
+        };
+    let object =
+        |name: &str, description: &str, spelling: &str, fields: Vec<StructField>| StructField {
+            name: name.to_string(),
+            description: description.to_string(),
+            object: Some(Box::new(StructSchema { fields })),
+            source: CompletionSource::None,
+            accepts: None,
+            value_hint: None,
+            model_ref: false,
+            type_of: Some(spelling.to_string()),
+            kind: None,
+            default: None,
+        };
     let mut remote_values = vec![protocol::NONE_VALUE.to_string()];
     remote_values.extend(remotes.iter().cloned());
     // SPEC: `model: Model` -- no default, so an entry may fill it.
@@ -211,6 +218,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         ..leaf(
             "model",
             "The model this session runs on.",
+            "Model",
             CompletionSource::Models,
             "provider/model",
         )
@@ -222,6 +230,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
             ..leaf(
                 "thinking",
                 "How hard the model thinks.",
+                "Thinking",
                 CompletionSource::None,
                 "level",
             )
@@ -233,6 +242,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         leaf(
             "ctx_limit",
             "The context level for a Context notice.",
+            "str",
             CompletionSource::Static(
                 [
                     "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
@@ -252,6 +262,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
             ..leaf(
                 "cache_tier",
                 "The cache tier every request sends.",
+                "str",
                 CompletionSource::None,
                 "name",
             )
@@ -263,6 +274,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         leaf(
             "remote",
             "The machine this session's shells run on; none is this machine.",
+            "optional[Remote]",
             CompletionSource::Static(remote_values),
             "name",
         ),
@@ -273,6 +285,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         leaf(
             "cwd",
             "The session's directory.",
+            "path",
             CompletionSource::Paths,
             "path",
         ),
@@ -283,6 +296,7 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         leaf(
             "worktree",
             "A branch and worktree made with this session, in the repository its cwd sits in.",
+            "optional[str]",
             CompletionSource::None,
             "name",
         ),
@@ -292,18 +306,21 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
     let keep_alive = leaf(
         "keep_alive",
         "Whether a periodic notice keeps the prefix warm.",
+        "bool",
         CompletionSource::Static(vec!["true".to_string(), "false".to_string()]),
         "true|false",
     );
     let live_compact_enabled = leaf(
         "enabled",
         "Whether the server asks this session to fold its own context.",
+        "bool",
         CompletionSource::Static(vec!["true".to_string(), "false".to_string()]),
         "true|false",
     );
     let live_compact_interval = leaf(
         "interval_tokens",
         "Input-token growth between this session's checkpoints.",
+        "int",
         CompletionSource::None,
         "tokens",
     );
@@ -315,18 +332,21 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
                 ..object(
                     "model_config",
                     "The model and how it is asked.",
+                    "ModelConfig",
                     vec![model, thinking, ctx_limit, cache_tier],
                 )
             },
             object(
                 "workspace",
                 "Where the session works.",
+                "Workspace",
                 vec![remote, cwd, worktree],
             ),
             keep_alive,
             object(
                 "live_compact",
                 "Whether the server asks this session for checkpoint summaries.",
+                "LiveCompact",
                 vec![live_compact_enabled, live_compact_interval],
             ),
         ],

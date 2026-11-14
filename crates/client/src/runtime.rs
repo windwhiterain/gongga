@@ -356,6 +356,8 @@ pub async fn run(
                 let offered = window.shared().complete(&line, at);
                 let (start, end, _) = crate::token_bounds(&line, at);
                 ui.show_completion(&crate::Completion {
+                    line,
+                    cursor,
                     start: offered.start.unwrap_or(start),
                     // A JSON value ends at its own token, not at the whitespace
                     // around it.

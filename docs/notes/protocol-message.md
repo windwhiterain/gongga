@@ -532,8 +532,15 @@ kills only the answering process is undone by a restart.
 ## ArgSpec::structure, ArgSpec::update
 
 A structured argument publishes its shape -- the fields, their completion sources,
-the sets a model refuses, and each leaf's default -- so a front-end can complete
-inside it without knowing any command.
+the sets a model refuses, each leaf's **type** and each leaf's default -- so a
+front-end can complete inside it without knowing any command.
+
+A leaf states `type_of` in the same SPEC spelling `ArgSpec.type_of` uses
+(`str`, `bool`, `int`, `path`, `Model`, `optional[Remote]`), and `protocol::argtype`
+reads it through the one table. That is what makes a value writable without
+asking what it is: a client quotes a string, writes `true` for a switch and leaves
+a count as a number, from the type alone. A type this table does not know is not a
+silent string; the completion offers nothing beyond the published list.
 
 `kind` names the sticky type a field carries, and only the types SPEC marks carry
 one: `model_config` (a `ModelConfig`) and `model` (a `Model`) inside a session's
