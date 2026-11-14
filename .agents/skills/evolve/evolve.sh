@@ -68,12 +68,38 @@ mkdir -p "$RUN"
 # would call it: the name on PATH first, then the build in this repo. Both
 # spellings are asked for: `gongga` is what a home installed before the command
 # was renamed, and a handover has to work across that rename.
-CLI="$(command -v gongga-cli || command -v gongga-cli.exe || command -v gongga || command -v gongga.exe || true)"
-if [ -z "$CLI" ] && [ -x "$ROOT/target/debug/gongga-cli.exe" ]; then
-  CLI="$ROOT/target/debug/gongga-cli.exe"
-elif [ -z "$CLI" ] && [ -x "$ROOT/target/debug/gongga.exe" ]; then
-  CLI="$ROOT/target/debug/gongga.exe"
-fi
+#
+# A name that exists is not a command that answers. A home whose `bin/gongga-cli`
+# still names a python file this build retired answers every question with a
+# traceback and a non-zero exit, and `swap` then printed "cancelling" without
+# sending anything: the old server kept the home and the successor kept waiting
+# (2026-11-14 21:10). So each candidate is asked something harmless and read-only
+# first, and only the one that answered is kept.
+cli_answers() { # <program>
+  local out
+  out="$("$1" '{"name":"ls_session","args":{"path":"/"}}' 2>/dev/null)" || return 1
+  [ -n "$out" ]
+}
+
+CLI=""
+CLI_TRIED=""
+# This home's own command first -- it is the one a shell started by this server
+# types -- then whatever `PATH` calls the command, then this build's tree. A name
+# already tried is not asked twice, and one that did not answer does not stop the
+# search: only the first answer ends it.
+for candidate in   "$HOME_DIR/bin/gongga-cli"   "$HOME_DIR/bin/gongga-cli.exe"   "$HOME_DIR/bin/gongga"   "$HOME_DIR/bin/gongga.exe"   "$(command -v gongga-cli || true)"   "$(command -v gongga-cli.exe || true)"   "$(command -v gongga || true)"   "$(command -v gongga.exe || true)"   "$ROOT/target/debug/gongga-cli.exe"   "$ROOT/target/debug/gongga.exe"; do
+  [ -n "$candidate" ] || continue
+  [ -x "$candidate" ] || continue
+  case " $CLI_TRIED " in
+  *" $candidate "*) continue ;;
+  esac
+  if cli_answers "$candidate"; then
+    CLI="$candidate"
+    break
+  fi
+  CLI_TRIED="$CLI_TRIED $candidate"
+  echo "note: $candidate did not answer; trying the next command" >&2
+done
 
 die() { echo "evolve: $*" >&2; exit 1; }
 
@@ -765,7 +791,7 @@ its launcher has already left the queue -- run stage again if you meant the newe
   pid="$(running_pid || true)"
   [ -n "$pid" ] || die "no live server on $HOME_DIR; refusing to cancel"
   if [ -z "$CLI" ] || [ ! -x "$CLI" ]; then
-    die "no gongga CLI to send cancel with; is one on PATH?"
+    die "no gongga CLI answered${CLI_TRIED:+ (tried:$CLI_TRIED)}; nothing was cancelled"
   fi
   # A successor that hangs from the server is one the cancel ends with it: it
   # beats until the old process exits and then goes with the job, leaving the
