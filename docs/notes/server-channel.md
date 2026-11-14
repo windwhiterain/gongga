@@ -209,6 +209,15 @@ carried the bytes and left the cursor where it was would be the way to hand the 
 window over twice. The row is stored as `inject`, so the reader draws it as the harness
 talking while the model still reads a user turn.
 
+One thing the `Result` cannot say on its own: this is the *rest* of a call that had
+already stopped waiting, not a fresh answer. `exit: null` marked the call's own half, so
+the notice says it in words, appended inside `output` the way the cancelled end does --
+`[a call's wait ran out before this arrived; this is the rest of that call's answer]` --
+and SPEC's `Result` keeps its shape. Measured on this machine: a call with no `wait`
+answered after 4 s with `exit: null`, and the tail arrived as one notice when the program
+ended. A reader that took the first half as the whole answer reported a command's
+echoes as missing.
+
 ## An end is the row's end
 
 A channel is the program, so the program's end is what removes its row -- and with the

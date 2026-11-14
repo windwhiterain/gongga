@@ -237,6 +237,10 @@ say "$said"
 ok "the notice carries what the killed channel had printed" \
   "$(has "$said" 'the server stopped this channel as it was cancelled' && echo 0 || echo 1)"
 
+# The marker a reader needs: this Result is the tail of a call that stopped waiting.
+ok "the notice says a wait ran out, so it is not a fresh answer" \
+  "$(has "$said" "a call's wait ran out before this arrived" && echo 0 || echo 1)"
+
 # 6. Queued is not dropped: the notice arrives with the next turn that runs, so a
 #    session that never woke still reads what ended while it slept.
 "${cli[@]}" '{"name":"send_message","args":{"session":"'"$quiet"'","message":"what did I miss"}}' >/dev/null 2>&1

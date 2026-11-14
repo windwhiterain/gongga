@@ -997,6 +997,10 @@ impl Channels {
         // A notice is a read: it carries the window, so the cursor moves with it.
         let _ = self.store.set_channel_upto(row.id, read_to);
         if waited && claimed {
+            // A notice is a call's `wait` run out: say so, and leave SPEC's `Result` alone.
+            let output = format!(
+                "{output}\n\n[a call's wait ran out before this arrived; this is the rest of that call's answer]"
+            );
             (self.notify)(ChannelEnd {
                 session: row.session.clone(),
                 id: row.path.clone(),
