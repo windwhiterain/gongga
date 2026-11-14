@@ -327,6 +327,8 @@ mkdir -p "$tool/scripts" "$tool/crates/server/src"
 cp "$root/scripts/ship.sh" "$tool/scripts/ship.sh"
 cp "$root/crates/server/ship.toml" "$tool/crates/server/ship.toml"
 cp "$root/crates/server/src/fork.rs" "$tool/crates/server/src/fork.rs"
+# ship.sh is a front end over publish.sh, so a copy of ship.sh alone has nothing to run.
+cp "$root/scripts/publish.sh" "$tool/scripts/publish.sh"
 # A repository of its own, all of it readable by this build: the tool's question is
 # whether this build can read what it is about to publish, not what some other
 # scenario left on the branch.
