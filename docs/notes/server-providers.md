@@ -108,6 +108,12 @@ to the roster -- no Python, a bad exit, a timeout, or bad JSON is a
 catalogue is momentarily unreachable still answers on every model it already had
 rather than coming up with none.
 
+A reread rebuilds the roster from the file, which states the static rows and
+nothing about the scripted ones -- so the rows a script found are gone the moment
+somebody edits the roster or rotates a key. The run is keyed to the generation it
+was started for (`SCRIPTED`), and a reread starts a new one. Starting it once per
+process instead would empty a scripted provider until a restart.
+
 ## QuotaQuery, resolve_scripts
 
 `[[provider.quota_query]]` is how this machine reads what a provider still

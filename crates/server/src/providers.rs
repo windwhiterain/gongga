@@ -924,7 +924,17 @@ static LIVE: OnceLock<std::sync::RwLock<Live>> = OnceLock::new();
 static SCRIPTS: std::sync::OnceLock<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> =
     std::sync::OnceLock::new();
 
-/// Starts the discovery scripts the roster names, once.
+/// The roster generation whose scripted rows are already in hand.
+///
+/// # Invariant
+///
+/// A reread rebuilds the roster from the file, where a scripted provider has no
+/// rows at all. Only a run started for that generation puts them back, so a
+/// marker that outlives the catalog it was set for empties the provider for the
+/// life of the server.
+static SCRIPTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Starts the discovery scripts the roster names, once per generation.
 fn spawn_scripts(catalog: &Arc<Catalog>) {
     let work: Vec<(String, PathBuf)> = catalog
         .providers()
@@ -934,13 +944,14 @@ fn spawn_scripts(catalog: &Arc<Catalog>) {
     if work.is_empty() {
         return;
     }
+    if SCRIPTED.load(std::sync::atomic::Ordering::SeqCst) >= catalog.generation() {
+        return;
+    }
     let slot = SCRIPTS.get_or_init(|| std::sync::Mutex::new(None));
     let Ok(mut slot) = slot.lock() else {
         return;
     };
-    if slot.is_some() {
-        return;
-    }
+    // An older run merges into the catalog in force, so leave it to finish.
     *slot = Some(std::thread::spawn(move || {
         for (provider, script) in work {
             match run_models_script(&script) {
@@ -982,7 +993,10 @@ fn merge_scripted(provider: &str, scripted: Vec<Model>) {
     }
     entry.models.extend(fresh);
     catalog.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let generation = catalog.generation;
     guard.catalog = Arc::new(catalog);
+    // These rows are in the roster in force: a reread has to start a new run.
+    SCRIPTED.store(generation, std::sync::atomic::Ordering::SeqCst);
     drop(guard);
     tracing::info!(provider = %provider, "the models a script names are in the roster");
 }
