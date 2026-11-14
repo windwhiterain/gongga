@@ -35,7 +35,9 @@ setting a caller names becomes a mode the acknowledgement writes back.
 ## Dispatch::resolve
 
 One decision for every kind of command: does the name exist, who runs it, and are
-its required arguments here. A `Client`-target entry that reaches here is refused rather than executed: the server
+its required arguments here. `session` is not one of them: SPEC gives it `caller()`,
+so a call that omits it is complete, and the handler reads the session it runs from.
+A `Client`-target entry that reaches here is refused rather than executed: the server
 cannot change a caller's own state. This build publishes none, so the arm is a guard
 for a caller from another build rather than a path the window takes.
 
@@ -342,8 +344,8 @@ than a tail window filtered after it arrived. A caller reading a part of the
 transcript asks for exactly that part.
 
 The range leads the command line, as SPEC spells it, and may be omitted: an
-omitted range is the whole transcript. The session is the `--session` argument,
-required, filled from the sticky entry like any required argument.
+omitted range is the whole transcript. The session is the `--session` argument, and the
+caller's own when the line names none; a window fills it from the sticky entry.
 
 The syntax is Python's, with two differences that are deliberate:
 
@@ -693,6 +695,10 @@ leaving the argument out, and leaving it out is what takes the default.
 `session` is a default and not an extra argument: SPEC writes `session: Session =
 caller()`, and `commands::session_of` reads it -- a stated session wins, an omitted one is
 the session the call runs from (`Origin::session`, which a client fills from `$GONGGA_SESSION`).
+So the catalog declares it `required: false` wherever SPEC gives it that default, and a call
+that names neither is refused in words (`commands::caller_session`) instead of acting on the
+empty name. A command whose session SPEC does *not* default -- `send_message`,
+`interrupt_session`, `del_session`, `set_session` -- still requires one.
 
 SPEC names three roles and gives each one word, so the catalog does too: `session`
 is the session a command acts *within* (`send_message`, `get_messages`,

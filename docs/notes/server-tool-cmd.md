@@ -65,4 +65,6 @@ object a tool acts on (`bash`'s command, `write_file`'s path and content),
 never the switches. The session is positional
 everywhere because every tool command addresses one, and it is *hinted*
 `<name>` while a tool's own `name` argument is hinted by its JSON type -- the
-one collision this table cannot rename, since both are the caller's words.
+one collision this table cannot rename, since both are the caller's words. It is
+never *required*: SPEC gives it `caller()`, and the caller is exactly what a tool call
+has, so a call that names only the tool's own arguments is complete.

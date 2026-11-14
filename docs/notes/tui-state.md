@@ -52,10 +52,12 @@ members, and they travel inside `config`.
 
 ### What fills
 
-A slot is filled when it is a **missing argument with no default**: a required
-argument outright, and a field SPEC gives no default to. `thinking`, `ctx_limit`,
-`cache_tier` (`# re-default if model change`), `cwd`, `remote` and `mode` have
-defaults, so no entry reaches them. A struct **update** (`set_session`'s
+A slot is filled when it is a **missing argument this side can supply the default
+for**: a required argument outright, and a `session` argument, whose default is SPEC's
+`caller()` -- and the caller of a line typed in a window is that window's sticky entry.
+A field SPEC gives no default to is filled; `thinking`, `ctx_limit`, `cache_tier`
+(`# re-default if model change`), `cwd`, `remote` and `mode` have defaults no entry of
+theirs can stand for, so no entry reaches them. A struct **update** (`set_session`'s
 `config_delta: SessionConfig{..}`) is never filled at all: it says what changes, and
 `new_session`'s `config: SessionConfig`, a value, is the one that is filled.
 

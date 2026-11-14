@@ -84,7 +84,8 @@ pub fn context(
 ///
 /// Generated from the registry: the model's view and the operator's view of
 /// one tool are one definition. Positional spelling is the table's, not the
-/// schema's.
+/// schema's, and `session` is never required: it is the caller's own unless the
+/// call names another (SPEC's `session = caller()`).
 pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec> {
     tools
         .iter()
@@ -93,10 +94,12 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
             let mut args = vec![protocol::ArgSpec {
                 type_of: "Session".into(),
                 name: "session".into(),
-                description: "The session the tool runs as; its shells, its directory.".into(),
-                required: true,
+                description: "The session the tool runs as; its shells, its directory. \
+                     Omitted is the caller's own session."
+                    .into(),
+                required: false,
                 positional: true,
-                kind: None,
+                kind: Some("session".into()),
                 value_hint: Some("name".into()),
                 completions: protocol::CompletionSource::Sessions,
                 accepts: None,

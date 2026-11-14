@@ -285,10 +285,10 @@ impl Sticky {
     ///
     /// # Invariant
     ///
-    /// A value lands only on an argument whose `kind` names it and that has no
-    /// default: a required argument, and a structured value whose type SPEC marks
-    /// `# sticky`. A struct update is not filled at all. What the line stated
-    /// stays, at every depth. See `docs/notes/tui-state.md`.
+    /// A value lands only on an argument whose `kind` names it and the line left open: a
+    /// required one, a `session` one (SPEC's default is `caller()`, which here is the
+    /// sticky entry), and a structured value SPEC marks `# sticky`. A struct update and
+    /// every other defaulted argument are left alone. See `docs/notes/tui-state.md`.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
         for a in &spec.args {
@@ -302,7 +302,9 @@ impl Sticky {
 
     /// One argument, one entry: fill when omitted and an entry names its kind.
     fn fill_one(&self, a: &ArgSpec, args: &mut Args) {
-        if args.contains_key(&a.name) || !a.required {
+        // A session argument's default is the caller, which here is the sticky entry.
+        let caller = a.kind.as_deref() == Some("session");
+        if args.contains_key(&a.name) || !(a.required || caller) {
             return;
         }
         let Some(kind) = a.kind.as_deref() else {
