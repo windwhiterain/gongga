@@ -843,7 +843,6 @@ dependencies = [
  "shell-words",
  "tokio",
  "toml",
- "which",
 ]
 
 [[package]]

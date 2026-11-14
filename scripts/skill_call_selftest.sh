@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `run_skill` on real processes: a package's call arrives as one JSON line on stdin, a
-# body and a declared entry are refused with the sentence that says what to change, and
-# the package's own `import gongga` resolves against this home's `lib/`.
+# directory that is not a package is refused with the sentence that says what to make,
+# and the package's own `import gongga` resolves against this home's `lib/`.
 #
 # One line of verdict at the end; `-v` names the server log.
 set -uo pipefail
@@ -69,8 +69,9 @@ fi
 rm -rf "$home" "$checkout"; mkdir -p "$home"
 : > "$log"
 
-# The three shapes, in the project bucket of a checkout of this run's own: a package, a
-# body, and a directory whose frontmatter declares an entry.
+# The shapes, in the project bucket of a checkout of this run's own: a package, a body, and
+# a directory that still declares an entry -- which this build reads nowhere, so it is
+# refused like the body it also is.
 mkdir -p "$checkout/.agents/skills/pkg" "$checkout/.agents/skills/body" "$checkout/.agents/skills/entryonly"
 cat > "$checkout/.agents/skills/pkg/SKILL.md" <<'MD'
 ---
@@ -105,7 +106,7 @@ metadata:
 ---
 # entryonly
 
-The file is what `gongga-cli skill entryonly` runs.
+The file beside this one is what the declaration used to name.
 MD
 printf '#!/usr/bin/env bash\necho entry-ran\n' > "$checkout/.agents/skills/entryonly/run.sh"
 
@@ -171,13 +172,14 @@ imported=1
 [[ $imported == 0 ]] || say "want=$want got=${flat:0:400}"
 ok "the package imports gongga from this home's lib/" $imported
 
-# (b) a body is refused, naming the SKILL.md to read
+# (b) a body is refused: one sentence naming the package to make, and the SKILL.md it read
 out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"project/body","session":"reader","cmd":{"name":"anything","args":{}}}}' 2>&1)
 say "$out"
-[[ "$out" == *"is a body"* && "$out" == *"SKILL.md"* && "$out" != *"pkg:"* ]]
-ok "a body is refused, naming the SKILL.md to read" $?
+[[ "$out" == *"only as a Python call"* && "$out" == *"__init__.py"* && "$out" == *"SKILL.md"* && "$out" != *"pkg:"* ]]
+ok "a body is refused, naming the package to make and the SKILL.md it read" $?
 
-# (c) a declared entry is refused, saying the server runs a Python call and what makes one
+# (c) a declared entry is refused the same way: no code of this build reads the declaration,
+# so the file it names is not run either.
 out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"project/entryonly","session":"reader","cmd":{"name":"anything","args":{}}}}' 2>&1)
 say "$out"
 [[ "$out" == *"only as a Python call"* && "$out" == *"__init__.py"* && "$out" == *"SPEC"* && "$out" != *"entry-ran"* ]]

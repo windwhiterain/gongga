@@ -191,19 +191,20 @@ probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$
 ok "the delete_session operation is answered" $?
 say "$probe"
 
-# 15. `run_skill` is a server command (SPEC's `## Python Cmd`): what a skill is -- a
-#     package, an entry, a body -- decides how it runs, and no tool row is involved.
-mkdir -p "$home/skills/argv-probe" "$home/skills/body-only"
-cat > "$home/skills/argv-probe/SKILL.md" <<'MD'
+# 15. `run_skill` is a server command (SPEC's `## Python Cmd`): a skill is a package and
+#     runs; anything else is refused with the sentence that says what to make. No tool
+#     row is involved.
+mkdir -p "$home/skills/entry-only" "$home/skills/body-only"
+cat > "$home/skills/entry-only/SKILL.md" <<'MD'
 ---
-name: argv-probe
-description: Prints its argv, one word per line, and leaves with 3.
+name: entry-only
+description: Declares an entry, which this build does not read.
 metadata:
   entry: probe.sh
 ---
-# argv probe
+# entry only
 MD
-cat > "$home/skills/argv-probe/probe.sh" <<'SH'
+cat > "$home/skills/entry-only/probe.sh" <<'SH'
 #!/usr/bin/env bash
 for word in "$@"; do printf '[%s]\n' "$word"; done
 exit 3
@@ -215,8 +216,8 @@ description: A body and nothing to run.
 ---
 # body only
 MD
-# A skill may be a Python package: no declared entry, the callable comes from
-# `__all__`, and the same contract is callable in-process.
+# A skill is a Python package: the callable is a public function, its call arrives as
+# keyword arguments, and the same contract is callable in-process.
 mkdir -p "$home/skills/echo-pkg"
 cat > "$home/skills/echo-pkg/SKILL.md" <<'MD'
 ---
@@ -225,23 +226,24 @@ description: A skill that is a Python package, not a script.
 ---
 MD
 cat > "$home/skills/echo-pkg/__init__.py" <<'PY'
-def echo(*words):
-    return "argv: " + " | ".join(words) + "\n"
+def echo(first="", second=""):
+    return "argv: " + " | ".join([first, second]) + "\n"
 
 
 def code(fail: bool = False):
     return 2 if fail else None
 PY
-packed=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/echo-pkg","cmd":{"args":["echo","a b","c"]}}}' 2>&1)
+packed=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/echo-pkg","cmd":{"name":"echo","args":{"first":"a b","second":"c"}}}}' 2>&1)
 [[ "$packed" == *"argv: a b | c"* ]]
 ok "a package skill runs the function its API publishes" $?
 say "$packed"
 
 inproc=$(python -c "
 import sys
-sys.path.insert(0, r'$(cygpath -m "$root")/python')
+sys.path.insert(0, r'$(cygpath -m "$home")/lib')
 import gongga_skill
-print(gongga_skill.run(r'$(cygpath -m "$home")/skills/echo-pkg', 'echo', ['in', 'process']), end='')
+print(gongga_skill.run(r'$(cygpath -m "$home")/skills/echo-pkg', 'echo',
+                       {'first': 'in', 'second': 'process'}), end='')
 " 2>&1)
 [[ "$inproc" == *"argv: in | process"* ]]
 ok "the contract is importable: no process, no command line" $?
@@ -274,20 +276,21 @@ say "$client"
 ok "the catalog no longer carries index_skill" $?
 
 verbs=$("${cli[@]}" '{"name":"ls_skill","args":{"session":"main"}}' 2>&1)
-{ [[ "$verbs" == *"argv-probe"* ]] && [[ "$verbs" == *"Prints its argv"* ]]; } && rc=0 || rc=1
+{ [[ "$verbs" == *"entry-only"* ]] && [[ "$verbs" == *"does not read"* ]]; } && rc=0 || rc=1
 ok "ls_skill asks the server, and carries the description" $rc
 say "$verbs"
 
-probed=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/argv-probe","cmd":{"args":["a b","$HOME","semi;colon"]}}}' 2>&1)
-{ [[ "$probed" == *'[a b]'* ]] && [[ "$probed" == *'[$HOME]'* ]] && \
-  [[ "$probed" == *'[semi;colon]'* ]] && [[ "$probed" == *'exit status 3'* ]] && \
-  [[ "$probed" == *'"ok":false'* ]]; } && rc=0 || rc=1
-ok "run_skill passes the words unread and keeps the entry's exit code" $rc
+# A directory that declares an entry is not run: nothing reads the declaration, and the
+# file it names is never handed anything.
+probed=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/entry-only","cmd":{"name":"probe","args":{"word":"a b"}}}}' 2>&1)
+{ [[ "$probed" == *'only as a Python call'* ]] && [[ "$probed" == *'__init__.py'* ]] && \
+  [[ "$probed" != *'[a b]'* ]] && [[ "$probed" == *'"ok":false'* ]]; } && rc=0 || rc=1
+ok "a declared entry is refused, and the file it names is not run" $rc
 say "$probed"
 
 body=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/body-only","cmd":"no_such_function"}}' 2>&1)
-[[ "$body" == *"is a body and nothing to run"* ]]
-ok "a skill with no entry says there is nothing to run" $?
+[[ "$body" == *"only as a Python call"* && "$body" == *"SKILL.md"* ]]
+ok "a body is refused, naming the package to make and the SKILL.md it read" $?
 
 absent=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"harness/no-such-skill","cmd":"no_such_function"}}' 2>&1)
 say "unknown skill answered: $(printf '%s' "$absent" | tail -1 | head -c 300)"

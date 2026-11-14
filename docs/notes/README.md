@@ -73,6 +73,7 @@ commands. The crate rename has landed:
 | note | source |
 | --- | --- |
 | [`skill-lib.md`](skill-lib.md) | `crates/skill/src/lib.rs` |
+| [`skill-package.md`](skill-package.md) | `crates/skill/src/package.rs`, `ship/python/gongga_skill.py` |
 
 ### python
 
@@ -82,7 +83,6 @@ The Python files are the content repository's `python/` tree, installed under
 | note | source |
 | --- | --- |
 | [`python-client.md`](python-client.md) | `ship/python/gongga.py` |
-| [`skill-entry.md`](skill-entry.md) | `crates/skill/src/entry.rs`, `ship/python/gongga_skill.py` |
 
 ### console
 
@@ -174,7 +174,6 @@ library holds the loop it runs.
 | [`client-refill.md`](client-refill.md) | `crates/client/src/window_refill.rs` |
 | [`client-window-sync.md`](client-window-sync.md) | `crates/client/src/window_sync.rs` |
 | [`client-render-wire.md`](client-render-wire.md) | `crates/client/src/render_wire.rs` |
-| [`client-skill-command.md`](client-skill-command.md) | `crates/client/src/skill_command.rs` |
 | [`tui-state.md`](tui-state.md) | `crates/client/src/window_state.rs` |
 | [`tui-cache.md`](tui-cache.md) | `crates/client/src/window_cache.rs` |
 | [`tui-command.md`](tui-command.md) | `crates/client/src/window_command.rs` |

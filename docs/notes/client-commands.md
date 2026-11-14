@@ -66,8 +66,7 @@ then fails on whatever follows it -- `send_message --message --session hi` reads
 The three roots the server walks, in its order, from the one reading of them:
 `skill::Roots` in `crates/skill`. Completion still runs in a key handler and cannot ask
 the server, so both sides read the same directory walk rather than two walks that are
-kept equal by hope -- which is what this used to be, and what a third caller
-(`gongga-cli skill`) would have broken.
+kept equal by hope -- which is what this used to be.
 
 `project` is `None` when the session whose skills these are runs on another
 machine. Its checkout is then not on this disk, and reading

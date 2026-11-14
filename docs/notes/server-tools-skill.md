@@ -2,34 +2,32 @@
 
 ## module doc
 
-One skill, run: the function the Python package it is publishes, or a refusal naming
-what else the directory would have to become. There is no `skill` tool and no `skill` command -- SPEC's `## Python Cmd`
+One skill, run: the function the Python package it is publishes, or the one refusal
+naming what the directory would have to become. There is no `skill` tool and no `skill` command -- SPEC's `## Python Cmd`
 gives the namespace two commands, `ls_skill` and `run_skill`, and this module is what
 `run_skill` calls. The table `ls_skill` prints is the same walk, for the reason that
 matters to a reader: a row's `id` is what `run_skill` takes, so a path one lists is a
 path the other runs.
 
-## Three shapes, one door
+## Two shapes, one door
 
 A skill is a directory holding a `SKILL.md`, and what else is in it decides whether the
 model can call it. `Skills::run` is the one place that decides:
 
 | shape | what makes one | what `run_skill` does |
 | --- | --- | --- |
-| **body** | only a `SKILL.md` | refuses, naming the path to read: a body is prose, and prose is read |
-| **entry** | `metadata.entry:` names a file in that directory | refuses, saying the skill runs as a Python call and what makes one |
+| **body** | only a `SKILL.md` | refuses: a body is prose, and prose is read |
 | **package** | an `__init__.py` in that directory | runs it: the home's `gongga_skill.py` imports it and calls the function the call names, with its keyword arguments |
 
-Two refusals, because their next steps differ: "read the `SKILL.md`" and "make it a
-package" are not one instruction. Both name the change rather than the missing file, which
-is what makes them something a model can act on.
+The refusal is one sentence for both, and it is not about a file being missing: a skill runs
+only as a Python call, so it says what makes one -- a directory holding `__init__.py`, whose
+public functions are the names `run_skill` takes -- and where an implementation that is not
+Python goes (inside one of those functions). That is the change a model can make; a sentence
+that offered a shell door would name a command this harness no longer has.
 
-The server runs no entry. SPEC gives the model one door, a Python call, and a program with
-an argv is not one -- so `metadata.entry` is not read on any server path. It is still
-resolved in `crates/skill/src/entry.rs`, for `gongga-cli skill`: the machine's and the
-community's skills are scripts, and that command is not on the tool-call chain. When a
-directory holds both an `__init__.py` and a declared entry, the package is what runs, and
-the command line is the one place that choice is still made.
+There is no third shape and no second door. `metadata.entry` is not read on any path, here or
+in `crates/skill`: the command line stopped running entries too, because `gongga-cli` passes
+server commands and a skill is reached by `run_skill` alone.
 
 ## The call
 
@@ -39,8 +37,8 @@ receives is one JSON line on stdin, `{"skill": ..., "function": ..., "args": ...
 nothing a caller wrote is on a command line at all.
 
 An `args` list is refused, naming the shape: a function's arguments are keyword arguments,
-and position was the entry form's rule. `tools::skill` never spells a word list now;
-`entry_words` is gone with the entry branch it served.
+and a call has a shape rather than a position. `tools::skill` spells one word,
+the contract, and never an argv.
 
 A bare word is the whole call, and a string starting with `{` is an object, because an
 operator's line spells `cmd` as text.
@@ -95,7 +93,8 @@ A name in two roots is two rows and two ids. That is the reason `run_skill` take
 
 ## What proves it
 
-`bash scripts/skill_call_selftest.sh` runs all three shapes against one real server on a
+`bash scripts/skill_call_selftest.sh` runs both shapes against one real server on a
 temporary home: the package's function answering with the text it was given and the
-`gongga` it imported, the body's refusal, and the declared entry's. It is also where
+`gongga` it imported, and the refusal a directory gets -- whether it is a body or declares an
+entry in its frontmatter -- naming the package to make. It is also where
 "`import gongga` resolves from the home's `lib/`" is measured rather than assumed.

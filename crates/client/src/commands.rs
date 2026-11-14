@@ -13,10 +13,10 @@ use protocol::{ArgSpec, Args, CommandSpec, StructSchema};
 ///
 /// # Invariant
 ///
-/// One walk, shared with the server's `skill` and with `skill <name>` -- so a
-/// name read here is a name that can be opened. `project` is the directory the session
-/// works in, and `None` when that directory is another machine's: its checkout is not
-/// on this disk. See `docs/notes/cli-commands.md`.
+/// One walk, shared with the server's `ls_skill` and `@skill(...)` -- so a name read
+/// here is a name that can be opened. `project` is the directory the session works in,
+/// and `None` when that directory is another machine's: its checkout is not on this
+/// disk. See `docs/notes/client-commands.md`.
 pub fn installed_skills(home: &Path, project: Option<&Path>) -> Vec<String> {
     roots(home, project)
         .all()

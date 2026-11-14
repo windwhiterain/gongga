@@ -2,10 +2,9 @@
 
 ## module doc
 
-`exec` had the spawn a skill's entry needed: the program and its words, no shell between
-them, both streams read while the program runs, a deadline that stops it rather than leaving
-it behind, and the error wording a reader acts on when a name is not on PATH. Copying that
-into a second tool would have been two places for a pipe to deadlock.
+`exec` had the spawn a skill needs too: the program and its words, no shell between them,
+both streams read while the program runs, and a deadline that stops it rather than leaving it
+behind. Copying that into a second tool would have been two places for a pipe to deadlock.
 
 What moved is only the part that is the same for both: `run(program, args, stdin, cwd, env, deadline)`.
 What stayed in `exec` is what makes it `exec` -- the word list's validation (a word holding a
@@ -30,7 +29,7 @@ a directory this machine does not have, and the rule is the same everywhere in t
 | --- | --- |
 | the call itself (`exec`'s `cwd`) | refused by its caller, naming that path |
 | the session, as a default | refused by its caller, naming it as the session's |
-| a session directory used directly (a skill's entry, `new_channel`, a file tool) | never an error: `tools::standing_dir` answers this server's own directory |
+| a session directory used directly (a skill's package, `new_channel`, a file tool) | never an error: `tools::standing_dir` answers this server's own directory |
 
 The third row is the one measured: a session whose directory is on a peer has an empty
 one here (`Workspace::dir` is "empty on the other machine"), and `Command::current_dir` of
@@ -55,8 +54,8 @@ tools promise, and it is the reason neither takes a command line.
 
 The one thing this does not cover is the *program* being a shell: `["bash", "-c", "…"]` starts
 a shell with a string, and then the string is code again. That is the caller's word to give,
-not this module's to refuse -- but it is why a skill is started as an entry and an argv instead of
-letting a body's instructions reach a shell.
+not this module's to refuse -- but it is why a skill is started as a Python call with one JSON
+line on stdin instead of letting a body's instructions reach a shell.
 
 ## The environment the child gets
 

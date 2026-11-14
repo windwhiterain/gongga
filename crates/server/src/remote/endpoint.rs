@@ -138,12 +138,14 @@ impl Endpoint {
         }
     }
 
-    /// The command that replaces the distribution on the peer.
+    /// What replaces the distribution on the peer, and with which peer.
     ///
     /// # Invariant
     ///
-    /// Only an endpoint reached over ssh has a peer to reinstall, and the
-    /// command is the deployment tool's own: one a reader can run as it stands.
+    /// Only an endpoint reached over ssh has a peer to reinstall, and the answer is the
+    /// skill that does it rather than a command line: a skill runs only as a Python call,
+    /// so this names `harness/remote`'s `install` (SPEC's `run_skill`) and the peer it
+    /// describes, and leaves the call's own shape to that skill's body.
     fn remedy(&self) -> Option<String> {
         let Endpoint::Remote {
             transport:
@@ -157,27 +159,20 @@ impl Endpoint {
         else {
             return None;
         };
-        let (user, address) = match host.rsplit_once('@') {
-            Some((user, address)) => (Some(user), address),
-            None => (None, host.as_str()),
-        };
-        let mut command = String::from("gongga-cli skill remote install --host ");
-        command.push_str(address);
-        if let Some(user) = user {
-            command.push_str(" --user ");
-            command.push_str(user);
-        }
+        let mut peer = host.clone();
         if let Some(port) = port {
-            command.push_str(" --port ");
-            command.push_str(&port.to_string());
+            peer.push_str(&format!(" port {port}"));
         }
         if let Some(identity) = identity {
-            command.push_str(" --identity ");
-            command.push_str(&quoted(&identity.display().to_string()));
+            peer.push_str(&format!(
+                " identity {}",
+                quoted(&identity.display().to_string())
+            ));
         }
         Some(format!(
-            "reinstall the distribution on the peer with `{command}`, point this machine's \
-             remote at the runner it prints, and restart the server"
+            "reinstall the distribution on the peer with the `remote` skill's `install` call \
+             (`run_skill` with `id: harness/remote`; peer {peer}), point this machine's remote \
+             at the runner it prints, and restart the server"
         ))
     }
 

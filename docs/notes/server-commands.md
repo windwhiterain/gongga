@@ -739,8 +739,8 @@ one, and `har` is nothing -- a component, never a string prefix. A row is
 `{name, args}`, and `args` is the function's keyword arguments -- an object, sent as one
 JSON line on the process's stdin, never flattened into flags and never spelled as words.
 The skill has to be a Python package for that; a directory without `__init__.py` is
-refused before a process starts, and the refusal names what to do about it (see
-`server-tools-skill.md`).
+refused before a process starts, and the refusal names what to do about it -- make it a
+package (see `server-tools-skill.md`).
 
 The id resolves against the same walk and picks one root by name, which is the reason
 the id exists: a name two roots spell is two rows, and a path names one.
@@ -749,11 +749,10 @@ It then runs the skill itself, through `tools::skill::Skills::run` -- the same d
 the command layer and the config's tool rows meet at, reached directly rather than
 through a registered tool: `run_skill` is SPEC's, so it does not depend on a row
 naming a `skill` tool. What a skill *is* decides what happens, in one place: a package
-is imported from its own directory and the call binds to a published function; a body is
-refused, naming the `SKILL.md` to read; a declared entry is refused too, because a skill
-the model calls runs as a Python call and an entry is `gongga-cli skill`'s form. A function
-the package does not publish is refused by `gongga_skill` with the signature and the list of
-what it does publish.
+is imported from its own directory and the call binds to a published function; anything else
+is refused, because a skill the model calls runs only as a Python call and the refusal says
+what makes one. A function the package does not publish is refused by `gongga_skill` with the
+signature and the list of what it does publish.
 
 The skill's own exit code is the call's, and its output is the answer: `[exit status
 N]`, capped like any other result. Neither is re-encoded, because a skill's answer is

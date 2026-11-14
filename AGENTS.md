@@ -306,12 +306,14 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 「读者自己写的」而不再更新。
 
 **跑一个 skill 的脚本：从它自己的目录出发，别写桶的路径。** 正文里写入口用
-`SKILL_DIR=<本 SKILL.md 所在目录>`（`@skill(...)` 展开的 `SKILL.md: <path>`、`skill` 的
-`path` 列都给得出它），再 `"$SKILL_DIR/<entry>" …`：home 会搬、桶会变，而别的 harness 不认
-`<home>/skills/...` 也不认 clone 路径——它读到的是一个不存在的命令。gongga 里更短的一层是
-`gongga-cli skill <name> [args…]`（`skill ls` 是它的诊断动词），
-它按同样的三根优先级晚绑定解析，参数原样透传，退出码就是入口的。入口本身在 frontmatter 里
-声明（`metadata.entry:`，规范 `metadata` 允许的扩展位），所以正文和机器读的是同一份事实。
+`SKILL_DIR=<本 SKILL.md 所在目录>`（`@skill(...)` 展开的 `SKILL.md: <path>`、`ls_skill` 的
+`path` 列都给得出它），再 `"$SKILL_DIR/<file>" …`：home 会搬、桶会变，而别的 harness 不认
+`<home>/skills/...` 也不认 clone 路径——它读到的是一个不存在的命令。
+
+**skill 只有一种形态：Python package。** 目录里有 `__init__.py`，公开函数就是 `run_skill`
+取的名字（`cmd.name`，参数是关键字参数对象）；正文只是描述它。gongga 没有第二个门：
+`gongga-cli` 只调 server cmd，所以 skill 不经 shell 运行，非 Python 的实现要么被某个函数调用，
+要么写成函数本身。frontmatter 的 `metadata.entry` 已经不再被任何代码读取。
 `scripts/skill_contract.sh` 拦两种走样：正文出现桶路径、`entry` 指不到文件。
 
 收到 `Context notice` 就是**要求尽快交接**，不是询问——但也不是立刻砍断：先提交、把只存在脑子里的状态写下来、把文档和引用整理好，再交接；不要再开新活。怎么交接读 `handoff` 技能正文（`skill` 表给路径）——服务端只测量和要求。
