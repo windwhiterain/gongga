@@ -132,6 +132,7 @@ The Python files are the content repository's `python/` tree, installed under
 | [`server-monitor.md`](server-monitor.md) | `crates/server/src/monitor.rs` |
 | [`server-session.md`](server-session.md) | `crates/server/src/session.rs` |
 | [`server-shell-command.md`](server-shell-command.md) | `crates/server/src/shell_command.rs` |
+| [`server-retired-python.md`](server-retired-python.md) | `crates/server/src/retired_python.rs` |
 | [`server-ship.md`](server-ship.md) | `crates/server/src/ship.rs` |
 | [`server-store.md`](server-store.md) | `crates/server/src/store.rs` |
 | [`server-subscriptions.md`](server-subscriptions.md) | `crates/server/src/subscriptions.rs` |
