@@ -30,6 +30,17 @@ commit first, then in the newest commit of the cache that carries the path, then
 in that checkout's history. It is written into `<home>/migrate/` so the
 next start runs the same bytes, and executed with `--home` and `--db`.
 
+## a_column_with_no_reader_is_dropped_where_the_schema_heals
+
+`sessions.monitor_attempts` went when the model search it counted went, and it is
+not a versioned step. A version bump would make every home's *start* depend on a
+migrator being fetchable, and the start resolves content without fetching (`ship::resolve`)
+-- a home that had not yet seen the new content would refuse to start over a column
+nothing reads. Dropping it is order-free and idempotent, so it belongs with the
+shape healing the store already does at every open (`store::migrate`, which also
+renames the columns two builds disagreed about), and a build that reads the column
+still adds it back on its own open.
+
 ## an_interpreter_is_asked_not_looked_for
 
 `python3` on a Windows PATH can be an execution alias that exits 9009 because the

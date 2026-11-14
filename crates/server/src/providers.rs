@@ -484,25 +484,6 @@ impl Catalog {
         self.entry(model).ok().or_else(|| self.entry_by_name(model))
     }
 
-    /// Whether a request for `model` is one this server could make.
-    ///
-    /// # Invariant
-    ///
-    /// The same test [`Self::default_entry`] applies, asked about one named model:
-    /// the roster places it and it takes the Responses API. A model the roster
-    /// knows and this shape cannot drive would be offered and then fail.
-    pub fn speaks_responses(&self, model: &str) -> bool {
-        let Some((provider_id, model_name)) = model.split_once('/') else {
-            return false;
-        };
-        self.providers
-            .iter()
-            .filter(|p| p.id == provider_id)
-            .flat_map(|p| p.models.iter())
-            .find(|m| m.id == model_name)
-            .is_some_and(Model::speaks_responses)
-    }
-
     /// A bare model name, looked for in every provider in file order.
     pub fn resolve_by_name(&self, model_name: &str) -> Option<Choice> {
         self.entry_by_name(model_name)

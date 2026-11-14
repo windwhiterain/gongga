@@ -1,13 +1,20 @@
-# server-monitor: the sessions the harness spawns and hands a report to
+# server-monitor: the sessions the harness hands a report to
 
-SPEC: "once a session stopped with error, auto spawn a moniter session told to
-fix. moniter session will be choosen from usable flash, auto switch if it also
-errored".
+SPEC: "providers: spawn/notice when a session failed on an llm request (refused, or
+the answer never finished) ... the session is handed the `providers` skill"; "disk:
+spawn/notice when free space is under certain threshold".
 
-A monitor is a session the *server* starts, on a model the server chose, with a
-report the server wrote. What differs between monitors is what they watch and what
-the report says; everything else -- the session, the model search, the retry, the
-delivery through `commands::deliver` -- is one implementation.
+A monitor is a session the *server* starts, with a report the server wrote -- and
+nothing else about it is special: it is created like any session, it runs on the
+model its own row names, and it is configured with `set_session`, the same command a
+person uses. What differs between monitors is what they watch and what the report
+says; everything else -- the session, the delivery through `commands::deliver` -- is
+one implementation.
+
+An earlier draft also had a monitor "choosen from usable flash, auto switch if it
+also errored". That is gone with the machinery it needed: a model the harness picks
+is a model its operator cannot change, which is the first thing anybody wants to
+change about a monitor that keeps failing.
 
 | kind | session | watches | skill |
 | --- | --- | --- | --- |
@@ -26,8 +33,8 @@ the wording of a log line.
 reading compared against a threshold, and it has its own note: `server-disk.md`.
 
 Three decisions carry the whole of it: what a trigger *is* (data, not an event),
-which session it goes to (`@monitor/<kind>`, one per kind), and how that session
-is chosen and re-chosen.
+which session it goes to (`@monitor/<kind>`, one per kind), and that the session is
+an ordinary one.
 
 ## A failure is a row, not an event
 
@@ -61,91 +68,74 @@ Only the *handover* is recorded, and it is recorded after the message is accepte
 a crash between the two repeats a report, which is recoverable, where the other
 order loses one.
 
-## One session per kind, under a name nobody else may take
+## One session per kind, and every name a person's
 
-The sessions are `@monitor/providers` and `@monitor/disk`. A leading `@` is the
-harness's namespace, and `set_session` refuses it -- whole or by segment -- with a
-sentence saying so. This is why the reservation is worth having at all: the harness
-never has to look at a session and decide whether it is its own, and a person's
-session called `monitor` -- which 2026-11-02 showed is a name people do use -- is
-simply their session. The slash is the same hierarchy every session name has, so
-`@monitor/providers` sorts and nests like any other name, and a monitor of our own can
-still be a child of another. Deleting one is allowed, because a monitor that cannot
-work has to be removable; the next trigger creates it again.
+The sessions are `@monitor/providers` and `@monitor/disk`. Those are names this
+module wrote down, and **no name is reserved**: `set_session` accepts whatever
+SPEC's grammar accepts, `@` and every segment after it included, and the harness
+never asks a name whether it is its own -- it knows its sessions by the constant it
+created them under.
+
+The cost is stated rather than hidden: a person who names a session `@monitor/disk`
+has a session the next disk report is delivered to. That is the same bargain as a
+person naming one `main`; the harness's handle on a name is a constant in one file,
+and the namespace itself belongs to the operator.
 
 `@` rather than `#` because a `#` that opens a word is a comment to
-`shell_words::split`, so `--session=@monitor/error` is what a hand types and nothing
-needs quoting. The references a message carries are `@image:`, `@skill:`,
-`@file:` -- prefixes with a colon -- so a bare `@monitor/providers` is not one of them,
-and the report a monitor is given never names itself anyway.
+`shell_words::split`, so `--session=@monitor/disk` is what a hand types and nothing
+needs quoting. The references a message carries are `@image(...)`, `@skill(...)` and
+`@file(...)` -- prefixes with an opening parenthesis -- so a bare
+`@monitor/providers` is never read as one (`meta::mentions`).
 
-The session is created with no `--cwd`, so `SessionManager` gives it the server's
-own directory, exactly like a session made from a window.
+Creation is `commands::create_session`: `set_session` with a name and nothing else.
+So a monitor comes into being exactly where a session a person named would -- the
+model `set_session` gives one that names none (`DEFAULT_SESSION_MODEL`), the
+server's own directory as its cwd, the default tuning. An existing row is never
+written here.
+
+Its configuration is the ordinary command, and it is the whole of it:
+
+    gongga-cli '{"name":"set_session","args":{"id":"@monitor/disk","model":"openai/gpt-5","cwd":"C:/work"}}'
+
+Nothing re-tunes the session on a later handover, so the model, the tier, the cwd,
+the keep-alive and the compaction settings are the operator's and stay. The report
+says which model its own turn runs on (`{{mine}}`), read from the row at handover
+rather than from a choice made for it.
 
 Delivery is `commands::deliver`, the same path `send_message` takes: idle means a
 turn starts now, busy means an inbox row the next step boundary reads. The queue
-gate, `@skill:` expansion, shells, tools, events, and the window's rendering are
+gate, `@skill(...)` expansion, shells, tools, events, and the window's rendering are
 all reused; there is no second way to start a turn.
 
-## Choosing the model: usable flash
+## No model is chosen, and no failure switches one
 
-`monitor::candidates` is the roster's `tier = "flash"` models that this server
-could actually send a request on: the roster places it, a credential resolves for
-it, and it takes the Responses API. The last one is `Catalog::speaks_responses`,
-the same test `default_entry` applies -- without it a roster entry the shape cannot
-drive would be picked and then fail with an error that says nothing about tiers.
+The monitor runs on what its row says. There is no flash search, no ranking by
+allowance, no `Catalog::speaks_responses` gate and no `sessions.monitor_attempts`
+column: all of it existed to pick a model for a session nobody could pick one for.
 
-Order: the worst window a provider last reported, best first; providers that have
-reported nothing sort after the ones that have, in roster order. "Worst window"
-because a provider with a full month and an empty five-hour window cannot serve
-the next turn, and a wallet with no window is a nominal share so it competes
-rather than being shut out. This is the same `fail_open` reading the `model_pool`
-skill uses: nothing reported is not a refusal.
-
-That comparison is why `quota` keeps a reading per provider. What SPEC's
-`active_quota` block draws is `quota::readings()`, every row ordered by its last
-request; `quota::of(provider)` is what a choice between providers needs. Both read
-the same table, so the block and the choice cannot disagree about a provider.
-
-The chosen model is written to `sessions.model` and the session's `Tuning` before
-the report is delivered, so the turn cannot start on the model that just failed.
+What that gives up is the automatic switch when the monitor's own model breaks. What
+stands in its place is a session in `error`, drawn by the window like any other, and
+one `set_session` away from running on something else. `quota::of` went with the
+ranking; the `active_quota` block still reads `quota::readings()`.
 
 ## When the monitor itself fails
 
-A monitor is an ordinary session, so its own failure is an ordinary
-`sessions.status = 'error'` row -- `self_failed` is "the name starts with
-`@monitor/`", which is now a fact rather than a guess. It goes to
-`@monitor/providers`, because "why does this session keep failing" is that kind's
-question whatever the failing session was.
+A monitor is an ordinary session, so its failure is an ordinary
+`sessions.status = 'error'` row. What keeps that from looping is identity rather
+than a name pattern: `sweep_errors` skips the failure of the session a report would
+be delivered to (`failure.name == PROVIDERS.session`), because handing it another
+report would be the same report forever. It stays in `error` for a reader.
 
-`sessions.monitor_attempts` counts the attempts made for this failure, so it is
-also the index of the *next* candidate. On a monitor failure the sweep takes
-`candidates[attempts]`, writes it, and delivers **the report the monitor was last
-given** (`store::user_texts`, last row) with a preface naming the model that failed
-and what the server recorded for that turn. Re-deriving the report would lose what
-the first attempt was told.
+A failure of `@monitor/disk` is a different session's, and goes to
+`@monitor/providers` like anybody else's: a provider is what broke, whatever that
+session was doing.
 
-Two details that are only obvious after getting them wrong:
-
-- A monitor created *during* this handover inherits the attempt count
-  (`store::set_monitor_attempts`), because otherwise its first failure would be
-  read as attempt 0 and the model that just failed would be chosen again.
-- `store::finish_turn` clears `monitor_attempts` and pushes `monitor_seq` past the
-  transcript whenever a turn ends *not* in error. A session that recovers and
-  fails again has a new episode, and the search starts from the best candidate.
-
-When the list is exhausted the sweep writes one `Event::Log` and stops: the kind's
-session has failed on every usable flash model, and the report is left for a
-reader. No recursion, no invented retry budget -- `AGENTS.md` forbids one, and the
-failure is still visible in the window either way.
-
-The disk kind counts its own attempts, because it has no failing session row to
-hang them on: `monitor_state` holds the event it last handed over
-(`disk.event`), how many models that handover has been through
-(`disk.attempts`), and the row the last report became (`disk.wake`). While that
-row's session is in `error`, the same event is handed over again on the next
-candidate -- a disk whose first choice of model is refused is still cleaned, and
-the providers kind is told about the failing monitor in parallel.
+The disk and quota kinds keep one cursor each in `monitor_state` -- `disk.event`,
+`quota.event` -- and nothing else, because the event row is the whole memory of what
+has been handed over. A handover that cannot happen at all (no session could be
+created, the report could not be written) advances the cursor and publishes one
+`Event::Log`; one the session would not take (`Refused`: it is being deleted, or the
+server is stopping) leaves the cursor where it is and the next tick asks again.
 
 ## What the report says, and what the skill says
 
@@ -219,29 +209,28 @@ having the map in a cached prompt instead of a transcript, and it is paid once.
 
 ## The boundary with `model_pool`
 
-The server reads the roster's `tier` and the providers' own quota readings.
-`preference.toml` weights, `model_pool mark`, and the entitlement probe stay in the
-skill, because they are this machine's policy and not the harness's. Running the
-skill's python from the server would also leave a wrong answer on a machine where
-the skill is not installed, which is the "two implementations" this avoids by not
-starting.
+The server chooses no model for a monitor, so it reads no `tier` and no allowance to
+do it. `preference.toml` weights, `model_pool mark`, the entitlement probe and the
+choice of a model for a session stay in the skill and in `set_session`, because they
+are this machine's policy and not the harness's. Running the skill's python from the
+server would also leave a wrong answer on a machine where the skill is not
+installed, which is the "two implementations" this avoids by not starting.
 
 ## Verified
 
 `scripts/monitor_selftest.sh`: scratch home, ports the kernel picks, a fake
 Responses endpoint that refuses one model id (`FAKE_LLM_FAIL_MODEL`), and a roster
-of two flash models where the first is the refused one -- so one run covers the
-whole chain:
+of two flash models where the first is the refused one:
 
 | step | result |
 | --- | --- |
-| `set_session '@mine'` | refused: the `@` prefix belongs to the harness |
-| a session on the refused model | `turn end … outcome=Failed`, `status='error'` |
-| the handover | `handed a failure to the monitor session=broken model=dead/flash-dead`, `@monitor/providers` created, `monitor_seq` past the transcript |
-| the monitor's own turn | `turn end session=@monitor/error outcome=Failed`, then `model=fake/flash-fake attempt=2`, and that turn ends `Done` |
-| the retry's transcript | the original report, unchanged, behind a preface naming the failed model |
+| `set_session '@mine'` | accepted: no name is reserved, and the session exists afterwards |
+| a session on the refused model | `turn end ... outcome=Failed`, `status='error'` |
+| the handover | `handed a failure to the monitor session=broken`, `@monitor/providers` created on the model `set_session` gives a session naming none, `monitor_seq` past the transcript |
+| `set_session` on the monitor | accepted, and the row carries the model it named -- and it is still there after the next handover |
+| the monitor's own failure | no second report: no handover names `@monitor/providers` as the failing session |
 | six more seconds of ticks | no second report for the same failure |
-| the disk kind | `bash scripts/disk_selftest.sh`: a successful tool call on a volume below the declared threshold writes one `disk_space` event and creates `@monitor/disk` with `@skill: clean-disk` in its prompt index; a second call adds nothing; a refused first model is retried and the turn ends `Done` |
+| the disk kind | `bash scripts/disk_selftest.sh`: a successful tool call on a volume below the declared threshold writes one `disk_space` event and creates `@monitor/disk` with `@skill(clean-disk)` in its prompt index; a second call adds nothing |
 | the disk kind's arithmetic | `disk::tests::*`: an ordinary disk says nothing, a low one says it once, a recovered one says it again |
 
 The disk kind is a separate script because it needs no error to have happened

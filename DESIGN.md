@@ -2030,27 +2030,29 @@ monitor 的那一行）与 `monitor_attempts`（这次失败换过几个模型�
 （`store::begin_turn`），所以 `seq` 只增，一个比较就够。入口是同一个 `monitor::sweep`：
 启动时一次（端口绑定之前）、已有的 2 秒 tick 一次。
 
-**一个会话，名字是 `@monitor`。** 内置会话带 `@` 前缀，`set_session` 拒绝这个前缀并说明
-理由——2026-11-02 证明「monitor」是用户真的会用的名字。前缀本身先选了 `#`，被一个细节否掉：
+**一个会话，名字是 `@monitor/...`，没有任何保留。** 内置会话叫 `@monitor/providers` 与
+`@monitor/disk`，但那只是本模块写下的一个名字：`set_session` 不保留任何前缀，`@` 与别的字符
+一视同仁，人取了这个名字，下一次 disk 报告就投到他的会话里。harness 认自己的会话靠的是建它时
+用的那个常量，从不问名字「你是不是我的」——这正是保留命名空间当年想要的效果，而它换来的是
+monitor 的配置谁都改不了，不划算。前缀本身先选了 `#`，被一个细节否掉：
 `shell_words::split`（输入行与脚本 argv 用的就是它）把**以 `#` 开头**的词之后整行当注释，
 于是手敲要引号；`@` 不用，而且引用以 `@image(` / `@skill(` / `@file(` 开头、以 `)` 收尾，裸的
 `@monitor` 永远不会被 `meta::mentions` 当成引用。下发走 `commands::deliver`：空闲就起
 turn，忙就进 inbox，排队门 / `@skill(...)` 展开 / shell / 工具 / 事件 / 窗口渲染全部复用。
-`del_session @monitor` 允许（不能工作的 monitor 得能删），下一次失败会重建它。
+`del_session @monitor/disk` 允许，下一次触发会重建它。
 
-**选模型：usable flash。** roster 的 `tier = "flash"` × credential 能解析 × 能走 Responses
-API。排序按最差的额度窗口降序，没报额度的按 roster 顺序排在后面（没报不是拒绝，与
-`model_pool` 的 `fail_open` 一致）。这也是 `quota` 要多存一份「按 provider」的原因：
-`last()` 仍然服务 SPEC 的 `active_quota` 行，而**在 provider 之间做选择**是另一件事。
+**选模型：不选。** monitor 跑在自己行里写的那个模型上。没有 flash 搜索、没有按额度排序、没有
+`Catalog::speaks_responses` 门、也没有 `monitor_attempts` 列——它们存在的意义只是替一个谁都改
+不了的会话挑模型。新会话由 `commands::create_session` 建（= `set_session` 只给一个名字），所以
+它拿到的模型、cwd、tuning 与手敲 `/set_session --id @monitor/disk` 完全一样；已存在的行本模块
+从不改写，于是那条命令就是它配置的全部，下一次交接也不会把它冲掉。`quota::of` 随排序一起
+删掉，`active_quota` 块仍然读 `quota::readings()`。
 
-**monitor 自己失败。** 它也是普通会话，`status = 'error'` 一样会被看到。`monitor_attempts`
-既是「试过几个」也是**下一个候选的下标**，于是取下一个模型、把**上一次给它的那份报告**原样
-再投一次（重新推导会丢掉第一次被告知的内容），前面加一句「上次用的是这个模型，失败原因是
-这些」。列表走完就写一条 `Event::Log` 停下——不递归、不自造重试预算。
-
-两个只有踩过才知道的细节：交接过程中新建的 `@monitor` 要继承 `monitor_attempts`，否则它
-第一次失败会被当成第 0 次而重挑刚失败的模型；`store::finish_turn` 在 turn **不是**以 error
-收尾时清计数并把 `monitor_seq` 推过整份 transcript，这样恢复之后再次失败是一次新的搜索。
+**monitor 自己失败。** 它也是普通会话，`status = 'error'` 一样会被看到。防环靠身份而不靠名字：
+`sweep_errors` 跳过「报告正要投给的那个会话」自己的失败（`failure.name == PROVIDERS.session`），
+否则同一份报告会为它一直投下去。代价是没有自动换模型——那正是上一版 `adopt` 干的活，也正是
+它让 monitor 的配置谁都改不了的原因。`@monitor/disk` 自己失败是另一个会话的失败，照常交
+给 `@monitor/providers`：坏的是 provider，不是那个会话在做什么。
 
 **知识按寿命分成两半**（2026-11-02 用户定）：实测一次 monitor 回合花 112 秒、30 次工具调用
 去摸清「一个 gongga home 长什么样」——而那部分对每次失败都一样。

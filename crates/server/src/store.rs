@@ -145,10 +145,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- user row before it starts, so `seq` only grows: this column is the whole
     -- record of "this failure has been reported", and it survives a restart.
     monitor_seq INTEGER NOT NULL DEFAULT 0,
-    -- How many models a monitor turn has been switched through for the failure
-    -- this session is in. Reset when the session stops being in error, so a new
-    -- failure starts the search again.
-    monitor_attempts INTEGER NOT NULL DEFAULT 0,
     -- The tier every request of this session sends, in the roster's spelling.
     -- NULL picks the shortest tier the roster declares, so a row written before
     -- this column existed reads what a session that never asked reads.
@@ -454,6 +450,11 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     if has_column(conn, "sessions", "model") && !has_column(conn, "sessions", "model_name") {
         conn.execute("ALTER TABLE sessions RENAME COLUMN model TO model_name", [])?;
     }
+    // No reader left: a monitor is an ordinary session, so nothing counts the
+    // models one was switched through.
+    if has_column(conn, "sessions", "monitor_attempts") {
+        conn.execute("ALTER TABLE sessions DROP COLUMN monitor_attempts", [])?;
+    }
     if has_column(conn, "sessions", "provider") && !has_column(conn, "sessions", "model") {
         conn.execute("ALTER TABLE sessions RENAME COLUMN provider TO model", [])?;
     }
@@ -489,10 +490,6 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         (
             "monitor_seq",
             "ALTER TABLE sessions ADD COLUMN monitor_seq INTEGER NOT NULL DEFAULT 0",
-        ),
-        (
-            "monitor_attempts",
-            "ALTER TABLE sessions ADD COLUMN monitor_attempts INTEGER NOT NULL DEFAULT 0",
         ),
         (
             "cache_tier",
@@ -926,11 +923,11 @@ impl Store {
                 "INSERT INTO sessions (name, status, model, model_name, cwd, created_at,
                                        updated_at, context_limit, thinking_effort,
                                        context_tokens, context_generation, cached_tokens,
-                                       tps, ttft_ms, remote, monitor_seq, monitor_attempts,
+                                       tps, ttft_ms, remote, monitor_seq,
                                        cache_tier, cache_keepalive, mode)
                  SELECT ?2, 'idle', model, model_name, cwd, ?3, ?3, context_limit,
                         thinking_effort, context_tokens, context_generation, cached_tokens,
-                        tps, ttft_ms, remote, monitor_seq, monitor_attempts, cache_tier,
+                        tps, ttft_ms, remote, monitor_seq, cache_tier,
                         cache_keepalive, mode
                    FROM sessions WHERE name = ?1",
                 params![source, name, now],
@@ -1104,7 +1101,7 @@ impl Store {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT s.id, s.name, COALESCE(s.model, s.model_name),
-                    s.monitor_seq, s.monitor_attempts,
+                    s.monitor_seq,
                     COALESCE((SELECT MAX(m.seq) FROM messages m WHERE m.session_id = s.id), 0)
              FROM sessions s WHERE s.status = 'error'
                AND COALESCE((SELECT json_extract(e.payload, '$.origin') FROM events e
@@ -1119,8 +1116,7 @@ impl Store {
                     name: r.get(1)?,
                     model: r.get(2)?,
                     monitor_seq: r.get(3)?,
-                    monitor_attempts: r.get::<_, i64>(4)?.max(0) as u32,
-                    last_seq: r.get(5)?,
+                    last_seq: r.get(4)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1133,11 +1129,11 @@ impl Store {
     ///
     /// Written after the turn is handed over, never before: a crash between the
     /// two repeats a report, which is recoverable, where the other order loses one.
-    pub fn mark_monitored(&self, session_id: i64, seq: i64, attempts: u32) -> anyhow::Result<()> {
+    pub fn mark_monitored(&self, session_id: i64, seq: i64) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(
-            "UPDATE sessions SET monitor_seq = ?2, monitor_attempts = ?3 WHERE id = ?1",
-            params![session_id, seq, i64::from(attempts)],
+            "UPDATE sessions SET monitor_seq = ?2 WHERE id = ?1",
+            params![session_id, seq],
         )?;
         Ok(())
     }
@@ -1167,16 +1163,6 @@ impl Store {
             "INSERT INTO monitor_state (kind, value) VALUES (?1, ?2)
              ON CONFLICT(kind) DO UPDATE SET value = ?2",
             params![kind, value],
-        )?;
-        Ok(())
-    }
-
-    /// How many models this session has been through for its current failure.
-    pub fn set_monitor_attempts(&self, session_id: i64, attempts: u32) -> anyhow::Result<()> {
-        let conn = self.lock();
-        conn.execute(
-            "UPDATE sessions SET monitor_attempts = ?2 WHERE id = ?1",
-            params![session_id, i64::from(attempts)],
         )?;
         Ok(())
     }
@@ -2383,26 +2369,6 @@ impl Store {
     ///
     /// `after` is exclusive and is the log's `id`, never `seq`: the id is monotonic over
     /// the table where `seq` is per session, and a filter is applied on the way out.
-    /// One event row, by its id: what a retry re-reads.
-    pub fn event_row(&self, id: i64) -> anyhow::Result<Option<EventRow>> {
-        let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, seq, session_id, kind, payload, created_at FROM events WHERE id = ?1",
-        )?;
-        Ok(stmt
-            .query_row(params![id], |r| {
-                Ok(EventRow {
-                    id: r.get(0)?,
-                    seq: r.get(1)?,
-                    session_id: r.get(2)?,
-                    kind: r.get(3)?,
-                    payload: r.get(4)?,
-                    created_at: r.get(5)?,
-                })
-            })
-            .optional()?)
-    }
-
     pub fn events_after(
         &self,
         after: i64,
@@ -2773,7 +2739,7 @@ impl Store {
         if status != SessionStatus::Error {
             // Owed nothing here, and the next failure is a new episode.
             tx.execute(
-                "UPDATE sessions SET monitor_seq = ?2, monitor_attempts = 0 WHERE id = ?1",
+                "UPDATE sessions SET monitor_seq = ?2 WHERE id = ?1",
                 params![session_id, now_millis()],
             )?;
             tx.execute(
@@ -3363,10 +3329,8 @@ pub struct Failure {
     pub name: String,
     /// The model the failed turn ran on, `provider/model_name`.
     pub model: String,
-    /// The last row a monitor turn was given, and how many models that turn was
-    /// switched through.
+    /// The last row a monitor turn was given.
     pub monitor_seq: i64,
-    pub monitor_attempts: u32,
     /// The session's newest row: this is what a monitor turn has not seen yet.
     pub last_seq: i64,
 }

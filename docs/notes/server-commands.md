@@ -244,17 +244,19 @@ look like the setting was applied.
 `set_session` doubles as creation: naming a session is the only way to get one,
 and refusing to create it would make the command useless.
 
-Two refusals before anything is created, and both are about the name itself. The first
-is `monitor::reserved`: no segment may begin with `@`, because that namespace is the
-harness's. The second is `session::checked_name`, SPEC's grammar -- `/`-separated
-segments, none empty. Nothing else about the name is refused: a space, a dot and a CJK
-segment are all a person's business.
+One refusal before anything is created, and it is about the name itself:
+`session::checked_name`, SPEC's grammar -- `/`-separated segments, none empty.
+Nothing else about the name is refused: a space, a dot, a CJK segment and a leading
+`@` are all a person's business.
 
 The grammar is enforced here and only here, because this is the one path that makes a
 session. Every name after it came from a row this command wrote, so a table that holds
-a name is a table whose names have passed -- a monitor's own name never goes through
-`set_session`, and `@monitor/error` is a legal value of the grammar's character set
-anyway, which is exactly why the reserved check is a separate refusal saying why.
+a name is a table whose names have passed.
+
+A monitor's session is made by this same path -- `commands::create_session` is this
+handler with a name and nothing else -- which is why its name is not a namespace
+anything reserves and its model is not a choice anything makes for it. See
+`server-monitor.md`.
 
 # Invariant
 
@@ -643,24 +645,22 @@ document. The alternative is what every adapter did before it: four ad-hoc
 queries against tables whose column names are the server's business, which
 is how a rename (`summary` to `handover`) broke a benchmark mid-run.
 
-## `@` is the harness's namespace
+## `@` is a name like any other
 
-`set_session` refuses a name beginning with `@`. Built-in sessions live there --
-the harness's monitors are `@monitor/error` and `@monitor/disk` -- so the namespace
-is reserved, and the harness never has to look at a session and decide whether it is
-its own. Refused rather than
-renamed: a session under a name the caller did not choose is a session they will
-not find again.
-
-Deleting one is still allowed: a monitor that cannot work has to be removable, and
-the next failure creates it again.
+The harness's monitors are `@monitor/providers` and `@monitor/disk`, and nothing
+reserves the namespace: `set_session` takes any name the grammar takes, `@`
+included, and a person who names a session `@monitor/disk` gets a session the next
+disk report is delivered to. The harness knows its own sessions by the constant it
+created them under, never by asking a name whose it is -- so it never has to
+decide whether a session is its own, which is what the reservation was for and what
+it stopped being worth once it made a monitor's configuration unreachable.
 
 `#` was the first choice and lost on a detail: a word that *starts* with `#` opens a
 comment in `shell_words::split`, which is what splits the input line and a script's
 argv, so `--session '#monitor'` had to be quoted or written `--session=#monitor`.
 `@` needs neither. It costs nothing on the reference side either: `@image(...)`,
 `@skill(...)` and `@file(...)` match on an opening parenthesis, so a bare
-`@monitor/error` is never read as one (`meta::mentions`).
+`@monitor/providers` is never read as one (`meta::mentions`).
 
 ## a session's own heartbeat
 
