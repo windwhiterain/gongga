@@ -933,27 +933,75 @@ fn event_error(d: &Value) -> &Value {
     }
 }
 
+/// The kinds a provider names for a request it will never accept; the `invalid*`
+/// family is caught by prefix instead.
+const REFUSED_KINDS: &[&str] = &[
+    "context_length_exceeded",
+    "authentication_error",
+    "permission_error",
+    "not_found_error",
+    "insufficient_quota",
+];
+
 /// Whether a streamed `error` event describes a bad minute or a refusal.
 ///
 /// # Invariant
 ///
-/// An unknown kind stays retryable: providers invent their own spellings, and
-/// giving up on one this code has not heard of is worse than one extra try.
+/// `status_retryable`'s rule reaches the face that has no status line: a kind naming
+/// the request invalid, or a status the provider states itself, is a refusal and ends
+/// the turn. Any other kind stays retryable -- providers invent their own spellings,
+/// and one extra try costs less than giving up on one this code has not heard of.
+///
+/// See `docs/notes/server-llm.md`.
 fn error_retryable(d: &Value) -> bool {
     let error = event_error(d);
     let kind = error["type"]
         .as_str()
         .or_else(|| error["code"].as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if kind.starts_with("invalid") || REFUSED_KINDS.contains(&kind.as_str()) {
+        return false;
+    }
+    match stated_status(error, d) {
+        Some(status) => status_retryable(status),
+        None => true,
+    }
+}
+
+/// The status a provider stated in the failure itself, when it stated one.
+///
+/// # Invariant
+///
+/// A streamed failure has no status line -- the `200` went out before the provider
+/// changed its mind -- so a status is known only where the provider writes one: in its
+/// `code`, or opening its message. A number anywhere else is prose, and prose read as
+/// a status ends a turn a retry could have saved.
+fn stated_status(error: &Value, d: &Value) -> Option<reqwest::StatusCode> {
+    if let Some(status) = error["code"]
+        .as_u64()
+        .and_then(|code| u16::try_from(code).ok())
+        .and_then(|code| reqwest::StatusCode::from_u16(code).ok())
+    {
+        return Some(status);
+    }
+    let said = error["message"]
+        .as_str()
+        .or_else(|| d["message"].as_str())
         .unwrap_or_default();
-    !matches!(
-        kind,
-        "invalid_request_error"
-            | "context_length_exceeded"
-            | "authentication_error"
-            | "permission_error"
-            | "not_found_error"
-            | "insufficient_quota"
-    )
+    opening_status(said)
+}
+
+/// A status written at the front of a message: `<400> InternalError.Algo...`.
+fn opening_status(said: &str) -> Option<reqwest::StatusCode> {
+    let rest = said.trim_start().trim_start_matches(['<', '[']);
+    let digits = rest.get(..3)?;
+    // Four digits is a number, not a status.
+    let next_is_digit = rest.as_bytes().get(3).is_some_and(u8::is_ascii_digit);
+    if !digits.bytes().all(|b| b.is_ascii_digit()) || next_is_digit {
+        return None;
+    }
+    reqwest::StatusCode::from_u16(digits.parse().ok()?).ok()
 }
 
 /// Adds the one instruction a size refusal leaves out, from `size_hint`.
