@@ -1399,9 +1399,10 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// A reference that names no readable picture is left as text, so a command
-    /// printing one cannot fail the turn; a model that cannot take images is told
-    /// so once, in the output, rather than having them silently dropped.
+    /// A reference that names no picture -- nothing readable there, or bytes that are
+    /// not one -- is left as text, so a command printing one cannot fail the turn; a
+    /// model that cannot take images is told so once, in the output, rather than having
+    /// them silently dropped.
     async fn attach_references(
         &self,
         ctx: &ToolContext,
@@ -1431,7 +1432,7 @@ impl Agent {
                 // Not a picture this harness can read: leave the text alone.
                 None => continue,
             };
-            let Some(media) = crate::image::media_type(std::path::Path::new(&path), &bytes) else {
+            let Some(media) = crate::image::media_type(&bytes) else {
                 continue;
             };
             if !ctx.vision.accepts_image {

@@ -486,7 +486,7 @@ async fn picture(
 ) -> Option<ImageRef> {
     let path = source.spelling(home, given);
     let bytes = source.read(home, given).await?;
-    let media = image::media_type(std::path::Path::new(&path), &bytes)?;
+    let media = image::media_type(&bytes)?;
     let llm = llm?;
     if !llm.accepts_image() {
         tracing::warn!(path = %path, "a picture was named for a model that cannot see one");

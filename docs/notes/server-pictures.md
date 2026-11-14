@@ -25,6 +25,33 @@ So the bytes are copied once, under an id the row records. The same argument as
 reason; the difference is that a blob is named by the provider's item id and a picture by
 this table's row, because nothing outside has named it yet.
 
+## what a picture is
+
+The bytes decide, and only the bytes. `image::media_type` (in `image/format.rs`)
+reads the format from them and then requires them to *be* that format: a PNG's
+signature followed by chunks that walk to `IEND`, an `IHDR` first and at least one
+`IDAT`; a JPEG that opens with `FFD8`, states a scan and closes with `FFD9`; a GIF
+with its trailer byte; a WebP whose RIFF length is the file's own and whose first
+chunk names the codec; a bitmap whose stated length, pixel offset and header size
+are ones this format has. The name a file happens to carry is not evidence, and is
+not consulted.
+
+That is the one hole a transcript cannot survive. A provider refuses a picture it
+cannot decode -- deepseek answers `400` before the stream, qwen accepts the request
+and then fails it inside a `200` -- and a refusal is not retried (see
+`server-llm.md`), so the turn ends, and every later request replaying that row ends
+the same way. The 28-byte file that poisoned three transcripts was a throwaway
+fixture named `a.png`: the signature, then twenty `0` bytes. Taking the media type
+from the extension is what let it be stored: nothing decoded it, so nothing
+refused it.
+
+So a mention whose bytes are not a picture stays the text it was. The row keeps
+`@image(<path>)`, gets no copy id, and a request carries the path as prose -- both
+where a message is stored (`meta::picture`) and where a tool's output is scanned
+(`Agent::attach_references`). The trade is stated rather than hidden: a real
+picture whose file was truncated, or padded after its end marker, is refused too.
+A picture named and not delivered is a worse day than a sentence naming it.
+
 ## where the copy lives
 
 `<home>/pictures/<id>`, beside the database rather than in it: a row is read on every

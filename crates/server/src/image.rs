@@ -1,8 +1,19 @@
 //! Pictures: formats, media types, and what a provider will accept.
 
 pub(crate) mod files;
+pub(crate) mod format;
 pub(crate) mod pictures;
 pub(crate) mod uploads;
+
+/// The media type of a file, from what its bytes are.
+///
+/// # Invariant
+///
+/// The bytes decide, never the extension a file happens to carry, and they must be
+/// the whole of what they claim: a provider refuses a picture it cannot decode, and
+/// that refusal is a request which can never be sent again. See
+/// `docs/notes/server-pictures.md`.
+pub use format::media_type;
 
 /// What the provider answered when it took one picture: the file, and when it goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,16 +26,6 @@ pub struct Uploaded {
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-
-/// The picture formats this harness accepts, by extension.
-pub const KNOWN: &[(&str, &str)] = &[
-    ("png", "image/png"),
-    ("jpg", "image/jpeg"),
-    ("jpeg", "image/jpeg"),
-    ("gif", "image/gif"),
-    ("webp", "image/webp"),
-    ("bmp", "image/bmp"),
-];
 
 /// Where a picture is, and what it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,36 +81,4 @@ pub fn resolve(cwd: &Path, given: &str) -> PathBuf {
         return path;
     }
     cwd.join(path)
-}
-
-/// The media type of a file, from the extension first and the magic number second.
-///
-/// # Invariant
-///
-/// A picture is only offered when its kind is certain: a wrong media type is a
-/// request the provider rejects, and the model cannot tell why.
-pub fn media_type(path: &Path, bytes: &[u8]) -> Option<&'static str> {
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        let ext = ext.to_ascii_lowercase();
-        if let Some((_, media)) = KNOWN.iter().find(|(e, _)| *e == ext) {
-            return Some(media);
-        }
-    }
-    // No usable extension: the first bytes still say what it is.
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        return Some("image/png");
-    }
-    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        return Some("image/jpeg");
-    }
-    if bytes.starts_with(b"GIF8") {
-        return Some("image/gif");
-    }
-    if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        return Some("image/webp");
-    }
-    if bytes.starts_with(b"BM") {
-        return Some("image/bmp");
-    }
-    None
 }
