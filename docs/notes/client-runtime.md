@@ -34,6 +34,20 @@ refuse the lock and the window would end up with no server at all. Porting this
 branch from `tui/run.rs` was the only semantic work in merging main into the
 client split; the rest of that file had already moved here.
 
+## The reconnect ladder, and where its wait lives
+
+`RECONNECT_MIN` is the first delay and the only constant: each failed dial doubles it and
+nothing caps it (`docs/notes/protocol-retry.md`). A capped ladder turned "wait for the
+server to come back" into "stop trying quietly", which is the one thing a window left
+open overnight must not do.
+
+The wait is a future kept across loop iterations, the same way `Dialing` is: re-made
+every round it would start over, and awaited inside the branch it would stop the keyboard
+being read. `Step::Dial` happens when the wait ends or when the loop owes none -- the
+first round, a `connect_server`, a link that ended, a send that failed -- and the delay
+stays cancellable because the wait sits in the same `select!` as the keys and the closing
+console.
+
 ## What is still in tui/run.rs
 
 `TuiSink`, the three interface impls (`Sink`, `WindowView`, `Frontend`), and a

@@ -337,13 +337,18 @@ not decide success or failure and never split a result by pipe. Only the final
 The final verdict relabels and seals that same result block; an empty result has
 a summary and no fabricated output text.
 
-## Event::Log — no tag
+## Event::Log — whose line it is
 
-A server log message carries its own name already (`agent.rs` formats
-`"{name}: delivered a message ..."`), so prefixing the session would render as
-`[peer] peer: ...`. Nothing is added here. `Event::Cmd` and `Event::CmdResult`
-are left alone for the same reason in the other direction: they echo what this
-client typed, not something a session said.
+A log line about one session carries that session (`Event::Log.session`) and is drawn in
+that session's window: a retry is the reason, and a retry is news the reader has to find
+where the work is, not in a status line the next note overwrites. A line about the whole
+server carries no session and keeps the status line.
+
+Nothing is added to the words either way: the more talkative lines already spell their
+own name (`agent.rs` formats `"{name}: delivered a message ..."`), so prefixing the
+session would render as `[peer] peer: ...`. `Event::Cmd` and `Event::CmdResult` are left
+alone for the same reason in the other direction: they echo what this client typed, not
+something a session said.
 
 ## NullSink
 

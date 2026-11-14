@@ -54,10 +54,17 @@ the only place that had to change.
 
 ## Backoff, and no cap
 
-200 ms, doubling, 30 s at most, and the delay resets whenever a child has lived
-60 s. There is no attempt limit: a panic loop is worth retrying forever (it is
-what the log is for), and `AGENTS.md` forbids turning a wait into a budget. A
-server killed once an hour is therefore restarted at once every hour.
+200 ms, doubling, with no ceiling (`docs/notes/protocol-retry.md`), and the delay resets
+whenever a child has lived 60 s. There is no attempt limit either: a panic loop is worth
+retrying forever (it is what the log is for), and `AGENTS.md` forbids turning a wait into
+a budget -- the 30 s cap this used to have was exactly such a budget. A server killed
+once an hour is therefore restarted at once every hour.
+
+What the missing cap costs, said plainly: a crash loop whose children never live 60 s
+climbs the ladder past any horizon a person waits for, so the restarts effectively stop.
+That is the shape of an unbounded wait -- the same trade `llm.rs` makes with
+`max_retries == 0` -- and the healthy reset is what keeps a single crash from climbing
+at all.
 
 Each decision writes one line to the same log, prefixed `watchdog:`, so
 `server.log` is still the only file a reader needs.

@@ -48,6 +48,11 @@ three are the provider's bad minute rather than ours. The caller sees one
 stream either way; a retry that is about to happen is announced as
 `LlmEvent::Retrying` so the operator can watch it happen.
 
+The delay doubles and is never capped (`docs/notes/protocol-retry.md`): a provider that
+is down for a day is waited out rather than quietly given up on, and with
+`max_retries == 0` the cancel is the only end. The wait is spent where the cancel can
+still reach it, so `interrupt_session` answers at once even inside a very long delay.
+
 An empty completion is worth asking for again: the provider acknowledged the
 request and then said nothing, which is what an overloaded or truncated
 response looks like. So is a stream that stopped without completing.
@@ -502,7 +507,8 @@ through `retryable`: that counts attempts against a configured ceiling, and this
 is not a bad minute -- its fix is not another try of the same bytes.
 
 **The stream's invariant, in full.** A failed, timed-out, or empty attempt is retried
-with a doubling delay: the caller always sees one stream, and each retry is announced as
+with a delay that doubles and has no ceiling: the caller always sees one stream, and each
+retry is announced as
 `LlmEvent::Retrying`. A panic inside one attempt is that attempt's failure and enters
 the same loop, so it never ends this stream by unwinding past it. How far an attempt got
 is not a reason to stop: only the provider saying the request itself is wrong ends this

@@ -156,9 +156,14 @@ in a state the operator can act on rather than "running".
 
 ## retry_warning
 
-One line for a request that is about to be tried again, naming the attempt, the
-ceiling and why the last one gave nothing. `max == 0` reads as "until
-cancelled": printing `1/0` said the opposite of what it meant.
+One line for a request that is about to be tried again, naming the attempt and why the
+last one gave nothing. `max == 0` reads as "until cancelled": printing `1/0` said the
+opposite of what it meant.
+
+The session is not in the words: the `Event::Log` carries it in its own field and the
+client draws the line in that session's window (`client-lib.md`), so naming it again
+would be the same name twice. Display only -- it never becomes a transcript row, or the
+model would be sent it again on every turn.
 
 ## a failed attempt's fragments are dropped before the retry
 

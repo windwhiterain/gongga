@@ -142,6 +142,7 @@ impl Agent {
                 self.bus.publish(Event::Log {
                     level: LogLevel::Error,
                     message: format!("{}: turn panicked: {message}", session.name()),
+                    session: None,
                 });
                 (TurnOutcome::Failed, 0, Some("harness"))
             }
@@ -440,6 +441,7 @@ impl Agent {
                     self.bus.publish(Event::Log {
                         level: LogLevel::Info,
                         message: format!("{name}: delivered {delivered} queued message(s)"),
+                        session: None,
                     });
                 }
                 delivered
@@ -505,6 +507,7 @@ impl Agent {
             message: format!(
                 "{name}: context at {tokens} of {budget} tokens; asked the agent to fold"
             ),
+            session: None,
         });
     }
 
@@ -1337,7 +1340,8 @@ impl Agent {
                 } => {
                     self.bus.publish(Event::Log {
                         level: LogLevel::Warn,
-                        message: retry_warning(&name, attempt, max, delay, &reason),
+                        message: retry_warning(attempt, max, delay, &reason),
+                        session: Some(name.to_string()),
                     });
                 }
                 // SPEC: nothing a cancel interrupts is lost. The chunks were
@@ -1374,6 +1378,7 @@ impl Agent {
             self.bus.publish(Event::Log {
                 level: LogLevel::Warn,
                 message: failed_warning(&name, &message, &said, discarded),
+                session: None,
             });
             return Err(anyhow::Error::new(ProviderFailure(message)));
         }
@@ -1442,6 +1447,7 @@ impl Agent {
                         "{}: {given} was referenced but not attached -- {}",
                         ctx.session, ctx.vision.refusal
                     ),
+                    session: None,
                 });
                 continue;
             }
@@ -1910,6 +1916,7 @@ impl Agent {
         self.bus.publish(Event::Log {
             level: LogLevel::Error,
             message: said,
+            session: None,
         });
     }
 }
@@ -1954,25 +1961,20 @@ pub(crate) fn panic_message(payload: &(dyn Any + Send)) -> String {
     }
 }
 
-/// The operator-facing line for a request that is about to be tried again.
+/// The line for a request that is about to be tried again.
 ///
 /// # Invariant
 ///
 /// `max == 0` is "no ceiling", not "zero allowed": printing `1/0` read like the
-/// opposite of what it meant.
-fn retry_warning(
-    session: &str,
-    attempt: u32,
-    max: u32,
-    delay: std::time::Duration,
-    reason: &str,
-) -> String {
+/// opposite of what it meant. The session is not in the words: the event carries it,
+/// and the line is drawn in that session's own window.
+fn retry_warning(attempt: u32, max: u32, delay: std::time::Duration, reason: &str) -> String {
     let of = if max == 0 {
         "until cancelled".to_string()
     } else {
         format!("of {max}")
     };
-    format!("{session}: model request failed ({reason}); retry {attempt} {of} in {delay:?}")
+    format!("model request failed ({reason}); retry {attempt} {of} in {delay:?}")
 }
 
 /// The operator-facing line for a request no further attempt can fix.
@@ -2180,18 +2182,12 @@ mod tests {
     /// "why did the first attempt fail" unanswerable.
     #[test]
     fn a_retry_warning_names_why() {
-        let said = retry_warning(
-            "main",
-            2,
-            0,
-            std::time::Duration::from_secs(2),
-            "HTTP 500: boom",
-        );
+        let said = retry_warning(2, 0, std::time::Duration::from_secs(2), "HTTP 500: boom");
         assert!(said.contains("HTTP 500: boom"), "{said}");
         assert!(said.contains("retry 2 until cancelled"), "{said}");
         assert!(said.contains("2s"), "{said}");
         // An explicit ceiling still reads as a ceiling, not as a fraction of 0.
-        let said = retry_warning("main", 1, 3, std::time::Duration::from_secs(1), "empty");
+        let said = retry_warning(1, 3, std::time::Duration::from_secs(1), "empty");
         assert!(said.contains("retry 1 of 3"), "{said}");
     }
 

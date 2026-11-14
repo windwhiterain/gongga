@@ -56,8 +56,6 @@ pub const DEFAULT_CACHE_TTL_SECS: u64 = 0;
 
 /// The share of an indexed entry's lines that may change before it is re-sent.
 pub const DEFAULT_INDEX_CHANGE_TOLERANCE: f64 = 0.2;
-/// The longest a retry delay may grow to. See `docs/notes/server-config.md`.
-pub const DEFAULT_RETRY_CEILING_MS: u64 = 30_000;
 
 /// The room left below which a volume counts as out of room, in MiB.
 ///
@@ -195,10 +193,8 @@ pub struct ModelConfig {
     pub idle_timeout: Duration,
     /// Extra attempts after a failure or an empty response; 0 is no ceiling.
     pub max_retries: u32,
-    /// First retry delay; doubles per attempt up to [`Self::retry_ceiling`].
+    /// First retry delay; every further attempt doubles it, with no ceiling.
     pub retry_base: Duration,
-    /// The longest a retry delay may grow to.
-    pub retry_ceiling: Duration,
     /// Provider-side tools, in the provider's spelling; sent verbatim. Empty is none.
     pub builtin_tools: Vec<String>,
     /// What the roster says this model takes in; empty means unstated.
@@ -414,7 +410,6 @@ struct FileModel {
     idle_timeout_ms: Option<u64>,
     max_retries: Option<u32>,
     retry_base_ms: Option<u64>,
-    retry_ceiling_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -650,14 +645,6 @@ impl Config {
                         env_or("GONGGA_PROVIDER_RETRY_BASE_MS").and_then(|v| v.parse().ok())
                     })
                     .unwrap_or(1_000),
-            ),
-            retry_ceiling: Duration::from_millis(
-                model_file
-                    .retry_ceiling_ms
-                    .or_else(|| {
-                        env_or("GONGGA_PROVIDER_RETRY_CEILING_MS").and_then(|v| v.parse().ok())
-                    })
-                    .unwrap_or(DEFAULT_RETRY_CEILING_MS),
             ),
             builtin_tools: entry
                 .as_ref()

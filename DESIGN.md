@@ -1395,7 +1395,7 @@ US 布局永远合成不出来的字符，**一个字节都不写进 pty**。两
   客户端自己的状态，一行都不动。
 - **重连就是重新握手**，没有第二条 resync 路径：`Hello` 回来时照原样把 catalog / sessions /
   model 刷一遍 —— 同一条消息既开始了新会话，也恢复了一个旧窗口，这正是重连便宜的原因。
-- 退避：250ms 起、每次失败翻倍、封顶 5s（`RECONNECT_MIN` / `RECONNECT_MAX`）。
+- 退避：250ms 起、每次失败翻倍，**不封顶**（只有 `RECONNECT_MIN`；封顶等于给等待设预算，见 `docs/notes/protocol-retry.md`）。
 - **拨号放在 `select!` 里和键盘并行**，不是 `await` 在分支里。握手超时是 5s；直接等的话，
   服务端一掉线窗口就每隔几秒僵 5 秒 —— 恰恰是最想按 Ctrl+Q 的时候。拨号的 future 跨迭代
   存着（`Box::pin`），按键不会把它打断，也不会让它被反复重启。
@@ -1423,10 +1423,14 @@ US 布局永远合成不出来的字符，**一个字节都不写进 pty**。两
   回答的长度由 provider 自己的输出上限约束，不由 socket 计时器约束。
 - 连接本身另有 30s 的 connect timeout（`CONNECT_TIMEOUT`，不可配）。
 - `max_retries`（默认 0 = 不限）/ `retry_base_ms`（默认 1000）：失败、超时、或**完成了但一个字
-  都没有**的空响应，以及**读流读到一半 panic**，都会退避重试，延迟翻倍（1s → 2s → 4s，封顶
-  30s）。
-- 只有「本次尝试一个字都没说」才允许重试：已经说过话再问一次，会给出第二个互相矛盾的答案。
-- 重试会发一条 warn 到 TUI（`retry 1/3 in 1s`），所以慢的时候看得到是在重试，而不是在思考。
+  都没有**的空响应，以及**读流读到一半 panic**，都会退避重试，延迟翻倍（1s → 2s → 4s → …），
+  **不封顶**：封顶会把「等 provider 缓过来」变成「悄悄放弃」，而缓过来要多久无从预知
+  （`docs/notes/protocol-retry.md`）。
+- 允许重试与「本次尝试说了多少」无关：已经吐出的碎片在重试之前就被丢掉，所以「说到一半死了」
+  和「一个字没说就死了」是同一种坏分钟。只有 provider 明说请求本身不对（4xx、
+  `invalid_request_error`、上下文超长）才不重试。
+- 重试会写一条 warn **到那个会话自己的窗口**（`retry 1 of 3 in 1s`、`retry 2 until cancelled in 4s`），
+  所以慢的时候看得到是在重试，而不是在思考；它只是显示，不进模型上下文。
 
 `GONGGA_LLM_*` 环境变量可覆盖配置项。
 
@@ -2008,7 +2012,9 @@ gongga-server …            <- supervisor：不建 runtime、不拿 server.lock
 维护的约定，它换来的性质是：一个**不可能成功**的启动不是崩溃，于是「锁被活进程占着」不会被
 每 200ms 重试到写满磁盘。改动只有 `gongga_server::main` 的错误路径。
 
-退避 200ms 起、×2、上限 30s，子进程活过 60s 复位；**不设次数上限**（AGENTS 禁 budget）。
+退避 200ms 起、×2、**不封顶**，子进程活过 60s 复位；**不设次数上限**（AGENTS 禁 budget）。
+封顶和次数上限都是预算，两者都不设：代价是持续的崩溃循环会把等待拉到人不会等的尺度，
+`docs/notes/protocol-retry.md` 与 `server-supervise.md` 里写明了这一点。
 
 **两处 pid 语义跟着改。** 窗口 spawn 到的是 supervisor 的 pid，greeting 里是服务端的 pid：
 `ServerInfo::supervisor` 让 `tui::run::whose_server` 两个 pid 都认；

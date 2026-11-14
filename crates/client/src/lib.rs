@@ -1718,12 +1718,20 @@ impl Client {
             // A log row is data, not conversation: the window draws what was said,
             // and `events` is how a reader asks for the rest.
             Event::Record { .. } => {}
-            Event::Log { level, message } => {
+            // A session's line is drawn in that session's window; a server-wide one stays.
+            Event::Log {
+                level,
+                message,
+                session,
+            } => {
                 let kind = match level {
                     LogLevel::Debug | LogLevel::Info => LineKind::System,
                     LogLevel::Warn | LogLevel::Error => LineKind::Error,
                 };
-                sink.note(kind, &message);
+                match session {
+                    Some(session) => sink.line(&session, kind, &message),
+                    None => sink.note(kind, &message),
+                }
             }
         }
     }
