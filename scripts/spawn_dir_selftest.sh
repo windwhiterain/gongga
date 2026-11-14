@@ -81,7 +81,10 @@ cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 
 # A skill of this run's own: an entry that says where it stands, so the answer is the
 # directory rather than a shape.
-mkdir -p "$home/skills/echo"
+# The home reads its content from the checkout in the home: make it before the
+# fixtures below are written into it.
+[[ -d "$home/ship/.git" ]] || git clone -q "${GONGGA_SHIP_URL:-$root/ship}" "$home/ship"
+mkdir -p "$home/ship/skills/echo"
 cat > "$home/skills/echo/SKILL.md" <<'MD'
 ---
 name: echo

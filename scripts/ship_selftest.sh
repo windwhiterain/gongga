@@ -232,8 +232,8 @@ wait_file() { # path
 }
 
 # What the marker skill says on disk, which is the only thing that proves an install.
-marker() { sed -n 's/^marker \(.*\)$/\1/p' "$1/skills/marker/SKILL.md" 2>/dev/null | head -1; }
-installed_commit() { sed -n '1p' "$1/.ship-pin" 2>/dev/null | tr -d '\r\n'; }
+marker() { sed -n 's/^marker \(.*\)$/\1/p' "$1/ship/skills/marker/SKILL.md" 2>/dev/null | head -1; }
+installed_commit() { git -C "$1/ship" rev-parse HEAD 2>/dev/null | tr -d '\r\n'; }
 
 say "== a fresh home clones the content and installs it"
 home=$work/home-1; mkdir -p "$home"; log=$work/home-1.log
@@ -259,7 +259,7 @@ mine=$(git -C "$checkout" rev-parse HEAD)
 say "     checkout HEAD: $(git -C "$checkout" rev-parse --abbrev-ref HEAD) $(git -C "$checkout" rev-parse --short HEAD) (personal $(git -C "$checkout" rev-parse --short local 2>/dev/null || echo none))"
 log=$work/home-2.log
 pid=$(start_server "$home" "$remote" "$log")
-wait_file "$home/skills/local-note/SKILL.md"; rc=$?
+wait_file "$home/ship/skills/local-note/SKILL.md"; rc=$?
 ok "the personal branch's own skill landed in the home" $rc
 stop_server "$pid" "$home"
 
@@ -269,7 +269,7 @@ log=$work/home-3.log
 pid=$(start_server "$home" "$remote" "$log")
 wait_marker "$home" D; rc=$?
 ok "an upstream change arrives (marker $(marker "$home"))" $rc
-[[ -f "$home/skills/local-note/SKILL.md" ]]; rc=$?
+[[ -f "$home/ship/skills/local-note/SKILL.md" ]]; rc=$?
 ok "and the personal skill is still there" $rc
 [[ "$(git -C "$checkout" rev-parse --abbrev-ref HEAD)" == local ]]; rc=$?
 ok "and the checkout is still on the personal branch" $rc

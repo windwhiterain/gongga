@@ -316,18 +316,10 @@ static SHARED: OnceLock<Prompts> = OnceLock::new();
 
 /// Points the process at one home's config; startup checks what came back.
 pub fn install(config: &Path) -> Vec<&'static str> {
-    let pinned = match crate::ship::config_text() {
-        Some(text) => read_table(&text).0,
-        None => {
-            tracing::warn!(
-                content = %crate::ship::resolved_commit()
-                    .unwrap_or_else(|| "nothing resolved".to_string()),
-                protocol = crate::ship::link().protocol,
-                "the shipped config is not readable here; only this home's [prompts] stand"
-            );
-            BTreeMap::new()
-        }
-    };
+    // The content's config is this home's own file: one file, both halves.
+    let pinned = std::fs::read_to_string(config)
+        .map(|text| read_table(&text).0)
+        .unwrap_or_default();
     let _ = SHARED.set(Prompts::layered(Some(config.to_path_buf()), pinned));
     let prompts = shared();
     // Reads the home now, so the first request is not the first read.

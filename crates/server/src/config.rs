@@ -478,16 +478,21 @@ impl Config {
         config_path: Option<&Path>,
         home_override: Option<&Path>,
     ) -> anyhow::Result<Self> {
-        let home_override = home_override.map(Path::to_path_buf);
-        let config_path = match config_path {
-            Some(p) => p.to_path_buf(),
-            None => home_override
-                .clone()
-                .unwrap_or_else(home_dir)
-                .join("config.toml"),
+        let named = home_override.map(Path::to_path_buf);
+        let mut home = named.clone().unwrap_or_else(home_dir);
+        // The content's own file; `--config` names one instead.
+        let (config_path, inside) = match config_path {
+            Some(path) => (path.to_path_buf(), false),
+            None => (crate::ship::config(&home), true),
         };
         let file = if config_path.exists() {
             read_file(&config_path)?
+        } else if inside {
+            anyhow::bail!(
+                "this home's config is the content's own file, and {} is not there: the                  checkout at {} holds no content to read",
+                config_path.display(),
+                crate::ship::checkout(&home).display()
+            );
         } else {
             FileConfig::default()
         };
@@ -503,13 +508,27 @@ impl Config {
             );
         }
 
-        let home = home_override.unwrap_or_else(|| {
-            file.server
+        // A config inside the home cannot move the home it is read from.
+        if named.is_none()
+            && let Some(stated) = file
+                .server
                 .as_ref()
                 .and_then(|s| s.home.clone())
                 .map(expand)
-                .unwrap_or_else(home_dir)
-        });
+        {
+            if inside {
+                if std::path::absolute(&stated).ok() != std::path::absolute(&home).ok() {
+                    tracing::warn!(
+                        config = %config_path.display(),
+                        home = %home.display(),
+                        stated = %stated.display(),
+                        "[server] home is not read: this config is already inside the home it                          names, so the home is where the file is"
+                    );
+                }
+            } else {
+                home = stated;
+            }
+        }
         std::fs::create_dir_all(&home)?;
         // Absolute from here on: a child in another directory (script, shell)
         // must resolve the same home.

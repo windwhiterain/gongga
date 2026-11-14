@@ -15,7 +15,7 @@ ship start_fetch  the content fetch, on its own thread. Nobody joins it here.
 ship prepare  resolve the content commit from the checkout. Waits for that fetch
               only when the checkout declares no protocol this build can read.
 migrate       the db is brought forward before anything opens it.
-ship install  reconcile the content into the roots. Local git reads and copies.
+ship content  the checkout on the commit this build reads; the config is its own file.
 prompts       templates from this config, over the pin.
 store         the db.
 ...           shell command, scripts, tools, subscriptions, dispatch, repair, sweep.
@@ -23,7 +23,7 @@ bind          the port answers. Everything above is what a client waits for.
 --- behind the port ---
 agents::start      the community clone's fetch + rebase, on its own thread.
 ship::refresh      waits for the start's content fetch; resolves again and
-                   reconciles the increment into the roots.
+                   moves the checkout onto the commit it named.
 (model scripts)    spawned by the roster read; their models merge in and bump a
                    generation, which is what republishes the roster.
 ```
@@ -55,12 +55,12 @@ so there is nothing to be early for.
 
 ## What refresh does
 
-It waits for the fetch this start made, resolves the checkout again and reconciles
-the increment into both roots. Content is live tracked (SPEC: `ALL Config File Must
-Be Live Tracked`), so a moved checkout is installed now rather than promised to the
-next start. `install_at` merges against `.ship-base` and writes only what changed: a
-local edit nobody upstream touched is left alone. `ship::content` is a `RwLock`, so
-the new commit is the answer for every later reader in this process.
+It waits for the fetch this start made, resolves the checkout again and moves the
+checkout onto the commit it names. Content is live tracked (SPEC: `ALL Config File
+Must Be Live Tracked`), so a moved checkout is what a running server reads from now
+rather than a promise for the next start: the config is the checkout's own file and
+`Current::now` re-reads it, and the skill roots are read per call. `ship::content` is
+a `RwLock`, so the new commit is the answer for every later reader in this process.
 
 ## The other half: the client's poll window
 

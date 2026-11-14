@@ -108,8 +108,11 @@ export GONGGA_SHIP_URL="$(cygpath -m "$root/ship")"
 : > "$work/selfcontrol-remotes.toml"
 export GONGGA_REMOTES_CATALOG="$work/selfcontrol-remotes.toml"
 # The skill under test, installed the way a home installs it.
-mkdir -p "$home/skills"
-cp -r "$skill" "$home/skills/self-control"
+# The home reads its content from the checkout in the home: make it before the
+# fixtures below are written into it.
+[[ -d "$home/ship/.git" ]] || git clone -q "${GONGGA_SHIP_URL:-$root/ship}" "$home/ship"
+mkdir -p "$home/ship/skills"
+cp -r "$skill" "$home/ship/skills/self-control"
 cp -r "$root/ship/config/config.toml" "$home/config.toml" 2>/dev/null
 
 port=$(free_port); fake_port=$(free_port)
@@ -221,7 +224,7 @@ f_label="ask asks, waits and prints the answer: exit $f, '$answer' $(first_line 
 ok "$f_label" $?
 
 # --- H: the script form of `ask` still runs -------------------------------------
-answer=$(timeout -k 5 120 "$home/skills/self-control/ask_session.py" mentor "What did I ask?" 2>"$work/ask-h.err")
+answer=$(timeout -k 5 120 "$home/ship/skills/self-control/ask_session.py" mentor "What did I ask?" 2>"$work/ask-h.err")
 h=$?
 printf '%s' "$answer" > "$work/ask-h.out"
 h_label="the script form of ask still runs: exit $h, '$answer' $(first_line "$work/ask-h.out" "$work/ask-h.err")"
