@@ -111,8 +111,8 @@ server_pid=$back
 alt_port=$(free_port)
 refusal="$root/.dev/selftest/refusal.log"; : > "$refusal"
 env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$bin/gongga-server.exe" --home "$home" --bind "127.0.0.1:$alt_port" --log info >"$refusal" 2>&1 &
-for _ in $(seq 1 150); do grep -q "already running on this home" "$refusal" && break; sleep 0.2; done
-grep -q "already running on this home" "$refusal"; ok "a second server on the same home refuses" $?
+for _ in $(seq 1 150); do grep -q "already using this home" "$refusal" && break; sleep 0.2; done
+grep -q "already using this home" "$refusal"; ok "a second server on the same home refuses" $?
 [[ "$(grep -c 'watchdog:' "$refusal")" == 0 ]]; ok "a refusal is not restarted" $?
 sleep 1
 if netstat -ano 2>/dev/null | grep -q ":$alt_port "; then refused_left=1; else refused_left=0; fi
