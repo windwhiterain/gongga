@@ -115,6 +115,18 @@ The `description` is in there because a dump is read later, out of context -- a 
 keeping the full output is being able to find the right one again. `slug()` in
 `bash.rs` is what makes it safe for a path.
 
+## standing_dir
+
+Where a program this machine starts stands when the session cannot say. The session's own
+directory, when this machine has it; this server's own otherwise. The two ways a session's
+directory is not here are an empty path -- its directory is on a peer -- and a path that
+is no longer a directory: both are a place to start somewhere else, never a failed spawn.
+
+A directory a *call* stated is not this function's business. `exec` resolves its `cwd`
+first and refuses an unusable one by name, keeping whether it came from the session or
+from the call, because the two sentences differ. See `server-tools-words.md`, "The
+directory a program stands in".
+
 ## The wait, and the clock
 
 `waited` is the only wait: a call's work runs on a task with a token of its

@@ -173,7 +173,7 @@ async fn one_shot(
         .arg("-u")
         .arg("-c")
         .arg(DRIVER)
-        .current_dir(cwd)
+        .current_dir(crate::tools::standing_dir(cwd))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())

@@ -22,7 +22,8 @@ pub struct RunOutcome {
 /// The program is spawned with its words as arguments and no shell between them,
 /// so what it receives is what the caller wrote. Both streams are read while it
 /// runs, so a chatty program cannot fill a pipe and stop; a run that passes the
-/// deadline is stopped, not left behind.
+/// deadline is stopped, not left behind. The directory is `standing_dir`'s: one this
+/// machine does not have is this server's own, never a failed spawn.
 pub async fn run(
     program: &Path,
     args: &[String],
@@ -32,7 +33,7 @@ pub async fn run(
 ) -> Result<RunOutcome, String> {
     let mut child = Command::new(program)
         .args(args)
-        .current_dir(cwd)
+        .current_dir(crate::tools::standing_dir(cwd))
         .envs(env.iter().map(|(name, value)| (name, value)))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

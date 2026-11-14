@@ -17,6 +17,16 @@ directory under `<home>/channels/ch-<opaque>/`:
 | `status` | the relay | pid, start, exit, end; rewritten whole by a rename |
 | `in` | the server | commands: `input <base64>` or `kill` |
 
+A channel *here* starts in a directory this machine has, whatever the session's own
+answer was: `Channels::start` passes the session's directory through
+`tools::standing_dir`, so a session whose directory is on a peer, or is gone, still gets a
+channel -- in this server's own directory. A channel on a peer keeps the path as that
+machine spelled it; only that machine can say whether it exists. And because `exec` falls
+back to the session's directory, `exec` refuses an unusable one *itself*, by name, before
+anything is started: a directory is never reported as a program that could not run.
+
+### The name is not the path
+
 The name is not the path because a live program's files cannot be moved: a Windows
 move of a directory whose file is open is refused. Measured on this machine with a
 junction standing in for the name — the link could be created and removed while the

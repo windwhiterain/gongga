@@ -141,6 +141,20 @@ impl ToolContext {
     }
 }
 
+/// Where a program this machine starts stands, when the session cannot say.
+///
+/// # Invariant
+///
+/// A directory this machine does not have never fails a call. Empty is a session whose
+/// directory is on a peer, and a path that is not a directory is one gone: both answer
+/// this server's own. A stated directory is its caller's to refuse, by name.
+pub(crate) fn standing_dir(cwd: &std::path::Path) -> PathBuf {
+    if !cwd.as_os_str().is_empty() && cwd.is_dir() {
+        return cwd.to_path_buf();
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolOutcome {
     /// Text handed back to the model as the function call output.

@@ -90,7 +90,7 @@ pub fn run(dir: &Path) -> anyhow::Result<()> {
     }
     let mut child = command
         .spawn()
-        .map_err(|e| anyhow::anyhow!("starting {:?}: {e}", words.program))?;
+        .map_err(|e| anyhow::anyhow!("starting {:?} in {:?}: {e}", words.program, words.cwd))?;
     let pid = child.id();
     // Its streams are pumped into `out` here: Git's bash cannot write to an inherited
     // handle.

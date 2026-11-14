@@ -255,7 +255,11 @@ impl Channels {
             } else {
                 args.to_vec()
             },
-            cwd: cwd.to_path_buf(),
+            // A channel here stands in a directory this machine has; a peer's is its own.
+            cwd: match remote {
+                Some(_) => cwd.to_path_buf(),
+                None => crate::tools::standing_dir(cwd),
+            },
             env: env.to_vec(),
         };
         let started = match remote {

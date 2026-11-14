@@ -127,21 +127,37 @@ impl Cmd for ExecTool {
                         }
                     },
                 };
-                // The session's directory, when this call asked for its machine and the
-                // session named one; the machine's own otherwise.
-                let cwd = match protocol::argtype::given(&args, "cwd") {
+                // The call's `cwd` or the session's default: which one, for the refusals.
+                let (cwd, from_session) = match protocol::argtype::given(&args, "cwd") {
                     protocol::Given::Value(value)
                         if value.as_str().is_some_and(|path| !path.is_empty()) =>
                     {
-                        std::path::PathBuf::from(value.as_str().unwrap_or_default())
+                        (
+                            std::path::PathBuf::from(value.as_str().unwrap_or_default()),
+                            false,
+                        )
                     }
                     protocol::Given::Nothing
                         if remote == ctx.remote && !ctx.cwd.as_os_str().is_empty() =>
                     {
-                        ctx.cwd.clone()
+                        (ctx.cwd.clone(), true)
                     }
-                    _ => std::path::PathBuf::from("."),
+                    _ => (std::path::PathBuf::from("."), false),
                 };
+                // Refused by name here: a missing directory is never the program's failure.
+                if remote.is_none() && !cwd.is_dir() {
+                    return ToolOutcome::err(if from_session {
+                        format!(
+                            "this session's directory {:?} is not on this machine, so this \n                             call has nowhere to start; state a `cwd` for it",
+                            cwd.display()
+                        )
+                    } else {
+                        format!(
+                            "no directory {:?} on this machine; a call's `cwd` is a \n                             directory that machine has",
+                            cwd.display()
+                        )
+                    });
+                }
                 if let Err(why) = ctx
                     .channels
                     .start(
