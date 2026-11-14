@@ -80,6 +80,12 @@ because a mapping is a fact about *that* repository's history — moving a skill
 retiring a path must not need a rebuild, which is the whole point of resolving by
 protocol.
 
+`commands` is the one entry that does not place a file anywhere: it names the functions
+this content publishes as commands of the home's own (see `server-content-commands.md`).
+A commit that declares none is read as one that has none, which is why the list defaults
+-- and why raising the protocol is what keeps a server that cannot read these lines on
+the commit that does not have them.
+
 ## plans
 
 `config.toml` is mapped from one repository file to one home file; a skill bucket is

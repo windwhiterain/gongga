@@ -233,6 +233,17 @@ pub trait Tool: Send + Sync {
     /// look its call takes when it ends. See `docs/notes/server-explore.md`.
     fn writes(&self) -> bool;
 
+    /// The command this tool hands its call to, when that is all it does.
+    ///
+    /// # Invariant
+    ///
+    /// `Some(name)` says the row is that command's spelling, not a second implementation:
+    /// the catalog publishes the command and not this alias, so a name whose command is
+    /// gone is unknown rather than a call that resolves back to itself for ever.
+    fn forwards_to(&self) -> Option<&str> {
+        None
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -264,6 +275,11 @@ pub trait Cmd: Send + Sync {
     fn machine(&self, _args: &Value, _ctx: &ToolContext) -> Option<Machine> {
         None
     }
+
+    /// The command this one hands its call to, when that is all it does.
+    fn forwards_to(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// SPEC's `fn <tool>(**args)`: one command, called as a tool.
@@ -279,6 +295,10 @@ pub struct Forward {
 }
 
 impl Cmd for Forward {
+    fn forwards_to(&self) -> Option<&str> {
+        Some(&self.name)
+    }
+
     fn run<'a>(
         &'a self,
         args: Value,
@@ -495,6 +515,10 @@ impl Tool for Specd {
 
     fn writes(&self) -> bool {
         self.spec.writes
+    }
+
+    fn forwards_to(&self) -> Option<&str> {
+        self.work.forwards_to()
     }
 
     fn run<'a>(

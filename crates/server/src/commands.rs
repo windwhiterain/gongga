@@ -38,6 +38,8 @@ pub struct Dispatch {
     pub subscriptions: Arc<crate::subscriptions::Subscriptions>,
     /// Commands registered by scripts, and the way to run one.
     pub scripts: Arc<crate::script::Scripts>,
+    /// Commands the content declares: a skill's function, published under its own name.
+    pub declared: Arc<crate::content_commands::ContentCommands>,
     /// The machine's LLM roster: what `set_session --model` is checked against.
     pub providers: crate::providers::Handle,
     /// Turns currently running. `cancel` waits for this to drain before the
@@ -1222,6 +1224,10 @@ pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) ->
     if spec.target == CommandTarget::ServerScript {
         return d.scripts.run(name, args).await;
     }
+    // Before the tool arm: a row forwarding to this name would hand it back for ever.
+    if let Some(route) = d.declared.route(name).await {
+        return declared_command(d, &route, args, origin.session()).await;
+    }
     match name {
         "send_message" => send_message(d, args, origin.session()).await,
         "set_session" => set_session(d, args).await,
@@ -1307,11 +1313,31 @@ pub fn resolve(catalog: &[CommandSpec], name: &str, args: &Args) -> Result<Comma
 }
 
 impl Dispatch {
-    /// Every command offered, from all three sources: the only list there is.
+    /// Every command offered, from all four sources: the only list there is.
     pub async fn catalog(&self) -> Vec<CommandSpec> {
         let mut all = server_catalog(&self.sessions.remote_names());
-        all.extend(crate::tool_cmd::catalog(&self.agent.tools()));
-        all.extend(self.scripts.commands().await);
+        let tools = self.agent.tools();
+        let scripts = self.scripts.commands().await;
+        // A name this build implements is not a declaration's to take.
+        let mut reserved: Vec<String> = all.iter().map(|spec| spec.name.clone()).collect();
+        reserved.extend(scripts.iter().map(|spec| spec.name.clone()));
+        reserved.extend(
+            tools
+                .iter()
+                .filter(|tool| tool.forwards_to().is_none())
+                .map(|tool| tool.name().to_string()),
+        );
+        let declared = self
+            .declared
+            .commands(&crate::content_commands::Publish {
+                skills: tools.skills(),
+                tools: &tools,
+                reserved: &reserved,
+            })
+            .await;
+        all.extend(declared);
+        all.extend(crate::tool_cmd::catalog(&tools));
+        all.extend(scripts);
         all
     }
 }
@@ -2659,6 +2685,28 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         true => Outcome::ok(outcome.output),
         false => Outcome::err(outcome.output),
     }
+}
+
+/// Runs one command the content declares: the skill's function, as the caller's session.
+///
+/// # Invariant
+///
+/// One implementation: `run_skill` is the door a package skill is opened by, so a declared
+/// command is that call under a shorter name -- `id` is the skill, `cmd` the function and
+/// the arguments this call carried. Nothing here knows a skill by any other route.
+async fn declared_command(
+    d: &Dispatch,
+    route: &crate::content_commands::Route,
+    args: &Args,
+    caller: Option<&str>,
+) -> Outcome {
+    let mut call = Args::new();
+    call.insert("id", route.skill.clone());
+    call.insert(
+        "cmd",
+        serde_json::json!({"name": route.function, "args": args.as_json()}),
+    );
+    run_skill(d, &call, caller).await
 }
 
 /// Arms a pattern, and answers with what it armed.

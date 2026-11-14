@@ -209,13 +209,17 @@ fn call_of(cmd: Option<&Value>) -> Result<Call, String> {
 /// is the checkout's, so a session whose directory is on a remote is handed the home's
 /// and the machine's rows. See `docs/notes/server-tools-skill.md`.
 pub fn installed_for(cwd: &Path, machine: Machine) -> Vec<Skill> {
+    roots((machine == Machine::Local).then_some(cwd)).all()
+}
+
+/// The same three roots, for a caller with no session to stand in a project root.
+pub fn roots(project: Option<&Path>) -> skill::Roots {
     let roots = crate::ship::roots();
     skill::Roots::new(
-        (machine == Machine::Local).then(|| cwd.join(".agents").join("skills")),
+        project.map(|cwd| cwd.join(".agents").join("skills")),
         roots.home.join("skills"),
         Some(roots.machine.join("skills")),
     )
-    .all()
 }
 
 /// One row: what to call it, the path that names it, where it comes from, what it is

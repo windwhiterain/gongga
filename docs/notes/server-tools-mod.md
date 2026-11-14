@@ -140,6 +140,14 @@ execution it runs, to call a hung mechanism a fault. `CALL_TIMEOUT_MS` is the
 one such number today, the skill program's. No caller sets it, no caller reads
 it, and while the harness is correct the interface is unchanged by it.
 
+## Tool, Cmd::forwards_to
+
+The pair answers one question nothing else can: is this row a command's spelling, or
+a tool with work of its own? `Forward` says `Some(name)`, every other `Cmd` says
+nothing, and `Specd` passes its work's answer up. `tool_cmd::catalog` reads it to
+leave the alias out, and `Dispatch::catalog` reads it to keep a declaration from taking
+a name this build implements.
+
 ## Tool
 
 Implemented with a boxed future rather than `async_trait` so the crate keeps

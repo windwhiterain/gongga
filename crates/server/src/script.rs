@@ -454,6 +454,6 @@ fn parse_arg(raw: &Value) -> Option<ArgSpec> {
     })
 }
 
-fn head(text: &str) -> String {
+pub(crate) fn head(text: &str) -> String {
     text.chars().take(200).collect()
 }

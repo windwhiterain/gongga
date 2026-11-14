@@ -12,6 +12,7 @@ mod bus;
 mod clock;
 mod commands;
 mod config;
+mod content_commands;
 mod diff;
 mod disk;
 mod explore;
@@ -353,6 +354,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(error = %e, "cannot create {output_dir:?}; capped output will be dropped");
     }
 
+    // The commands the content declares: a skill's function, published under its own name.
+    let declared = content_commands::ContentCommands::new(cfg.home.clone());
+
     // Scripts register commands; the directory is data, so nothing here knows one.
     let scripts = script::Scripts::new(
         cfg.scripts.dir.clone(),
@@ -464,6 +468,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         bus: bus.clone(),
         subscriptions: subscriptions.clone(),
         scripts: scripts.clone(),
+        declared,
         providers: providers::Handle,
         active: active.clone(),
         shutting_down: Arc::new(AtomicBool::new(false)),

@@ -108,6 +108,22 @@ impl Roots {
     pub fn find(&self, name: &str) -> Option<Skill> {
         self.named(name).into_iter().next()
     }
+
+    /// The skill one `id` names, read from the one root it belongs to.
+    ///
+    /// # Invariant
+    ///
+    /// The inverse of [`Skill::id`] and nothing else: the bucket in the id decides the
+    /// root, so an id is answered by one `stat`, never by a walk of every root. A
+    /// directory with no `SKILL.md` there is no skill, as everywhere else.
+    pub fn at(&self, id: &str) -> Option<Skill> {
+        let (word, name) = id.split_once('/')?;
+        let bucket = Bucket::ALL
+            .into_iter()
+            .find(|bucket| bucket.as_str() == word)?;
+        let dir = self.dir(bucket)?.join(name);
+        dir.join(SKILL).is_file().then(|| declared(bucket, &dir))
+    }
 }
 
 /// One skill directory: what its frontmatter declares, and where its files are.

@@ -91,6 +91,10 @@ skills are that machine's files to `ls` and `cat` over `remote_bash`.
 A name in two roots is two rows and two ids. That is the reason `run_skill` takes an
 `id` and never a bare name: a path names one row, a name may name two.
 
+`roots` is that construction, so a caller with no session can ask the same question: the
+catalog is built before any client is greeted, and the command a piece of content
+declares is a function of the home's or the machine's skills, never of one checkout's.
+
 ## What proves it
 
 `bash scripts/skill_call_selftest.sh` runs both shapes against one real server on a

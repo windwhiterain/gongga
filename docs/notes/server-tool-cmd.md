@@ -15,6 +15,18 @@ from the registry's own schemas -- the model's view and the operator's view of
 next greeting names. When scripts register commands dynamically, the registry
 derives from the catalog instead and the two views stay one.
 
+## A row that only forwards is not published
+
+A row whose `cmd` is its own name and names nothing this build implements hands its
+call to the command layer (`Forward`), so its catalog entry would resolve back to
+itself: one call, and no end. Such a tool is not published at all -- it is that
+command's spelling, and the command is what the greeting carries. A row forwarding to
+a name nothing answers is then an unknown command, which is the honest answer, instead
+of an entry that loops.
+
+That is also what makes a name one row: `ls_channel`'s server command was published
+twice before this, once by `server_catalog` and once by this module.
+
 ## Why the tunnel matters
 
 An agent that wants to run a command used to have to spell it as a shell line

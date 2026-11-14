@@ -115,6 +115,7 @@ The Python files are the content repository's `python/` tree, installed under
 | [`server-blobs.md`](server-blobs.md) | `crates/server/src/blobs.rs` |
 | [`server-clock.md`](server-clock.md) | `crates/server/src/clock.rs` |
 | [`server-commands.md`](server-commands.md) | `crates/server/src/commands.rs` |
+| [`server-content-commands.md`](server-content-commands.md) | `crates/server/src/content_commands.rs` |
 | [`server-config.md`](server-config.md) | `crates/server/src/config.rs` |
 | [`server-diff.md`](server-diff.md) | `crates/server/src/diff.rs` |
 | [`server-disk.md`](server-disk.md) | `crates/server/src/disk.rs` |

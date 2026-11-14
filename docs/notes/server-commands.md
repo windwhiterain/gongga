@@ -14,10 +14,11 @@ only way to get a default is the client's `persistant_cmd_argument`, which is
 filled in before the command ever reaches the wire.
 
 The catalog is the only list, and it is published to clients at connect time.
-It has four parts -- the server's own commands, the tool commands (one per
-tool, generated from the registry; see `docs/notes/server-tool-cmd.md`), and
-whatever scripts registered -- and one `target` field on each entry says who runs
-it. The client's own commands are *not* here: they are the window's, and the window
+It has four parts -- the server's own commands, the commands the content declares
+(one per function of a skill; see `docs/notes/server-content-commands.md`), the tool
+commands (one per tool, generated from the registry; see
+`docs/notes/server-tool-cmd.md`), and whatever scripts registered -- and one `target`
+field on each entry says who runs it. The client's own commands are *not* here: they are the window's, and the window
 seeds its own catalog with `protocol::client_commands` (`docs/notes/tui-command.md`). Dispatch
 reads that field; so does the CLI. A command nobody implemented is not
 "unknown" but a catalog entry with no handler, which the answer says outright.
@@ -45,7 +46,8 @@ for a caller from another build rather than a path the window takes.
 
 Rebuilt per greeting, not cached: the script half is a filesystem scan that
 re-reads only changed files, so a script added while the server runs appears on
-the next connect.
+the next connect; the declared half asks a package what it publishes only when the
+content commit or that package moved.
 
 ## DEFAULT_MESSAGE_LIMIT
 

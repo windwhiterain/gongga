@@ -64,6 +64,33 @@ pub struct Declared {
     pub python: String,
     #[serde(default)]
     skills: SkillRoots,
+    /// The commands this content adds to a home's catalog, in the order it declares them.
+    ///
+    /// # Invariant
+    ///
+    /// Absent from a commit that declares none, which is why the list defaults: the
+    /// mapping a protocol-12 commit carries is still this build's to install. The key is
+    /// `[[command]]` -- one table per command, the way a TOML declares a list.
+    #[serde(default, rename = "command")]
+    pub commands: Vec<Command>,
+}
+
+/// One command the content declares: a function of one of its skills, published under a
+/// name of its own.
+///
+/// # Invariant
+///
+/// Three words and no arguments. What a call carries is that function's signature, which
+/// the contract answers when a manifest is asked for, so a declaration that listed
+/// arguments too would be a second answer to a question Python already answers.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Command {
+    /// The name the command is published and called by.
+    pub name: String,
+    /// The id of the skill that implements it, as `ls_skill` prints one.
+    pub skill: String,
+    /// The function of that package to run.
+    pub function: String,
 }
 
 /// One commit of the content, with what it declares.
@@ -74,6 +101,13 @@ pub struct Content {
     /// Whether the repository answered this start.
     pub reachable: bool,
     declared: Declared,
+}
+
+impl Content {
+    /// The commands this commit declares; empty for one that declares none.
+    pub fn commands(&self) -> &[Command] {
+        &self.declared.commands
+    }
 }
 
 /// Where each bucket of skills belongs.

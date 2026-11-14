@@ -82,13 +82,14 @@ pub fn context(
 ///
 /// # Invariant
 ///
-/// Generated from the registry: the model's view and the operator's view of
-/// one tool are one definition. Positional spelling is the table's, not the
-/// schema's, and `session` is never required: it is the caller's own unless the
-/// call names another (SPEC's `session = caller()`).
+/// Generated from the registry: the model's view and the operator's view of one tool are
+/// one definition. `session` is never required: it is the caller's own unless the call
+/// names another (SPEC's `session = caller()`). A tool that only forwards its call is not
+/// here -- see `server-tool-cmd.md`: its entry would resolve back to itself.
 pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec> {
     tools
         .iter()
+        .filter(|tool| tool.forwards_to().is_none())
         .map(|tool| {
             let row = tool.spec();
             let mut args = vec![protocol::ArgSpec {

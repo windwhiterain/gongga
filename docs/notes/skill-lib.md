@@ -32,13 +32,18 @@ layer on this disk, and a machine whose home cannot be found has no general laye
 a placeholder path there would read the process's own directory as a root, which is a
 table full of skills nobody installed.
 
-## all, named, find
+## all, named, find, at
 
 `all` walks every layer and sorts each one's directories, so the same home draws the same
 table twice. `named` keeps every skill a name opens instead of the first one: `find` is
 what `@skill(...)` reads, and the rest is what the editor's completion reports as shadowed. A name in two layers is not an error -- the specification says the more
 specific layer wins and asks the implementation to say when it did -- but it is also not
 something to hide from the reader who typed the name.
+
+`at` is the inverse of `Skill::id`, and it is the one that does not walk: the
+bucket word in the id decides the root, so an id is answered by one `stat`. That is
+what lets the catalog ask a declared package what it publishes before any session
+exists to stand in a project root.
 
 ## Skill
 
