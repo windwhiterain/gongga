@@ -54,11 +54,8 @@ pub fn ensure_pair(home: &Path) -> Option<PathBuf> {
     if let Some(source) = server_source() {
         place(&bin, SERVER, &source);
     }
-    // Beside the server, never left out: `bin` without the relay looks installed and
-    // cannot start a channel.
-    if let Some(source) = relay_source() {
-        place(&bin, RELAY, &source);
-    }
+    // No relay in `bin` is no channel: a copy it could not replace is asked again.
+    refresh_relay(home);
     // The command line is this home's Python: what a shell needs is a name for it.
     for (name, body) in SHIM {
         let _ = write(&bin, name, body);
@@ -97,9 +94,10 @@ pub(crate) fn relay_source() -> Option<PathBuf> {
 ///
 /// # Invariant
 ///
-/// A build tree is rebuilt under a server that is still running. The installed
-/// copy is the pair this process started with, so a later `cargo build` cannot
-/// change the program that holds its channels.
+/// A build tree is rebuilt under a server that is still running. The installed copy is
+/// the pair this process started with, so a later `cargo build` cannot change the program
+/// that holds its channels. It may be a copy `place` could not replace -- a relay still
+/// holding a channel pins the file -- and such a copy is what [`refresh_relay`] answers.
 pub(crate) fn relay_for_channel(home: &Path) -> PathBuf {
     if let Some(named) = std::env::var_os("GONGGA_RELAY_BIN") {
         let named = PathBuf::from(named);
@@ -112,6 +110,35 @@ pub(crate) fn relay_for_channel(home: &Path) -> PathBuf {
         return installed;
     }
     relay_source().unwrap_or(installed)
+}
+
+/// This build's relay in `bin`, updated when it is behind; `None` if there is no source.
+///
+/// # Invariant
+///
+/// A copy that could not be replaced is not an update: this answers `Some` only when
+/// `bin` holds the source's own bytes, so a caller asking after a refusal can tell "this
+/// build now" from "still the one that refused".
+pub(crate) fn refresh_relay(home: &Path) -> Option<PathBuf> {
+    let bin = home.join("bin");
+    let installed = bin.join(file_name(RELAY));
+    let source = relay_source()?;
+    // Never a source for itself: a server run from `bin` would otherwise "update" the
+    // file with itself.
+    if same_file(&source, &installed) {
+        return None;
+    }
+    std::fs::create_dir_all(&bin).ok()?;
+    place(&bin, RELAY, &source)?;
+    same_build(&installed, &source).then_some(installed)
+}
+
+/// Whether two paths name one file.
+fn same_file(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 /// One shim in `bin`, rewritten only when its bytes differ.

@@ -136,7 +136,6 @@ commands. The crate rename has landed:
 | [`server-remote.md`](server-remote.md) | `crates/server/src/remote/` |
 | [`server-tools-bash.md`](server-tools-bash.md) | `crates/server/src/tools/bash.rs` |
 | [`server-tools-detached.md`](server-tools-detached.md) | `crates/server/src/tools/detached.rs` |
-| [`server-tools-tunnel.md`](server-tools-tunnel.md) | `crates/server/src/tools/tunnel.rs` |
 | [`server-tools-text.md`](server-tools-text.md) | `crates/server/src/tools/text.rs` |
 | [`server-tools-skill.md`](server-tools-skill.md) | `crates/server/src/tools/skill.rs` |
 | [`server-pylib.md`](server-pylib.md) | `crates/server/src/pylib.rs` |
@@ -176,6 +175,12 @@ library holds the loop it runs.
 | [`tui-state.md`](tui-state.md) | `crates/client/src/window_state.rs` |
 | [`tui-cache.md`](tui-cache.md) | `crates/client/src/window_cache.rs` |
 | [`tui-command.md`](tui-command.md) | `crates/client/src/window_command.rs` |
+
+### server
+
+| note | source |
+| --- | --- |
+| [`server-session-config.md`](server-session-config.md) | `crates/server/src/session_config.rs` |
 
 ### cli (historical name)
 

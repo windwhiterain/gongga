@@ -72,6 +72,16 @@ if [[ -z "${peer_host:-}" ]]; then
   exit 0
 fi
 
+# A peer that is configured but does not answer from here is not a failure of the code
+# under test: say so and leave, instead of waiting out a handshake that will not come.
+# The connection this needs is the peer's own, so ask it the way the tools will: a
+# peer that is configured but does not answer ends the run with a skip rather than
+# with a handshake nobody waits out.
+if ! timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \n    ${peer_port:+-p "$peer_port"} ${peer_key:+-i "$peer_key"} "$peer_host" true >/dev/null 2>&1; then
+  echo "skip: $peer_name at $peer_host does not answer from this machine, so there is no peer to place a channel on"
+  exit 0
+fi
+
 free_port() {
   python -c 'import socket
 s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'

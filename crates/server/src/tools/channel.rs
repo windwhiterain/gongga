@@ -255,7 +255,11 @@ impl Channels {
             } else {
                 args.to_vec()
             },
-            cwd: cwd.to_path_buf(),
+            // A channel here stands in a directory this machine has; a peer's is its own.
+            cwd: match remote {
+                Some(_) => cwd.to_path_buf(),
+                None => crate::tools::standing_dir(cwd),
+            },
             env: env.to_vec(),
         };
         let started = match remote {
@@ -283,6 +287,12 @@ impl Channels {
     }
 
     /// A channel on this machine: its own directory, and a relay started beside us.
+    ///
+    /// # Invariant
+    ///
+    /// A start that fails leaves nothing behind: no row, no `status`, and no directory
+    /// either. The directory is this call's own invention, and a channel nobody holds is
+    /// litter no reader can use.
     async fn start_here(&self, words: &crate::relay::Words) -> Result<(Where, u32), String> {
         let dir = self
             .root
@@ -296,36 +306,99 @@ impl Channels {
         // never missed.
         std::fs::write(dir.join("in"), b"").map_err(|e| format!("could not write `in`: {e}"))?;
         let log = dir.join("relay.log");
-        let relay = crate::tools::detached::DetachedJob::launch_program(
-            &self.server,
+        let place = Where::Here(dir);
+        match self.open_channel(&place, &log, words).await {
+            Ok(pid) => Ok((place, pid)),
+            Err(why) => {
+                if let Where::Here(dir) = &place {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+                Err(why)
+            }
+        }
+    }
+
+    /// One channel's relay, and the pid it named: this build's copy, then a second look.
+    ///
+    /// # Invariant
+    ///
+    /// A relay that will not hold a channel of this protocol is answered with one attempt
+    /// to install this build's copy, and no more. A start that cannot be paired is a
+    /// failure the caller reads now, with the relay's own words, not a silence that ends
+    /// in a deadline.
+    async fn open_channel(
+        &self,
+        place: &Where,
+        log: &Path,
+        words: &crate::relay::Words,
+    ) -> Result<u32, String> {
+        match self.launch_relay(&self.server, place, log, words).await {
+            Ok(pid) => Ok(pid),
+            // A pair that cannot work is the one thing an install answers; anything else
+            // is already the answer.
+            Err(refused) if refused.may_be_out_of_date() => {
+                match self.home().and_then(crate::shell_command::refresh_relay) {
+                    Some(fresh) => self
+                        .launch_relay(&fresh, place, log, words)
+                        .await
+                        .map_err(|refused| refused.words),
+                    // Nothing to update from: the words name the two protocols, and
+                    // that is what this start can say.
+                    None => Err(refused.words),
+                }
+            }
+            Err(refused) => Err(refused.words),
+        }
+    }
+
+    /// One relay, started for one channel directory, and the pid it named.
+    ///
+    /// # Invariant
+    ///
+    /// The protocol travels, not the commit: a relay that reads `cmd` and `status` the
+    /// way this build writes them holds the channel whatever it was built from. The
+    /// build rides along for the refusal's own words alone.
+    async fn launch_relay(
+        &self,
+        relay: &Path,
+        place: &Where,
+        log: &Path,
+        words: &crate::relay::Words,
+    ) -> Result<u32, Refused> {
+        let mut job = crate::tools::detached::DetachedJob::launch_program(
+            relay,
             &[
                 "--relay".to_string(),
-                dir.display().to_string(),
-                // The pair's version: a relay of another build refuses to hold this
-                // channel and names both numbers.
+                place.dir(),
+                "--protocol".to_string(),
+                crate::relay::PROTOCOL.to_string(),
                 "--build".to_string(),
                 protocol::BUILD.to_string(),
             ],
             &self.root,
-            &log,
+            log,
             &words.env,
         )
-        .map_err(|e| {
-            format!(
+        .map_err(|e| Refused {
+            code: None,
+            words: format!(
                 "could not start a relay for {:?} with {}: {e}",
                 words.program,
-                self.server.display()
-            )
+                relay.display()
+            ),
         })?;
         // In this server's tree, so a kill takes the channel with it: only a `cancel`
         // lets them go.
         #[cfg(windows)]
-        crate::tools::job::arm(relay.pid);
-        let place = Where::Here(dir);
-        let pid = self
-            .await_status(&place, &log.display().to_string())
-            .await?;
-        Ok((place, pid))
+        crate::tools::job::arm(job.pid);
+        self.await_status(place, &log.display().to_string(), job.take_child())
+            .await
+    }
+
+    /// This home, when `root` is the `channels` directory of one.
+    fn home(&self) -> Option<&Path> {
+        let home = self.root.parent()?;
+        (self.root.file_name()? == "channels").then_some(home)
     }
 
     /// A channel on a peer: it places its own directory, and its relay outlives us.
@@ -367,7 +440,10 @@ impl Channels {
             runner,
             dir: started.dir,
         };
-        let pid = self.await_status(&place, &started.log).await?;
+        let pid = self
+            .await_status(&place, &started.log, None)
+            .await
+            .map_err(|refused| refused.words)?;
         Ok((place, pid))
     }
 
@@ -420,17 +496,43 @@ impl Channels {
         self.store.channel_of(session, id).map_err(quiet)
     }
 
-    /// Waits for the relay's first `status`, which says who it started.
-    async fn await_status(&self, place: &Where, log: &str) -> Result<u32, String> {
+    /// The pid the relay named, once it has started the program.
+    ///
+    /// # Invariant
+    ///
+    /// A relay that is gone without naming one has answered: its refusal is all a start
+    /// can say, and waiting out `START_DEADLINE` cannot change it. One that is still
+    /// there may still be reading its words, so the deadline stays for it. `child` is
+    /// `None` for a peer's relay, whose end this side sees through the connection.
+    async fn await_status(
+        &self,
+        place: &Where,
+        log: &str,
+        mut child: Option<tokio::process::Child>,
+    ) -> Result<u32, Refused> {
         let deadline = Instant::now() + START_DEADLINE;
         loop {
             if let Some(status) = place.status().await {
                 return Ok(status.pid);
             }
+            if let Some(code) = ended(&mut child) {
+                // A pid written between the look above and this one is a start, not a
+                // refusal.
+                if let Some(status) = place.status().await {
+                    return Ok(status.pid);
+                }
+                return Err(Refused {
+                    code,
+                    words: words_in(log),
+                });
+            }
             if Instant::now() >= deadline {
-                return Err(format!(
-                    "a relay started but never said who it started; its own words are in {log}"
-                ));
+                return Err(Refused {
+                    code: None,
+                    words: format!(
+                        "a relay started but never said who it started; its own words are in {log}"
+                    ),
+                });
             }
             tokio::time::sleep(LOOK).await;
         }
@@ -634,8 +736,9 @@ impl Channels {
     ///
     /// # Invariant
     ///
-    /// `kill` in the command file, then the row: a channel whose program is still
-    /// writing must not look gone while it is not.
+    /// `kill` in the command file, then the row, then this home's directory: a channel
+    /// whose program is still writing must not look gone while it is not, and the files
+    /// outlive the row only as litter nobody can name.
     pub async fn stop(&self, session: &str, id: &str) -> Result<bool, String> {
         let row = self.row_of(session, id)?;
         let place = self.place_of(&row).await?;
@@ -657,7 +760,56 @@ impl Channels {
             tokio::time::sleep(LOOK).await;
         }
         self.store.delete_channel(session, id).map_err(quiet)?;
+        // The files were the row's; a peer's directory is not this machine's to remove.
+        if let Where::Here(dir) = &place {
+            let _ = std::fs::remove_dir_all(dir);
+        }
         Ok(true)
+    }
+
+    /// Removes the directories no row names: what an ended channel used to leave behind.
+    ///
+    /// # Invariant
+    ///
+    /// A directory younger than [`GRACE`] belongs to a start that may still be writing its
+    /// row, and is left alone; a name the table holds is a channel somebody can still
+    /// read. That is what lets this run behind a serving server: unlinking thousands of
+    /// them is minutes of work, and no reader waits for it.
+    pub fn sweep(&self) -> usize {
+        let rows = match self.store.every_channel() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("could not read the channels to sweep: {e}");
+                return 0;
+            }
+        };
+        // A peer's directory is not here; only this machine's rows can vouch for a name.
+        let known: std::collections::HashSet<String> = rows
+            .iter()
+            .filter(|row| row.remote.is_none())
+            .map(|row| named(&row.dir))
+            .collect();
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return 0;
+        };
+        let mut gone = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("ch-") || known.contains(&name) {
+                continue;
+            }
+            let fresh = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|when| when.elapsed().is_ok_and(|age| age < GRACE));
+            if fresh {
+                continue;
+            }
+            if std::fs::remove_dir_all(entry.path()).is_ok() {
+                gone += 1;
+            }
+        }
+        gone
     }
 
     /// Gives a channel another name: one key of this table, and nothing on disk.
@@ -942,6 +1094,78 @@ impl Drop for Attached<'_> {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&self.id);
     }
+}
+
+/// A relay that did not hold a channel: how it ended, and what it said.
+///
+/// # Invariant
+///
+/// The words are the relay's own, because they name the two programs that disagree. A
+/// caller that can do something about the pair -- install the copy beside this server --
+/// reads [`Refused::may_be_out_of_date`] first, and reports these words when that does
+/// not land, instead of a deadline that says nothing.
+struct Refused {
+    /// `None` when it never started, or never ended: the two cases a code cannot tell.
+    code: Option<i32>,
+    words: String,
+}
+
+impl Refused {
+    /// Whether this is a relay that could be replaced by this build's copy.
+    ///
+    /// # Invariant
+    ///
+    /// The three codes a relay answers with when it will not hold what it was handed:
+    /// `2` (it does not know these words at all), [`REFUSED`](crate::relay::REFUSED)
+    /// (another protocol), and `None` (there was nothing to start). Anything else is a
+    /// relay that ran and failed, which no install changes.
+    fn may_be_out_of_date(&self) -> bool {
+        match self.code {
+            Some(code) => code == 2 || code == i32::from(crate::relay::REFUSED),
+            None => true,
+        }
+    }
+}
+
+/// The code a child ended with, once it has ended.
+fn ended(child: &mut Option<tokio::process::Child>) -> Option<Option<i32>> {
+    let status = child.as_mut()?.try_wait().ok()??;
+    Some(status.code())
+}
+
+/// The last thing a relay's log says, for an error that has to carry it.
+///
+/// # Invariant
+///
+/// A tail, not the file: a relay that spent a day holding a channel has said nothing in
+/// it, but the one line that matters is written as it starts.
+fn words_in(log: &str) -> String {
+    let read = std::fs::read(log).unwrap_or_default();
+    let tail = read.len().saturating_sub(4096);
+    let text = String::from_utf8_lossy(&read[tail..]);
+    let text = text.trim();
+    if text.is_empty() {
+        format!("the relay ended without a word; its log is {log}")
+    } else {
+        format!("the relay ended: {text}")
+    }
+}
+
+/// How long a directory is given to be named by a row before a sweep may take it.
+///
+/// # Invariant
+///
+/// A start writes its row within milliseconds of making the directory. This is the margin
+/// between the two, and it is what lets the sweep run behind a serving server.
+const GRACE: Duration = Duration::from_secs(120);
+
+/// The directory name a row's path ends in, in either spelling of the separator.
+fn named(dir: &str) -> String {
+    dir.replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .unwrap_or(dir)
+        .to_string()
 }
 
 /// Where one channel's files are: a directory this machine has, or one a peer has.

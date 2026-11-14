@@ -68,16 +68,34 @@ pub const DEFAULT_RETRY_CEILING_MS: u64 = 30_000;
 /// `docs/notes/server-disk.md`.
 pub const DEFAULT_DISK_LOW_MB: u64 = 1024;
 
-/// How long one call waits when nothing states one.
-pub const DEFAULT_TOOL_MAX_WAIT_MS: u64 = 60_000;
+/// How long one quota endpoint's reading stands before it is asked again, in
+/// seconds; `0` asks at every step's end.
+///
+/// # Invariant
+///
+/// A cadence, not a budget: nothing is held back and no number is withheld. It is
+/// what one endpoint's last answer is compared against, so a turn of many steps
+/// reads a provider's allowance once instead of once per step. See
+/// `docs/notes/server-quota.md`.
+pub const DEFAULT_QUOTA_INTERVAL_SECS: u64 = 60;
+
+/// How long a tool's own mechanism may take before the harness calls it a fault.
+///
+/// # Invariant
+///
+/// Internal and invisible: nothing a caller writes, reads or is told depends on
+/// this number while the harness is correct. It exists so a hung mechanism ends
+/// instead of holding a turn for ever. A tool whose wait is the call's own --
+/// `exec`'s `wait`, `wait`'s `time` -- does not use it at all.
+pub const CALL_TIMEOUT_MS: u64 = 120_000;
 
 /// How long a peer may stay silent when `[remote] answer_timeout_ms` states nothing.
 ///
 /// # Invariant
 ///
 /// A ceiling on one answer, never on a command: what it ends is the request, with an
-/// error. The clock a call goes to the background on is its own `timeout_ms`,
-/// measured on this machine, and no network number may move it.
+/// error. A call's own clock is measured on this machine, and no network number
+/// may move it.
 pub const DEFAULT_ANSWER_TIMEOUT_MS: u64 = 30_000;
 
 /// Share of a model's window `--context_limit` starts at; see `docs/notes/server-config.md`.
@@ -115,6 +133,9 @@ pub struct Config {
     /// Room left below which this server says the disk is out of room. See
     /// `docs/notes/server-disk.md`.
     pub disk_low: u64,
+    /// How long one endpoint's reading stands; `0` asks at every step end. See
+    /// `docs/notes/server-quota.md`.
+    pub quota_interval: Duration,
     /// `[ship] url`: this home's content repository. See `docs/notes/server-ship.md`.
     pub ship_url: Option<String>,
 }
@@ -214,13 +235,6 @@ pub fn image_refusal(
 
 #[derive(Debug, Clone)]
 pub struct BashConfig {
-    /// How long a `bash` call waits before returning.
-    ///
-    /// # Invariant
-    ///
-    /// Not a budget on the command: one still running when this passes keeps
-    /// running and posts its output when it finishes.
-    pub timeout: Duration,
     /// Tool output longer than this is capped: head and tail only, all of it on disk.
     pub max_output_chars: usize,
 }
@@ -237,17 +251,9 @@ pub struct PythonConfig {
     pub max_output_chars: usize,
 }
 
-/// What every tool call shares: the tunnel's own ceiling.
+/// What every tool call shares.
 #[derive(Debug, Clone)]
 pub struct ToolsConfig {
-    /// The longest one call may wait for its answer.
-    ///
-    /// # Invariant
-    ///
-    /// A ceiling on waiting, not on the work: a call that would wait longer is
-    /// refused and told to go `detached`, and what it started keeps running. See
-    /// `SPEC`, "Tool", and `docs/notes/server-tools-mod.md`.
-    pub max_wait: Duration,
     /// Every tool this home declares, in the order the names sort.
     ///
     /// # Invariant
@@ -263,13 +269,6 @@ pub struct ToolsConfig {
     /// A name absent here is a program started with the call's own words: the table
     /// says what is *not* raw, and nothing else.
     pub channels: std::collections::BTreeMap<String, crate::tools::spec::ChannelSpec>,
-    /// The tunnel's own arguments, in the words every tool that takes them shares.
-    ///
-    /// # Invariant
-    ///
-    /// Said once, because one tunnel offers them: a row that worded them again would
-    /// be a second answer to one question, and twenty rows would drift.
-    pub arguments: std::collections::BTreeMap<String, String>,
 }
 
 /// What a conversation with a peer costs when the peer is silent.
@@ -277,8 +276,8 @@ pub struct ToolsConfig {
 /// # Invariant
 ///
 /// Not a wait, and not a budget: this is the network clock, and it ends a request
-/// with an error. A call that runs long becomes a background job on its own clock,
-/// which this number never touches. See `docs/notes/server-remote.md`.
+/// with an error. What bounds a call is its own wait, which this number never
+/// touches. See `docs/notes/server-remote.md`.
 #[derive(Debug, Clone)]
 pub struct EndpointConfig {
     /// The longest a peer may stay silent, at its greeting and at every answer.
@@ -381,6 +380,9 @@ struct FileServer {
     /// Room left below which the disk counts as out of room, in MiB; `0` turns the
     /// reading off.
     disk_low_mb: Option<u64>,
+    /// How long one quota endpoint's reading stands, in seconds; `0` asks at every
+    /// step's end.
+    quota_interval_secs: Option<u64>,
 }
 
 /// `[ship]`: where this home fetches content from; a path is a local checkout.
@@ -419,15 +421,10 @@ struct FileModel {
 struct FileTools {
     bash: Option<FileBash>,
     python: Option<FilePython>,
-    max_wait_ms: Option<u64>,
-    /// `[tools.arguments]`: what the tunnel's own arguments are for, said once for
-    /// every tool that takes them.
-    arguments: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct FileBash {
-    timeout_ms: Option<u64>,
     max_output_chars: Option<usize>,
 }
 
@@ -675,12 +672,6 @@ impl Config {
         let tools_file = file.tools.clone().unwrap_or_default();
         let bash_file = tools_file.bash.clone().unwrap_or_default();
         let bash = BashConfig {
-            timeout: Duration::from_millis(
-                bash_file
-                    .timeout_ms
-                    .or_else(|| env_or("GONGGA_BASH_TIMEOUT_MS").and_then(|v| v.parse().ok()))
-                    .unwrap_or(120_000),
-            ),
             max_output_chars: bash_file
                 .max_output_chars
                 .or_else(|| env_or("GONGGA_BASH_MAX_OUTPUT_CHARS").and_then(|v| v.parse().ok()))
@@ -706,15 +697,8 @@ impl Config {
         };
 
         let tools = ToolsConfig {
-            max_wait: Duration::from_millis(
-                tools_file
-                    .max_wait_ms
-                    .or_else(|| env_or("GONGGA_TOOL_MAX_WAIT_MS").and_then(|v| v.parse().ok()))
-                    .unwrap_or(DEFAULT_TOOL_MAX_WAIT_MS),
-            ),
             rows: file.tool.unwrap_or_default(),
             channels: file.channel.unwrap_or_default(),
-            arguments: tools_file.arguments.clone().unwrap_or_default(),
         };
 
         let scripts_file = file.scripts.unwrap_or_default();
@@ -817,6 +801,14 @@ impl Config {
             .unwrap_or(DEFAULT_DISK_LOW_MB)
             .saturating_mul(1024 * 1024);
 
+        let quota_interval = Duration::from_secs(
+            file.server
+                .as_ref()
+                .and_then(|s| s.quota_interval_secs)
+                .or_else(|| env_or("GONGGA_QUOTA_INTERVAL_SECS").and_then(|v| v.parse().ok()))
+                .unwrap_or(DEFAULT_QUOTA_INTERVAL_SECS),
+        );
+
         // An empty line is the compiled URL, not a repository called nothing.
         let ship_url = file
             .ship
@@ -840,6 +832,7 @@ impl Config {
             transport,
             endpoint,
             disk_low,
+            quota_interval,
             ship_url,
         })
     }

@@ -103,14 +103,17 @@ struct Node {
     own: Mark,
     /// The strongest mark of everything under this node, itself included.
     under: Mark,
+    /// The greatest index under this node in the list it was built from: the place
+    /// the newest session it holds stands in.
+    latest: usize,
 }
 
 /// The rows the list draws: every session's name, and every prefix of one.
 ///
 /// # Invariant
 ///
-/// Siblings stand in the layout's order, oldest first, so a group appears where its
-/// first session is; a folded name keeps its rows, and unfolding it costs no data.
+/// Siblings keep the layout's order, oldest first, and a group stands where its newest
+/// session is; a folded name keeps its rows, and unfolding it costs no data.
 ///
 /// A row that names a session reports that session alone; a row that only groups
 /// reports the strongest mark below it. The row clicked for a window answers for that
@@ -119,7 +122,7 @@ pub fn rows(listed: &[Listed], folded: &BTreeSet<String>, unseen: &BTreeSet<Stri
     let mut nodes: Vec<Node> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     let mut roots: Vec<usize> = Vec::new();
-    for listed in listed {
+    for (place, listed) in listed.iter().enumerate() {
         let mark = mark_of(listed, unseen);
         let mut prefix = String::new();
         let mut parent: Option<usize> = None;
@@ -140,6 +143,7 @@ pub fn rows(listed: &[Listed], folded: &BTreeSet<String>, unseen: &BTreeSet<Stri
                         session: false,
                         own: Mark::Idle,
                         under: Mark::Idle,
+                        latest: place,
                     });
                     index.insert(prefix.clone(), at);
                     match parent {
@@ -152,12 +156,21 @@ pub fn rows(listed: &[Listed], folded: &BTreeSet<String>, unseen: &BTreeSet<Stri
             // Every row above this one holds this session too, so a group among
             // them answers for it.
             nodes[at].under = nodes[at].under.max(mark);
+            nodes[at].latest = nodes[at].latest.max(place);
             parent = Some(at);
         }
         if let Some(last) = parent {
             nodes[last].session = true;
             nodes[last].own = nodes[last].own.max(mark);
         }
+    }
+    // A row's place is the last index under its name, so a group moves as one.
+    // See `docs/notes/tui-tree.md`.
+    roots.sort_by_key(|&at| nodes[at].latest);
+    for at in 0..nodes.len() {
+        let mut children = std::mem::take(&mut nodes[at].children);
+        children.sort_by_key(|&child| nodes[child].latest);
+        nodes[at].children = children;
     }
     // Depth first without recursion: a name is arbitrarily deep and a stack is not.
     let mut rows = Vec::with_capacity(nodes.len());

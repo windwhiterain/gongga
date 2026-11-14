@@ -17,6 +17,16 @@ directory under `<home>/channels/ch-<opaque>/`:
 | `status` | the relay | pid, start, exit, end; rewritten whole by a rename |
 | `in` | the server | commands: `input <base64>` or `kill` |
 
+A channel *here* starts in a directory this machine has, whatever the session's own
+answer was: `Channels::start` passes the session's directory through
+`tools::standing_dir`, so a session whose directory is on a peer, or is gone, still gets a
+channel -- in this server's own directory. A channel on a peer keeps the path as that
+machine spelled it; only that machine can say whether it exists. And because `exec` falls
+back to the session's directory, `exec` refuses an unusable one *itself*, by name, before
+anything is started: a directory is never reported as a program that could not run.
+
+### The name is not the path
+
 The name is not the path because a live program's files cannot be moved: a Windows
 move of a directory whose file is open is refused. Measured on this machine with a
 junction standing in for the name — the link could be created and removed while the
@@ -34,6 +44,27 @@ appendable.
 
 That is why `--relay` is answered before clap and before the watchdog: a supervised
 relay would be started again the moment its program ends.
+
+## The pair is a protocol, not a build
+
+`cmd` and `status` are a contract between the relay that writes them and the server that
+reads them, and that contract's version is `relay::PROTOCOL`, declared beside the two
+structs it is about. The server names its own on the command line (`--protocol <n>`), and
+a relay of another one refuses with exit 3, naming both numbers. `--build` rides along
+for the refusal's words alone: SPEC's rule for programs that travel together is the
+latest *compatible protocol*, so two commits that left `Words` and `Status` untouched are
+one pair. A check on the commit instead (the guard as first written, 2026-11-11) refused
+every rebuild, and since a copy it could not replace was reused in silence, a home ended
+up with channels that all died on `exit 3` with nothing but a line in each `relay.log`.
+
+A relay of another protocol is therefore not the end of a start. The server asks
+`refresh_relay` for the copy beside itself (a build tree, or a bundle's `payload/<stamp>`),
+places that in the home's `bin`, and tries once more. When there is nothing to update from
+— a server running from `bin` has only the copy it is looking at — the start fails at once
+with the relay's own words instead of waiting out `START_DEADLINE`, and a copy pinned by a
+relay that is still holding a channel (Windows will not replace a running image) is the
+same answer. `scripts/channel_pair_selftest.sh` is the proof of all four: same protocol and
+another build, no protocol named at all, a copy that gets replaced, and a copy that cannot.
 
 The `.run` of a relay is a loop of two questions — are there new commands in `in`, and
 has the child ended — every 50 ms. The poll is the floor on a write's round trip, and
@@ -219,10 +250,9 @@ Delete in this order, one slice at a time, each slice building and passing
 3. **Interpreters.** `tools/python.rs`, `tools/interpreter.rs`,
    `tools/python_remote.rs`, `remote/shell*.rs` and their rows. Subscriptions already
    run in a channel; the interpreter's REPL semantics are what a `python` channel gives.
-4. **Detached processes.** `tools/detached.rs` and the `background` carrier: a channel
-   is what outlives a turn, so this is the last to go. It carries `JobRow`, the job
-   view and `cancel_lets_go` -- check each before removing it, because `cancel` and a
-   `resume` after a stop read them.
+4. **Detached processes.** The `background` and `timeout_ms` arguments and the job
+   row behind them are gone: a channel is what outlives a turn, and `exec`'s `wait`
+   is how long a call stays to listen.
 
 ## Deleted so far
 
@@ -231,8 +261,8 @@ Delete in this order, one slice at a time, each slice building and passing
 `tunnel::promote_child`, `words::Own`/`spawn_own`, `Store::job_of_call`,
 `ToolContext::endpoint` and the `CANCEL_LETS_GO` flag nothing read any more. Their two
 rows went with them, and `scripts/job_selftest.sh` retired too: it tested "a call's own
-program becomes a job", which is what a channel is for now. `check_job`/`del_job` and
-`tools/detached.rs` are still here for the slice that removes the `background` carrier.
+program becomes a job", which is what a channel is for now. The job row that
+answered a `background` call went with them.
 
 What stays: `read_file`, `write_file`, `replace` (a model has no other door to a file),
 `list_paths`, and every command in `commands.rs` that the channel world added.

@@ -239,3 +239,11 @@ A name can mean one thing in two commands (`set_session <session>` targets a
 session; `show_session <session>` names one to draw), and the hop prefers the
 argument that is *required*: that is the reading a free-form value should mirror.
 Catalog order does not decide it.
+
+## A refused filled value
+
+`refused_values` answers "would the model this line runs on take this value", for
+values the *window* filled in -- an operator's own word is a statement, and a
+statement is worth the server's refusal. It reads top-level arguments only, which is
+every slot a fill can reach: a structured leaf with an `accepts` set has a default by
+construction (`thinking`, `cache_tier`), and a defaulted leaf is never filled.

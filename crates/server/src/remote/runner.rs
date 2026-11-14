@@ -666,6 +666,11 @@ fn relay(cwd: Option<&str>, words: &str) -> Result<Value, String> {
     command
         .arg("--relay")
         .arg(&dir)
+        // The same rule as a channel here: the protocol, with the build for its words.
+        .arg("--protocol")
+        .arg(crate::relay::PROTOCOL.to_string())
+        .arg("--build")
+        .arg(protocol::BUILD)
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err)

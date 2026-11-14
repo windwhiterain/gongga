@@ -115,29 +115,6 @@ impl Side {
     }
 }
 
-/// What carries a call that says `background`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Carrier {
-    /// A process of its own, which outlives a `cancel`.
-    Process,
-    /// A worker process that leaves its answer in a file.
-    Worker,
-    /// Neither: it acts on what this server holds, so `background` is refused.
-    #[default]
-    Here,
-}
-
-impl Carrier {
-    pub fn carried(self) -> crate::tools::tunnel::Carried {
-        match self {
-            Carrier::Process => crate::tools::tunnel::Carried::Process,
-            Carrier::Worker => crate::tools::tunnel::Carried::Worker,
-            Carrier::Here => crate::tools::tunnel::Carried::Here,
-        }
-    }
-}
-
 /// What a name is, as `[channel.<name>]` declares it.
 ///
 /// # Invariant
@@ -183,25 +160,9 @@ pub struct ToolSpec {
     /// a session that only looks refuses.
     #[serde(default)]
     pub writes: bool,
-    /// Whether `background` is this tool's own work.
-    #[serde(default)]
-    pub handles_background: bool,
-    /// Whether this tool's wait is its own, so the tunnel's clock does not end it.
-    #[serde(default)]
-    pub owns_its_wait: bool,
     /// Whether the model is offered this tool; the command layer reaches all of them.
     #[serde(default = "yes")]
     pub offered: bool,
-    /// Whether the tunnel's shared arguments (`description`, `max_output`,
-    /// `timeout_ms`, `background`) belong to it.
-    #[serde(default = "yes")]
-    pub tunneled: bool,
-    /// What carries a call of its own that says `background`.
-    #[serde(default)]
-    pub carrier: Carrier,
-    /// The wait a call that states none gets.
-    #[serde(default)]
-    pub timeout_ms: Option<u64>,
     /// Output longer than this is capped for it. `0` disables the cap.
     #[serde(default)]
     pub max_output_chars: Option<usize>,

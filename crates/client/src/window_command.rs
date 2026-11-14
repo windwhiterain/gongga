@@ -75,19 +75,14 @@ pub fn run(
             };
             // An entry no argument declares can never take effect: refused, unless
             // no catalog has arrived to prove it wrong.
-            let kinds: Vec<String> = client
-                .commands()
-                .iter()
-                .flat_map(|command| command.args.iter())
-                .filter_map(|arg| arg.kind.clone())
-                .collect();
+            let kinds = crate::commands::sticky_kinds(&client.commands());
             if !kinds.is_empty() && !kinds.contains(&kind) {
                 client.say(
                     LineKind::Error,
                     &format!(
                         "{kind:?} is not a type any published argument declares, so no \
                          sticky entry can use it; the types are: {}",
-                        sorted(kinds).join(", ")
+                        kinds.join(", ")
                     ),
                     sink,
                 );
@@ -381,13 +376,6 @@ pub fn follows(client: &crate::Client) -> Vec<(String, String)> {
             Some((kind, parent))
         })
         .collect()
-}
-
-/// The kinds once each, in the order a reader can scan them.
-fn sorted(mut kinds: Vec<String>) -> Vec<String> {
-    kinds.sort_unstable();
-    kinds.dedup();
-    kinds
 }
 
 /// The completion a window offers: its own commands, then the server's catalog.

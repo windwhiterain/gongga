@@ -4,7 +4,7 @@
 # behaviours its prose describes still hold?
 #
 #   0  the head is stamped with the session's first message, and only that
-#   A  spawn creates a session under the caller's name, and arms `turn_end` for it
+#   A  `new_subagent` makes a session under the caller's name and arms `turn_end`
 #   B  a taken name becomes a new segment, never somebody else's transcript
 #   C  a multi-segment role is refused, and nothing is created
 #   D  no `GONGGA_SESSION` is refused
@@ -12,8 +12,8 @@
 #   F  the child's brief keeps its `@file:`/`@skill:` spellings, in its first row
 #   G  the child's turn end reaches the parent's transcript as a subscription notice
 #   H  a later message's reference does not join the stamped head
-#   I  the skill is a package: its API is `spawn(role, ...)`, run by `skill subagent spawn`
-#   K  deleting a session takes its own subscriptions, not its children's
+#   I  the skill is a package: its API is `new_subagent(config, role)`, beside `self_config`
+#   K  deleting a session takes the subtree under it, subscriptions and all
 #
 # One server lifecycle, one fake endpoint, one temporary home. `--keep` leaves the
 # home for a failing run; the default removes it.
@@ -232,8 +232,23 @@ rooted=$(query "select json_extract(display,'\$.rooted') from messages where ses
 ok "0 the parent's head is stamped with its first message's references: $rooted" $?
 
 # --- A: one spawn, one session under the caller's name, one subscription ---------
-name=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":{"args":["spawn","impl","--cwd","'"$(native "$project")"'","--model","fake/flash-fake","--context_limit","20%"]}}}' 2>"$work/spawn-a.err" | answer)
-[[ "$name" == "probe/impl" ]]; ok "A spawn names the session <caller>/<role>: $name" $?
+# SPEC's subagent skill publishes `self_config()` and `new_subagent(config, role)`: a
+# child's settings are the caller's own row with the keys it varies set on it, so the
+# test reads that row first instead of spelling a SessionConfig by hand.
+subagent() { "${cli[@]}" '{"name":"run_skill","args":{"session":"'"$1"'","id":"harness/subagent","cmd":'"$2"'}}'; }
+base=$(subagent probe '{"name":"self_config"}' 2>"$work/self-config.err" | answer)
+[[ -n "$base" ]] || hard "self_config read nothing: $(head -1 "$work/self-config.err")"
+config=$(python - "$base" "$(native "$project")" <<'INNER'
+import json, sys
+config = json.loads(sys.argv[1])
+config["workspace"] = {"cwd": sys.argv[2]}
+config.setdefault("model_config", {})["ctx_limit"] = "20%"
+print(json.dumps(config))
+INNER
+)
+
+name=$(subagent probe '{"name":"new_subagent","args":{"config":'"$config"',"role":"impl"}}' 2>"$work/spawn-a.err" | answer)
+[[ "$name" == "probe/impl" ]]; ok "A a spawn names the session <caller>/<role>: $name" $?
 armed=$(query "select session, pattern, persistent from subscriptions")
 [[ "$armed" == 'probe|^turn_end:probe/impl$|1' ]]
 ok "A and arms ^turn_end:probe/impl\$ for probe, persistently: $armed" $?
@@ -244,7 +259,7 @@ taken_ctx=$(query "select context_limit from sessions where name='probe/impl'")
 ok "A its --context_limit was taken: $taken_ctx" $?
 
 # --- B: the same role twice is a new segment, never a shared transcript ----------
-second=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":{"args":["spawn","impl","--model","fake/flash-fake"]}}}' 2>"$work/spawn-b.err" | answer)
+second=$(subagent probe '{"name":"new_subagent","args":{"config":'"$config"',"role":"impl"}}' 2>"$work/spawn-b.err" | answer)
 # The label is built before the check, never inside it: a command substitution
 # among `ok`'s arguments runs first and leaves its own status where the check's
 # was, so every check below reads `$?` into a variable and prints that.
@@ -255,7 +270,7 @@ ok "B a taken name becomes a new segment: $second $b_said" $?
 ok "B and it is separately subscribed" $?
 
 # --- C: the refusal, and nothing left behind ------------------------------------
-"${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":{"args":["spawn","a/b"]}}}' >"$work/spawn-c.out" 2>"$work/spawn-c.err"; c=$?
+subagent probe '{"name":"new_subagent","args":{"config":'"$config"',"role":"a/b"}}' >"$work/spawn-c.out" 2>"$work/spawn-c.err"; c=$?
 c_said=$(answer < "$work/spawn-c.out")
 grep -q 'one segment' "$work/spawn-c.out" "$work/spawn-c.err"; c_refused=$?
 [[ $c == 1 && $c_refused == 0 ]]
@@ -270,7 +285,7 @@ ok "C and nothing is created" $?
 # nothing half-made is left behind. (The create-then-subscribe rollback has no
 # reachable trigger left: with the caller's row present, only the server can make
 # `subscribe` fail, and `spawn` names every argument it passes.)
-"${cli[@]}" '{"name":"run_skill","args":{"session":"ghost","id":"harness/subagent","cmd":{"args":["spawn","lost","--model","fake/flash-fake"]}}}' >"$work/spawn-e.out" 2>"$work/spawn-e.err"; e=$?
+subagent ghost '{"name":"new_subagent","args":{"config":'"$config"',"role":"lost"}}' >"$work/spawn-e.out" 2>"$work/spawn-e.err"; e=$?
 e_said=$(answer < "$work/spawn-e.out")
 grep -q 'no session named' "$work/spawn-e.out" "$work/spawn-e.err"; e_refused=$?
 [[ $e == 1 && $e_refused == 0 ]]
@@ -345,7 +360,10 @@ ok "H and one request later there is still exactly one head row" $?
 # --- J: the pattern is anchored, so a grandchild's turn is not the grandparent's --
 # `probe` hears about `probe/impl`; `probe/impl/review` ends with `turn_end` about a
 # session whose name *starts with* that pattern's. Unanchored, `probe` would hear it.
-grand=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe/impl","id":"harness/subagent","cmd":{"args":["spawn","review","--model","fake/flash-fake"]}}}' 2>/dev/null | answer)
+# The child reads its own row back and hands that on, which is what a caller does:
+# `new_subagent` copies nothing itself, so `self_config` is the first half of a spawn.
+child_config=$(subagent probe/impl '{"name":"self_config"}' 2>/dev/null | answer)
+grand=$(subagent probe/impl '{"name":"new_subagent","args":{"config":'"${child_config:-{\}}"',"role":"review"}}' 2>/dev/null | answer)
 [[ "$grand" == "probe/impl/review" ]]
 ok "J the caller is the parent, so a grandchild is <child>/<role>: $grand" $?
 "${cli[@]}" '{"name":"send_message","args":{"session":"'"$grand"'","message":"Answer with one word."}}' >"$work/grand.out" 2>&1
@@ -356,15 +374,16 @@ ok "J its own parent is told exactly once" $?
 [[ "$(query "select count(*) from messages where session_id=(select id from sessions where name='probe') and kind='text' and display like '%probe/impl/review finished its turn%'")" == "0" ]]
 ok "J and the grandparent is not told at all" $?
 
-# --- K: deleting a session takes its own subscriptions, not its children's -------
+# --- K: deleting a session takes the subtree under it, and its own subscriptions ----
 "${cli[@]}" '{"name":"del_session","args":{"path":"probe/impl"}}' >"$work/del.out" 2>&1
 [[ "$(query "select count(*) from subscriptions where session='probe/impl'")" == "0" ]]
 ok "K the deleted session's subscriptions go with it" $?
 kept=$(query "select group_concat(pattern,' ') from subscriptions where session='probe'")
 [[ "$(query "select count(*) from subscriptions where session='probe'")" == "2" ]]
 ok "K the parent's own two stay: $kept" $?
-[[ "$(query "select count(*) from sessions where name='probe/impl/review'")" == "1" ]]
-ok "K and its child session is still there, now unheard" $?
+left_under=$(query "select group_concat(name,' ') from sessions where name like 'probe/impl%'")
+[[ -z "$left_under" ]]
+ok "K and the child under it went with it, as del_channel takes a path's channels: '${left_under}'" $?
 
 # --- L: `wait` waits for the NEXT thing, and no subscription means it sits ------
 # 2.5 s is the bound the fake asks for, so a timeout is 2.5 s of wall clock and an
@@ -387,7 +406,9 @@ ok "L with no subscription, wait sits to its timeout: $spent ms, '$waits'" $?
 # The parent has to be busy for the notice to be a queued row: it is inside its
 # first `wait` when the child finishes, so the tool returns early instead of timing out.
 start_wait_fake
-child_from_alone=$("${cli[@]}" '{"name":"run_skill","args":{"session":"alone","id":"harness/subagent","cmd":{"args":["spawn","impl","--model","waitfake/wait-fake"]}}}' 2>/dev/null | answer)
+alone_config=$(subagent alone '{"name":"self_config"}' 2>/dev/null | answer)
+[[ -n "$alone_config" ]] || hard "the second parent's self_config read nothing"
+child_from_alone=$(subagent alone '{"name":"new_subagent","args":{"config":'"$alone_config"',"role":"impl"}}' 2>/dev/null | answer)
 [[ "$child_from_alone" == "alone/impl" ]]; ok "M a second parent gets its own child: $child_from_alone" $?
 "${cli[@]}" '{"name":"send_message","args":{"session":"alone","message":"wait while the child works"}}' >"$work/alone-wait.out" 2>&1
 for _ in $(seq 1 100); do
@@ -405,16 +426,16 @@ last_s=$(printf '%s' "$last" | head -1 | sed -n 's/^\([0-9][0-9]*\)\.[0-9]*s$/\1
 [[ -n "$last_s" && $last_s -lt 2 ]]
 ok "M the child's turn end interrupts it: '$last'" $?
 
-# --- I: the skill is a package whose API is `spawn(role, ...)` -----------------
+# --- I: the skill is a package whose API is `new_subagent(config, role)` --------
 here=$("${cli[@]}" '{"name":"ls_skill","args":{"session":"probe"}}' 2>/dev/null)
 [[ "$here" == *"subagent"* && "$here" == *"SKILL.md"* ]]
 ok "I ls_skill names the subagent, and the SKILL.md the package sits beside: $(printf '%s' "$here" | head -c 160)" $?
 asked=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":"no_such_function"}}' 2>&1)
-[[ "$asked" == *"publishes: spawn"* ]]
-ok "I the package publishes one function, spawn" $?
-wrong=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":{"args":["spawn"]}}}' 2>&1)
-[[ "$wrong" == *"spawn(role"*"needs role"* ]]
-ok "I and calling it without a role is refused with its signature" $?
+[[ "$asked" == *"publishes: self_config, new_subagent"* ]]
+ok "I the package publishes what it names: self_config and new_subagent" $?
+wrong=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":{"name":"new_subagent"}}}' 2>&1)
+[[ "$wrong" == *"new_subagent(config"*"needs config"* ]]
+ok "I and calling it without a config is refused with its signature" $?
 
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then printf 'PASS · subagent-skill · %s\n' "$sha"; else printf 'FAIL · subagent-skill · %s (%d)\n' "$sha" "$fails"; exit 1; fi

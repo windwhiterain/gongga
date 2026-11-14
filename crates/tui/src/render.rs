@@ -11,6 +11,25 @@ use crate::log::Shown;
 use crate::panes::{Pane, Panes};
 use crate::{LineKind, Screen};
 
+/// SPEC's `hot-key` for the sticky session's newest row, written once.
+///
+/// # Invariant
+///
+/// The reminder row and the button drawn over a view scrolled off its bottom both
+/// compose their words from this key, so neither can name a key the other does
+/// not. See `docs/notes/tui-render.md`.
+macro_rules! bottom_key {
+    () => {
+        "Ctrl+\u{2193}"
+    };
+    (entry) => {
+        concat!(bottom_key!(), " to bottom")
+    };
+    (hint) => {
+        concat!(" \u{2193} bottom \u{00b7} ", bottom_key!(), " ")
+    };
+}
+
 /// SPEC's `hot-key` list, one binding per entry: the reminder row says these and
 /// nothing else.
 ///
@@ -22,7 +41,7 @@ use crate::{LineKind, Screen};
 pub const HELP: &[&str] = &[
     "Shift+Enter newline",
     "PageUp/PageDown scroll",
-    "Ctrl+\u{2193} to bottom",
+    bottom_key!(entry),
     "Shift+\u{2191}/\u{2193} cmd line",
     "Shift+Delete delete session",
     "Ctrl+V paste",
@@ -650,7 +669,7 @@ fn list_window(total: usize, height: usize, scroll: usize) -> (usize, usize) {
 /// gets the hint rather than the session drawn under it. A view too narrow for even
 /// the arrow has no hint, and then nothing to click. See `docs/notes/tui-render.md`.
 fn bottom_hint(area: Rect) -> Option<(&'static str, Rect)> {
-    const FULL: &str = " \u{2193} bottom \u{00b7} Shift+\u{2193} ";
+    const FULL: &str = bottom_key!(hint);
     // A narrow view gets the bare arrow: one column fits the list's spare one.
     const SHORT: &str = "\u{2193}";
     let hint = if area.width > UnicodeWidthStr::width(FULL) as u16 {

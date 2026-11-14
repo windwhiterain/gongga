@@ -13,12 +13,26 @@ pub struct ModelRef {
     pub model: Option<String>,
 }
 
+/// One model, as the two spellings the roster publishes it in.
+///
+/// # Invariant
+///
+/// SPEC's `Model := {provider, model}` and the flat `provider/model` name a
+/// session's row and a sticky entry already hold are the same value; both are read
+/// here so a client can hand over whichever it keeps. See `docs/notes/server-session-config.md`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum ModelValue {
+    Spelled(String),
+    Ref(ModelRef),
+}
+
 /// SPEC `ModelConfig := {model, thinking, ctx_limit, cache_tier}`. Fields are optional:
 /// a delta keeps what it omits.
 #[derive(Debug, Default, Deserialize)]
 pub struct ModelConfig {
     #[serde(default)]
-    pub model: Option<ModelRef>,
+    pub model: Option<ModelValue>,
     #[serde(default)]
     pub thinking: Option<String>,
     #[serde(default)]
@@ -71,15 +85,20 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
         .map_err(|e| format!("--config is not a SessionConfig object: {e}"))?;
     if let Some(model_config) = config.model_config {
         if let Some(model) = model_config.model {
-            let spelled = match (model.provider, model.model) {
-                (Some(provider), Some(name)) => format!("{provider}/{name}"),
-                (None, Some(name)) => name,
-                (Some(provider), None) => {
-                    return Err(format!(
-                        "--config model names provider {provider:?} but no model"
-                    ));
-                }
-                (None, None) => return Err("--config model is empty: name a model".to_string()),
+            let spelled = match model {
+                ModelValue::Spelled(text) => text,
+                ModelValue::Ref(model) => match (model.provider, model.model) {
+                    (Some(provider), Some(name)) => format!("{provider}/{name}"),
+                    (None, Some(name)) => name,
+                    (Some(provider), None) => {
+                        return Err(format!(
+                            "--config model names provider {provider:?} but no model"
+                        ));
+                    }
+                    (None, None) => {
+                        return Err("--config model is empty: name a model".to_string());
+                    }
+                },
             };
             args.insert("model".to_string(), spelled);
         }
@@ -133,8 +152,26 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
     Ok(())
 }
 
-/// The `SessionConfig` shape a client completes inside `--config`: field names, and
-/// what each leaf accepts.
+/// One field SPEC gives a default, spelled as SPEC spells it.
+///
+/// # Invariant
+///
+/// Every default SPEC states is marked here, and a marked field is exactly what a
+/// sticky entry may not fill: a value the type already decides is not a missing
+/// argument. See `docs/notes/server-session-config.md`.
+fn defaulted(field: protocol::StructField, spelling: &str) -> protocol::StructField {
+    protocol::StructField {
+        default: Some(spelling.to_string()),
+        ..field
+    }
+}
+
+/// The `SessionConfig` shape a client completes inside `--config`.
+///
+/// # Invariant
+///
+/// Field names, the values each leaf offers, and the default each one has: what a
+/// fill may not stand in for. See `docs/notes/server-session-config.md`.
 pub fn schema(remotes: &[String]) -> protocol::StructSchema {
     use protocol::{CompletionSource, StructField, StructSchema};
     let leaf = |name: &str, description: &str, source: CompletionSource, hint: &str| StructField {
@@ -145,6 +182,8 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         accepts: None,
         value_hint: Some(hint.to_string()),
         model_ref: false,
+        kind: None,
+        default: None,
     };
     let object = |name: &str, description: &str, fields: Vec<StructField>| StructField {
         name: name.to_string(),
@@ -154,11 +193,16 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
         accepts: None,
         value_hint: None,
         model_ref: false,
+        kind: None,
+        default: None,
     };
     let mut remote_values = vec![protocol::NONE_VALUE.to_string()];
     remote_values.extend(remotes.iter().cloned());
+    // SPEC: `model: Model` -- no default, so an entry may fill it.
     let model = StructField {
         model_ref: true,
+        // SPEC: `Model := {provider, model} # sticky`.
+        kind: Some("model".into()),
         ..leaf(
             "model",
             "The model this session runs on.",
@@ -166,49 +210,70 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
             "provider/model",
         )
     };
-    let thinking = StructField {
-        accepts: crate::providers::level_accepts(),
-        ..leaf(
-            "thinking",
-            "How hard the model thinks.",
-            CompletionSource::None,
-            "level",
-        )
-    };
-    let ctx_limit = leaf(
-        "ctx_limit",
-        "The context level for a Context notice.",
-        CompletionSource::Static(
-            [
-                "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+    // SPEC: `Thinking = provider_default()`, re-defaulted when the model changes.
+    let thinking = defaulted(
+        StructField {
+            accepts: crate::providers::level_accepts(),
+            ..leaf(
+                "thinking",
+                "How hard the model thinks.",
+                CompletionSource::None,
+                "level",
+            )
+        },
+        "provider_default()",
+    );
+    // SPEC: `ctx_limit = 70%`.
+    let ctx_limit = defaulted(
+        leaf(
+            "ctx_limit",
+            "The context level for a Context notice.",
+            CompletionSource::Static(
+                [
+                    "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ),
+            "n%",
         ),
-        "n%",
+        "70%",
     );
-    let cache_tier = StructField {
-        accepts: crate::providers::tier_accepts(),
-        ..leaf(
-            "cache_tier",
-            "The cache tier every request sends.",
-            CompletionSource::None,
+    // SPEC: `cache_tier = provider_default()`.
+    let cache_tier = defaulted(
+        StructField {
+            accepts: crate::providers::tier_accepts(),
+            ..leaf(
+                "cache_tier",
+                "The cache tier every request sends.",
+                CompletionSource::None,
+                "name",
+            )
+        },
+        "provider_default()",
+    );
+    // SPEC: `remote: optional[Remote] = none`.
+    let remote = defaulted(
+        leaf(
+            "remote",
+            "The machine this session's shells run on; none is this machine.",
+            CompletionSource::Static(remote_values),
             "name",
-        )
-    };
-    let remote = leaf(
-        "remote",
-        "The machine this session's shells run on; none is this machine.",
-        CompletionSource::Static(remote_values),
-        "name",
+        ),
+        "none",
     );
-    let cwd = leaf(
-        "cwd",
-        "The session's directory.",
-        CompletionSource::Paths,
-        "path",
+    // SPEC: `cwd: path = "."`.
+    let cwd = defaulted(
+        leaf(
+            "cwd",
+            "The session's directory.",
+            CompletionSource::Paths,
+            "path",
+        ),
+        ".",
     );
+    // SPEC: `keep_alive: bool` -- no default, so an entry may fill it.
     let keep_alive = leaf(
         "keep_alive",
         "Whether a periodic notice keeps the prefix warm.",
@@ -229,11 +294,15 @@ pub fn schema(remotes: &[String]) -> protocol::StructSchema {
     );
     StructSchema {
         fields: vec![
-            object(
-                "model_config",
-                "The model and how it is asked.",
-                vec![model, thinking, ctx_limit, cache_tier],
-            ),
+            // SPEC: `ModelConfig := {model, thinking, ctx_limit, cache_tier} # sticky`.
+            StructField {
+                kind: Some("model_config".into()),
+                ..object(
+                    "model_config",
+                    "The model and how it is asked.",
+                    vec![model, thinking, ctx_limit, cache_tier],
+                )
+            },
             object("workspace", "Where the session works.", vec![remote, cwd]),
             keep_alive,
             object(

@@ -12,6 +12,24 @@ What stayed in `exec` is what makes it `exec` -- the word list's validation (a w
 NUL is refused, because an argument ends at one, and the program may or may not be on the
 machine), the machine choice, and how the run is reported.
 
+## The directory a program stands in
+
+`run` is handed a directory and always starts the program in one. What it is handed may be
+a directory this machine does not have, and the rule is the same everywhere in this layer:
+
+| who asked | a directory that does not exist |
+| --- | --- |
+| the call itself (`exec`'s `cwd`) | refused by its caller, naming that path |
+| the session, as a default | refused by its caller, naming it as the session's |
+| a session directory used directly (a skill's entry, `new_channel`, a file tool) | never an error: `tools::standing_dir` answers this server's own directory |
+
+The third row is the one measured: a session whose directory is on a peer has an empty
+one here (`Workspace::dir` is "empty on the other machine"), and `Command::current_dir` of
+an empty path fails on Windows with `ERROR_INVALID_NAME` -- which a spawn error used to
+report as `could not run "...bash.exe": ... (os error 123)`, sending the reader after a
+broken interpreter instead of a missing directory. `scripts/spawn_dir_selftest.sh` is the
+real-process check.
+
 ## Why no shell
 
 The program is spawned with `Command::new(program).args(words)`. On Unix that is `execve` and

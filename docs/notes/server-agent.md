@@ -360,11 +360,13 @@ string, and a re-spelling is no longer a reason to re-bill.
 The index is the first prompt row's second half: the `AGENTS.md` the session's directory
 carries, the text of every reference its messages name, and everything those name in
 turn -- walked recursively, ordered by `prefix_cache::plan`, appended to the instructions
-as one string. The rules file is seeded by `meta::roots` rather than named by a message,
-so a session is under its directory's rules without having to ask for them. One string
-rather than an item per entry: the entries are one thing to plan, a chain in
-`prefix_cache`, and measured, an item per node re-uses slightly less at steady state
-(94.5% against 97.7%), not more.
+as one string. The rules file opens it verbatim and is not planned at all: it is read by
+`meta::rules` and printed first, so a session is under its directory's rules without
+having to ask for them, and no chain the price favours can stand between the model and
+what the file says. Only the references it names enter the plan. One string rather than an
+item per entry: the entries are one thing to plan, a chain in `prefix_cache`, and
+measured, an item per node re-uses slightly less at steady state (94.5% against 97.7%),
+not more.
 
 It runs on the request that writes the row, and never again. Two arguments had to be
 settled for that to be the right answer, and both were settled by measurement:

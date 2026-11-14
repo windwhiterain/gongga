@@ -77,8 +77,6 @@ pub struct Agent {
     pub config: Arc<crate::config::Current>,
     /// Where capped tool output is spilled; without it the tail is lost.
     pub output_dir: PathBuf,
-    /// Jobs running in this process, so a call can stop one by its id.
-    pub jobs: crate::tools::tunnel::JobRegistry,
 }
 
 impl Agent {
@@ -620,6 +618,10 @@ impl Agent {
                 ("model", model),
             ],
         ));
+        // The four names a call may carry, where no schema says what they are for.
+        let parameters = prompts
+            .text(crate::prompts::PARAMETERS)
+            .filter(|text| !text.is_empty());
         // Where the conversation's references stand now, planned once, for the one
         // request that carries it.
         let (index, rooted) = match self
@@ -633,6 +635,7 @@ impl Agent {
             instructions,
             index,
             tail,
+            parameters,
             rooted,
             cwd: here,
             remote: remote.map(str::to_string),
@@ -750,9 +753,9 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// The interrupt cancels a child token, never the turn: a tool that was
-    /// waiting returns with its background jobs still running, and the next
-    /// request goes out while the prefix is still warm. See SPEC, `check_bash`.
+    /// The interrupt cancels a child token, never the turn: a tool that was waiting
+    /// returns with what it started still running, and the next request goes out
+    /// while the prefix is still warm.
     async fn run_before_cache_expiry(
         &self,
         name: &str,
@@ -827,8 +830,9 @@ impl Agent {
     ///
     /// The order is `prefix_cache`'s, a permutation of what it was given: no entry is
     /// invented for a reference that could not be read, and the spellings returned are the
-    /// ones the index carries, so a message naming one again keys the same entry. Everything
-    /// is read in `home`, the session's directory. See `docs/notes/server-agent.md`.
+    /// ones the index carries, so a message naming one again keys the same entry. The rules
+    /// travel outside it (`meta::rules`). Everything is read in `home`. See
+    /// `docs/notes/server-agent.md`.
     async fn index_of(
         &self,
         id: i64,
@@ -844,8 +848,9 @@ impl Agent {
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let rules = crate::meta::rules(source, home).await;
         let roots = crate::meta::roots(source, home, &borrowed).await;
-        if roots.is_empty() {
+        if rules.is_none() && roots.is_empty() {
             return None;
         }
         let rates = self.rates(model);
@@ -877,6 +882,22 @@ impl Agent {
             })
             .collect::<Vec<_>>()
             .join("\n\n");
+        // The rules first and out of the plan's reach: no price moves them, no patch hides them.
+        let body = match rules {
+            Some(text) => {
+                let spelling = crate::meta::rules_spelling();
+                let rules = format!(
+                    "{spelling} ({})\n{text}",
+                    crate::meta::machine_note(&spelling, source, remote)
+                );
+                if body.is_empty() {
+                    rules
+                } else {
+                    format!("{rules}\n\n{body}")
+                }
+            }
+            None => body,
+        };
         let prompts = crate::prompts::shared();
         let mut index = prompts.render("reference_index", &[("entries", &body)]);
         if !planned.revisions.is_empty() {
@@ -986,6 +1007,7 @@ impl Agent {
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.index.as_deref(),
+            prompt.parameters.as_deref(),
             prompt.tail.as_deref(),
             &source,
             &tools.tools,
@@ -1291,6 +1313,7 @@ impl Agent {
                         self.bus.clone(),
                         self.store.clone(),
                         attempt.llm.provider().map(str::to_string),
+                        self.quota_interval,
                     );
                     // A delta, not a whole list: republishing that every step
                     // would cost every view its scroll.
@@ -1487,7 +1510,6 @@ impl Agent {
             reader: session.reader(),
             machine,
             remote: session.remote_name(),
-            jobs: self.jobs.clone(),
             events: Some(tx),
             cancel: tool_cancel.clone(),
             store: self.store.clone(),
@@ -1495,7 +1517,6 @@ impl Agent {
             env: session.env(),
             vision: llm.vision(crate::prompts::shared()),
             inbox: session.inbox_signal(),
-            holds_the_turn: true,
             stop: session.stop_signal(),
             closing: session.closing_signal(),
             // The threshold the config states now, not the one this process started with.
@@ -2134,6 +2155,7 @@ mod tests {
             instructions: "prose".to_string(),
             index: None,
             tail: Some("Session `s`, 2026-11-01 14:00 UTC".to_string()),
+            parameters: Some("every call may carry `description`".to_string()),
             rooted: Vec::new(),
             cwd: ".".to_string(),
             remote: None,
@@ -2212,8 +2234,8 @@ fn description_of(value: &serde_json::Value) -> &str {
 ///
 /// # Invariant
 ///
-/// The per-tool list is this crate's: it owns the tools, so it knows a `bash`
-/// call is summarised by `{name, background, detached, timeout}` and that
+/// The per-tool list is this crate's: it owns the tools, so it knows an `exec`
+/// call is summarised by `{bin, wait}` and that
 /// `command` is the detail's. The wire carries the verdict per field, so adding a
 /// tool touches nothing a front-end reads. Every argument is sent once: what the
 /// summary leaves out is here, so opening needs no request.
@@ -2278,13 +2300,9 @@ fn command_text(command: &serde_json::Value) -> String {
 /// The arguments SPEC's `toolcall` summarises this tool by, in its order.
 fn summary_keys(tool: &str) -> &'static [&'static str] {
     match tool {
-        // SPEC lists bash's own set; another tool is summarised by nothing yet,
-        // which still reads better than a wall of JSON.
-        "bash" => &["name", "background", "time_out"],
         // SPEC's `exec(bin #abstraction, wait #abstraction)`: the program it
         // names, and how long it stays to hear it.
         "exec" => &["bin", "wait"],
-        "check_job" => &["job_id", "wait_ms"],
         _ => &[],
     }
 }

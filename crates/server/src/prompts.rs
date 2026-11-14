@@ -19,6 +19,17 @@ pub const REVISION: &str = "reference_revision";
 /// The start card: what the session is, where it stands, and when. Stamped once.
 pub const TAIL: &str = "dynamic_tail";
 
+/// What a call may carry besides the arguments its own row lists, said once.
+///
+/// # Invariant
+///
+/// Deliberately not in [`REQUIRED`], and deliberately not a sentence on the shared
+/// arguments of each tool's schema: the same four names would be spelled once per
+/// tool in every request, and they belong to the call layer rather than to any tool.
+/// A home that predates this template runs without the section rather than refusing
+/// to start over prose it may never need.
+pub const PARAMETERS: &str = "general_parameters";
+
 /// What opens the request, before the index. See `docs/reference/prefix-cache.md`.
 pub const INDEX_OPENING: &str = "index_opening";
 
@@ -293,7 +304,7 @@ impl Prompts {
             snapshot.complained = !problems.is_empty();
         }
         for name in templates.keys() {
-            let known = REQUIRED.contains(&name.as_str()) || name == SYSTEM;
+            let known = REQUIRED.contains(&name.as_str()) || name == SYSTEM || name == PARAMETERS;
             if !self.pinned.contains_key(name) && !known {
                 tracing::warn!(prompt = %name, "no prompt uses this template; is the name misspelled?");
             }

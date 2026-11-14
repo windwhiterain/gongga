@@ -23,12 +23,19 @@ than the turn it hangs behind.
 
 ## Last
 
-The reading is one row, so it is one value: the newest measurement, and whether a
-read is in flight.
+The reading is one row, so it is one value: the newest measurement, the same by
+provider, and what each endpoint last answered.
 
-`reading_now` is what keeps a fast turn from starting one child per step: two
-steps' ends inside one slow read are one question about the same provider, and
-the second one answers with what the first is about to publish.
+`in_flight` is what keeps a fast turn from starting one child per step: two steps'
+ends inside one slow read are one question about the same provider, and the second
+one answers with what the first is about to publish. It is keyed by provider
+because one read covers every query that provider lists.
+
+`answered` is the other half, and the reason it is keyed by **endpoint**
+(`<provider>/<query id>`) rather than by provider: the interval is a statement
+about one URL. Minimax lists three readers for one provider, and a provider-level
+clock would let the M Plan reader -- the one that answers -- decide how often the
+pay-as-you-go wallet may be asked.
 
 ## last
 
@@ -44,6 +51,12 @@ spawns instead of awaiting: reading an allowance is a network call through a chi
 process, and a turn that waited on a provider's billing endpoint before its last
 token could be reported would be a turn that stalls for something nobody asked
 for. The step goes on; the row arrives when the answer does.
+
+`interval` is the cadence in `[server] quota_interval_secs` (default 60s, `0` asks
+every step end). A step end is seconds apart from the one before it, and a balance
+is not: asking a billing endpoint once per step
+is a request per step per provider, which is what a provider rate-limits, and the
+one row SPEC asks for does not change in between.
 
 ## read, read_in
 
@@ -77,6 +90,25 @@ wallet without either naming the other.
 A query that fails is remembered rather than reported immediately: a provider whose
 first reader needs a credential this machine does not have should still get the
 second reader read.
+
+## kept, remember
+
+What one endpoint said, stamped with when it said it, so a step end inside the
+interval reuses it instead of asking again. Two facts follow from that, and both
+are deliberate:
+
+- **A failure is kept like a reading.** An endpoint that just answered 429, or did
+  not answer at all, is exactly the one a retry per step must not hit; the note it
+  produced stays the row's note until the interval is up.
+- **The answer is indexed by endpoint, so a kept answer cannot be mistaken for a
+  fresh one elsewhere.** The roster's preference order still decides which answer
+  is shown: a kept reading of the first query returns before the second is looked
+  at, and a kept failure falls through to the next query the way a fresh one does.
+
+The clock is `Instant` and the comparison saturates: a monotonic clock that stepped
+back is not a reason to panic on a turn's path. `kept` with `interval` of zero is
+never fresh, which is how `0` keeps meaning "ask every step end" without a branch
+of its own.
 
 ## ask
 

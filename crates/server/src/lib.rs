@@ -48,7 +48,6 @@ mod tool_cmd;
 mod tools;
 mod transcript;
 mod transport;
-pub mod worker;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -398,6 +397,17 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         },
     ));
 
+    // The directories no row names, swept behind the start: minutes of unlinking.
+    {
+        let channels = channels.clone();
+        tokio::task::spawn_blocking(move || {
+            let removed = channels.sweep();
+            if removed > 0 {
+                tracing::info!(removed, "channel directories no row names were removed");
+            }
+        });
+    }
+
     let agent = Arc::new(Agent {
         store: store.clone(),
         providers: providers::Handle,
@@ -407,19 +417,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             let lib = skill_lib.clone();
             crate::live::Derived::new(move |cfg: &config::Config| {
                 Arc::new(
-                    ToolRegistry::settings(
-                        cfg.tools.max_wait,
-                        cfg.bash.timeout,
-                        cfg.bash.max_output_chars,
-                    )
-                    .with_python(cfg.python.clone(), lib.clone())
-                    .with_skills(
-                        tools::skill::programs(cfg),
-                        lib.clone(),
-                        cfg.bash.timeout,
-                        cfg.bash.max_output_chars,
-                    )
-                    .build(&cfg.tools.rows, &cfg.tools.arguments),
+                    ToolRegistry::settings(cfg.bash.max_output_chars)
+                        .with_python(cfg.python.clone(), lib.clone())
+                        .with_skills(
+                            tools::skill::programs(cfg),
+                            lib.clone(),
+                            std::time::Duration::from_millis(crate::config::CALL_TIMEOUT_MS),
+                            cfg.bash.max_output_chars,
+                        )
+                        .build(&cfg.tools.rows),
                 )
             })
         },
@@ -427,7 +433,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         config: config.clone(),
         home: cfg.home.clone(),
         output_dir: output_dir.clone(),
-        jobs: crate::tools::tunnel::JobRegistry::new(),
     });
     clock.step("tools");
 
@@ -493,12 +498,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // Failures the last run left behind, before a client can ask about them.
     monitor::sweep(&dispatch, &cfg.home).await;
     clock.step("sweep");
-    // What the last run left running is adopted, or said to be gone.
-    let owed = tools::tunnel::announce_owed(&store, &cfg, &output_dir).await;
-    clock.step("owed");
-    if owed > 0 {
-        tracing::info!(owed, "reported jobs a stopped server left owed");
-    }
     // Whatever the last run detached is still out there; adopt its pids now.
     let adoption_started = std::time::Instant::now();
     let adopted = detached.adopt().await;
@@ -517,7 +516,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             &'a self,
             session: &'a str,
             name: &'a str,
-            mut args: protocol::Args,
+            args: protocol::Args,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = crate::commands::Outcome> + Send + 'a>,
         > {

@@ -41,25 +41,32 @@ hunting the three roots for the directory; measured on 2026-11-04 in one session
 `ls`/`skill` calls before it found `SKILL.md`. `@file(...)` is the opposite case: its
 spelling *is* its path, so it is left exactly as written and still keys the index.
 
-## the rules file is a root, not a message
+## the rules file is sent, not planned
 
-`AGENTS.md` in the session's own directory is the walk's first spelling, named by
-`roots` rather than by a message: what a directory keeps as its rules is standing
+`AGENTS.md` in the session's own directory opens the index on every request, verbatim and
+in front of every planned entry: what a directory keeps as its rules is standing
 instruction for the work done in it, and a session that has to be told to read it has
 already spent the turn it was meant to save. It is one file, and no ancestor's copy:
 `cwd/AGENTS.md` and nothing above it, so a subdirectory with none of its own inherits
 nothing.
 
-Where it lands is the whole point. The index sits in `instructions`, in front of the
-transcript, so the rules are charged once and re-used by every later request of the
-conversation; a rules file expanded into a message would ride the transcript instead and
-be re-sent for the life of the session. Being a spelling also means a message that writes
-`@file(AGENTS.md)` stays literal and keys the same entry, so one file is never carried
-twice.
+It is deliberately *not* a memory module of the prefix cache. As a planned entry the rules
+were a node like any other: a chain that carried them later could be the cheaper one, an
+edit inside `index_change_tolerance` kept the stale copy at the head and appended what
+changed after the whole index, and an expiry could drop them. What a model has to read as
+written is not something a price gets to move. So `meta::rules` reads them and `index_of`
+prints them first, out of the plan's reach.
 
-It is read on every request, like every other root, so an edit reaches the next turn --
-at the price the index always charges for an edit: a new prompt row, and the prefix behind
-it re-billed.
+What the plan does receive is what the rules *name*: `meta::roots` walks their references
+first -- ahead of the ones a message names, because every session of a directory shares
+them -- and nothing else about the file. So `rooted` does not carry `@file(AGENTS.md)`
+anymore, which is also what the warm-prefix walk needs: it must see the chain that really
+went out, and that chain starts at the first root the plan ordered.
+
+A message that writes `@file(AGENTS.md)` still stays literal, so one file is never carried
+twice. The file is read when the prompt row is stamped, like every root, so an edit reaches
+the next row rather than a request already sent: `scripts/append_only_selftest.sh` pins
+that an edit to it moves no head.
 
 Where it is read changed on 2026-11-02, and the reason is the SPEC invariant it broke. It
 used to be read from whatever directory the shell reported for that turn, and that is not
@@ -88,8 +95,9 @@ Two consequences, both accepted:
 
 ## A session on a peer is handed the `remote` skill
 
-`roots` seeds two references no message named: `AGENTS.md`, which is the rules of where
-the session stands, and — when the session's directory is on a peer — `@skill:remote`.
+`roots` seeds one reference no message named — `@skill:remote`, when the session's
+directory is on a peer — after whatever the rules file names, since the rules themselves
+travel outside the index.
 The second is there because the tool instructions deliberately say nothing about the two
 machines (a description states what its tool is, and how two machines relate is prose).
 A model that is never told reads `remote_bash` as a second `bash`, which is what it did

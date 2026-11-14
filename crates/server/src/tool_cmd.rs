@@ -61,7 +61,6 @@ pub fn context(
         reader: handle.reader(),
         machine: handle.owner(),
         remote: handle.remote_name(),
-        jobs: agent.jobs.clone(),
         events: None,
         cancel: CancellationToken::new(),
         store: store.clone(),
@@ -72,8 +71,6 @@ pub fn context(
             refusal: String::new(),
         },
         inbox: handle.inbox_signal(),
-        // An operator's line holds this turn the same way a model's call does.
-        holds_the_turn: true,
         stop: handle.stop_signal(),
         closing: handle.closing_signal(),
         disk_low: agent.config.now().disk_low,
@@ -104,8 +101,8 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 completions: protocol::CompletionSource::Sessions,
                 accepts: None,
                 sticky_to: None,
-                sticky: false,
                 structure: None,
+                update: false,
             }];
             // The row's order, object first: a bare word binds the first unfilled one.
             let mut ordered: Vec<&crate::tools::spec::Argument> = row
@@ -131,8 +128,8 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                     completions: argument.completion.source(),
                     accepts: None,
                     sticky_to: None,
-                    sticky: false,
                     structure: None,
+                    update: false,
                 });
             }
             protocol::CommandSpec {

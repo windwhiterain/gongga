@@ -102,6 +102,16 @@ if [[ -z "${peer_host:-}" ]]; then
   exit 0
 fi
 
+# A peer that is configured but does not answer from here is not a failure of the code
+# under test: say so and leave, instead of waiting out a handshake that will not come.
+# The connection this needs is the peer's own, so ask it the way the tools will: a
+# peer that is configured but does not answer ends the run with a skip rather than
+# with a handshake nobody waits out.
+if ! timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \n    ${peer_port:+-p "$peer_port"} ${peer_key:+-i "$peer_key"} "$peer_host" true >/dev/null 2>&1; then
+  echo "skip: $peer_name at $peer_host does not answer from this machine, so there is no peer to prove this against"
+  exit 0
+fi
+
 port=$(free_port)
 fake_port=$(free_port)
 server_pid=""; fake_pid=""
@@ -282,7 +292,8 @@ c = sqlite3.connect(f"file:{home}/gongga.db?mode=ro", uri=True)
 sid = c.execute("select id from sessions where name='probe2'").fetchone()[0]
 last = [json.loads(d) for (d,) in c.execute(
     "select display from messages where session_id=? and kind='system' order by seq desc limit 1", (sid,))][0]
-assert "@file(AGENTS.md)" in last["rooted"], last["rooted"]
+# The rules are sent, not planned: the spelling is in the index, not in `rooted`.
+assert "@file(AGENTS.md)" in (last["index"] or ""), (last["index"] or "")[:300]
 assert marker in (last["index"] or ""), (last["index"] or "")[:300]
 INNER
 ok "a placed session's first prompt carries the peer's own AGENTS.md" $?

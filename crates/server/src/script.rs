@@ -445,9 +445,9 @@ fn parse_arg(raw: &Value) -> Option<ArgSpec> {
         accepts: None,
         // A script declares no dependency: what a value belongs to is its own.
         sticky_to: None,
-        // A script may ask for it: `"sticky": true` in its manifest.
-        sticky: raw.get("sticky").and_then(Value::as_bool).unwrap_or(false),
         structure: None,
+        // A script declares flags, not a partial object.
+        update: false,
         // Script commands keep the flag spelling; a bare word still binds by
         // order, as for every command.
         positional: false,

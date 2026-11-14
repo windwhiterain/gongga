@@ -2,11 +2,12 @@
 //!
 //! See `docs/notes/cli-commands.md`.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use serde_json::Value;
 
-use protocol::{ArgSpec, Args, CommandSpec};
+use protocol::{ArgSpec, Args, CommandSpec, StructSchema};
 
 /// The skills a session can open: the project's own, the home's, then the machine's.
 ///
@@ -31,6 +32,45 @@ pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
         home.join("skills"),
         dirs::home_dir().map(|home| home.join(".agents").join("skills")),
     )
+}
+
+/// Every sticky type a command can actually take.
+///
+/// # Invariant
+///
+/// SPEC's four, and nothing else: a required argument's `kind` (`Session`), a
+/// structured value's own type when it is not an update (`SessionConfig`), and a
+/// field's type when it has no default (`ModelConfig`, `Model`). One list for
+/// `set_sticky`, `--type` and the write-back. See `docs/notes/client-commands.md`.
+pub fn sticky_kinds(commands: &[CommandSpec]) -> Vec<String> {
+    let mut kinds = BTreeSet::new();
+    for command in commands {
+        for arg in &command.args {
+            let fillable = arg.required || (arg.structure.is_some() && !arg.update);
+            if let Some(kind) = &arg.kind
+                && fillable
+            {
+                kinds.insert(kind.clone());
+            }
+            if let Some(structure) = &arg.structure {
+                field_kinds(structure, &mut kinds);
+            }
+        }
+    }
+    kinds.into_iter().collect()
+}
+
+fn field_kinds(schema: &StructSchema, kinds: &mut BTreeSet<String>) {
+    for field in &schema.fields {
+        if field.default.is_none()
+            && let Some(kind) = &field.kind
+        {
+            kinds.insert(kind.clone());
+        }
+        if let Some(nested) = &field.object {
+            field_kinds(nested, kinds);
+        }
+    }
 }
 
 /// Binds a line's tokens to a published spec. See `next_unfilled`.

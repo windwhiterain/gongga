@@ -60,6 +60,11 @@ roots at all, so a `remote` session runs the home's and the machine's skills and
 never handed a path it cannot read. The package form is handed `GONGGA_SKILL_LIB`, so a
 skill's own `import gongga` resolves against the home's client.
 
+A session whose own directory is on a peer has none *here*, so the entry stands in this
+server's own directory (`tools::standing_dir`): an entry skill has no `cwd` argument, so a
+directory it cannot stand in is a call that cannot be made, not a failure to report. See
+`server-tools-words.md`, "The directory a program stands in".
+
 The run is the session's work: it holds the turn (`tool_cmd::context` is the same
 context a tool call gets), its output is capped and spilled the same way, and
 `explore::after_job` looks at the workspace afterwards as it does after a shell -- a

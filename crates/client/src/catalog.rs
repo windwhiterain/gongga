@@ -596,15 +596,8 @@ fn published(
         CompletionSource::Static(values) => pick(values.iter().map(String::as_str), token, "value"),
         CompletionSource::Arguments => {
             // The types the catalog declares: the only sticky entries there are.
-            let mut kinds: Vec<&str> = ctx
-                .all
-                .iter()
-                .flat_map(|c| c.args.iter())
-                .filter_map(|a| a.kind.as_deref())
-                .collect();
-            kinds.sort_unstable();
-            kinds.dedup();
-            pick(kinds.into_iter(), token, "type")
+            let kinds = crate::commands::sticky_kinds(ctx.all);
+            pick(kinds.iter().map(String::as_str), token, "type")
         }
         // The line's session decides: its own directory here, a listing from the
         // peer when its shells run elsewhere.
@@ -732,8 +725,8 @@ fn session_named(
         .or_else(|| message_session.map(str::to_string))
 }
 
-/// The model a line runs on: the one it names, else the one the session it
-/// names already has, else the server's own.
+/// The model a line runs on: the one it names, else the one the session it names
+/// already has, else the server's own.
 fn model_named(ctx: &Ctx<'_>, words: &[String]) -> Option<String> {
     let spec = words
         .first()
@@ -1335,6 +1328,8 @@ fn root_schema(spec: &CommandSpec) -> StructSchema {
                 accepts: a.accepts.clone(),
                 value_hint: a.value_hint.clone(),
                 model_ref: false,
+                kind: a.kind.clone(),
+                default: None,
             })
             .collect(),
     }

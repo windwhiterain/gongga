@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{self, ArgSpec, Args, CommandSpec};
+use serde_json::{Map, Value};
+
+use crate::protocol::{self, ArgSpec, Args, CommandSpec, StructField, StructSchema};
 
 /// How many wrapped rows one block may fill. Client-side only.
 ///
@@ -283,21 +285,24 @@ impl Sticky {
     ///
     /// # Invariant
     ///
-    /// A value lands only on an argument whose `kind` names it. SPEC's two
-    /// bullets are one rule: a missing non-optional argument is filled from
-    /// its entry, and a missing optional argument takes the entry as its
-    /// initial value. An argument no entry names is left alone: absence keeps
-    /// the command's own initial, applied where the command runs.
+    /// A value lands only on an argument whose `kind` names it and that has no
+    /// default: a required argument, and a structured value whose type SPEC marks
+    /// `# sticky`. A struct update is not filled at all. What the line stated
+    /// stays, at every depth. See `docs/notes/tui-state.md`.
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
         for a in &spec.args {
-            self.fill_one(a, args);
+            match &a.structure {
+                Some(schema) if !a.update => self.fill_struct(a, schema, args),
+                Some(_) => {}
+                None => self.fill_one(a, args),
+            }
         }
     }
 
     /// One argument, one entry: fill when omitted and an entry names its kind.
     fn fill_one(&self, a: &ArgSpec, args: &mut Args) {
-        if args.contains_key(&a.name) {
+        if args.contains_key(&a.name) || !a.required {
             return;
         }
         let Some(kind) = a.kind.as_deref() else {
@@ -305,6 +310,151 @@ impl Sticky {
         };
         if let Some(v) = self.args.get(kind) {
             args.insert(a.name.clone(), v.clone());
+        }
+    }
+
+    /// A structured value, filled by the entry of its own type and by the entries of
+    /// the types its fields carry.
+    ///
+    /// # Invariant
+    ///
+    /// The line wins, then the narrower entry (`model` over `model_config` over
+    /// `config`), and a field with a default is never filled at any depth: it is the
+    /// value the type already chose. An object no entry contributed to is left out
+    /// instead of sent empty.
+    fn fill_struct(&self, a: &ArgSpec, schema: &StructSchema, args: &mut Args) {
+        let stated = args.get(&a.name).cloned();
+        let Some(value) = self.value_of(schema, a.kind.as_deref(), stated.as_ref()) else {
+            return;
+        };
+        if stated.as_ref() == Some(&value) {
+            return;
+        }
+        args.insert(a.name.clone(), value);
+    }
+
+    /// One value of a structured type: the entry its kind names, under what the line
+    /// stated.
+    fn value_of(
+        &self,
+        schema: &StructSchema,
+        kind: Option<&str>,
+        stated: Option<&Value>,
+    ) -> Option<Value> {
+        let mut object = kind
+            .and_then(|kind| self.object_of(kind, schema))
+            .unwrap_or_default();
+        let stated_object = stated.and_then(Value::as_object);
+        for field in &schema.fields {
+            let stated_field = stated_object.and_then(|object| object.get(&field.name));
+            if let Some(inner) = &field.object {
+                if let Some(filled) = self.value_of(inner, field.kind.as_deref(), stated_field) {
+                    object.insert(field.name.clone(), filled);
+                }
+                continue;
+            }
+            if let Some(stated_field) = stated_field {
+                object.insert(field.name.clone(), stated_field.clone());
+                continue;
+            }
+            if field.default.is_some() {
+                continue;
+            }
+            if let Some(value) = field.kind.as_deref().and_then(|kind| self.args.get(kind)) {
+                object.insert(field.name.clone(), leaf_value(field, value));
+            }
+        }
+        (!object.is_empty()).then_some(Value::Object(object))
+    }
+
+    /// One entry as an object of this shape; anything else is not one.
+    fn object_of(&self, kind: &str, schema: &StructSchema) -> Option<Map<String, Value>> {
+        let text = self.args.get(kind)?;
+        let Value::Object(object) = serde_json::from_str(text).ok()? else {
+            return None;
+        };
+        Some(prune(schema, object))
+    }
+
+    /// What a line stated, as the entries its types keep.
+    ///
+    /// # Invariant
+    ///
+    /// A field with a default is left out at every depth: the type decides it. The
+    /// wider type keeps the whole object (merged into what it already held, because
+    /// an update is a delta) and each field with a kind keeps its own.
+    pub fn absorb(&self, spec: &CommandSpec, typed: &Args) -> Vec<(String, String)> {
+        let mut pairs = Vec::new();
+        for a in &spec.args {
+            let Some(stated) = typed.get(&a.name) else {
+                continue;
+            };
+            let Some(schema) = &a.structure else {
+                if let Some(kind) = a.kind.as_deref() {
+                    pairs.push((kind.to_string(), crate::json_command::word(stated)));
+                }
+                continue;
+            };
+            let Value::Object(object) = stated else {
+                continue;
+            };
+            let kept = prune(schema, object.clone());
+            if kept.is_empty() {
+                continue;
+            }
+            if let Some(kind) = a.kind.as_deref() {
+                let whole = self.merged(kind, &kept);
+                pairs.push((kind.to_string(), whole));
+            }
+            self.nested_kinds(schema, &kept, &mut pairs);
+        }
+        pairs
+    }
+
+    /// One stated object merged into what its type already held.
+    fn merged(&self, kind: &str, kept: &Map<String, Value>) -> String {
+        let held = self
+            .args
+            .get(kind)
+            .and_then(|text| serde_json::from_str(text).ok());
+        match held {
+            Some(Value::Object(mut object)) => {
+                overlay(&mut object, kept);
+                Value::Object(object).to_string()
+            }
+            _ => Value::Object(kept.clone()).to_string(),
+        }
+    }
+
+    /// The fields of one object that carry a sticky type of their own.
+    fn nested_kinds(
+        &self,
+        schema: &StructSchema,
+        object: &Map<String, Value>,
+        pairs: &mut Vec<(String, String)>,
+    ) {
+        for field in &schema.fields {
+            let Some(value) = object.get(&field.name) else {
+                continue;
+            };
+            let Some(inner) = &field.object else {
+                if let Some(kind) = field.kind.as_deref() {
+                    pairs.push((kind.to_string(), crate::json_command::word(value)));
+                }
+                continue;
+            };
+            let Value::Object(map) = value else {
+                continue;
+            };
+            let kept = prune(inner, map.clone());
+            if kept.is_empty() {
+                continue;
+            }
+            if let Some(kind) = field.kind.as_deref() {
+                let whole = self.merged(kind, &kept);
+                pairs.push((kind.to_string(), whole));
+            }
+            self.nested_kinds(inner, &kept, pairs);
         }
     }
 
@@ -327,6 +477,70 @@ impl Sticky {
             Some(_) => self.save().map(|()| true),
             None => Ok(false),
         }
+    }
+}
+
+/// What an object may keep: the fields with no default, at every depth.
+///
+/// # Invariant
+///
+/// A default is the type's decision, so an entry that reached this far with one is
+/// a value from an older build or a hand edit -- and it is dropped here rather than
+/// sent. A member the schema does not know is dropped too: an entry may not invent
+/// a field. See `docs/notes/tui-state.md`.
+fn prune(schema: &StructSchema, object: Map<String, Value>) -> Map<String, Value> {
+    let mut kept = Map::new();
+    for field in &schema.fields {
+        let Some(value) = object.get(&field.name) else {
+            continue;
+        };
+        match &field.object {
+            Some(inner) => {
+                if let Value::Object(map) = value {
+                    let pruned = prune(inner, map.clone());
+                    if !pruned.is_empty() {
+                        kept.insert(field.name.clone(), Value::Object(pruned));
+                    }
+                }
+            }
+            None => {
+                if field.default.is_none() {
+                    kept.insert(field.name.clone(), value.clone());
+                }
+            }
+        }
+    }
+    kept
+}
+
+/// One object laid over another: what both name is merged, and the newer wins.
+fn overlay(into: &mut Map<String, Value>, from: &Map<String, Value>) {
+    for (name, value) in from {
+        match (into.get_mut(name), value) {
+            (Some(Value::Object(lower)), Value::Object(upper)) => overlay(lower, upper),
+            _ => {
+                into.insert(name.clone(), value.clone());
+            }
+        }
+    }
+}
+
+/// One stored entry as the value a structured leaf takes.
+///
+/// # Invariant
+///
+/// The leaf's shape decides what its text is on the wire: a switch is a boolean, a
+/// model is the object SPEC spells (or its flat `provider/model` word, which the
+/// server reads as the same value), and everything else keeps the word itself.
+/// See `docs/notes/tui-state.md`.
+fn leaf_value(field: &StructField, text: &str) -> Value {
+    match (field.name.as_str(), text) {
+        ("keep_alive", "true") => Value::Bool(true),
+        ("keep_alive", "false") => Value::Bool(false),
+        _ if field.model_ref => {
+            serde_json::from_str(text).unwrap_or(Value::String(text.to_string()))
+        }
+        _ => Value::String(text.to_string()),
     }
 }
 

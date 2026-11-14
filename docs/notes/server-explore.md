@@ -79,11 +79,9 @@ write.
 
 ## after_job
 
-Called where a call ends, which is two places and not one: a foreground call ends in
-`ToolRegistry::run` -- the one funnel of a model's call, a command layer's and a
-subscription's alike -- and an asynchronous one (`background`, `detached`, promoted by
-its clock, or adopted after a restart) ends in `tunnel::report`. Both are job ends, so
-both look.
+Called where a call ends: `ToolRegistry::run` -- the one funnel of a model's call, a
+command layer's and a subscription's alike. A channel that ends later is a channel
+row, not a call, and it looks when its end is seen.
 
 The foreground half sits in `run` around `invoke` rather than in the turn, because the
 turn is not the only caller: an operator's `bash <session> ...` and a subscription's

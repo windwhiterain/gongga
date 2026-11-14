@@ -377,7 +377,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             description: "Create a session under a name nobody holds, and refuse the call \
                       when one already does: the verb a caller uses to start its own."
                 .into(),
-            args: session_config_args(remotes)
+            args: session_config_args(remotes, false)
                 .into_iter()
                 .filter(|argument| argument.name != "must_create")
                 .collect(),
@@ -389,7 +389,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 "Create the session if it does not exist, and apply the given settings to \
                       it. Settings omitted now are left as they are."
                     .into(),
-            args: session_config_args(remotes),
+            args: session_config_args(remotes, true),
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -455,18 +455,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                       received is kept. Nothing is owed to a restart -- `cancel` is the verb 
                       that continues a turn, not this one. Background jobs keep running."
                 .into(),
-            args: vec![{
-                let mut spec = pos(
-                    "id",
-                    "Session whose turn should stop.",
-                    true,
-                    Some("name"),
-                    CompletionSource::Sessions,
-                );
-                // Of the sticky entry `session`, like every session argument.
-                spec.kind = Some("session".into());
-                spec
-            }],
+            args: vec![kind_pos(
+                "id",
+                "Session whose turn should stop.",
+                true,
+                "session",
+                Some("name"),
+                CompletionSource::Sessions,
+            )],
         },
         CommandSpec {
             target: CommandTarget::Server,
@@ -929,11 +925,12 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("path"),
                     CompletionSource::None,
                 ),
-                pos(
+                kind_pos(
                     "session",
                     "Whose skills: its directory is the `project` layer, and the machine \
                      it stands on decides whether that layer is read at all.",
                     true,
+                    "session",
                     Some("name"),
                     CompletionSource::Sessions,
                 ),
@@ -969,17 +966,41 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("cmd"),
                     CompletionSource::None,
                 ),
-                pos(
+                kind_pos(
                     "session",
                     "The session it runs as: its directory is where it runs, and the call \
                      is that session's work.",
                     true,
+                    "session",
                     Some("name"),
                     CompletionSource::Sessions,
                 ),
             ],
         },
     ]
+}
+
+/// SPEC's `config: SessionConfig`, or -- for the command whose argument is a struct
+/// update -- `SessionConfig{..}`.
+///
+/// # Invariant
+///
+/// One shape, two readings, and the reading is the argument's: `set_session` says
+/// what changes, so a sticky entry may not fill it (it would restate the whole
+/// config); `new_session` takes a value, so a field with no default is filled.
+fn config_arg(remotes: &[String], update: bool) -> protocol::ArgSpec {
+    let mut spec = arg(
+        "config",
+        "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (remote, cwd), and keep_alive. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. remote and cache_tier take none to clear.",
+        false,
+        Some("json"),
+        CompletionSource::None,
+    )
+    .with_structure(crate::session_config::schema(remotes));
+    // SPEC: `SessionConfig := {...} # sticky`, so the whole object is one entry.
+    spec.kind = Some("config".into());
+    spec.update = update;
+    spec
 }
 
 /// A flag argument, spelled `--name <value>`.
@@ -990,17 +1011,14 @@ fn arg(
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
-    sticky_arg(
-        arg_spec(
-            name,
-            description,
-            required,
-            false,
-            None,
-            value_hint,
-            completions,
-        ),
+    arg_spec(
+        name,
+        description,
+        required,
         false,
+        None,
+        value_hint,
+        completions,
     )
 }
 
@@ -1012,17 +1030,14 @@ fn pos(
     value_hint: Option<&str>,
     completions: CompletionSource,
 ) -> protocol::ArgSpec {
-    sticky_arg(
-        arg_spec(
-            name,
-            description,
-            required,
-            true,
-            None,
-            value_hint,
-            completions,
-        ),
-        false,
+    arg_spec(
+        name,
+        description,
+        required,
+        true,
+        None,
+        value_hint,
+        completions,
     )
 }
 
@@ -1046,6 +1061,19 @@ fn kind_arg(
     )
 }
 
+fn kind_pos(
+    name: &str,
+    description: &str,
+    required: bool,
+    kind: &str,
+    value_hint: Option<&str>,
+    completions: CompletionSource,
+) -> protocol::ArgSpec {
+    let mut spec = pos(name, description, required, value_hint, completions);
+    spec.kind = Some(kind.to_string());
+    spec
+}
+
 fn arg_spec(
     name: &str,
     description: &str,
@@ -1066,8 +1094,8 @@ fn arg_spec(
         completions,
         accepts: None,
         sticky_to: None,
-        sticky: false,
         structure: None,
+        update: false,
     }
 }
 
@@ -1089,22 +1117,15 @@ fn type_of(name: &str) -> &'static str {
     }
 }
 
-/// SPEC's `(sticky)`: a value the caller set once, applied to every later command.
-fn sticky_arg(mut spec: protocol::ArgSpec, sticky: bool) -> protocol::ArgSpec {
-    spec.sticky = sticky;
-    spec
-}
-
 /// The arguments a session is created or re-tuned with: SPEC's `SessionConfig`.
 ///
 /// # Invariant
 ///
 /// One list, because `new_session` and `set_session` differ in one thing only -- whether
 /// a name already taken is refused or joined.
-fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
+fn session_config_args(remotes: &[String], update: bool) -> Vec<protocol::ArgSpec> {
     vec![
-    // SPEC: `--id <session>(sticky)`. A sticky entry keys on the kind `session`.
-    sticky_arg(
+        // SPEC: `--id <session>(sticky)`. A sticky entry keys on the kind `session`.
         kind_arg(
             "id",
             "Session to create or reconfigure.",
@@ -1113,53 +1134,44 @@ fn session_config_args(remotes: &[String]) -> Vec<protocol::ArgSpec> {
             Some("name"),
             CompletionSource::Sessions,
         ),
-        true,
-    ),
-    // SPEC: `config: SessionConfig` -- the nested settings, one JSON object.
-        arg(
-            "config",
-            "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (remote, cwd), and keep_alive. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. remote and cache_tier take none to clear.",
+        // SPEC: `config: SessionConfig` -- the nested settings, one JSON object.
+        config_arg(remotes, update),
+        kind_arg(
+            "mode",
+            "What this session may do to the workspace. work (the default) writes as it likes; explore refuses write_file and replace outright and tells the session which paths a bash, exec, python or skill call changed when it ended. Not a jail: a program that writes is told, not stopped, so read the changed paths and put them back before answering.",
             false,
-        Some("json"),
-        CompletionSource::None,
-    )
-    .with_structure(crate::session_config::schema(remotes)),
-    kind_arg(
-        "mode",
-        "What this session may do to the workspace. work (the default) writes as it likes; explore refuses write_file and replace outright and tells the session which paths a bash, exec, python or skill call changed when it ended. Not a jail: a program that writes is told, not stopped, so read the changed paths and put them back before answering.",
-        false,
-        "mode",
-        Some("work|explore"),
-        CompletionSource::Static(vec!["work".into(), "explore".into()]),
-    ),
-    // SPEC's `LiveCompact`: the session's own opt-in and threshold; unset follows `[agent]`.
-    arg(
-        "live_compact_enabled",
-        "Whether the server asks this session to write checkpoint summaries. Unset follows the home's `[agent] live_compact_enabled`; switched on, the starting checkpoint is the transcript's end.",
-        false,
-        Some("true|false"),
-        CompletionSource::Static(vec!["true".into(), "false".into()]),
-    ),
-    arg(
-        "live_compact_interval_tokens",
-        "Input-token growth between this session's checkpoints. Unset follows the home's `[agent] live_compact_interval_tokens`; a count of tokens is the threshold, never the switch.",
-        false,
-        Some("tokens"),
-        CompletionSource::None,
-    ),
+            "mode",
+            Some("work|explore"),
+            CompletionSource::Static(vec!["work".into(), "explore".into()]),
+        ),
+        // SPEC's `LiveCompact`: the session's own opt-in and threshold; unset follows `[agent]`.
+        arg(
+            "live_compact_enabled",
+            "Whether the server asks this session to write checkpoint summaries. Unset follows the home's `[agent] live_compact_enabled`; switched on, the starting checkpoint is the transcript's end.",
+            false,
+            Some("true|false"),
+            CompletionSource::Static(vec!["true".into(), "false".into()]),
+        ),
+        arg(
+            "live_compact_interval_tokens",
+            "Input-token growth between this session's checkpoints. Unset follows the home's `[agent] live_compact_interval_tokens`; a count of tokens is the threshold, never the switch.",
+            false,
+            Some("tokens"),
+            CompletionSource::None,
+        ),
         arg(
             "must_create",
             "true refuses the command unless the session does not exist yet, so a caller that means to start its own session cannot join another one's transcript by picking a name that was already taken.",
             false,
-        Some("true|false"),
-        CompletionSource::Static(
-            protocol::SHOW_VALUES
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            Some("true|false"),
+            CompletionSource::Static(
+                protocol::SHOW_VALUES
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
         ),
-    ),
-]
+    ]
 }
 
 /// Runs one command, on behalf of whoever `origin` names.
@@ -2935,34 +2947,16 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
     if channels > 0 {
         tracing::info!(session = %name, channels, "channels ended with their session");
     }
-    // A job of this session is work it started: it goes the way its bash goes.
-    let jobs = d.store.jobs_of(name).unwrap_or_default();
-    let mut workers = Vec::new();
-    for job in jobs {
-        d.agent.jobs.stop(job);
-        // A background call runs in a process of its own, and the row names it.
-        if let Ok(Some(row)) = d.store.job(job)
-            && let Some(pid) = row.pid.and_then(|pid| u32::try_from(pid).ok())
-        {
-            workers.push(pid);
-        }
-        let _ = d.store.delete_job(job);
-    }
     // A delete waits for no process: what it cannot wait for is ended by one task.
     let bash = d.sessions.detached().detach_session(name).await;
-    let (stopping_bash, stopping_jobs) = (bash.len(), workers.len());
+    let stopping_bash = bash.len();
     let shells = session.clone();
-    if stopping_bash > 0 || stopping_jobs > 0 || shells.is_some() {
+    if stopping_bash > 0 || shells.is_some() {
         tokio::spawn(async move {
             for mut job in bash {
                 if !job.stop().await {
                     tracing::warn!(pid = job.pid, name = %job.name,
                     "a deleted session's background bash did not stop");
-                }
-            }
-            for pid in workers {
-                if !crate::tools::detached::stop_process(pid).await {
-                    tracing::warn!(pid, "a deleted session's job did not stop");
                 }
             }
             if let Some(shells) = shells {
@@ -2979,9 +2973,6 @@ async fn finish_delete(d: &Dispatch, name: &str, was_busy: bool, dropped: usize)
             let mut message = format!("deleted session {name}");
             if stopping_bash > 0 {
                 message.push_str(&format!("; stopping {stopping_bash} background bash(es)"));
-            }
-            if stopping_jobs > 0 {
-                message.push_str(&format!("; stopping {stopping_jobs} job(s)"));
             }
             if was_busy {
                 message.push_str(" (interrupted the running turn)");
@@ -3166,14 +3157,6 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         // Fire the token: a stuck call has no boundary. A waiting one gets a deadline.
         interrupt(d, session.name(), Stop::Cancel);
     }
-    // Only a protocol `cancel` lets jobs go; every other stop ends them here.
-    let (released, killed) = match origin {
-        // A tool is a person's hands: its `cancel` lets jobs go as a client's does.
-        Origin::Client { .. } | Origin::Tool { .. } => {
-            (crate::tools::detached::release_detached(), 0)
-        }
-        Origin::Signal { .. } => (0, d.sessions.detached().stop_all().await),
-    };
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
     // SPEC: without `keep_alive`, a cancel ends every channel with it.
     let channels = match keep_alive {
@@ -3188,8 +3171,6 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
             "by": by,
             "sessions": running.len(),
             "pending": pending,
-            "released": released,
-            "killed": killed,
             "channels": channels.unwrap_or(0),
             "kept_channels": keep_alive,
         }),
@@ -3200,17 +3181,6 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         tokio::time::sleep(SHUTDOWN_NOTICE).await;
         shutdown.cancel();
     });
-    let jobs = match origin {
-        Origin::Client { .. } | Origin::Tool { .. } => format!(
-            "{} background job(s) keep running -- they are processes of their own, outlive \
-         this server and are adopted on the next start",
-            released
-        ),
-        Origin::Signal { .. } => format!(
-            "{} background job(s) ended with this server: only a `cancel` lets them go",
-            killed
-        ),
-    };
     let channels = match channels {
         Some(ended) => format!("; {ended} channel(s) ended with this server"),
         None => "; every channel was kept alive, and the next start adopts them".to_string(),
@@ -3228,7 +3198,7 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         ),
     };
     let said = format!(
-        "interrupted {} session(s); {continuation}; {jobs}{channels}",
+        "interrupted {} session(s); {continuation}{channels}",
         running.len()
     );
     tracing::warn!(
@@ -3425,59 +3395,8 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
             }
             continue;
         };
-        // A `job` row speaks through `announce_owed`; a shell's buffer is gone.
-        let mut kept = Vec::with_capacity(tasks.len());
-        let mut dropped = 0;
-        let mut lost: Vec<String> = Vec::new();
-        for task in tasks {
-            match task.payload["notice"].as_str() {
-                Some("background") => {
-                    let said = task.payload["message"].as_str().unwrap_or("").trim();
-                    if !said.is_empty() {
-                        lost.push(said.to_string());
-                    }
-                }
-                Some("job") => {}
-                _ => {
-                    kept.push(task);
-                    continue;
-                }
-            }
-            let _ = d.store.delete_pending_task(task.id);
-            dropped += 1;
-        }
-        if dropped > 0 {
-            tracing::info!(
-                session = %name, dropped,
-                "dropped notices about work the last run took with it"
-            );
-        }
-        // Said as a message, not a notice: this one has to wake the session.
-        if !lost.is_empty() {
-            let mut notices = String::new();
-            for said in &lost {
-                notices.push_str("-- ");
-                notices.push_str(said);
-                notices.push_str("\n\n");
-            }
-            let message = crate::prompts::harness_wrap(crate::prompts::shared().render(
-                crate::prompts::LOST_NOTICES,
-                &[("notices", notices.as_str())],
-            ));
-            let payload = json!({"session": name, "message": message});
-            match d.store.add_pending_task(&name, "inject", &payload) {
-                // In `kept`: what owes a turn has to be a task this pass knows about.
-                Ok(id) => kept.push(crate::store::PendingTask {
-                    id,
-                    session: name.clone(),
-                    kind: "inject".to_string(),
-                    payload,
-                }),
-                Err(e) => {
-                    tracing::warn!(session = %name, error = %e, "could not say what was lost");
-                }
-            }
-        }
+        // Every row still here is news this build wrote: none is dropped.
+        let kept = tasks;
         let owed = owes_a_turn(&kept);
         // Rows already here are the news the wait waited for; with none, the clock decides.
         if let Some((id, until)) = waiting.get(&name)

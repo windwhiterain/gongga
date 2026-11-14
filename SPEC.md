@@ -52,7 +52,7 @@ Channel := path
 Result := {id: Channel, output: str, time: time, mactehd: bool, exit: int|none}
 fn exec(
   bin: path = channel[id].bin, #summary
-  args: list[str] | dict[str],
+  args: list[str],
   input: optional[str] = none,
   id: Channel = "/{bin}/default",
   wait: optional[time] = none, #summary
@@ -157,7 +157,7 @@ fn clone_session(source: path, dest: path)
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
 ## Prompt
-after the system prompt, before the first user message, inject one message with useful information about session name, harness version (commit id), cwd, time. it is stamped once with the session's first prompt row and never re-rendered.
+after the system prompt, before the first user message, inject two messages: one with useful information about session name, harness version (commit id), cwd, time; one introducing the parameters every tool call shares besides its own arguments. they are stamped once with the session's first prompt row and never re-rendered.
 
 **Invariant: context only has append/cut API**
 
@@ -197,6 +197,8 @@ for the first user message to a empty session, find all meta references recursiv
     - [session{name (click: toggle show, if show change to true, set sticky session, if false and sticky, del sticky session)}] (vertical scroll, tree: a prefix of a name is a group row, a click on its marker folds it away)
     - [{session(show = true){name, context (in tokens), cached (in n%, latest), tps (latest), ttft (latest), cwd, model, thinking_effort, context_limit}(click: set sticky session), events}] (horizontal split):(vertical)
   - [active_quota{provider, [mouth n%] [week n%] [5h n%] [credit n] [money n¥]}]: update each step end.
+    - each endpoint is asked at most once per `quota_interval_secs` (`0` asks every step end);
+      in between the row keeps the numbers it last read.
   - last cmd | cmd_result (non session related)
   - cmd_input: perfix select, auto complete (match candidates in any char position).
     - `/<cmd>`

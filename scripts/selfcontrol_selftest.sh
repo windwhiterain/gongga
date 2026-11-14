@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# SPEC's `## Skill: Self Control`, on a real server with a fake provider: does the
-# content in `ship/skills/self-control` publish the functions it names, and do the
-# server behaviours its prose describes still hold?
+# SPEC's `## Skill: Self Control`, on a real server with a fake provider: the one
+# function the content in `ship/skills/self-control` publishes, and the script form of
+# the same question.
 #
-#   A  `new_session` gives the new session the source's row, column by column, and
-#      leaves that session empty
-#   B  a name that is taken is refused, and the row it names is left as it was
-#   C  a remote this server does not know is refused before a row is made
-#   D  no source session is refused, and no session is made
-#   E  the package publishes `ask` and `new_session`
-#   F  `ask` asks, waits and prints the answer
-#   G  `--dry_run` prints the arguments and makes nothing
+#   E  the package publishes `ask`, and nothing else
+#   F  `ask` asks another session, waits, and prints its answer
 #   H  the script form of `ask` still runs
+#
+# What this file used to drive -- `new_session` through the skill, copying the caller's
+# row column by column -- is gone: a skill function is not a server command any more,
+# and `set_session` applies a config rather than inheriting one. Those behaviours belong
+# to the command layer, and `cmd_selftest.sh` is where a command's own arguments are
+# proved.
 #
 # One server lifecycle, one fake endpoint, one temporary home. `--keep` leaves the
 # home for a failing run; the default removes it.
@@ -200,55 +200,15 @@ project_native=$(cygpath -m "$project")
 source_columns=$(columns_of source)
 [[ -n "$source_columns" ]] || hard "the source session has no row"
 
-# --- A: the copy's row is the source's row, and the copy is empty --------------
-"${cli[@]}" '{"name":"run_skill","args":{"session":"source","id":"harness/self-control","cmd":{"args":["new_session","copy"]}}}' >"$work/new-a.out" 2>"$work/new-a.err"
-a=$?
-copy_columns=$(columns_of copy)
-a_label="the new session's row is the source's row: '$copy_columns' (source: '$source_columns')"
-[[ -n "$copy_columns" && "$copy_columns" == "$source_columns" ]]
-ok "$a_label" $?
-empty=$(empty_of copy)
-a_label="and it is empty: $empty (messages|pending|subscriptions)"
-# A copy that is not there is not an empty one: the emptiness is only said of a
-# session that exists.
-[[ -n "$copy_columns" && "$empty" == "0|0|0" ]]
-ok "$a_label" $?
-# The call's own verdict: a session that was made and a call that says it was
-# refused are two facts, and a caller reads the second one.
-a_label="and the command says so: exit $a, $(first_line "$work/new-a.out" "$work/new-a.err")"
-[[ $a == 0 ]]
-ok "$a_label" $?
-
-# --- B: a name that is taken is refused, and the row it names is left alone -----
-"${cli[@]}" '{"name":"set_session","args":{"id":"taken","model":"fake/flash-fake","thinking":"low"}}' >"$work/taken.out" 2>&1
-taken_before=$(columns_of taken)
-"${cli[@]}" '{"name":"run_skill","args":{"session":"source","id":"harness/self-control","cmd":{"args":["new_session","taken"]}}}' >"$work/new-b.out" 2>"$work/new-b.err"
-b=$?
-said=$(cat "$work/new-b.out" "$work/new-b.err")
-b_label="a taken name is refused with the server's own words: exit $b, $(first_line "$work/new-b.out" "$work/new-b.err")"
-[[ $b == 1 && "$said" == *"already exists"* ]]
-ok "$b_label" $?
-b_label="and the row it names is untouched: $(columns_of taken)"
-[[ "$(query "select count(*) from sessions where name='taken'")" == "1" && "$(columns_of taken)" == "$taken_before" ]]
-ok "$b_label" $?
-
-# --- C: a machine this server does not know is refused before a row is made -----
-"${cli[@]}" '{"name":"run_skill","args":{"session":"source","id":"harness/self-control","cmd":{"args":["new_session","far","--remote","nosuch"]}}}' >"$work/new-c.out" 2>"$work/new-c.err"
-c=$?
-said=$(cat "$work/new-c.out" "$work/new-c.err")
-c_label="an unknown remote is refused: exit $c, $(first_line "$work/new-c.out" "$work/new-c.err")"
-[[ $c == 1 && "$said" == *"no remote named"* ]]
-ok "$c_label" $?
-c_label="and nothing was created"
-[[ "$(query "select count(*) from sessions where name='far'")" == "0" ]]
-ok "$c_label" $?
-
-# --- E: the package publishes the two functions it names ------------------------
+# --- E: the package publishes the one function its description names -------------
+# A server command is not a skill function: the twenty-three a session drives itself
+# with are the command layer's (`self-control`'s own SKILL.md documents them), and this
+# package adds the one convenience SPEC gives it.
 "${cli[@]}" '{"name":"run_skill","args":{"session":"source","id":"harness/self-control","cmd":"no_such_function"}}' >"$work/e.out" 2>"$work/e.err"
 e=$?
 said=$(cat "$work/e.out" "$work/e.err")
-e_label="the package publishes ask and new_session: exit $e, $(first_line "$work/e.out" "$work/e.err")"
-[[ $e != 0 && "$said" == *"ask"* && "$said" == *"new_session"* ]]
+e_label="the package publishes ask: exit $e, $(first_line "$work/e.out" "$work/e.err")"
+[[ $e != 0 && "$said" == *"publishes: ask"* ]]
 ok "$e_label" $?
 
 # --- F: `ask` asks, waits and prints the answer ---------------------------------
@@ -259,17 +219,6 @@ printf '%s' "$answer" > "$work/ask-f.out"
 f_label="ask asks, waits and prints the answer: exit $f, '$answer' $(first_line "$work/ask-f.out" "$work/ask-f.err")"
 [[ $f == 0 && "$answer" == *"hello from the fake"* ]]
 ok "$f_label" $?
-
-# --- G: a dry run prints the arguments and makes nothing ------------------------
-"${cli[@]}" '{"name":"run_skill","args":{"session":"source","id":"harness/self-control","cmd":{"args":["new_session","dryrun","--dry_run","true"]}}}' >"$work/new-g.out" 2>"$work/new-g.err"
-g=$?
-said=$(cat "$work/new-g.out" "$work/new-g.err")
-g_label="a dry run prints what it would do: exit $g, $(first_line "$work/new-g.out" "$work/new-g.err")"
-[[ $g == 0 && -n "$said" && "$said" == *"dryrun"* ]]
-ok "$g_label" $?
-g_label="and creates nothing"
-[[ "$(query "select count(*) from sessions where name='dryrun'")" == "0" ]]
-ok "$g_label" $?
 
 # --- H: the script form of `ask` still runs -------------------------------------
 answer=$(timeout -k 5 120 "$home/skills/self-control/ask_session.py" mentor "What did I ask?" 2>"$work/ask-h.err")

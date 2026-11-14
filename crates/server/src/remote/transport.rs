@@ -26,8 +26,8 @@ const WINDOW: usize = 8;
 ///
 /// One clock on the connection, and the only one: it bounds the greeting and every
 /// answer, and what it ends is the request, with an error that says which one. It is
-/// not the clock a call goes to the background on -- that one is the caller's own
-/// `timeout_ms`, measured on this machine alone. See `docs/notes/server-remote.md`.
+/// not a call's own wait -- that one is measured on this machine alone. See
+/// `docs/notes/server-remote.md`.
 pub const DEFAULT_ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How long a dropped transport waits for its runner to end its own shells.
@@ -204,8 +204,8 @@ impl std::error::Error for Refused {}
 ///
 /// # Invariant
 ///
-/// An error, never a background: this is the network clock, and what it ends is the
-/// request. The clock that hands a call to the background is the caller's own.
+/// An error, never a wait: this is the network clock, and what it ends is the
+/// request. A call's own wait is measured by the caller.
 #[derive(Debug)]
 pub struct Unanswered {
     /// The operation the peer was silent about.

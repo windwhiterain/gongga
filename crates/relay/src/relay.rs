@@ -13,6 +13,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+/// The pair's version: what the two files below mean.
+///
+/// # Invariant
+///
+/// Bumped when `Words` or `Status` changes in a way the other side would misread, and
+/// only then. Compatibility is this number, never a build id: SPEC pairs the latest
+/// *compatible protocol*, so two commits that left these alone still pair.
+pub const PROTOCOL: u32 = 1;
+
+/// The code a refusal uses: not a program that failed, a pair that cannot work.
+pub const REFUSED: u8 = 3;
+
 /// The words the program was started with, read once.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Words {
@@ -78,7 +90,7 @@ pub fn run(dir: &Path) -> anyhow::Result<()> {
     }
     let mut child = command
         .spawn()
-        .map_err(|e| anyhow::anyhow!("starting {:?}: {e}", words.program))?;
+        .map_err(|e| anyhow::anyhow!("starting {:?} in {:?}: {e}", words.program, words.cwd))?;
     let pid = child.id();
     // Its streams are pumped into `out` here: Git's bash cannot write to an inherited
     // handle.

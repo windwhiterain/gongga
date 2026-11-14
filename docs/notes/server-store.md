@@ -158,7 +158,7 @@ worse than a leak: SQLite hands a freed id out again, and the dead session's
 events then pose as the new session's history.
 
 The same rule for every row keyed by the session's *name* rather than its id --
-`pending_tasks`, `detached_jobs`, `tool_jobs` -- and for `drafts`, whose id-keyed
+`pending_tasks`, `detached_jobs` -- and for `drafts`, whose id-keyed
 row would otherwise be settled at the next start into a message for a session
 that no longer exists. One transaction, because a delete that half-happened is a
 session whose name is free and whose rows are not.
@@ -270,10 +270,14 @@ writes is a result the next question sees.
 
 `open_calls` then reads one thing: the newest `(turn, step)` in the session, and every
 call in it that no result names. A turn answers its calls before it ends, so that is
-the only place a half-written step can be. A resumed turn reuses its numbers, so an
-older row sharing the pair is read too -- its answered calls filter themselves out by
-`call_id`, never by position. `answer_open_calls` copies the call's own pair onto the
-answer it appends, so the repaired row lands in the step it belongs to.
+the only place a half-written step can be. "Newest" is the row `seq` puts last, never
+the largest number: a turn is counted in memory from one at every start, so a transcript
+that outlived a run -- precisely the one this exists for -- carries numbers that go
+backwards, and a maximum then asks about a step answered hours ago. A resumed turn
+reuses its numbers, so an older row sharing the pair is read too -- its answered calls
+filter themselves out by `call_id`, never by position. `answer_open_calls` copies the
+call's own pair onto the answer it appends, so the repaired row lands in the step it
+belongs to.
 
 ## pictures in a row
 

@@ -683,8 +683,8 @@ nothing survives the turn to be discovered later.
 
 ## How an argument is spelled, and what a `path` means
 
-An argument type is SPEC spelling -- `optional[path]`, `list[str] | dict[str]`,
-`time` -- and `protocol::argtype` is the one table that turns it into the JSON Schema a
+An argument type is SPEC spelling -- `optional[path]`, `list[str]`, `time`, `optional[str]` --
+and `protocol::argtype` is the one table that turns it into the JSON Schema a
 model reads, the value a typed line becomes, and the kind a call is held to. A value of
 the wrong kind is refused with the kinds it takes; a stated `null` is the empty value of
 the type (no remote, no directory, no count), which is a different instruction from

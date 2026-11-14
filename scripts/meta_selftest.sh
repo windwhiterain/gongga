@@ -142,7 +142,15 @@ spaced=$(cygpath -w "$spacey")
 nested=$(cygpath -w "$nested")
 message="看下@file(docs/notes/tui-main.md)这个文件，还有@skill(self-control)是做什么的，以及@file($spaced)这个、@file($nested)那个"
 say "message: $message"
-sent=$("${cli[@]}" '{"name":"send_message","args":{"session":"reader","message":"'"$message"'"}}' 2>&1)
+# The message holds Windows paths and Chinese prose, so it is built as JSON by the one
+# thing that knows how: pasted in raw, a `` in a path is an escape and the line is
+# refused as "not a JSON object".
+payload=$(python - "$message" <<'INNER'
+import json, sys
+print(json.dumps({"name": "send_message", "args": {"session": "reader", "message": sys.argv[1]}}))
+INNER
+)
+sent=$("${cli[@]}" "$payload" 2>&1)
 say "sent: $sent"
 [[ "$sent" == *'"ok":true'* ]]
 ok "its turn is accepted" $?

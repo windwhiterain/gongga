@@ -57,8 +57,35 @@ def _as_bool(word):
     raise ValueError(f"{word!r} is not a boolean")
 
 
+def _as_json(word, kind):
+    """A word that stands for a JSON value, decoded: what a `dict` or `list` takes.
+
+    SPEC's arguments are `dict[str, any]` and reach a skill as words, so a table a
+    caller passes -- `new_subagent(config=...)` -- is JSON text by the time it is
+    here. Anything else is refused in the skill's own words rather than bound as a
+    string that fails later, one call deeper.
+    """
+    try:
+        value = json.loads(word)
+    except ValueError as bad:
+        raise ValueError(f"{word!r} is not JSON: {bad}") from None
+    if not isinstance(value, kind):
+        raise ValueError(f"{word!r} is JSON, and not a {kind.__name__}")
+    return value
+
+
 #: Annotations a word is converted to; anything else keeps the word as written.
-CONVERT = {int: int, float: float, bool: _as_bool}
+CONVERT = {
+    int: int,
+    float: float,
+    bool: _as_bool,
+    dict: lambda word: _as_json(word, dict),
+    list: lambda word: _as_json(word, list),
+}
+
+#: The same types by the name an annotation spells when it was not evaluated -- a
+#: skill with `from __future__ import annotations` carries `"dict"`, not `dict`.
+NAMED = {"int": int, "float": float, "bool": bool, "dict": dict, "list": list}
 
 
 def package(directory):
@@ -148,7 +175,10 @@ def bind(entry, words):
             )
 
     def converted(name, word):
-        convert = CONVERT.get(signature.parameters[name].annotation)
+        annotation = signature.parameters[name].annotation
+        if isinstance(annotation, str):
+            annotation = NAMED.get(annotation.strip(), annotation)
+        convert = CONVERT.get(annotation)
         return convert(word) if convert else word
 
     args = [converted(parameter.name, word) for parameter, word in zip(parameters, positional)]
