@@ -239,7 +239,13 @@ while :; do
   if [ -n "$OLD_PID" ] && tasklist //FI "PID eq $OLD_PID" //NH 2>/dev/null | grep -q "$OLD_PID"; then
     alive=1
   fi
-  listening=$(netstat -ano 2>/dev/null | grep -c ":$PORT" || true)
+  # Only a *bound* socket is the home still taken. `grep -c ":$PORT"` counted any
+  # line mentioning the port, and a window retrying in a loop puts its own
+  # `SYN_SENT` row there with this port as the *foreign* address -- so a waiter
+  # left behind by a handover that already succeeded would read "still bound"
+  # forever and never take the home it was waiting for. The second column is the
+  # local address, and a bound socket is the one that ends with the port there.
+  listening=$(netstat -ano 2>/dev/null | awk -v port=":$PORT" '$2 ~ (port "$") { n++ } END { print n + 0 }')
   if [ "$alive" = 0 ] && [ "$listening" = 0 ]; then
     cd '@@ROOT@@'
     # `--clean` wipes the build tree, and the old server is still holding pieces
@@ -457,8 +463,21 @@ lease_live() {
   if alive "$pid" || alive "$launcher"; then
     return 0
   fi
+  # The window between `stage` and `launch` is worth guarding, and the *absence* of
+  # anything `launch` writes is what makes it that window. Once a launcher's pid,
+  # beat or outside claim is on disk, the question is whether the process is alive
+  # -- and it is not -- so the handover is abandoned, not waiting.
+  #
+  # Without those three checks a `stamp.txt` alone held the lease forever: a
+  # successor that died with the server it was waiting to replace (2026-11-14
+  # 21:19) left `launch.pid` and `launch.beat` behind, `status` still said "is
+  # waiting to take the home", and every later `stage` was refused with "another
+  # handover is in flight" until somebody noticed the stale directory.
   [ -n "$stamp" ] && [ "$stamp" = "$(cat "$CURRENT" 2>/dev/null || true)" ] \
-    && [ -f "$RUN/evolve-$stamp.txt" ]
+    && [ -f "$RUN/evolve-$stamp.txt" ] \
+    && [ ! -f "$RUN/evolve-$stamp-launch.outside" ] \
+    && [ ! -f "$RUN/evolve-$stamp-launch.pid" ] \
+    && [ ! -f "$RUN/evolve-$stamp-launch.beat" ]
 }
 
 # Takes the lease for `stamp`, or stops and says who holds it.
@@ -837,10 +856,13 @@ cmd_status() {
       echo "lease: stage ${holder:-unknown} is staged; launch it, then swap"
     fi
   fi
-  local server_pid
+  local server_pid bound
   server_pid="$(cat "$HOME_DIR/server.lock" 2>/dev/null || echo none)"
   echo "server.lock: $server_pid"
-  netstat -ano 2>/dev/null | grep ":$PORT" || echo "port $PORT: not bound"
+  # The same rule the successor waits on: a socket bound here, not a client
+  # reaching for this port from somewhere else.
+  bound="$(netstat -ano 2>/dev/null | awk -v port=":$PORT" '$2 ~ (port "$")')"
+  if [ -n "$bound" ]; then printf '%s\n' "$bound"; else echo "port $PORT: not bound"; fi
   echo "staged:"
   ls -t "$RUN"/evolve-*.txt 2>/dev/null | head -n 3
   echo "successors:"
