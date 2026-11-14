@@ -198,10 +198,12 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
                             session.name(),
                             report.ended
                         ),
+                        session: None,
                     }),
                     Some(Err(e)) => bus.publish(Event::Log {
                         level: LogLevel::Error,
                         message: format!("{}: the queued move failed: {e}", session.name()),
+                        session: None,
                     }),
                     None => {}
                 }
@@ -2441,6 +2443,7 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
         Err(e) => d.bus.publish(Event::Log {
             level: LogLevel::Warn,
             message: format!("{name} was cloned, but its rows were not re-sent: {e}"),
+            session: None,
         }),
     }
     tracing::info!(session = %name, source = %source, rows = report.rows, "session cloned");
@@ -2970,6 +2973,7 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
             return (!drawn).then(|| Event::Log {
                 level: LogLevel::Info,
                 message: row.text.clone(),
+                session: None,
             });
         }
     };

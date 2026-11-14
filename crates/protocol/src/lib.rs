@@ -26,6 +26,7 @@ pub mod channel;
 pub mod frame;
 pub mod message;
 pub mod reference;
+pub mod retry;
 
 pub use channel::{
     Channel, ChannelConfig, ChannelError, ChannelSink, ChannelStream, MAX_MESSAGE_LEN, Role,

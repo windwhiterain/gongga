@@ -107,5 +107,8 @@ address empty, instead of naming a handshake that never started.
 ## REDIAL_MIN
 
 Not a budget on how long the bridge keeps trying -- it keeps trying for as long
-as the process lives, because the harness may be down for a rebuild -- but a
-ceiling on how often it hammers a harness that is not there.
+as the process lives, because the harness may be down for a rebuild -- and not a
+ceiling on how slowly it comes back either: each failure doubles the delay and
+nothing caps it (`docs/notes/protocol-retry.md`). The cap it used to have read as
+"hammer a harness that is not there every thirty seconds"; the ladder now grows
+until the harness answers, and the platform connection stays up meanwhile.

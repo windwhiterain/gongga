@@ -5,7 +5,7 @@ mod channel;
 mod chat;
 mod config;
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -572,8 +572,8 @@ async fn main() -> anyhow::Result<()> {
                     retry_in = ?backoff,
                     "could not reach the harness; the platform connection stays up"
                 );
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(REDIAL_MAX);
+                protocol::retry::sleep(backoff).await;
+                backoff = protocol::retry::doubled(backoff);
                 continue;
             }
         };
@@ -608,15 +608,13 @@ async fn main() -> anyhow::Result<()> {
         // Both halves go with the link; the next dial makes new ones.
         drop((sink, stream));
         tracing::warn!(error = %link, retry_in = ?backoff, "lost the harness; redialing");
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(REDIAL_MAX);
+        protocol::retry::sleep(backoff).await;
+        backoff = protocol::retry::doubled(backoff);
     }
 }
 
-/// First redial delay and the ceiling it backs off to; retrying never stops.
-/// See `docs/notes/bridge-main.md`.
+/// First redial delay; it doubles per failure, with no ceiling, and redialing never stops.
 const REDIAL_MIN: Duration = Duration::from_secs(1);
-const REDIAL_MAX: Duration = Duration::from_secs(30);
 
 /// The harness answered, and the answer was no.
 #[derive(Debug)]

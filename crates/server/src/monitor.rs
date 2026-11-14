@@ -115,6 +115,7 @@ async fn report_failure(d: &Arc<Dispatch>, home: &Path, failure: &Failure) {
             d.bus.publish(protocol::Event::Log {
                 level: LogLevel::Error,
                 message: why,
+                session: None,
             });
             let _ = d.store.mark_monitored(failure.id, failure.last_seq);
         }
@@ -164,6 +165,7 @@ async fn give_quota(d: &Arc<Dispatch>, home: &Path, row: &crate::store::EventRow
             d.bus.publish(protocol::Event::Log {
                 level: LogLevel::Error,
                 message: why,
+                session: None,
             });
             let _ = d.store.set_monitor_value(QUOTA_EVENT_CURSOR, row.id);
         }
@@ -247,6 +249,7 @@ async fn give_disk(d: &Arc<Dispatch>, home: &Path, row: &crate::store::EventRow)
             d.bus.publish(protocol::Event::Log {
                 level: LogLevel::Error,
                 message: why,
+                session: None,
             });
             let _ = d.store.set_monitor_value(DISK_EVENT_CURSOR, row.id);
         }

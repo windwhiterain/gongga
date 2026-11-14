@@ -36,13 +36,6 @@ home could not change the one number every session started at. It is
 the `context_limit` a `session_info` reports -- ask the config, so the title and the
 request cannot disagree about it the way they once did about a level.
 
-## DEFAULT_RETRY_CEILING_MS
-
-The longest one retry delay may grow to. Doubling is meant to wait out a
-provider's bad minute, not to add a silent one of this server's own, so the cap is
-`[model] retry_ceiling_ms` rather than a constant in `llm.rs`: a home that would
-rather give up sooner says so.
-
 ## ModelConfig::provider
 
 Roster id of the provider this configuration points at, when it points at one.
@@ -90,8 +83,12 @@ at all. `0` is no ceiling: retry until the turn is cancelled.
 
 ## ModelConfig::retry_base
 
-First retry delay; every further attempt doubles it, up to `retry_ceiling`,
-so a provider having a bad minute is waited out rather than hammered.
+First retry delay; every further attempt doubles it, with no ceiling, so a provider
+having a bad minute is waited out rather than hammered. The ceiling that used to
+follow it is gone with `[model] retry_ceiling_ms`: a delay that is never capped has
+no cap to configure, and a field that no longer means anything is worse than a removed
+one. A home still carrying the key is read and the key is ignored. See
+`docs/notes/protocol-retry.md`.
 
 ## No timeout is configured
 

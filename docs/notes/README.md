@@ -66,6 +66,7 @@ commands. The crate rename has landed:
 | [`protocol-frame.md`](protocol-frame.md) | `crates/protocol/src/frame.rs` |
 | [`protocol-message.md`](protocol-message.md) | `crates/protocol/src/message.rs` |
 | [`protocol-reference.md`](protocol-reference.md) | `crates/protocol/src/reference.rs` |
+| [`protocol-retry.md`](protocol-retry.md) | `crates/protocol/src/retry.rs` |
 | [`protocol-channel.md`](protocol-channel.md) | `crates/protocol/src/channel.rs` |
 
 ### skill

@@ -298,8 +298,8 @@ impl InboxTrait for Inbox {
                     Ok(()) => self.backoff = Duration::from_secs(1),
                     Err(e) => {
                         tracing::warn!(error = %e, retry_in = ?self.backoff, "qq gateway connect failed");
-                        tokio::time::sleep(self.backoff).await;
-                        self.backoff = (self.backoff * 2).min(Duration::from_secs(30));
+                        protocol::retry::sleep(self.backoff).await;
+                        self.backoff = protocol::retry::doubled(self.backoff);
                         continue;
                     }
                 }
@@ -310,7 +310,7 @@ impl InboxTrait for Inbox {
                 Step::Reconnect(why) => {
                     tracing::warn!(reason = %why, "qq gateway: reconnecting");
                     self.socket = None;
-                    tokio::time::sleep(self.backoff).await;
+                    protocol::retry::sleep(self.backoff).await;
                 }
             }
         }

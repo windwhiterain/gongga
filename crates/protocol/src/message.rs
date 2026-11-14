@@ -431,8 +431,19 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         outcome: Option<TurnOutcome>,
     },
-    /// Diagnostic line for the TUI status bar.
-    Log { level: LogLevel, message: String },
+    /// A line about the server, or about one session when `session` names it.
+    ///
+    /// # Invariant
+    ///
+    /// A session's line is drawn in that session's own window, so it is news the
+    /// reader finds where the work is. Never a transcript row: a notice that entered
+    /// the context would be sent to the model again on every turn.
+    Log {
+        level: LogLevel,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
     /// What a session's last completed request measured. See [`UsageEvent`].
     Usage(UsageEvent),
     /// What is left at a provider, read at a step's end. See [`Quota`].
@@ -463,7 +474,7 @@ impl Event {
     /// # Invariant
     ///
     /// Two kinds name no session -- a command and its answer, and the facts that
-    /// belong to the whole server (the session list, a log line, a quota reading).
+    /// belong to the whole server (the session list, a quota reading).
     /// Everything that belongs to a conversation says which, so a reader can tell
     /// one conversation's lines from another's without knowing the event's shape.
     pub fn session(&self) -> Option<&str> {
@@ -474,6 +485,7 @@ impl Event {
             Event::Status { session, .. } => Some(session.as_str()),
             Event::Usage(e) => Some(e.session.as_str()),
             Event::Record { session, .. } => session.as_deref(),
+            Event::Log { session, .. } => session.as_deref(),
             Event::Session { session } => Some(session.name.as_str()),
             Event::SessionGone { name } => Some(name.as_str()),
             Event::Transcript { session, .. } => Some(session.as_str()),
@@ -481,7 +493,7 @@ impl Event {
             | Event::CmdResult { .. }
             | Event::Models { .. }
             | Event::Commands { .. } => None,
-            Event::Log { .. } | Event::Quota(_) => None,
+            Event::Quota(_) => None,
         }
     }
 

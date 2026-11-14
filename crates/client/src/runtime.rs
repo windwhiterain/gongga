@@ -14,14 +14,13 @@ use crate::window_state::State;
 use crate::window_sync::WindowView;
 use crate::{Connection, DialFailure, Greeting, LineKind, Link, Listed, Sink};
 
-/// First redial delay, doubling up to the cap; a cadence, not a budget.
+/// First redial delay, doubled per failure with no ceiling; a cadence, not a budget.
 ///
 /// # Invariant
 ///
 /// Backing off never costs the window: history, input and scroll stay put, and
 /// Alt+Q still leaves. See `docs/notes/client-runtime.md`.
 pub const RECONNECT_MIN: Duration = Duration::from_millis(250);
-pub const RECONNECT_MAX: Duration = Duration::from_secs(5);
 
 /// How much of a burst is decoded before the keyboard is looked at again.
 ///
@@ -220,6 +219,9 @@ enum Step {
 /// A dial kept alive between loop iterations, boxed so the loop never blocks.
 type Dialing = Pin<Box<dyn Future<Output = Result<(Link, Greeting), DialFailure>>>>;
 
+/// The backoff wait, kept like [`Dialing`]: awaited in the branch it would stop the keys.
+type Waiting = Pin<Box<dyn Future<Output = ()>>>;
+
 /// The loop that outlives the link, driven through `Frontend`.
 ///
 /// # Invariant
@@ -260,7 +262,8 @@ pub async fn run(
 
     let mut link: Option<crate::Link> = None;
     let mut dialing: Option<Dialing> = None;
-    let mut next_try = tokio::time::Instant::now();
+    // Nothing owed a wait yet: the first dial is the first round's.
+    let mut waiting: Option<Waiting> = None;
     let mut backoff = RECONNECT_MIN;
     let mut attempts: u32 = 0;
     // Started once, before any dial; what it spawned is its to stop, so the
@@ -323,16 +326,19 @@ pub async fn run(
                 outcome = pending.as_mut() => Step::Dialed(outcome),
                 _ = closing => Step::Closing,
             }
-        } else {
+        } else if let Some(wait) = waiting.as_mut() {
             let closing = ui.closing();
             tokio::select! {
                 // The keyboard first, every time: a stream that never pauses would
                 // otherwise win the race.
                 biased;
                 event = ui.next_event() => Step::Input(event),
-                _ = tokio::time::sleep_until(next_try) => Step::Dial,
+                _ = wait.as_mut() => Step::Dial,
                 _ = closing => Step::Closing,
             }
+        } else {
+            // Nothing is owed a wait: dial now, and the next round serves the keys.
+            Step::Dial
         };
 
         match step {
@@ -420,7 +426,7 @@ pub async fn run(
                     ui.set_server(None);
                     backoff = RECONNECT_MIN;
                     attempts = 0;
-                    next_try = tokio::time::Instant::now();
+                    waiting = None;
                     let unanswered = client.set_offline(0, ui.sink().as_mut());
                     give_back(&mut *ui, unanswered);
                 }
@@ -448,7 +454,7 @@ pub async fn run(
                                 ui.set_server(None);
                                 backoff = RECONNECT_MIN;
                                 attempts = 0;
-                                next_try = tokio::time::Instant::now();
+                                waiting = None;
                                 let unanswered = client.set_offline(0, ui.sink().as_mut());
                                 give_back(&mut *ui, unanswered);
                             }
@@ -497,7 +503,7 @@ pub async fn run(
                     ui.set_server(None);
                     backoff = RECONNECT_MIN;
                     attempts = 0;
-                    next_try = tokio::time::Instant::now();
+                    waiting = None;
                     let unanswered = client.set_offline(0, ui.sink().as_mut());
                     ui.sink().note(
                         LineKind::System,
@@ -511,13 +517,15 @@ pub async fn run(
                 ui.set_server(None);
                 backoff = RECONNECT_MIN;
                 attempts = 0;
-                next_try = tokio::time::Instant::now();
+                waiting = None;
                 let unanswered = client.set_offline(0, ui.sink().as_mut());
                 ui.sink()
                     .note(LineKind::System, "server connection lost — reconnecting");
                 give_back(&mut *ui, unanswered);
             }
             Step::Dial => {
+                // The wait that just ended is spent: a retry that fails again makes a new one.
+                waiting = None;
                 attempts += 1;
                 dialing = Some(Box::pin(dial_now(conn.clone())));
             }
@@ -552,9 +560,10 @@ pub async fn run(
                                 ),
                             );
                         }
-                        backoff = (backoff * 2).min(RECONNECT_MAX);
-                        next_try =
-                            tokio::time::Instant::now() + wait_for(spawned, attempts, backoff);
+                        backoff = protocol::retry::doubled(backoff);
+                        waiting = Some(Box::pin(protocol::retry::sleep(wait_for(
+                            spawned, attempts, backoff,
+                        ))));
                     }
                 }
             }

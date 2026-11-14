@@ -27,9 +27,8 @@ pub const REFUSED: i32 = 2;
 /// The exit code of a second, insistent stop request.
 const INSISTED: i32 = 130;
 
-/// The first wait before a restart, doubling up to [`MAX_BACKOFF`].
+/// The first wait before a restart; it doubles per crash in a row, with no ceiling.
 const MIN_BACKOFF: Duration = Duration::from_millis(200);
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
 /// How long a child has to live to count as healthy, which resets the backoff.
 ///
@@ -196,7 +195,7 @@ pub fn watch() -> i32 {
                     crate::store::now_millis()
                 ));
                 std::thread::sleep(backoff);
-                backoff = (backoff * 2).min(MAX_BACKOFF);
+                backoff = protocol::retry::doubled(backoff);
             }
         }
     }

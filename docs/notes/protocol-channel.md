@@ -132,6 +132,13 @@ Backing off per packet rather than per channel is what keeps a burst of losses
 from stalling every other in-flight packet: one unlucky fragment does not push
 the whole window's timers out.
 
+The `min_rto`/`max_rto` clamps here and in `effective_rto` are not the ladders of
+`docs/notes/protocol-retry.md` and are not meant to follow them: this is one packet's
+timer inside a bounded retransmit loop, and its bound is what lets a lost packet become
+`ChannelError::Timeout` rather than an ever-longer wait. Growing it without a ceiling
+would turn "the peer is gone" into "wait forever", which is the opposite of what that
+loop is for.
+
 ## Sender
 
 The sending half is immutable and shared with the timer path; the receiving half
