@@ -47,3 +47,25 @@ conversations with a workspace, not one-shot runs, and moving them onto this sea
 separate change. `meta::Source` reads a reference's bytes, and knows three answers
 (`Local`, `Remote(reader)`, `Unreachable`) where `Space` knows two -- a reference names
 its machine in the text, so it can point at one the session does not stand on.
+
+## The Python mirror
+
+The skills run in Python, on this machine, whatever machine the session stands on
+(`tools/skill.rs` starts them in `ctx.dir(Machine::Local)`). So the file skill cannot
+borrow this `Space`: it has its own, `ship/python/gongga_space.py`, installed to
+`<home>/lib` and importable by every skill. Same seam, same rule -- one value decides
+the machine, a caller asks it to read bytes, write bytes or run a program and never
+asks which machine it is on.
+
+Its primitives are the file side this `Space` has not grown yet: `read_bytes` rides
+the runner's `Read`, and `write_bytes` is an `Append` to a temp beside the target and
+one `Open`'d `mv`. Not a `cat` through a shell: the runner's `Write` never closes a
+shell's stdin, so a program that reads to EOF would wait forever -- the same reason
+`run` here only ever fed a driver that reads one line and exits. The bytes move
+through the runner's own base64 file I/O, binary-safe; the shell only renames.
+
+The transport wheels (`Peer`, `run`, `hello`, ...) are one copy in that module, which
+the `remote` skill imports too, so a shell, a file read and an install reach a peer
+the same way. The `file` skill's `read`/`write`/`edit` take `remote`/`cwd` and default
+to the session's machine; the matching, BOM and all-or-nothing logic stays local and
+is one implementation on either machine.
