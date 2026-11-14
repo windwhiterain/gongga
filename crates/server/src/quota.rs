@@ -134,11 +134,6 @@ fn requested(provider: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// What a provider last reported, if it was ever read in this run.
-pub fn of(provider: &str) -> Option<Quota> {
-    state().lock().ok()?.by_provider.get(provider).cloned()
-}
-
 /// The event a provider's unreadable allowance is logged as, for the monitor.
 pub const EVENT: &str = "quota";
 

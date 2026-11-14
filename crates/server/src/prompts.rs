@@ -64,9 +64,6 @@ pub const SYSTEM: &str = "instructions";
 /// What a monitor session is handed when a turn failed. See `docs/notes/server-prompts.md`.
 pub const MONITOR_PROVIDERS: &str = "monitor_error";
 
-/// The same report again, for the next model, after the monitor itself failed.
-pub const MONITOR_PROVIDERS_AGAIN: &str = "monitor_error_again";
-
 /// What a cleaner session is handed when a disk is under this machine's floor.
 pub const MONITOR_DISK: &str = "monitor_disk";
 
@@ -146,7 +143,6 @@ pub const REQUIRED: &[&str] = &[
     INDEX_OPENING,
     INDEX_SEPARATOR,
     MONITOR_PROVIDERS,
-    MONITOR_PROVIDERS_AGAIN,
     MONITOR_DISK,
     EXPLORE_NOTICE,
     WORK_NOTICE,

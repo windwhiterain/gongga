@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # SPEC's monitor, end to end and offline: a fake Responses endpoint that refuses
-# one model id, and a roster of two flash models where the first is the refused
-# one -- so one run covers a failed turn, the handover, the monitor's own
-# failure, and the switch to the model that works. The disk kind has its own
-# script (`disk_selftest.sh`): it needs no error to have happened first.
+# one model id, and a roster in which that id is the model `set_session` gives a
+# session naming none -- so one run covers a failed turn, the handover, the monitor
+# coming into being on that default, its own failure earning no second report, and
+# a `set_session` on it that sticks.
 #
 # One line of verdict at the end; `-v` prints the report the monitor was given.
 set -uo pipefail
@@ -65,7 +65,7 @@ rows() {
   python - "$home" <<'PY'
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
-print(c.execute("select name,status,model,monitor_seq,monitor_attempts from sessions").fetchall())
+print(c.execute("select name,status,model,monitor_seq from sessions").fetchall())
 PY
 }
 
@@ -97,28 +97,20 @@ if [[ -n "${left// /}" ]]; then
   sleep 2
 fi
 rm -rf "$home"; mkdir -p "$home"
-# The installed content is the clone this home can resolve commits from; the prompt
-# words this checkout carries are laid over it below, because the binary under test
-# is built from this tree and the report's wording is what this run reads.
-cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
+# The installed content is the clone this home can resolve commits from. This
+# branch changes no shipped prose, so what is installed is what this run reads.
+# The checkout under test, not the running home: a worktree has its own
+# submodule, and a test must not depend on what somebody's home installed.
+ship="$root/ship"
+export GONGGA_SHIP_URL="$(native "$ship")"
+# A clone, not a copy: `ship/` in a worktree is a submodule, whose `.git` is a
+# file pointing outside it, and the server refuses a directory that is not a
+# clone of its own.
+git clone --quiet --no-hardlinks "$ship" "$home/ship"
 # This home watches no disk: the disk kind's own script states its threshold. The
 # shipped config is the base, because a home config that holds only this is a home
 # with no tool sentences, and the server refuses to start on it.
-cp "$HOME/.gongga/ship/config/config.toml" "$home/config.toml"
-python - "$root/ship/config/config.toml" "$home/config.toml" <<'OVERLAY'
-import re
-import sys
-
-carried = open(sys.argv[1], encoding="utf-8").read()
-target = sys.argv[2]
-installed = open(target, encoding="utf-8").read()
-for name in ("monitor_error", "monitor_error_again"):
-    found = re.search(rf"^{name} = '''.*?'''", carried, re.S | re.M)
-    if found is None:
-        sys.exit(f"the checkout's config carries no {name}")
-    installed = re.sub(rf"^{name} = '''.*?'''", found.group(0), installed, count=1, flags=re.S | re.M)
-open(target, "w", encoding="utf-8", newline="\n").write(installed)
-OVERLAY
+cp "$ship/config/config.toml" "$home/config.toml"
 # The skill this checkout carries, installed where a home resolves it: publishing
 # does the same thing through the content repository, which this run does not reach.
 mkdir -p "$home/skills"
@@ -142,9 +134,12 @@ PY
 # Two flash models: the first is refused by the endpoint, the second is served.
 # File order is the candidate order when no provider has a quota reading.
 cat > "$roster" <<TOML
+# Two models on one fake endpoint. The first is the id the endpoint refuses, and it
+# is also config::DEFAULT_SESSION_MODEL, so the monitor a handover creates comes
+# into being on it -- the worst case, and the one the loop guard is about.
 [[provider]]
-id = "dead"
-name = "Dead flash"
+id = "deepseek-official"
+name = "Refused default"
 key_env = "DEAD_API_KEY"
 
   [[provider.endpoint]]
@@ -153,7 +148,7 @@ key_env = "DEAD_API_KEY"
   base_url = "http://127.0.0.1:$fake_port/v1"
 
   [[provider.model]]
-  id = "flash-dead"
+  id = "deepseek-flash"
   name = "Refused Flash"
   tier = "flash"
   context = 100000
@@ -182,7 +177,7 @@ export GONGGA_PROVIDERS_CATALOG="$roster"
 export DEAD_API_KEY=sk-dead
 export FAKE_API_KEY=sk-fake
 export FAKE_LLM_DUMP="$dump"
-export FAKE_LLM_FAIL_MODEL=flash-dead
+export FAKE_LLM_FAIL_MODEL=deepseek-flash
 # One MiB: the test checks the claim, not the arithmetic of a gigabyte. A volume
 # with less than this left is the "full" the free space reading has to see, and a
 # tool that says so itself is the other reading.
@@ -206,40 +201,62 @@ wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exi
 server_pid=$(child_pid); sup=$(parent_of "$server_pid")
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
-# Captured, not piped into `grep -q`: grep exits on the match, the command layer
-# takes SIGPIPE writing the rest, and `pipefail` reports that instead.
-refusal=$("${cli[@]}" '{"name":"set_session","args":{"id":"@mine","model":"dead/flash-dead","cwd":"'"$(native "$root")"'"}}' 2>&1)
-[[ "$refusal" == *"names beginning with"* ]]
-ok "a person cannot take a name in the harness's namespace" $?
+# A name beginning with `@` is a name like any other: the namespace is not reserved.
+out=$("${cli[@]}" '{"name":"set_session","args":{"id":"@mine"}}' 2>&1)
+ok "set_session takes a name beginning with @ like any other" $?
 
-"${cli[@]}" '{"name":"set_session","args":{"id":"broken","model":"dead/flash-dead","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
+# A session on the refused model fails on its provider.
+"${cli[@]}" '{"name":"set_session","args":{"id":"broken"}}' >/dev/null 2>&1
 "${cli[@]}" '{"name":"send_message","args":{"session":"broken","message":"say hello"}}' >/dev/null 2>&1
 for _ in $(seq 1 100); do grep -q 'turn end session=broken' "$log" && break; sleep 0.5; done
 grep -q 'turn end session=broken outcome=Failed' "$log"
 ok "a session whose model is refused ends in error" $?
 
-for _ in $(seq 1 100); do grep -q "handed a failure to the monitor" "$log" && break; sleep 0.5; done
-grep -q 'handed a failure to the monitor session=broken model=dead/flash-dead' "$log"
-ok "the failure is handed to @monitor/providers, on the first usable flash model" $?
+for _ in $(seq 1 100); do grep -q 'handed a failure to the monitor' "$log" && break; sleep 0.5; done
+grep -q 'handed a failure to the monitor session=broken' "$log"
+ok "the failure is handed to @monitor/providers" $?
 rows | grep -q "'@monitor/providers'"
 ok "@monitor/providers exists as an ordinary session" $?
 
-for _ in $(seq 1 100); do grep -q 'turn end session=@monitor/providers outcome=Failed' "$log" && break; sleep 0.5; done
+python - "$home" <<'INNER'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+model, = c.execute("select model from sessions where name = '@monitor/providers'").fetchone()
+assert model == "deepseek-official/deepseek-flash", model
+INNER
+ok "it was created on the model set_session gives a session naming none" $?
+
+for _ in $(seq 1 100); do grep -q 'turn end session=@monitor/providers' "$log" && break; sleep 0.5; done
 grep -q 'turn end session=@monitor/providers outcome=Failed' "$log"
-ok "the monitor's own turn failed too" $?
-# Waited for by its own line, not by "a second handover happened": the monitor's
-# failure and the retry are two handovers, and the second one lands after both.
-retry='handed a failure to the monitor session=@monitor/providers model=fake/flash-fake attempt=2'
-for _ in $(seq 1 100); do grep -q "$retry" "$log" && break; sleep 0.5; done
-grep -q "$retry" "$log"
-ok "so the next model was tried" $?
+ok "the monitor's own turn failed on that same model" $?
+before=$(grep -c 'handed a failure to the monitor session=@monitor/providers' "$log")
+sleep 6
+[[ "$(grep -c 'handed a failure to the monitor session=@monitor/providers' "$log")" == "$before" ]]
+ok "its own failure is not handed to itself" $?
+
+# What a monitor runs on is its row's business: one set_session, and nothing lowers
+# it back on the next handover.
+"${cli[@]}" '{"name":"set_session","args":{"id":"@monitor/providers","model":"fake/flash-fake"}}' >/dev/null 2>&1
+"${cli[@]}" '{"name":"set_session","args":{"id":"broken2"}}' >/dev/null 2>&1
+"${cli[@]}" '{"name":"send_message","args":{"session":"broken2","message":"say hello"}}' >/dev/null 2>&1
+for _ in $(seq 1 100); do grep -q 'handed a failure to the monitor session=broken2' "$log" && break; sleep 0.5; done
+grep -q 'handed a failure to the monitor session=broken2' "$log"
+ok "the next failure is handed over on the model that was set" $?
 for _ in $(seq 1 100); do grep -q 'turn end session=@monitor/providers outcome=Done' "$log" && break; sleep 0.5; done
 grep -q 'turn end session=@monitor/providers outcome=Done' "$log"
-ok "and that attempt finished" $?
+ok "and that turn runs on it" $?
+
+python - "$home" <<'INNER'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+model, = c.execute("select model from sessions where name = '@monitor/providers'").fetchone()
+assert model == "fake/flash-fake", model
+INNER
+ok "the handover did not put its own model back" $?
 
 echo "--- the standing knowledge is an index entry, not a message"
 python - "$home" <<'INNER'
-import json, sqlite3, sys
+import json, os, sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 row = c.execute("""select m.display from messages m join sessions s on s.id = m.session_id
                    where s.name = '@monitor/providers' and m.kind = 'system'
@@ -249,8 +266,9 @@ prompt = json.loads(row[0])
 rooted = prompt.get('rooted') or []
 assert '@skill(providers)' in rooted, f'the skill is not an index root: {rooted}'
 body = prompt.get('index') or ''
-assert 'provider 4xx' in body or 'providers' in body, 'the skill body is not in the index'
-assert 'The text of every reference' in body
+skill = open(os.path.join(sys.argv[1], 'skills', 'providers', 'SKILL.md'), encoding='utf-8').read()
+heading = next(line.strip() for line in skill.splitlines() if line.startswith('# '))
+assert heading in body, f"the skill's own heading is not in the index: {heading}"
 INNER
 ok "the skill body reaches the prompt index, not the transcript" $?
 
@@ -262,31 +280,15 @@ first = c.execute("""select m.display from messages m join sessions s on s.id = 
                      where s.name = '@monitor/providers' and m.kind = 'text'
                      order by m.seq limit 1""").fetchone()[0]
 text = json.loads(first).get('text', '')
-assert text.startswith('@skill(providers)'), text[:80]
+assert text.startswith('<harness>@skill(providers)'), text[:80]
 assert 'A gongga session stopped because a provider would not serve it' in text
 assert 'session: broken' in text, 'the report names the session that failed'
 assert 'harness build:' in text and 'home:' in text
+assert 'this turn runs on: deepseek-official/deepseek-flash' in text, text[-400:]
 # The literal spelling stays in the message: the index carries the body instead.
 assert 'provider 4xx' not in text
 INNER
 ok "the report names this failure and leaves the map to the index" $?
-
-python - "$home" <<'INNER'
-import json, sqlite3, sys
-c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
-texts = [json.loads(d).get("text", "") for (d,) in c.execute(
-    """select m.display from messages m join sessions s on s.id = m.session_id
-       where s.name = '@monitor/providers' order by m.seq""")]
-reports = [t for t in texts if "stopped because a provider would not serve it" in t]
-assert len(reports) >= 2, reports
-# The retry re-sends the first report unchanged, behind a preface naming the
-# model. It is the row that says so: a later failure of the same session earns
-# its own fresh report, which is a different row.
-retry = next((t for t in reports if "unchanged" in t), None)
-assert retry is not None, "no retry report arrived"
-assert retry.rstrip().endswith(reports[0].rstrip()), "the retry lost the original report"
-INNER
-ok "the retry carries the first report, unchanged" $?
 
 before=$(grep -c 'handed a failure to the monitor' "$log")
 sleep 6
@@ -295,7 +297,6 @@ ok "a tick does not report the same failure again" $?
 
 [[ "$verbose" == "-v" ]] && { say "-- sessions:"; rows | say; }
 [[ "$verbose" == "-v" ]] && { say "-- the report:"; grep -o "A gongga session stopped[^\"]\{0,400\}" "$log" | head -1 | say; }
-
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then
   printf 'PASS · monitor · %s\n' "$sha"

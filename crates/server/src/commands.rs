@@ -1486,6 +1486,25 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
     }
 }
 
+/// Creates `name` the way `set_session` does, and answers why not when it will not.
+///
+/// # Invariant
+///
+/// A monitor's session comes into being here and nowhere else, so it starts on the
+/// model, the tier and the tuning a session a person named starts on: this is
+/// `set_session` with a name and nothing else, never a second creation path that a
+/// later change to one of them would leave behind.
+pub(crate) async fn create_session(d: &Dispatch, name: &str) -> Result<(), String> {
+    let mut args = Args::new();
+    args.insert("id", name.to_string());
+    let outcome = set_session(d, &args).await;
+    if outcome.ok {
+        Ok(())
+    } else {
+        Err(outcome.message)
+    }
+}
+
 async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     // SPEC's nested `config` flattens into the settings the flat flags name, so
     // one body applies them either way.
@@ -1497,12 +1516,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     }
     let args = &owned;
     let name = args.word("id").unwrap_or_default().to_string();
-    // A leading `@` is the harness's own namespace: a name a person could take
-    // is a name the harness cannot trust.
-    if let Some(refusal) = crate::monitor::reserved(&name) {
-        return Outcome::err(refusal);
-    }
-    // Then whether the name is a name at all: the list draws one row per prefix.
+    // Whether the name is a name at all: the list draws one row per prefix.
     if let Some(refusal) = crate::session::checked_name(&name) {
         return Outcome::err(refusal);
     }

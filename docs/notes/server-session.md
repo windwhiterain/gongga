@@ -194,10 +194,9 @@ draws one row per prefix, and `a//b` or `a/` has no row to be drawn on -- while 
 other character is the operator's: a space, a `.` and a CJK segment draw as themselves.
 Refusing them would be this function inventing a policy SPEC does not have.
 
-The prefix that matters is the one the harness owns, and that refusal is
-`monitor::reserved`'s, kept separate: it now checks every segment rather than only the
-first, because `work/@monitor/error` draws a row a reader cannot tell from the
-harness's own session. Two functions, two reasons, both stated where they refuse.
+Nothing else is refused, and that includes a leading `@`: the names the harness uses
+(`@monitor/providers`, `@monitor/disk`) are names, not a namespace, and nothing here
+tells them apart from a person's. See `server-monitor.md`.
 
 ## stated_directory
 

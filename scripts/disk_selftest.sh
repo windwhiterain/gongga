@@ -91,7 +91,14 @@ cleanup() {
 trap cleanup EXIT
 
 rm -rf "$work"; mkdir -p "$home"
-cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
+# The checkout under test, not the running home: a worktree has its own
+# submodule, and a test must not depend on what somebody's home installed.
+ship="$root/ship"
+export GONGGA_SHIP_URL="$(native "$ship")"
+# A clone, not a copy: `ship/` in a worktree is a submodule, whose `.git` is a
+# file pointing outside it, and the server refuses a directory that is not a
+# clone of its own.
+git clone --quiet --no-hardlinks "$ship" "$home/ship"
 # The threshold this machine is told to watch: no disk is above it, so the first
 # tool call is already below the line, and the reading is the whole story. It goes
 # into the *shipped* config, which is the base: a home whose config.toml holds only
@@ -114,13 +121,15 @@ open(path, "w", encoding="utf-8", newline="\n").write("\n".join(out) + "\n")
 PY
 : > "$log"; : > "$dump"
 
-# Two flash models where the first is refused, so the disk monitor's own failure
-# and the switch to a model that works are covered in the same run.
+# One model, and it is config::DEFAULT_SESSION_MODEL: a handover creates
+# @monitor/disk through set_session, which gives a session naming none exactly
+# this one. A home whose roster lacks it cannot make the session at all, and this
+# run is here to prove the disk kind still works with no model chosen for it.
 cat > "$roster" <<TOML
 [[provider]]
-id = "dead"
-name = "Dead flash"
-key_env = "DEAD_API_KEY"
+id = "deepseek-official"
+name = "Served default"
+key_env = "DEFAULT_API_KEY"
 
   [[provider.endpoint]]
   id = "openai"
@@ -128,12 +137,13 @@ key_env = "DEAD_API_KEY"
   base_url = "http://127.0.0.1:$fake_port/v1"
 
   [[provider.model]]
-  id = "flash-dead"
-  name = "Refused Flash"
+  id = "deepseek-flash"
+  name = "Served Flash"
   tier = "flash"
   context = 100000
   modalities = ["text"]
 
+# The session this run drives names its model, so one more has to exist.
 [[provider]]
 id = "fake"
 name = "Served flash"
@@ -153,10 +163,9 @@ key_env = "FAKE_API_KEY"
 TOML
 
 export GONGGA_PROVIDERS_CATALOG="$roster"
-export DEAD_API_KEY=sk-dead
+export DEFAULT_API_KEY=sk-default
 export FAKE_API_KEY=sk-fake
 export FAKE_LLM_DUMP="$dump"
-export FAKE_LLM_FAIL_MODEL=flash-dead
 
 # The fake writes its own Windows pid: `$!` is an MSYS pid, and taskkill on one
 # kills whatever process that number happens to name.
@@ -188,7 +197,7 @@ ok "the server read the threshold this home declared" $?
 # so waiting for one of them to fail waits for the first big write -- which on a
 # server that mostly reads may be never. That is the whole reason the reading
 # happens after every call.
-tool_ok=$("${cli[@]}" '{"name":"exec","args":{"session":"spill","bin":"bash","id":"spill/once","args":["-lc","echo hello"],"wait":8000}}' 2>&1)
+tool_ok=$("${cli[@]}" '{"name":"exec","args":{"session":"spill","bin":"bash","id":"spill/once","args":["-lc","echo hello"],"until":"hello","wait":20000}}' 2>&1)
 [[ "$tool_ok" == *hello* ]]
 ok "the tool call succeeded" $?
 
@@ -249,7 +258,7 @@ first = c.execute("""select m.display from messages m join sessions s on s.id = 
                      where s.name = '@monitor/disk' and m.kind = 'text'
                      order by m.seq limit 1""").fetchone()[0]
 text = json.loads(first).get("text", "")
-assert text.startswith("@skill(clean-disk)"), text[:80]
+assert text.startswith("<harness>@skill(clean-disk)"), text[:120]
 assert "has less disk room left" in text, text[:400]
 assert "Nothing has failed yet" in text, text[:400]
 assert "(in session spill, which succeeded)" in text, text[:900]
@@ -258,17 +267,18 @@ assert "volumes as they stood then" in text
 INNER
 ok "the report names the failure, the volumes and the space that was released" $?
 
-echo "--- a refused first model is retried, not dropped"
-for _ in $(seq 1 120); do
-  grep -q "handed the disk's last room to the monitor session=@monitor/disk" "$log" && break
-  sleep 0.5
-done
-grep -q 'turn end session=@monitor/disk outcome=Failed' "$log"
-ok "the disk monitor's first model was refused" $?
-for _ in $(seq 1 120); do grep -q 'turn end session=@monitor/disk outcome=Done' "$log" && break; sleep 0.5; done
+echo "--- the disk monitor runs, on the model its row names"
+for _ in $(seq 1 120); do grep -q 'turn end session=@monitor/disk' "$log" && break; sleep 0.5; done
 grep -q 'turn end session=@monitor/disk outcome=Done' "$log"
-ok "and the same report on the next model finished" $?
+ok "the cleaning turn finished" $?
 
+python - "$home" <<'INNER'
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+model, = c.execute("select model from sessions where name = '@monitor/disk'").fetchone()
+assert model == "deepseek-official/deepseek-flash", model
+INNER
+ok "it was created on the model set_session gives a session naming none" $?
 [[ "$verbose" == "-v" ]] && { say "-- sessions:"; rows | say; }
 [[ "$verbose" == "-v" ]] && { say "-- the report:"; grep -o "has less disk room[^\"]\{0,400\}" "$log" | head -1 | say; }
 

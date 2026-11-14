@@ -68,11 +68,10 @@ one report per row to `@monitor/disk` through `commands::deliver`.
 That is why a crash between the reading and the handover loses nothing: the row is
 the fact, and the sweep is stateless but for the cursor.
 
-`monitor_state` also holds `disk.attempts` and `disk.wake`. The disk monitor has no
-failing session row of its own to hang a retry on, so its cursor and its attempt
-count live here: while its session is in `error`, the same event is handed over
-again on the next model, and a disk whose first choice of model is refused is still
-cleaned. See `server-monitor.md`.
+That cursor is all `monitor_state` holds for this kind. It used to hold `disk.attempts`
+and `disk.wake` as well, and the same event was handed over again on the next model
+while the monitor's own session was in `error`; nothing switches a monitor's model
+any more, so one event is one report. See `server-monitor.md`.
 
 ## What a report says
 
@@ -125,7 +124,7 @@ report, and the machine is a fact in it.
 | the room is read from the volume and moves when a big file does | `disk::tests::the_room_left_is_read_from_the_volume_itself` |
 | one episode per fall, and a new one after recovering | `disk::tests::a_low_disk_is_reported_once_and_again_after_recovering` |
 | the smallest volume decides | `disk::tests::the_volume_with_the_least_room_decides` |
-| a successful tool call on a low disk is enough to wake the monitor, with `@skill: clean-disk` in its index, on the second model | `bash scripts/disk_selftest.sh` |
+| a successful tool call on a low disk is enough to wake the monitor, with `@skill(clean-disk)` in its index, on the model `set_session` gives a session naming none | `bash scripts/disk_selftest.sh` |
 
 The e2e script states a threshold no disk is above (`[server] disk_low_mb` in the
 test home's own config), because a test cannot fill a disk and the chain from a

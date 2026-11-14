@@ -156,7 +156,7 @@ index and no use for a patch, and refusing to start over prose it may not need i
 wrong trade; `Agent::index_tolerance` asks whether the template is there and stops
 patching when it is not -- the same answer a tolerance of `0` gives.
 
-## monitor_error, monitor_error_again, monitor_disk
+## monitor_error, monitor_disk
 
 `monitor_error` is the **providers** monitor's report: it is handed to
 `@monitor/providers` when another session's turn failed on its model request, and
@@ -171,15 +171,21 @@ for it, and the limit of its authorization (that one session's error, and a mode
 only inside the session's own tier). `{{noted}}` is the server's last notice for that
 session, or nothing; `{{rows}}` is the transcript window the report covers.
 
-`monitor_error_again` is the same report handed to the next model after the monitor
-itself failed: `{{again}}` is the report unchanged, because re-deriving it would lose
-what the first attempt was told. `monitor_disk` is the cleaner's report, and `{{read_back}}`
-with `{{reach}}` are its two conditional tails -- empty when they do not apply, the same
-way `monitor_error`'s `{{noted}}` is.
+`{{mine}}` is the model that session's own turn runs on -- read from its row at
+handover, not a model the server picked for it.
 
-All three are in `REQUIRED`, unlike `REVISION`: a missing patch costs a re-sent entry,
-while a missing report is a monitor that never learns what it may not do. That is also
-why the content that carries them declares protocol 3.
+`monitor_disk` is the cleaner's report, and `{{read_back}}` with `{{reach}}` are its
+two conditional tails -- empty when they do not apply, the same way `monitor_error`'s
+`{{noted}}` is.
+
+Both are in `REQUIRED`, unlike `REVISION`: a missing patch costs a re-sent entry,
+while a missing report is a monitor that never learns what it may not do.
+
+`monitor_error_again` is still in the shipped config and is no longer read by this
+build: it worded the retry that handed the same report to the next model after the
+monitor itself failed, and nothing switches a monitor's model any more. It stays
+where it is because a config's prompt *names* are content shape -- deleting one is a
+protocol bump, not a prose change -- and a template nobody renders costs nothing.
 
 ## the notices the server injects
 
