@@ -1,6 +1,6 @@
 //! `skill`: run what a skill publishes -- an entry, or a package's function.
 //!
-//! See `docs/notes/cli-skill-command.md`.
+//! See `docs/notes/client-skill-command.md`.
 
 use std::collections::HashSet;
 use std::io::Write;
@@ -15,8 +15,9 @@ use anyhow::{Context, anyhow};
 ///
 /// Everything after the name is the entry's argv, unparsed and unquoted, and the
 /// entry's exit code is this process's. A package's first word names the function it
-/// publishes, and the rest bind to that function's parameters. A skill whose own name
-/// is `ls` or `run` is still reachable as `skill run <name>`.
+/// publishes and the rest are one JSON word, `{"function": "<name>", "args": {...}}`,
+/// sent as the line its stdin is. A skill whose own name is `ls` or `run` is still
+/// reachable as `skill run <name>`.
 pub fn dispatch(home: &Path, tokens: &[String]) -> anyhow::Result<()> {
     let cwd = std::env::current_dir().context("reading this process's directory")?;
     let roots = crate::commands::roots(home, Some(&cwd));
@@ -68,7 +69,7 @@ fn list(roots: &skill::Roots) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Runs a skill's entry with this process's stdio, and leaves as it did.
+/// Runs a skill with this process's stdio, and leaves as it did.
 fn launch(
     roots: &skill::Roots,
     home: &Path,
@@ -92,26 +93,114 @@ fn launch(
             skill.path.display()
         ));
     }
-    let run = skill::runner_of(skill.dir(), skill.entry.as_deref(), &programs())
-        .map_err(|why| anyhow!(why))?;
-    let target = skill.entry.as_deref().unwrap_or(skill.dir());
-    let mut command = Command::new(&run.program);
-    command
-        .args(run.words(target, argv))
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
     // The home's Python surface, so a package imports the contract and the client.
     let lib = home.join("lib");
+    let launch = skill::runner_of(
+        skill.dir(),
+        skill.entry.as_deref(),
+        &programs(),
+        lib.is_dir().then_some(lib.as_path()),
+    )
+    .map_err(|why| anyhow!(why))?;
+    let target = skill.entry.as_deref().unwrap_or(skill.dir());
+    let (program, words, request) = match &launch {
+        skill::Launch::Entry(runner) => (runner.program.clone(), runner.words(target, argv), None),
+        skill::Launch::Package(runner) => {
+            let (function, args) = package_call(argv)?;
+            let request = skill::request(skill.dir(), &function, &args);
+            (
+                runner.program.clone(),
+                runner.leading.clone(),
+                Some(request),
+            )
+        }
+    };
+    let mut command = Command::new(&program);
+    command
+        .args(&words)
+        .stdin(match request {
+            Some(_) => Stdio::piped(),
+            None => Stdio::inherit(),
+        })
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
     if lib.is_dir() {
         command.env("GONGGA_SKILL_LIB", &lib);
     }
-    let status = command
-        .status()
+    let mut child = command
+        .spawn()
         .with_context(|| format!("running {}", target.display()))?;
+    // The request, then the end of it: the dropped pipe is the contract's EOF.
+    if let (Some(text), Some(mut pipe)) = (request, child.stdin.take()) {
+        pipe.write_all(text.as_bytes())
+            .with_context(|| format!("writing the request to {}", program.display()))?;
+    }
+    let status = child
+        .wait()
+        .with_context(|| format!("waiting for {}", program.display()))?;
     let _ = std::io::stdout().flush();
     // The entry answered, not this command. A signal has no code.
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// The one word a package's call is: `{"function": "<name>", "args": {...}}`.
+///
+/// # Invariant
+///
+/// One JSON object and no flags: a package's call is the contract's request without the
+/// skill's path, so `skill <name> '<json>'` reaches the runner as the line it reads.
+/// Nothing here parses a command line back out of words -- that parser was removed on
+/// purpose, and a second one would answer the same question twice.
+fn package_call(words: &[String]) -> anyhow::Result<(String, serde_json::Value)> {
+    let text = words.join(" ");
+    if text.trim().is_empty() {
+        return Ok((String::new(), serde_json::Value::Object(Default::default())));
+    }
+    let call: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+        anyhow!(
+            "a package's call is one JSON object, `{{\"function\": \"<name>\", \"args\": {{}}}}`, \
+             and this does not parse: {e}"
+        )
+    })?;
+    let serde_json::Value::Object(table) = call else {
+        return Err(anyhow!(
+            "a package's call is one JSON object of `function` and `args`, and this is {}",
+            kind(&call)
+        ));
+    };
+    let function = match table.get("function") {
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(serde_json::Value::String(name)) => name.trim().to_string(),
+        Some(other) => {
+            return Err(anyhow!(
+                "`function` is the name a package publishes, and this is {}",
+                kind(other)
+            ));
+        }
+    };
+    let args = match table.get("args") {
+        None | Some(serde_json::Value::Null) => serde_json::Value::Object(Default::default()),
+        Some(serde_json::Value::Object(table)) => serde_json::Value::Object(table.clone()),
+        Some(other) => {
+            return Err(anyhow!(
+                "`args` is the function's keyword arguments, an object of named ones, and this is {}",
+                kind(other)
+            ));
+        }
+    };
+    Ok((function, args))
+}
+
+/// What a JSON value is called in a sentence about the call.
+fn kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "a list",
+        serde_json::Value::Object(_) => "an object",
+    }
 }
 
 /// A line for a skill installed under a name that a more specific root already took.

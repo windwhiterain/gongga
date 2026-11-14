@@ -127,6 +127,7 @@ content_commit() { # repo, protocol, marker text, message
   cat > "$repo/ship.toml" <<TOML
 protocol = $protocol
 config = "config/config.toml"
+python = "python"
 
 [skills]
 harness = "skills"

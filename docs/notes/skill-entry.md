@@ -58,24 +58,37 @@ A skill may be a Python package instead of a script: the directory holds `__init
 what to run is *discovered* rather than declared. Its public API is its **functions**:
 whatever global scope holds under a name that does not start with `_`. `__all__` is not a
 second spelling of that -- `SKILL.md` is where the functions are described, and a file that
-hid one would be answering the same question twice. A call names one: the first word after
-the skill. The rest bind to
-that function's parameters in declaration order, or by name with `--name value`, and an
-annotation of `int`, `float` or `bool` converts the word. What the function answers is the
-answer: `None`, a string, an exit code, or a structure printed as JSON.
+hid one would be answering the same question twice. A call names one: `cmd.name` in `run_skill`'s
+object, or `function` in the request below. `cmd.args` is that function's **keyword
+arguments**, an object -- not positional words, and not flags, because the request already
+has a shape. What the function answers is the answer: `None`, a string, an exit code, or a
+structure printed as JSON.
 
 There is no `metadata.entry` to keep in step with a file name, no interpreter table to
 consult (it is Python), and no path spelling to get wrong -- on every platform the same
 thing happens. A function that cannot be filled is refused with its signature rather than a
 traceback, so a wrong call reads like a diagnosis.
 
-`python/gongga_skill.py` is that contract, and it is one file with two readers: the harness
-carries it with `include_str!` and runs it as `python -c <source> <dir> <argv...>`, and a
-Python caller imports it and calls `run(directory, argv)`. The second is why the form exists
--- an agent's Python can use a skill in-process, with the argv as a list and the answer as a
-value, instead of re-deriving a command line. Neither reader looks for skills: a name is
-resolved by `Roots` first, because "which file does this name open" is one answer and it is
-not Python's.
+## The request, and where the contract lives
+
+A package's process is `python <home>/lib/gongga_skill.py` with **no other argv**: the call
+is one JSON line on stdin.
+
+    {"skill": "<skill directory, absolute>", "function": "<name>", "args": {...}}
+
+It used to be `python -c "<the whole contract>" <dir> <argv...>`, and that is what this
+shape replaced: the source was a command-line payload, which is a thing Windows caps (a
+request holding a whole `SessionConfig` is not a shell's business), a thing every process
+listing can read, and a thing that made the contract impossible to change without a rebuild.
+`skill::request` writes the line in this crate, so the server's `run_skill` and `gongga-cli
+skill` feed the contract the same bytes.
+
+The contract file itself is the content repository's `python/gongga_skill.py`, which the
+content step installs into the home's `lib/` -- so editing it takes a content push, not a
+`cargo build`. `crates/skill` no longer carries a copy: an `include_str!` of it would be a
+second answer to "what does this contract say", and the copy in the binary is the one nobody
+can edit. A home without `lib/gongga_skill.py` is refused before a process starts, naming
+the path.
 
 A package wins over a declared entry: discovery is the point of the form. Everything else
 keeps the script rule below, which stays for the skills that arrived before packages did --
@@ -83,9 +96,9 @@ and is the fallback on a machine with no Python at all.
 
 ## What a package's process is given
 
-`GONGGA_SKILL_LIB` and the session's own environment (`SessionHandle::env`): the first
-puts `gongga_skill.py` and `gongga.py` on `sys.path` for the package's own imports, the
-second makes `import gongga` reach *this* server as *this* session. Without the second a
-skill written in Python would have to shell out to `gongga-cli` for every command -- which
-is what `subagent` did before packages -- and its `$GONGGA_SESSION` would be the
+`GONGGA_SKILL_LIB` and the session's own environment (`SessionHandle::env`): the first puts
+the home's `lib/` -- `gongga_skill.py` and `gongga.py` -- on `sys.path` for the package's own
+imports, the second makes `import gongga` reach *this* server as *this* session. Without the
+second a skill written in Python would have to shell out to `gongga-cli` for every command --
+which is what `subagent` did before packages -- and its `$GONGGA_SESSION` would be the
 launcher's, not the caller's.

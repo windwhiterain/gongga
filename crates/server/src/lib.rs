@@ -30,7 +30,6 @@ mod probe;
 mod process;
 mod prompts;
 mod providers;
-mod pylib;
 mod quota;
 pub use ::relay::relay;
 pub mod remote;
@@ -334,14 +333,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     );
     let bus = EventBus::new(4096);
 
-    // Where a session's Python imports the skill contract and the client.
-    let skill_lib = match pylib::install(&cfg.home) {
-        Ok(dir) => Some(dir),
-        Err(e) => {
-            tracing::warn!(error = %e, "cannot install gongga_skill.py; a package skill's Python will not find it");
-            None
-        }
-    };
+    // Where a session's Python imports the contract and the client: the content's
+    // `python` tree lands here.
+    let skill_lib = Some(cfg.home.join("lib"));
 
     // A provider's own picture is kept beside the home, not in the transcript.
     blobs::install(&cfg.home.join("blobs"));

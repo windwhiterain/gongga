@@ -37,8 +37,8 @@ crates/bundle    gongga-bundle     别名 bundle
 | SPEC | 现在 | 仍待做 |
 |---|---|---|
 | `[client]` binary（UI 的子进程） | `crates/client`（`gongga-client`）现在是 library + `gongga-client` bin；`runtime.rs` 持有主循环，`main.rs` 的 `PipeFrontend` 用 stdin/stdout 的 JSON Lines 接 UI；`window_state.rs` / `window_command.rs` / `window_input.rs` / `window_cache.rs` / `window_index.rs` / `window_refill.rs` / `window_sync.rs` / `render_wire.rs` / `window_journal.rs` / `window_roster.rs` 均已上提，`WindowJournal` 持有磁盘 `Cache` 与窗口事实（client 侧） | A-3 / ⑦ / ⑧ 均已完成、同进程回退已删；A-4 已按裁定甲执行：TUI 的 `Log` 只剩折行视图，`Panes` 只留一份 `wants` 队列（见下） |
-| `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`python/gongga_cli.py` | 保持为 `client` 库内的逻辑层，不新建 crate |
-| `[cli]` python | `python/gongga.py`、`python/gongga_cli.py` | 不变 |
+| `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`gongga_cli.py`（内容仓 `ship/python/`） | 保持为 `client` 库内的逻辑层，不新建 crate |
+| `[cli]` python | 内容仓 `ship/python/` 的 `gongga.py`、`gongga_cli.py`、`gongga_skill.py`，装进 `<home>/lib` | 不再由本仓 `include_str!` 携带 |
 | `[tui]` binary | `crates/tui`：`pipe.rs` 是宿主，`run.rs` 的 `TuiSink` / `apply_frame` 把帧画成终端行，`log.rs` 仍管折行视图；同进程主循环已删 | 退为纯终端前端，键盘与绘制之外不持状态 |
 | `[webui]` binary | 无 | 新增，与 `tui` 平级，用任意语言写 |
 
@@ -123,7 +123,7 @@ ratatui 与 crossterm 拖进了**每一个**只想发一条命令的调用：脚
 **方向曾有测试钉着**（当时的记录）：`cli` 里断言「依赖里不得出现 tui/ratatui/crossterm，且它的
 程序就是命令行那一个 `gongga-cli`」，`tui` 里断言「必须依赖 cli」，两者都读
 `include_str!("../Cargo.toml")`。2026-11-07 核对：源码里的 `include_str!` 只剩
-`server/pylib.rs`（3）、`server/ship.rs`（1）、`skill/entry.rs`（1），这类方向断言已不在代码里。
+`server/ship.rs`（1），这类方向断言已不在代码里。
 现在方向由 `Cargo.toml` 与 review 保证；阶段 1 改名时应补回一条，否则箭头调回去没人拦。
 
 **`tui` 的边界**：旧版 SPEC 说「tui: transparent cli wrapper, do not know cmd」。所以 tui 只认识

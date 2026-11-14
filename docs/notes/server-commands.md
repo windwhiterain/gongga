@@ -736,11 +736,11 @@ one, and `har` is nothing -- a component, never a string prefix. A row is
 ## run_skill
 
 `run_skill(id, cmd, session)` is SPEC's call and the only way to run a skill: `cmd` is
-`{name, args}`, and the words it spells are the name first, then its arguments. An
-`args` **object** is spelled `--key value` per entry, which is what `gongga_skill.py`
-binds to a parameter by name; an `args` **list** is passed through as written, which is
-how an entry takes a subcommand and its flags. `tools::skill::call_words` is that
-reading, and it is the only one.
+`{name, args}`, and what `args` is belongs to the form. A **package** gets `args` as the
+function's keyword arguments -- an object, sent as one JSON line on the process's stdin,
+never flattened into flags. An **entry** gets a command line: an `args` object as
+`--key value` per entry, an `args` list as written. `tools::skill` reads both, and
+`entry_words` is the only place a word list is spelled.
 
 The id resolves against the same walk and picks one root by name, which is the reason
 the id exists: a name two roots spell is two rows, and a path names one.

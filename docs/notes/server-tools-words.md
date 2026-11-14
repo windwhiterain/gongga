@@ -7,10 +7,19 @@ them, both streams read while the program runs, a deadline that stops it rather 
 it behind, and the error wording a reader acts on when a name is not on PATH. Copying that
 into a second tool would have been two places for a pipe to deadlock.
 
-What moved is only the part that is the same for both: `run(program, args, cwd, timeout)`.
+What moved is only the part that is the same for both: `run(program, args, stdin, cwd, env, deadline)`.
 What stayed in `exec` is what makes it `exec` -- the word list's validation (a word holding a
 NUL is refused, because an argument ends at one, and the program may or may not be on the
 machine), the machine choice, and how the run is reported.
+
+## The request a program reads
+
+`stdin` is the call itself, for the one caller that has a call to hand over: a package
+skill's contract reads one JSON line and answers on stdout. It is written from its own task
+while the program runs, so a request larger than a pipe's buffer cannot deadlock against a
+child that is still starting, and dropping the pipe is the EOF that tells the contract the
+line is complete. `None` is `/dev/null`: a program that reads stdin anyway sees the end of
+it, rather than whatever the server has on its own.
 
 ## The directory a program stands in
 

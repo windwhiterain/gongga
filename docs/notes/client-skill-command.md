@@ -32,9 +32,9 @@ command, asked quietly: its `cmd_result` and nothing else).
 
 Running stays local, and that is not a fallback but the answer: SPEC's `run_skill` takes a
 skill's `id`, and the bucket a bare name belongs to is a question this machine answers from
-its own roots. So `skill <name> [args...]` passes argv as typed and unparsed -- the entry's
+its own roots. So `skill <name> [args...]` passes argv as typed and unparsed -- a skill that
 own argv, exactly as a `run_skill` call would give it -- and the entry's exit code is this
-process's.
+process's. A package skill has no argv: its one word is a JSON call, see below.
 
 ## dispatch
 
@@ -44,12 +44,24 @@ skill name is the fallback, not the other way round. There is no `which`: what a
 is its `SKILL.md`'s `metadata.entry`, which is a line of the body a reader already has, and
 `ls` hands out that `SKILL.md`.
 
-Everything after the name is argv, and a package reads its first word as the function to
-call: `skill subagent spawn impl` is `spawn("impl")`. Nothing here knows that -- `argv` is
-passed through to the runner, and `crates/skill/src/entry.rs` starts
-`python -c <gongga_skill.py> <skill dir> <argv…>`, whose own first argument is the function.
-So this layer stays one rule for every skill, and "what does this package publish" is
+Everything after the name is argv for a skill that is an entry: `argv` is passed through to
+the runner, and `crates/skill/src/entry.rs` starts the file `metadata.entry` names with it. So
+an entry skill keeps the rule it always had, and "what does this package publish" is
 answered where a package is understood.
+
+## A package is one JSON word
+
+A package skill is not a program with an argv: its call is the contract's request, and the one
+thing this command adds is the skill's own path. So it is spelled as that request without the
+path, one shell word holding one JSON object:
+
+    gongga-cli skill subagent '{"function": "spawn", "args": {"role": "impl"}}'
+
+`skill::request` turns it into the line the runner reads on stdin. There is no flag parser here
+and there must not be one back: `--name value` was removed on purpose in `d782e636`, and a call
+that already has a shape does not need a second spelling. Words that are not that object are
+refused with the shape, and `args` has to be an object, because a function's arguments are
+keyword arguments -- position was the entry form's rule, not this one's.
 
 ## launch
 
@@ -101,8 +113,9 @@ answers a question, it is not a program anyone reads.
 
 ## The home's Python surface
 
-When `--home`'s `lib/` exists, the entry runs with `GONGGA_SKILL_LIB` pointing at it, so a
-package's `import gongga` and `import gongga_skill` resolve on this disk with no server at
-all. Nothing is written here: the server installs that directory at startup, and a home
-that never ran one has no client to import -- which the entry finds out as an ordinary
-`ImportError`, not as a command layered over a server this layer does not have.
+When `--home`'s `lib/` exists, the package runs with `GONGGA_SKILL_LIB` pointing at it, so a
+skill's `import gongga` resolves on this disk with no server at all. Nothing is written here:
+that directory is the content repository's `python` tree, installed by the server's content
+step, and a home that never ran one has no client to import -- which the skill finds out as
+an ordinary `ImportError`, not as a command layered over a server this layer does not have. A
+package with no `lib/` at all is refused before a process starts, naming the directory.

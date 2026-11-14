@@ -74,8 +74,8 @@ the old bare cache, and `adopt` turns one into the other without a network.
 ## Declared, declared_at
 
 What the content says about itself, read from the commit it is installed from: the
-protocol it speaks, which path is the config, where the skills live, which paths an
-earlier commit left on the machine. It is parsed rather than copied into this binary
+protocol it speaks, which path is the config, where the skills live, which path is the
+Python surface, which paths an earlier commit left on the machine. It is parsed rather than copied into this binary
 because a mapping is a fact about *that* repository's history — moving a skill or
 retiring a path must not need a rebuild, which is the whole point of resolving by
 protocol.
@@ -83,9 +83,16 @@ protocol.
 ## plans
 
 `config.toml` is mapped from one repository file to one home file; a skill bucket is
-mapped from a repository *tree* spread under `skills/`. The difference matters for
-`collect`, which yields one entry per file either way, and for what gets removed when
-upstream drops a path. The tag on each entry names that root's copy of the merge base.
+mapped from a repository *tree* spread under `skills/`; the Python surface is a tree
+spread under `lib/`. The difference matters for `collect`, which yields one entry per
+file either way, and for what gets removed when upstream drops a path. The tag on each
+entry names that root's copy of the merge base.
+
+`lib/` is what made the package contract editable: `gongga_skill.py`, `gongga.py` and
+`gongga_cli.py` used to sit in this repository and reach the home through three
+`include_str!`s, so editing the contract was a `cargo build` and every reader of it was
+a copy of one commit. As a tree mapping it is content: the same reconcile, the same base,
+a restart to take effect.
 
 ## reconcile
 
