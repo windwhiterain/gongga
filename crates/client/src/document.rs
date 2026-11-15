@@ -10,7 +10,7 @@
 //! Nothing here drops text: a marker the document does not close is printed as it
 //! came, and a code row that is longer than the width is broken rather than cut.
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 use crate::render_wire::{DocumentSpan, SpanClass};
 
@@ -34,18 +34,15 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
         // whose boundary is not drawn is a paragraph that happens to be blue.
         if head.starts_with("```") {
             code = !code;
-            out.push(vec![DocumentSpan::of(
-                format!("{}{}", CODE_MARGIN, head),
-                SpanClass::Marker,
-            )]);
+            out.push(vec![DocumentSpan::of(head.to_string(), SpanClass::Marker)]);
             continue;
         }
         if code {
             // Code keeps its own rows: a leading rule on every one of them, so the
             // block has an edge whatever the pane, and a break that never looks for a
             // space -- a line of code has no words to break between.
-            for piece in hard_wrap(line, width.saturating_sub(CODE_MARGIN.width())) {
-                let mut row = vec![DocumentSpan::of(CODE_MARGIN, SpanClass::Marker)];
+            for piece in hard_wrap(line, width) {
+                let mut row: Vec<DocumentSpan> = Vec::new();
                 if !piece.is_empty() {
                     row.push(DocumentSpan::of(piece, SpanClass::CodeBlock));
                 }
@@ -177,7 +174,6 @@ fn table(
     }
     let mut out: Vec<Vec<DocumentSpan>> = Vec::new();
     out.extend(compose(header, &widths, aligns, SpanClass::Heading));
-    out.push(vec![DocumentSpan::of(rule(&widths), SpanClass::Marker)]);
     for (at, row) in body.iter().enumerate() {
         out.extend(compose(row, &widths, aligns, SpanClass::Text));
         // A rule between the rows, so a cell that now takes two lines is still read
@@ -189,18 +185,29 @@ fn table(
     out
 }
 
-/// One table row as the physical rows it takes: a cell taller than one is wrapped.
-fn compose(
-    row: &[String],
-    widths: &[usize],
-    aligns: &[Align],
-    class: SpanClass,
-) -> Vec<Vec<DocumentSpan>> {
-    let cells: Vec<Vec<String>> = widths
+/// One table row as the physical rows it takes.
+///
+/// # Invariant
+///
+/// A cell holds markdown like any other words: it is parsed by [`inline`] and wrapped
+/// by [`wrap`], so `**bold**` and a backticked name inside a table look the way they
+/// look outside one. A heading row promotes what it holds, so a header cell is a
+/// heading rather than a bold word in the body's own ink.
+fn compose(row: &[String], widths: &[usize], aligns: &[Align], class: SpanClass) -> Vec<Vec<DocumentSpan>> {
+    let cells: Vec<Vec<Vec<DocumentSpan>>> = widths
         .iter()
         .enumerate()
         .map(|(column, width)| {
-            cell_lines(row.get(column).map(String::as_str).unwrap_or(""), *width)
+            let text = row.get(column).map(String::as_str).unwrap_or("");
+            let mut spans = inline(text);
+            if class == SpanClass::Heading {
+                for span in &mut spans {
+                    if span.class == SpanClass::Text {
+                        span.class = SpanClass::Heading;
+                    }
+                }
+            }
+            wrap(&spans, *width)
         })
         .collect();
     let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
@@ -208,17 +215,17 @@ fn compose(
     for line in 0..height {
         let mut spans: Vec<DocumentSpan> = vec![DocumentSpan::of("|", SpanClass::Marker)];
         for (column, width) in widths.iter().enumerate() {
-            let text = cells[column].get(line).map(String::as_str).unwrap_or("");
-            let spare = width.saturating_sub(text_width(text));
+            let empty: Vec<DocumentSpan> = Vec::new();
+            let cell = cells[column].get(line).unwrap_or(&empty);
+            let used: usize = cell.iter().map(|span| text_width(&span.text)).sum();
+            let spare = width.saturating_sub(used);
             let (before, after) = match aligns.get(column).copied().unwrap_or(Align::None) {
                 Align::Right => (spare, 0),
                 Align::Center => (spare / 2, spare - spare / 2),
                 Align::None | Align::Left => (0, spare),
             };
             spans.push(DocumentSpan::of(" ".repeat(before + 1), class));
-            if !text.is_empty() {
-                spans.push(DocumentSpan::of(text.to_string(), class));
-            }
+            spans.extend(cell.iter().cloned());
             spans.push(DocumentSpan::of(
                 format!("{}{}", " ".repeat(after), " |"),
                 SpanClass::Marker,
@@ -227,65 +234,6 @@ fn compose(
         rows.push(spans);
     }
     rows
-}
-
-/// One cell's words fitted into lines of `width` columns.
-///
-/// # Invariant
-///
-/// A break falls between words whenever one is in reach, because a cell is prose:
-/// a name cut in half reads as two names. Only a word longer than the whole column
-/// is broken, and then where it must be.
-fn cell_lines(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut lines: Vec<String> = vec![String::new()];
-    let mut used = 0usize;
-    for word in text.split_whitespace() {
-        let wide = text_width(word);
-        let space = usize::from(used != 0);
-        if used + space + wide <= width {
-            if let Some(line) = lines.last_mut() {
-                if space == 1 {
-                    line.push(' ');
-                }
-                line.push_str(word);
-            }
-            used += space + wide;
-            continue;
-        }
-        if wide <= width {
-            lines.push(word.to_string());
-            used = wide;
-            continue;
-        }
-        let mut rest = word;
-        while !rest.is_empty() {
-            let mut taken = String::new();
-            let mut room = width.saturating_sub(used);
-            for character in rest.chars() {
-                let advance = character.width().unwrap_or(1);
-                if room < advance {
-                    break;
-                }
-                room -= advance;
-                taken.push(character);
-            }
-            if taken.is_empty() {
-                taken.push(rest.chars().next().unwrap_or(' '));
-            }
-            if let Some(line) = lines.last_mut() {
-                line.push_str(&taken);
-            }
-            let kept = taken.len();
-            rest = &rest[kept..];
-            used += taken.width();
-            if !rest.is_empty() {
-                lines.push(String::new());
-                used = 0;
-            }
-        }
-    }
-    lines
 }
 
 /// The row under the header: one dash run per column, nothing else.
@@ -332,8 +280,6 @@ fn is_rule(line: &str) -> bool {
 }
 
 /// What every row of a code block opens with: the rule that makes it one block.
-const CODE_MARGIN: &str = "  │ ";
-
 /// `text` cut into pieces of at most `width` columns, breaking where it must.
 fn hard_wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
