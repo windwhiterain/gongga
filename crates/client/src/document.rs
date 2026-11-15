@@ -194,7 +194,9 @@ fn compose(
     let cells: Vec<Vec<String>> = widths
         .iter()
         .enumerate()
-        .map(|(column, width)| hard_wrap(row.get(column).map(String::as_str).unwrap_or(""), *width))
+        .map(|(column, width)| {
+            cell_lines(row.get(column).map(String::as_str).unwrap_or(""), *width)
+        })
         .collect();
     let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
     let mut rows: Vec<Vec<DocumentSpan>> = Vec::new();
@@ -220,6 +222,65 @@ fn compose(
         rows.push(spans);
     }
     rows
+}
+
+/// One cell's words fitted into lines of `width` columns.
+///
+/// # Invariant
+///
+/// A break falls between words whenever one is in reach, because a cell is prose:
+/// a name cut in half reads as two names. Only a word longer than the whole column
+/// is broken, and then where it must be.
+fn cell_lines(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines: Vec<String> = vec![String::new()];
+    let mut used = 0usize;
+    for word in text.split_whitespace() {
+        let wide = text_width(word);
+        let space = usize::from(used != 0);
+        if used + space + wide <= width {
+            if let Some(line) = lines.last_mut() {
+                if space == 1 {
+                    line.push(' ');
+                }
+                line.push_str(word);
+            }
+            used += space + wide;
+            continue;
+        }
+        if wide <= width {
+            lines.push(word.to_string());
+            used = wide;
+            continue;
+        }
+        let mut rest = word;
+        while !rest.is_empty() {
+            let mut taken = String::new();
+            let mut room = width.saturating_sub(used);
+            for character in rest.chars() {
+                let advance = character.width().unwrap_or(1);
+                if room < advance {
+                    break;
+                }
+                room -= advance;
+                taken.push(character);
+            }
+            if taken.is_empty() {
+                taken.push(rest.chars().next().unwrap_or(' '));
+            }
+            if let Some(line) = lines.last_mut() {
+                line.push_str(&taken);
+            }
+            let kept = taken.len();
+            rest = &rest[kept..];
+            used += taken.width();
+            if !rest.is_empty() {
+                lines.push(String::new());
+                used = 0;
+            }
+        }
+    }
+    lines
 }
 
 /// The row under the header: one dash run per column, nothing else.
