@@ -75,6 +75,8 @@ pub struct LlmClient {
     temperature: Option<f32>,
     /// The largest answer this model may give; this face requires the number.
     max_output_tokens: u32,
+    /// The input+output ceiling this model publishes, when the roster states one.
+    context: Option<u64>,
     store: bool,
     /// How long the provider may take to send response headers: not about the body,
     /// which only [`Self::idle_timeout`] bounds.
@@ -143,6 +145,30 @@ impl RequestSource {
 }
 
 impl LlmClient {
+    /// The answer length to ask for: the stated one, never more than the window has left.
+    ///
+    /// # Invariant
+    ///
+    /// The provider checks input plus this number against the window, and reserves the
+    /// model's whole output when given none: 664,898 in, 384,000 reserved, 322 over a
+    /// 1,048,576 window, which is a request that fits refused. The measurement is the
+    /// last step's input for this session, so the sum lands inside the window by the
+    /// provider's own arithmetic. See `docs/notes/server-llm.md`.
+    fn wanted_output(&self, spent: u64) -> u32 {
+        let stated = self.max_output_tokens;
+        let Some(window) = self.context else {
+            return stated;
+        };
+        // A roster that states no ceiling leaves the number to the provider: capping by
+        // what is left would ask for more than the model can answer.
+        if stated == 0 || spent == 0 || window <= spent {
+            return stated;
+        }
+        (window - spent).min(u64::from(stated)) as u32
+    }
+}
+
+impl LlmClient {
     pub fn new(cfg: &crate::config::ModelConfig) -> anyhow::Result<Self> {
         if cfg.api_key.is_empty() {
             anyhow::bail!(
@@ -177,6 +203,7 @@ impl LlmClient {
             provider: cfg.provider.clone(),
             temperature: cfg.temperature,
             max_output_tokens,
+            context: cfg.context,
             store: cfg.store,
             headers_timeout: cfg.headers_timeout,
             idle_timeout: cfg.idle_timeout,
@@ -262,6 +289,11 @@ impl LlmClient {
         // One per-conversation id -- the stable database id -- for every affinity field:
         // body key and headers alike.
         let session_id = format!("{SESSION_ID_PREFIX}{}", source.session_id);
+        let spent = self
+            .measure
+            .as_ref()
+            .and_then(|store| store.measured_input_tokens(source.session_id).ok())
+            .unwrap_or(0);
         let head = self.build_head(
             instructions,
             index,
@@ -271,6 +303,7 @@ impl LlmClient {
             tools,
             effort,
             cache_tier,
+            spent,
         );
         let session_headers: Vec<(String, String)> = self
             .session_id_headers
@@ -519,6 +552,7 @@ impl LlmClient {
         tools: &Value,
         effort: Option<&str>,
         cache_tier: Option<&str>,
+        spent: u64,
     ) -> Vec<u8> {
         // The index travels as a message, never in the system text.
         // See `docs/reference/prefix-cache.md`.
@@ -565,8 +599,10 @@ impl LlmClient {
         if let Some(t) = self.temperature {
             body["temperature"] = json!(t);
         }
-        if self.max_output_tokens > 0 {
-            body["max_output_tokens"] = json!(self.max_output_tokens);
+        // The provider reserves the whole output window unless told otherwise; ask for the rest.
+        let wanted = self.wanted_output(spent);
+        if wanted > 0 {
+            body["max_output_tokens"] = json!(wanted);
         }
         if let Some(effort) = effort {
             // The roster's per-model name for this field is

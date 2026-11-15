@@ -130,6 +130,8 @@ pub struct Model {
     ///
     /// Required by the anthropic-messages face, which asks for it in every request:
     /// `None` there is a refusal that names this field rather than a guessed length.
+    /// The community roster spells it `max_output`; both names are the same number.
+    #[serde(alias = "max_output")]
     pub max_output_tokens: Option<u32>,
     /// Levels this model accepts, as the roster spells them; empty passes through.
     pub reasoning_levels: Vec<String>,
@@ -852,7 +854,7 @@ struct FileModel {
     name: String,
     #[serde(default)]
     context: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "max_output")]
     max_output_tokens: Option<u32>,
     #[serde(default)]
     endpoints: Vec<String>,

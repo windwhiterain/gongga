@@ -1640,6 +1640,16 @@ impl Store {
     /// before the request was sent, so a row beyond it is one that attempt wrote,
     /// and the retry that follows has to send what the first attempt sent. See
     /// `docs/notes/server-store.md`.
+    /// The input tokens the last measurement counted for this session; 0 when none yet.
+    pub fn measured_input_tokens(&self, session_id: i64) -> anyhow::Result<u64> {
+        let tokens: i64 = self.lock().query_row(
+            "SELECT context_tokens FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(tokens.max(0) as u64)
+    }
+
     pub fn truncate_after(&self, session_id: i64, seq: i64) -> anyhow::Result<usize> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
