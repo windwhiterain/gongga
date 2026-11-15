@@ -1687,7 +1687,10 @@ fn document_span(span: &client::render_wire::DocumentSpan) -> Span<'static> {
         SpanClass::Strong => base.add_modifier(Modifier::BOLD),
         SpanClass::Emphasis => base.add_modifier(Modifier::ITALIC),
         SpanClass::Strike => base.add_modifier(Modifier::CROSSED_OUT),
-        SpanClass::Code => base,
+        // Brown for a word of code inside a sentence: one hue, so a name like
+        // `let_me()` is visible without a background behind it.
+        SpanClass::Code => Style::default().fg(Color::Indexed(180)),
+        SpanClass::CodeBlock => base,
         SpanClass::Marker => Style::default().fg(Color::DarkGray),
         // Named, not `LightBlue`: the bright-blue *slot* is #3B78FF in the default
         // Windows palette, which reads as a dark blue on a dark background. Index 117

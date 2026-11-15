@@ -54,7 +54,7 @@ public sealed class SpanLine : TextBlock
         "strong" => new Run { Text = span.Text, FontWeight = FontWeight.SemiBold },
         "emphasis" => new Run { Text = span.Text, FontStyle = FontStyle.Italic },
         "strike" => new Run { Text = span.Text, TextDecorations = Struck },
-        "code" => new Run
+        "code" or "code_block" => new Run
         {
             Text = span.Text,
             Background = KindBrushConverter.Lookup("CodeBrush"),

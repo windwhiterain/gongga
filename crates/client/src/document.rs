@@ -47,7 +47,7 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
             for piece in hard_wrap(line, width.saturating_sub(CODE_MARGIN.width())) {
                 let mut row = vec![DocumentSpan::of(CODE_MARGIN, SpanClass::Marker)];
                 if !piece.is_empty() {
-                    row.push(DocumentSpan::of(piece, SpanClass::Code));
+                    row.push(DocumentSpan::of(piece, SpanClass::CodeBlock));
                 }
                 out.push(row);
             }

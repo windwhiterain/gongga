@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Candidate, Layout, LineKind, Sink, protocol};
+use crate::{protocol, Candidate, Layout, LineKind, Sink};
 
 /// One run of a document row: its words, and the class that says how they look.
 ///
@@ -59,6 +59,9 @@ pub enum SpanClass {
     Emphasis,
     Strike,
     Code,
+    /// A line of a fenced block: the same words as `Code`, drawn as a block rather
+    /// than as a word in a sentence.
+    CodeBlock,
     /// A list's bullet, a quote's bar, a heading's own mark.
     Marker,
     /// An address, printed after the words that carry it.
