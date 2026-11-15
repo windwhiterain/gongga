@@ -278,10 +278,10 @@ What stays: `read_file`, `write_file`, `replace` (a model has no other door to a
 `Shells::names`, `ToolContext::peek` and the job view are used by live paths today; the
 slice that removes their last caller removes them.
 
-## Adopting what a stop kept (`Channels::adopt`, `Channels::stop_every`)
+## Adopting what a stop kept (`Channels::adopt`, `Channels::adopt_kept`, `Channels::stop_every`)
 
-`cancel --keep_alive` leaves every channel detached and says the next start adopts
-them. A channel is not a process the server owns -- it is a program a relay keeps,
+`cancel --keep_alive` marks every row `detached` and says the next start adopts them.
+A channel is not a process the server owns -- it is a program a relay keeps,
 read and written through its files -- so "adopted" is not a step taken at start: it is
 the relay's watcher speaking for a row that is still live. What a start can say is the
 other half: which of those rows are not. `adopt` reads each row's status, and one that
@@ -289,11 +289,25 @@ has ended is told to its session as a channel end notice -- what it printed, and
 it ended with -- and then removed (`Channels::reap`). The notice goes before the turns
 that would read it, which is why `run` adopts before it resumes anything.
 
-`stop_every` is the same debt on the way out. A default `cancel` ends every channel, and
-with its row gone the relay's watcher can never see it end -- so the kill is the only
-voice left, and it has to say so: the end notice carries what the channel had printed
-until then. SPEC names this pair as one rule ("killing channel / failed to adopt
-channel will produce channel end notice"); the two functions are where it lands.
+**The flag is a state, not the stop's argument.** `detached` is a column, so it
+outlives the stop that wrote it: a later stop that asked for nothing spares those rows
+too. That is the whole fix -- before it, `keep_alive` was read once and forgotten, so
+any default `cancel` after the handover ended what the handover had kept (a window
+leaving, a second evolve). `stop_every` now skips a row carrying the flag.
+
+**Adoption needs the relay's own id.** The row's `pid` is the *program's*, read from the
+relay's `status`, so a successor holding only that can see the program is gone but cannot
+find the relay to take over. `relay_pid` and `relay_started_at` are written at start, and
+`adopt_kept` verifies the process still matches before it arms a job -- an arm kills on
+close, so a recycled pid would make this server's death somebody else's. A row with no
+relay id (a remote channel, whose relay the peer started and this side holds no handle
+for) is left marked: adopting it is nothing this side can do.
+
+`stop_every` is the same debt on the way out. A default `cancel` ends every channel it
+does not spare, and with its row gone the relay's watcher can never see it end -- so the
+kill is the only voice left, and it has to say so: the end notice carries what the channel
+had printed until then. SPEC names this pair as one rule ("killing channel / failed to
+adopt channel will produce channel end notice"); the two functions are where it lands.
 
 Both functions take the row's wait flag before they speak, and hand it on as
 `ChannelEnd::waited`. That is the whole difference between the two rows: a call was

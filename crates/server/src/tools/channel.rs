@@ -284,9 +284,17 @@ impl Channels {
             }
             None => self.start_here(&words).await,
         }?;
-        let (place, pid) = started;
+        let (place, pid, relay) = started;
         self.store
-            .add_channel(session, &path, bin, remote, &place.dir(), pid)
+            .add_channel(
+                session,
+                &path,
+                bin,
+                remote,
+                &place.dir(),
+                pid,
+                relay.map(|r| (r.pid, r.started_at)),
+            )
             .map_err(quiet)?;
         let row = self
             .store
@@ -304,7 +312,10 @@ impl Channels {
     /// A start that fails leaves nothing behind: no row, no `status`, and no directory
     /// either. The directory is this call's own invention, and a channel nobody holds is
     /// litter no reader can use.
-    async fn start_here(&self, words: &crate::relay::Words) -> Result<(Where, u32), String> {
+    async fn start_here(
+        &self,
+        words: &crate::relay::Words,
+    ) -> Result<(Where, u32, Option<RelayId>), String> {
         let dir = self
             .root
             .join(format!("ch-{}", uuid::Uuid::new_v4().simple()));
@@ -319,7 +330,9 @@ impl Channels {
         let log = dir.join("relay.log");
         let place = Where::Here(dir);
         match self.open_channel(&place, &log, words).await {
-            Ok(pid) => Ok((place, pid)),
+            // The relay's own id, which is not the program's: a successor that only
+            // has the program's pid can see it is gone, and cannot find the relay.
+            Ok((pid, relay)) => Ok((place, pid, Some(relay))),
             Err(why) => {
                 if let Where::Here(dir) = &place {
                     let _ = std::fs::remove_dir_all(dir);
@@ -342,7 +355,7 @@ impl Channels {
         place: &Where,
         log: &Path,
         words: &crate::relay::Words,
-    ) -> Result<u32, String> {
+    ) -> Result<(u32, RelayId), String> {
         match self.launch_relay(&self.server, place, log, words).await {
             Ok(pid) => Ok(pid),
             // A pair that cannot work is the one thing an install answers; anything else
@@ -375,7 +388,7 @@ impl Channels {
         place: &Where,
         log: &Path,
         words: &crate::relay::Words,
-    ) -> Result<u32, Refused> {
+    ) -> Result<(u32, RelayId), Refused> {
         let mut job = crate::tools::detached::DetachedJob::launch_program(
             relay,
             &[
@@ -402,8 +415,14 @@ impl Channels {
         // lets them go.
         #[cfg(windows)]
         crate::tools::job::arm(job.pid);
+        // Read before the child is handed over: after this the job is the channel's.
+        let relay = RelayId {
+            pid: job.pid,
+            started_at: job.started_at,
+        };
         self.await_status(place, &log.display().to_string(), job.take_child())
             .await
+            .map(|pid| (pid, relay))
     }
 
     /// This home, when `root` is the `channels` directory of one.
@@ -422,7 +441,7 @@ impl Channels {
         &self,
         machine: &str,
         words: &crate::relay::Words,
-    ) -> Result<(Where, u32), String> {
+    ) -> Result<(Where, u32, Option<RelayId>), String> {
         let runner = self.runner_for(machine).await?;
         // `.` is the call naming no directory: the program then runs where the peer's
         // own runner stands.
@@ -455,7 +474,10 @@ impl Channels {
             .await_status(&place, &started.log, None)
             .await
             .map_err(|refused| refused.words)?;
-        Ok((place, pid))
+        // A peer started the relay, so this machine holds no handle for it and cannot
+        // adopt it: the flag on the row is still set for it, but adoption here is a
+        // no-op. Remote channels are their own problem -- see the note on the row.
+        Ok((place, pid, None))
     }
 
     /// The connection a peer answers on, started once and kept.
@@ -867,14 +889,35 @@ impl Channels {
             .map_err(quiet)
     }
 
-    /// Ends every channel of every session; one this server cannot reach is left
-    /// as the row it is.
+    /// Marks every channel as one a `cancel(keep_alive)` asked to keep.
+    ///
+    /// # Invariant
+    ///
+    /// The flag is a state on the row, so it outlives the stop that set it: a window
+    /// leaving later, or a second handover, spares these too. That is the whole
+    /// difference between this and passing `keep_alive` once.
+    pub async fn mark_kept(&self) -> usize {
+        match self.store.mark_detached() {
+            Ok(marked) => marked,
+            Err(e) => {
+                tracing::warn!("could not mark the channels to keep: {e}");
+                0
+            }
+        }
+    }
+
+    /// Ends every channel no `cancel` was asked to keep; one this server cannot reach
+    /// is left as the row it is.
     ///
     /// # Invariant
     ///
     /// `kill` in the command file and the row gone: the pair `stop_session` writes one
     /// session at a time. A row left behind would be adopted by the next start as a
     /// channel that answers nothing.
+    ///
+    /// A row carrying `detached` is spared: a `cancel(keep_alive)` asked for it, and
+    /// SPEC's "make every channel detached" is a state, not one stop's argument. So a
+    /// window leaving later does not end what an earlier handover kept.
     pub async fn stop_every(&self) -> usize {
         let rows = match self.store.every_channel() {
             Ok(rows) => rows,
@@ -885,6 +928,9 @@ impl Channels {
         };
         let mut ended = 0;
         for row in rows {
+            if row.detached {
+                continue;
+            }
             match self.place_of(&row).await {
                 Ok(place) => {
                     // What it printed until the kill: the notice is a `Result`, and
@@ -940,6 +986,61 @@ impl Channels {
             tracing::info!(gone, "channels the last run kept were gone when adopted");
         }
         gone
+    }
+
+    /// Takes over the relays a `cancel(keep_alive)` left running, and says how many.
+    ///
+    /// # Invariant
+    ///
+    /// The flag is what makes this possible: `cancel` marked the row, so a start knows
+    /// which channels were kept on purpose rather than left behind. The relay's own id
+    /// is on the row, because the program's pid cannot name it.
+    ///
+    /// A relay whose pid is gone, or whose process no longer matches `relay_started_at`,
+    /// ended while no server held it: the row goes and the channel is noticed, as
+    /// [`Self::reap`] does. A row with no relay id is left marked -- this machine never
+    /// held that handle, so adopting it is nothing this side can do.
+    pub async fn adopt_kept(&self) -> usize {
+        let rows = match self.store.detached_channels() {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("could not read the channels to adopt: {e}");
+                return 0;
+            }
+        };
+        let mut adopted = 0;
+        for row in &rows {
+            let Some(relay) = row.relay_pid else {
+                continue;
+            };
+            let Ok(relay) = u32::try_from(relay) else {
+                continue;
+            };
+            // Before the pid is trusted: an arm kills on close, so a recycled pid would
+            // make this server's death somebody else's.
+            match crate::tools::detached::adopt_kept_relay(relay, row.relay_started_at) {
+                Ok(true) => {}
+                Ok(false) => {
+                    // The relay is gone: the channel it held ended with it.
+                    if self.reap(row).await.is_some() {
+                        adopted += 1;
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(channel = %row.path, error = %e, "could not verify a kept relay");
+                    continue;
+                }
+            }
+            // The flag is spent: the relay is this server's now, and one more start must
+            // not offer it again.
+            let _ = self.store.clear_detached(row.id);
+            adopted += 1;
+        }
+        if adopted > 0 {
+            tracing::info!(adopted, "channels a previous run kept were taken over");
+        }
+        adopted
     }
 
     /// Ends one channel whose program is already gone, and says the status it ended with.
@@ -1221,6 +1322,21 @@ fn named(dir: &str) -> String {
 enum Where {
     Here(PathBuf),
     There { runner: Arc<Runner>, dir: String },
+}
+
+/// A relay's own identity: the pid it runs as, and when it started.
+///
+/// # Invariant
+///
+/// Not the same as the channel's `pid`, which is the *program's* one, read from the
+/// relay's `status`. A successor that holds only the program's pid can see the
+/// program is gone and cannot find the relay to adopt -- so the relay's own id is
+/// stored with the row, and a recycled pid is refused by `started_at` before a job
+/// is armed for it.
+#[derive(Debug, Clone, Copy)]
+struct RelayId {
+    pid: u32,
+    started_at: i64,
 }
 
 impl Where {

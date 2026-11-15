@@ -508,6 +508,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     "channels the last run kept, reported gone"
                 );
             }
+            // And the relays it left running: `cancel(keep_alive)` marked them, so this
+            // start takes them over instead of ending what a handover kept.
+            let kept = channels.adopt_kept().await;
+            if kept > 0 {
+                tracing::info!(kept, "channels the last run kept were taken over");
+            }
         });
     }
     // Whatever was in flight when the server last stopped is owed work.
