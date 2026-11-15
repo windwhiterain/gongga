@@ -241,6 +241,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     clock.step("ship content");
     let cfg = config_from(&args)?;
     clock.step("config");
+    // An unreadable roster refuses the start; see `docs/notes/server-lib.md`.
+    if let Some(problem) = providers::roster().problem() {
+        anyhow::bail!("the provider roster does not parse: {problem}");
+    }
     if args.check_config {
         // A handover's question: answered before the home is claimed, so asking
         // a live home costs it nothing.

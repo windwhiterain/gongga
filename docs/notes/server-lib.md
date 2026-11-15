@@ -128,6 +128,12 @@ serves the last good list under the *old* generation, so clients keep the table 
 have until the file parses again. Silence here is "nothing changed", never "the
 roster is empty".
 
+A start has no last good list to serve, so it does not invent one: a roster file that
+exists and does not parse refuses the start, naming the file and the error, and
+`--check_config` answers the same way so a handover asks before it cancels a server
+that works. The empty list an unread roster leaves is never what a session is failed
+against -- that failure would name neither the file nor the mistake in it.
+
 ## run (the subscription matcher)
 
 One task for every armed pattern, subscribed to the bus. Event publishing does not

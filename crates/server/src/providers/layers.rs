@@ -124,11 +124,10 @@ fn served(facts: &Table, serving: &Table) -> Result<Table, String> {
     if named(&row).is_empty() {
         return Err("a [[model]] states no id".to_string());
     }
-    // `max_output` is the roster's spelling; this crate reads `max_output_tokens`.
-    if !row.contains_key("max_output_tokens")
-        && let Some(longest) = row.get("max_output").cloned()
-    {
-        row.insert("max_output_tokens".to_string(), longest);
+    // One spelling, never both: `max_output` is aliased onto `max_output_tokens`.
+    if let Some(longest) = row.remove("max_output") {
+        row.entry("max_output_tokens".to_string())
+            .or_insert(longest);
     }
     Ok(row)
 }
