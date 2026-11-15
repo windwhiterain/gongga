@@ -22,8 +22,13 @@ keep=0
 [[ "${1:-}" == "--keep" ]] && keep=1
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-bin="$root/target/debug"
-work="$root/.dev/ship-selftest"
+source "$root/scripts/selftest_bin.sh"
+bin=$(selftest_bin "$root") || exit 1
+# One run, one directory. Much of what this script makes is a git repository with a
+# database beside it, and a fixed directory makes two runs of it clear each other's
+# -- the symptom is a bare remote that is suddenly not a repository, not a queue.
+mkdir -p "$root/.dev"
+work=$(mktemp -d "$root/.dev/ship-XXXXXX") || exit 1
 fails=0
 started=$(date +%s)
 
@@ -38,8 +43,6 @@ drift=$((proto + 1))
 say() { printf '  %s\n' "$*"; }
 ok() { if [[ "$2" == 0 ]]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
 
-[[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
-  echo "build first: cargo build -p gongga-server" >&2; exit 1; }
 server_bin="$bin/gongga-server.exe"; [[ -x "$server_bin" ]] || server_bin="$bin/gongga-server"
 # The content checkout whose shapes the scratch repositories are seeded from: the
 # submodule, or wherever `GONGGA_SHIP_CONTENT` points -- a linked worktree has no
@@ -94,21 +97,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Anything still serving this work directory is from an interrupted run: its
-# databases make the next run's homes start half-migrated, and its files make a
-# `rm` fail in the middle. Killed by the home it serves, never by image name.
-left=$(serving_home "$work")
-if [[ -n "${left// /}" ]]; then
-  say "a previous run left $(echo $left) serving $work; stopping it"
-  for pid in $left; do taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
-  sleep 2
-fi
-rm -rf "$work"
-if [[ -d "$work" ]]; then
-  echo "cannot clear $work: still held by $(serving_home "$work")" >&2
-  exit 1
-fi
-mkdir -p "$work"
+# The directory is this run's own and empty, so nothing of an earlier run is in reach.
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid
 

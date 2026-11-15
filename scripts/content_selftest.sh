@@ -16,9 +16,15 @@
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-bin=${GONGGA_BIN:-$root/target/debug}
-home="$root/.dev/selftest/content-home"
-log="$root/.dev/selftest/content.log"
+source "$root/scripts/selftest_bin.sh"
+bin=$(selftest_bin "$root") || exit 1
+# One run, one directory. Two of these at once -- which is how a fix is checked
+# against the bug -- would otherwise clear each other's scratch home, and the symptom
+# of that is a repository that vanishes mid-clone, not a queue.
+mkdir -p "$root/.dev"
+work=$(mktemp -d "$root/.dev/content-XXXXXX") || exit 1
+home="$work/home"
+log="$work/content.log"
 verbose=${1:-}
 
 say() { [[ "$verbose" == "-v" ]] && printf '%s\n' "$*"; return 0; }
@@ -27,8 +33,6 @@ ok() { # name, condition-result
   if [[ "$2" == 0 ]]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi
 }
 
-[[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
-  echo "build first: cargo build -p gongga-server" >&2; exit 1; }
 server_bin="$bin/gongga-server"; [[ -x "$server_bin" ]] || server_bin="$bin/gongga-server.exe"
 
 protocol=$(awk -F' = ' '$1 == "protocol" { print $2 }' "$root/crates/server/ship.toml" | sed 's/[[:space:]]*$//')
@@ -36,7 +40,7 @@ protocol=$(awk -F' = ' '$1 == "protocol" { print $2 }' "$root/crates/server/ship
 from=${GONGGA_SHIP_CONTENT:-$root/ship}
 [[ -f "$from/config/config.toml" ]] || {
   echo "no content checkout to take a config from: set GONGGA_SHIP_CONTENT" >&2; exit 1; }
-content="$root/.dev/selftest/content-content"
+content="$work/content-content"
 version() { # name, description, body
   printf -- '---\nname: %s\ndescription: %s\n---\n\n%s\n' "$1" "$2" "$3"
 }
@@ -90,11 +94,15 @@ serving_home() {
 server_pid=""
 sup=""
 cleanup() {
-  for pid in $(serving_home) "$server_pid" "$sup"; do
+  local pid
+  for pid in $(serving_home) "${server_pid:-}" "${sup:-}"; do
     alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
   done
   sleep 1
-  rm -rf "$home" || echo "note: $home is still held by a process" >&2
+  if ! rm -rf "$work" 2>/dev/null; then
+    sleep 3
+    rm -rf "$work" 2>/dev/null || echo "note: $work is still held by a process" >&2
+  fi
 }
 trap cleanup EXIT
 
@@ -129,13 +137,7 @@ stop() {
 }
 ask() { "$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" "$1" 2>&1; }
 
-left=$(serving_home)
-if [[ -n "${left// /}" ]]; then
-  echo "a previous run left $(echo $left) serving $home; stopping it" >&2
-  for pid in $left; do taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
-  sleep 2
-fi
-rm -rf "$home"; mkdir -p "$home"
+mkdir -p "$home"
 
 say "== a fresh home reads the checkout, and copies nothing out of it"
 start
@@ -160,7 +162,7 @@ ok "a skill edited under a running server is the skill it lists" $?
 say "$listed"
 # The config is the checkout's own file, and it is read again on the next call:
 # a broken one is named in the log, and the server keeps the last good read.
-mkdir -p "$root/.dev/selftest"; cp "$home/ship/config/config.toml" "$root/.dev/selftest/content-config.keep"
+cp "$home/ship/config/config.toml" "$work/config.keep"
 printf '
 [model]
 duplicate = "table"
@@ -169,7 +171,7 @@ ask '{"name":"ls_skill","args":{"session":"main"}}' >/dev/null
 grep -q "config.toml" "$log" && grep -q "did not parse" "$log"
 ok "the config is read again on the next call, and a broken one is named" $?
 say "$(grep 'did not parse' "$log" | head -1)"
-cp "$root/.dev/selftest/content-config.keep" "$home/ship/config/config.toml"
+cp "$work/config.keep" "$home/ship/config/config.toml"
 stop
 
 say "== an older build's copies go, and a file that is not a copy stays"

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # A directory this machine does not have, on real processes. A session whose own
-# directory is on a peer, or is gone, must still be able to run a skill's entry and
-# start a channel -- in this server's own directory -- and `exec`, which falls back to
-# the session's directory, must refuse by naming that directory and never the program.
+# directory is on a peer, or is gone, must still be able to run a skill and start a
+# channel -- in this server's own directory -- and `exec`, which falls back to the
+# session's directory, must refuse by naming that directory and never the program.
+#
+# A skill is a Python package and nothing else, so the form this harness dropped -- a
+# directory that declares `metadata.entry` -- is here too, to be refused in the one
+# sentence that names the change rather than as a file that went missing.
 #
 # One line of verdict at the end; `-v` keeps the scratch and prints each turn.
 set -uo pipefail
@@ -11,9 +15,12 @@ set -uo pipefail
 native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-bin="${GONGGA_BIN:-$root/target/debug}"
-tag="spawn-dir-$$"
-work="$root/.dev/selftest/$tag"
+source "$root/scripts/selftest_bin.sh"
+bin=$(selftest_bin "$root") || exit 1
+# One run, one directory: a second copy of this script is a second server, a second
+# home and a second stand-in model, and a shared directory makes each read the other's.
+mkdir -p "$root/.dev"
+work=$(mktemp -d "$root/.dev/spawn-dir-XXXXXX") || exit 1
 home="$work/home"
 log="$work/server.log"
 dump="$work/requests.jsonl"
@@ -24,8 +31,6 @@ fails=0
 ok() { if [[ "$2" == 0 ]]; then printf '  ok   %s\n' "$1"; else printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); fi; }
 kind() { [[ "$1" == *"$2"* ]] && echo 0 || echo 1; }
 
-[[ -x "$bin/gongga-server.exe" || -x "$bin/gongga-server" ]] || {
-  echo "build first: cargo build" >&2; exit 1; }
 server_bin="$bin/gongga-server"
 [[ -x "$server_bin" ]] || server_bin="$bin/gongga-server.exe"
 
@@ -79,28 +84,49 @@ rm -rf "$home"; mkdir -p "$work" "$home"
 # This machine's own content: a home with none reaches for the network.
 cp -r "$HOME/.gongga/ship" "$home/ship" 2>/dev/null
 
-# A skill of this run's own: an entry that says where it stands, so the answer is the
-# directory rather than a shape.
-# The home reads its content from the checkout in the home: make it before the
-# fixtures below are written into it.
+# A skill of this run's own: a package that says where it stands, so the answer is the
+# directory rather than a shape. A home reads its skills out of its content checkout, so
+# this is written there -- `skills/echo`, not an installed copy beside the checkout.
 [[ -d "$home/ship/.git" ]] || git clone -q "${GONGGA_SHIP_URL:-$root/ship}" "$home/ship"
 mkdir -p "$home/ship/skills/echo"
-cat > "$home/skills/echo/SKILL.md" <<'MD'
+cat > "$home/ship/skills/echo/SKILL.md" <<'MD'
 ---
 name: echo
-description: Print the directory this entry stands in and the words it was given.
-metadata:
-  entry: echo.sh
+description: Print the directory this package stands in and the words it was given.
 ---
 
 # echo
 
-A selftest's skill: it prints its directory and its words.
+A selftest's skill: one function, answering with its directory and its words.
 MD
-cat > "$home/skills/echo/echo.sh" <<'SHENTRY'
+cat > "$home/ship/skills/echo/__init__.py" <<'INIT'
+"""The selftest's package: where it stands, and the words a call carried."""
+
+import os
+
+
+def where(words=""):
+    """Answer with this package's directory and the words the call named."""
+    return "dir={} words={}".format(os.getcwd().replace(os.sep, "/"), words)
+INIT
+# A skill in the form this harness dropped: a directory that is not a package, saying in
+# its metadata what it would have been started with.
+mkdir -p "$home/ship/skills/scriptie"
+cat > "$home/ship/skills/scriptie/SKILL.md" <<'MD'
+---
+name: scriptie
+description: A skill that declares an entry, which is the form this harness dropped.
+metadata:
+  entry: run.sh
+---
+
+# scriptie
+
+Never runs here: being refused is the scenario.
+MD
+cat > "$home/ship/skills/scriptie/run.sh" <<'SHENTRY'
 #!/usr/bin/env bash
-printf 'dir=%s\n' "$(pwd -W 2>/dev/null || pwd)"
-printf 'words=%s\n' "$*"
+echo never
 SHENTRY
 
 # A peer nothing contacts: these scenarios only need a session whose directory is on
@@ -194,34 +220,43 @@ INNER
 
 model='"model_config":{"model":{"provider":"fake","model":"flash-fake"}}'
 
-# 1. The reported bug: a session whose directory is on a peer has none here, and a
-#    skill's entry still runs -- in this server's directory, not in a failed spawn.
+# 1. The reported bug: a session whose directory is on a peer has none here, and its
+#    skill still runs -- in this server's directory, not in a failed spawn.
 out=$(call '{"name":"new_session","args":{"id":"probe","config":{'"$model"',"workspace":{"remote":"probe-vm"}}}}')
 say "new_session probe: $out"
-out=$(call '{"name":"run_skill","args":{"id":"harness/echo","cmd":{"args":["hi"]},"session":"probe"}}')
+out=$(call '{"name":"run_skill","args":{"id":"harness/echo","cmd":{"name":"where","args":{"words":"hi"}},"session":"probe"}}')
 say "run_skill on probe: $(printf '%s' "$out" | tail -2)"
-ok "a peer session's entry skill runs here" "$(kind "$out" '[exit status 0]')"
+ok "a peer session's skill package runs here" "$(kind "$out" '[exit status 0]')"
 ok "and stands in this server's directory" "$(kind "$out" "dir=$(native "$root")")"
 ok "with the words it was given" "$(kind "$out" 'words=hi')"
 ok "not the empty directory it failed on" "$([[ "$out" != *'os error'* ]] && echo 0 || echo 1)"
 
-# 2. The same for a session whose own directory this machine no longer has.
+# 2. A skill in the form this harness dropped is refused before a process starts, in one
+#    sentence naming the change -- a package -- because a model has one door.
+out=$(call '{"name":"run_skill","args":{"id":"harness/scriptie","cmd":{"name":"run"},"session":"probe"}}')
+say "run_skill on scriptie: $out"
+ok "a skill that is not a package is refused" "$(kind "$out" 'runs only as a Python call')"
+ok "and the sentence names the change, not a missing file" \
+  "$([[ "$out" == *'make it a package'* && "$out" == *'__init__.py'* ]] && echo 0 || echo 1)"
+ok "and no program was blamed for it" "$([[ "$out" != *'could not run'* ]] && echo 0 || echo 1)"
+
+# 3. The same for a session whose own directory this machine no longer has.
 mkdir -p "$work/gone"
 call '{"name":"new_session","args":{"id":"stale","config":{'"$model"',"workspace":{"cwd":"'"$(native "$work/gone")"'"}}}}' >/dev/null
 rm -rf "$work/gone"
-out=$(call '{"name":"run_skill","args":{"id":"harness/echo","cmd":{"args":["gone"]},"session":"stale"}}')
+out=$(call '{"name":"run_skill","args":{"id":"harness/echo","cmd":{"name":"where","args":{"words":"gone"}},"session":"stale"}}')
 say "run_skill on stale: $(printf '%s' "$out" | tail -2)"
-ok "a gone directory is not a failed entry" "$(kind "$out" '[exit status 0]')"
-ok "and the entry still stands in this server's directory" "$(kind "$out" "dir=$(native "$root")")"
+ok "a gone directory is not a failed skill" "$(kind "$out" '[exit status 0]')"
+ok "and the package still stands in this server's directory" "$(kind "$out" "dir=$(native "$root")")"
 
-# 3. A channel on this machine: `new_channel` uses the session's directory directly.
+# 4. A channel on this machine: `new_channel` uses the session's directory directly.
 out=$(call '{"name":"new_channel","args":{"id":"/bash/c","name":"bash","session":"stale"}}')
 say "new_channel on stale: $out"
 ok "a channel starts for a session whose directory is gone" "$(kind "$out" 'pid')"
 out=$(call '{"name":"input_channel","args":{"id":"/bash/c","input":"pwd -W","session":"stale","wait":8000}}')
 ok "and stands in this server's directory" "$(kind "$out" "$(native "$root")")"
 
-# 4. `exec` falls back to the session's directory, so it must say which directory it
+# 5. `exec` falls back to the session's directory, so it must say which directory it
 #    could not use -- never that the program could not run.
 fake_up exec '{"bin":"bash","args":["-c","echo hi"],"remote":"none","cwd":"'"$(native "$work/nope")"'","wait":3000}'
 call '{"name":"send_message","args":{"message":"a stated directory that is gone","session":"stale"}}' >/dev/null
@@ -241,7 +276,7 @@ ok "the session's own directory is named as the session's" \
   "$([[ "$answer" == *"this session's directory"* && "$answer" == *"gone"* ]] && echo 0 || echo 1)"
 ok "and the program is not blamed for it either" "$([[ "$answer" != *'could not run'* ]] && echo 0 || echo 1)"
 
-# 5. A peer session with no directory at all still runs a program here.
+# 6. A peer session with no directory at all still runs a program here.
 fake_up exec '{"bin":"bash","args":["-c","echo alive"],"remote":"none","wait":4000}'
 call '{"name":"send_message","args":{"message":"run something here","session":"probe"}}' >/dev/null
 wait_turn probe
