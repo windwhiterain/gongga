@@ -21,6 +21,7 @@ you are about to touch.
 
 | you are about to | read first |
 | --- | --- |
+| commit, publish, or ask what shape the three checkouts are in | [`git-workflow.md`](git-workflow.md) |
 | run the distribution (`gongga`, `gongga tui`) | [`bundle-main.md`](bundle-main.md) -- it is not a read-only run: pointed at a live home it stops that home's server |
 | start, stop or watch a server | [`client-server.md`](client-server.md), [`server-supervise.md`](server-supervise.md), [`server-signal.md`](server-signal.md) |
 | write into a home (payload, config, database) | [`server-config.md`](server-config.md), [`server-store.md`](server-store.md) |
