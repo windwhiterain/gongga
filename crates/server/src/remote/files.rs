@@ -80,6 +80,15 @@ impl Reader {
             if chunk.eof || chunk.data.is_empty() {
                 return Ok(bytes);
             }
+            // Every chunk moves the cursor: a runner that stops advancing it would
+            // be read for ever.
+            if chunk.next <= offset {
+                anyhow::bail!(
+                    "the endpoint answered {path:?} at offset {offset} without moving its \
+                     cursor to {}: this runner cannot be read",
+                    chunk.next
+                );
+            }
             offset = chunk.next;
         }
     }

@@ -23,6 +23,26 @@ use crate::store::{MessageRow, PendingTask, Store, Transcript};
 /// still reaches whoever asked for it.
 const SHUTDOWN_NOTICE: Duration = Duration::from_millis(250);
 
+/// How long one command may run before the harness calls it a bug.
+///
+/// # Invariant
+///
+/// SPEC `## Server Cmd`: running out of this clock is a harness bug, never a refusal of
+/// the call. The number is `CALL_TIMEOUT_MS`, which no caller reads or is told. It exists
+/// because a command that waits on a mechanism used to hold its caller for as long as the
+/// mechanism did.
+const COMMAND_TIMEOUT: Duration = Duration::from_millis(crate::config::CALL_TIMEOUT_MS);
+
+/// The commands whose own argument is the clock, and that are therefore not cut here.
+///
+/// # Invariant
+///
+/// `input_channel` waits for as long as its `wait` says -- that is the call's own clock,
+/// and cutting it would break a read that is working. `run_skill` is started under the
+/// skill runner's own bound. `cancel` is the stop itself: cutting it would leave the
+/// acknowledgement it owes unwritten.
+const OWN_CLOCK: &[&str] = &["input_channel", "run_skill", "cancel"];
+
 /// The heartbeat's whole content: a clock reading, so a warm prefix is all it buys.
 fn time_notice() -> String {
     format!("(time notice: {})", crate::clock::now())
@@ -1225,7 +1245,37 @@ pub fn layer() -> Option<std::sync::Arc<dyn CmdLayer>> {
     LAYER.get().cloned()
 }
 
+/// Runs one command, and gives up on one that outlives the harness's own clock.
+///
+/// # Invariant
+///
+/// SPEC `## Server Cmd`: every command has an internal timeout, and the answer it leaves
+/// when that timeout runs out says the fault is the harness's. The catalogue, the
+/// required arguments and the handler are all [`run_now`]'s, so this is the one door and
+/// no second copy of the dispatch decides anything.
 pub async fn dispatch(d: &Dispatch, name: &str, args: &Args, origin: &Origin) -> Outcome {
+    if OWN_CLOCK.contains(&name) {
+        return run_now(d, name, args, origin).await;
+    }
+    match tokio::time::timeout(COMMAND_TIMEOUT, run_now(d, name, args, origin)).await {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            tracing::error!(
+                command = %name,
+                timeout = ?COMMAND_TIMEOUT,
+                "a command ran out of its internal timeout: this is a harness bug"
+            );
+            Outcome::err(format!(
+                "{name} did not answer within {}s and was abandoned: that is a harness \
+                 bug, not a refusal of the call",
+                COMMAND_TIMEOUT.as_secs()
+            ))
+        }
+    }
+}
+
+/// One command, run as far as it goes.
+async fn run_now(d: &Dispatch, name: &str, args: &Args, origin: &Origin) -> Outcome {
     // One catalog decides existence, runner and required args, for every kind.
     let spec = match resolve(&d.catalog().await, name, args) {
         Ok(spec) => spec,

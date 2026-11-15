@@ -147,6 +147,7 @@ fn config_from(args: &Args) -> anyhow::Result<Config> {
 }
 
 pub fn main(args: Args) -> anyhow::Result<()> {
+    adopt_home(&args);
     // Built here, not by `#[tokio::main]`, so the drop runs after `run` closed
     // every shell. See `docs/notes/server-lib.md`.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -157,6 +158,25 @@ pub fn main(args: Args) -> anyhow::Result<()> {
     drop(runtime);
     tracing::info!("main: runtime dropped");
     result
+}
+
+/// Makes the home this start resolved the one everything it starts inherits.
+///
+/// # Invariant
+///
+/// `--home` beats an inherited `GONGGA_HOME` here, and must beat it for the children
+/// too: a relay, a peer's runner and a skill each resolve their own home from
+/// `GONGGA_HOME`, so a stale value there puts their files in somebody else's home.
+/// Run before the runtime exists, which is the only moment no thread can read it.
+fn adopt_home(args: &Args) {
+    let Some(named) = args.home.as_ref() else {
+        return;
+    };
+    let home = crate::config::expand(named.clone());
+    // SAFETY: this process has one thread until the runtime is built below.
+    unsafe {
+        std::env::set_var("GONGGA_HOME", &home);
+    }
 }
 
 /// Where a start's seconds go, one line each.
