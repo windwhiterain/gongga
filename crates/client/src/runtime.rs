@@ -370,12 +370,11 @@ pub async fn run(
             }
             // A scroll past the oldest row a window holds: a page above it.
             Step::Input(FrontendEvent::Intent(UiIntent::Older { windows })) => owed.extend(windows),
-            // And past the newest one: the page below it.
+            // And past the newest one: the page below it. See `ask_newer`.
             Step::Input(FrontendEvent::Intent(UiIntent::Newer { windows })) => {
                 owed_newer.extend(windows);
             }
-            // What each window holds now: the rows it dropped to stay inside its
-            // budget, at whichever end. The client believed otherwise.
+            // What each window holds now: an end the client only guessed at.
             Step::Input(FrontendEvent::Intent(UiIntent::Held { windows })) => {
                 for (name, oldest, newest) in windows {
                     client.declare_held(&name, oldest, newest);

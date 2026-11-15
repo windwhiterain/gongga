@@ -2314,11 +2314,9 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// Replaces the client's belief about the window, which only ever guesses: a
-    /// window drops rows at either end to stay inside its budget, and the frame is
-    /// the one that knows where it now stops. A window that stops short of the
-    /// server is not behind -- the rows below it are the operator's to page for --
-    /// and one that reaches the server is following it again. See
+    /// Replaces the client's belief, which only ever guesses: a window drops rows at
+    /// either end to stay inside its budget. One that stops short of the server is
+    /// not behind -- the rows below it are the operator's to page for. See
     /// `docs/notes/client-window-journal.md`.
     pub fn declare_held(&mut self, name: &str, oldest: i64, newest: i64) {
         if oldest > newest {
@@ -2359,9 +2357,7 @@ impl Client {
         if sync.fill.is_some() || sync.blocked {
             return None;
         }
-        // A window that stops short of the server on purpose is not behind: the
-        // rows below it are the operator's to read, and sending them back would
-        // draw what the frame has just trimmed.
+        // A window that stops short of the server on purpose is not behind.
         if sync.short {
             return None;
         }

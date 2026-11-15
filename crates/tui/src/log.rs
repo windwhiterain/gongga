@@ -885,20 +885,15 @@ impl Log {
         self.drop_blocks(dropping)
     }
 
-    /// Drops the newest blocks of one window that lie entirely in the `below` rows
-    /// past its pane, and answers the rows that went.
+    /// Drops the newest blocks lying entirely in the `below` rows past the pane.
     ///
     /// # Invariant
     ///
-    /// The other end of [`Log::trim`]: a window that has stopped following a
-    /// session keeps the rows below its pane down to one margin, and the operator
-    /// pages for the rest. A block is dropped whole or not at all: one the pane is
-    /// drawing stays, however far past the margin it reaches, and the pane's own
-    /// scroll is corrected by exactly what went. The last block is never dropped, and neither is one
-    /// still streaming -- its later chunks would have no block to land in -- so
-    /// what goes is history behind the newest row, never where the session is.
-    /// The window's stamp moves down with it: the row the sink last said is a row
-    /// this window no longer has. See `docs/notes/tui-log.md`.
+    /// The other end of [`Log::trim`]: what goes is history behind the newest row,
+    /// never where the session is. A block is dropped whole or not at all, so one
+    /// the pane is drawing stays however far past the margin it reaches, and the
+    /// stamp -- the row the sink last said -- moves down with what went. See
+    /// `docs/notes/tui-log.md`.
     pub fn trim_newest(&mut self, window: &str, below: usize, margin: usize) -> usize {
         let dropping = {
             let Some(ledger) = self.views.get(window) else {
@@ -1096,8 +1091,7 @@ impl Log {
         added
     }
 
-    /// Inserts `rows` at `at` as finished blocks of `name`: one order, one ledger
-    /// rebuild.
+    /// Inserts `rows` at `at` as finished blocks of `name`.
     ///
     /// # Invariant
     ///
@@ -1141,8 +1135,7 @@ impl Log {
                 entry
             }
         };
-        // A page says where each of its rows came from: the number travels with
-        // the row, or a window could not say what it holds.
+        // A page says where each of its rows came from.
         let (seq, from) = match row {
             PastRow::Line { seq, .. } => (*seq, *seq),
             PastRow::Block { seq, from, .. } => (*seq, *from),

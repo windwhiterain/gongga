@@ -509,10 +509,7 @@ impl Panes {
         let mut gone = 0;
         let below = self.scroll_of(window);
         if below > keep {
-            // The rows below the pane go first: a window scrolled this far into the
-            // past is not following the session, so what it is over its budget by is
-            // the newest end -- the rows the operator pages for on the way back down.
-            // What went is the pane's own measure: the same rows are still on screen.
+            // The rows below the pane go first, and the same rows stay on screen.
             let dropped = self.log.trim_newest(window, below, keep);
             if let Some(pane) = self.panes.iter_mut().find(|pane| pane.name == window) {
                 pane.scroll = pane.scroll.saturating_sub(dropped);
@@ -520,8 +517,7 @@ impl Panes {
             gone += dropped;
         }
         let scroll = self.scroll_of(window);
-        // Then the rows above it, down to what the reader has scrolled through plus
-        // one margin: the past a pane is not drawing is the client's to hand back.
+        // Then the rows above it, down to what the reader scrolled through.
         gone += self.log.trim(window, keep + height + scroll);
         if gone > 0 {
             self.trimmed.insert(window.to_string());
@@ -533,7 +529,7 @@ impl Panes {
     /// # Invariant
     ///
     /// Taken once per change: a window that dropped rows is the client's only
-    /// account of where it now stops, and a window whose rows carry no number says
+    /// account of where it now stops. A window whose rows carry no number says
     /// nothing rather than a range it would be guessing. See
     /// `docs/notes/tui-panes.md`.
     pub fn take_held(&mut self) -> Vec<(String, i64, i64)> {
@@ -630,10 +626,7 @@ impl Panes {
         if let Some(pane) = self.get_mut(name) {
             pane.scroll_by(rows);
             older = rows > 0 && pane.kind == Kind::Shown && pane.scroll >= pane.max_scroll;
-            // A push against the newest row a window holds is the operator asking
-            // for the rows below: a window that stopped following a session dropped
-            // them to stay inside its budget, and this gesture is what brings them
-            // back. See `docs/notes/tui-panes.md`.
+            // A push against the newest row asks for the rows dropped below it.
             newer = rows < 0 && pane.kind == Kind::Shown && pane.scroll == 0;
         }
         if older {
