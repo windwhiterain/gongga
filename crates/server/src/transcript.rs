@@ -2,20 +2,21 @@
 //!
 //! See `docs/notes/server-store.md`.
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+
+use crate::store::Kind;
 
 /// A walk over one session's sendable rows in `(0, upto_seq]`, oldest first.
 ///
 /// # Invariant
 ///
-/// What comes back is the stored item, byte for byte: the request's shape was
-/// decided when the row was appended, so a walk cannot disagree with an earlier
-/// request about what a row is.
-///
-/// It holds its own connection rather than the store's, and `upto_seq` is fixed
-/// when the walk is made. See `docs/notes/server-transcript.md`.
+/// What comes back is the stored item, byte for byte, except for order inside a step: a
+/// step's calls come before the outputs they answered, because a request carries one
+/// assistant turn. It holds its own connection, and `upto_seq` is fixed when the walk is
+/// made. See `docs/notes/server-transcript.md`.
 pub struct Transcript {
     conn: Connection,
     session_id: i64,
@@ -23,6 +24,20 @@ pub struct Transcript {
     after_seq: i64,
     /// Permanent-prefix end and latest ordinary-round start, once compacted.
     projection: Option<(i64, i64)>,
+    /// A row read ahead of the output held in front of it.
+    pending: VecDeque<Row>,
+    /// Outputs waiting for the last call of their step.
+    held: VecDeque<crate::body::Stored>,
+    /// The `(turn, step)` the held outputs belong to.
+    held_step: Option<(i64, i64)>,
+}
+
+/// One row as it was read, before the walk decides where it goes.
+struct Row {
+    seq: i64,
+    stored: crate::body::Stored,
+    kind: Option<crate::store::Kind>,
+    step: Option<(i64, i64)>,
 }
 
 impl Transcript {
@@ -57,6 +72,9 @@ impl Transcript {
             upto_seq,
             after_seq: 0,
             projection,
+            pending: VecDeque::new(),
+            held: VecDeque::new(),
+            held_step: None,
         })
     }
 }
@@ -85,9 +103,52 @@ impl Iterator for Transcript {
     type Item = anyhow::Result<crate::body::Stored>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let row = match self.pending.pop_front() {
+                Some(row) => row,
+                None => match self.read_one() {
+                    Ok(Some(row)) => row,
+                    Ok(None) => return self.held.pop_front().map(Ok),
+                    Err(e) => return Some(Err(e)),
+                },
+            };
+            // An output waits for the last call of its own step.
+            if let Some(held_step) = self.held_step {
+                let continues =
+                    row.step == Some(held_step) && matches!(row.kind, Some(Kind::ToolCall));
+                if !continues {
+                    self.held_step = None;
+                    self.pending.push_front(row);
+                    if let Some(held) = self.held.pop_front() {
+                        return Some(Ok(held));
+                    }
+                    continue;
+                }
+            }
+            if matches!(row.kind, Some(Kind::ToolResult))
+                && let Some(step) = row.step
+            {
+                match self.call_after(row.seq, step) {
+                    Ok(true) => {
+                        self.held_step = Some(step);
+                        self.held.push_back(row.stored);
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+            return Some(Ok(row.stored));
+        }
+    }
+}
+
+impl Transcript {
+    /// The next row this walk may send, exactly as it was stored.
+    fn read_one(&mut self) -> anyhow::Result<Option<Row>> {
         // Indexed artifacts, prefix, and latest round plus later rows; raw rows stay unchanged.
         let found = self.conn.query_row(
-            "SELECT seq, content, kind, display FROM messages
+            "SELECT seq, content, kind, display, turn, step FROM messages
               WHERE session_id = ?1 AND seq > ?2 AND seq <= ?3 AND content IS NOT NULL
                 AND (?4 = 0 OR seq <= ?5 OR seq >= ?6
                      OR EXISTS (SELECT 1 FROM live_compact_artifacts a
@@ -108,38 +169,54 @@ impl Iterator for Transcript {
                     r.get::<_, Option<String>>(1)?.unwrap_or_default(),
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
+                    r.get::<_, Option<i64>>(4)?,
+                    r.get::<_, Option<i64>>(5)?,
                 ))
             },
         );
-        let (seq, item, kind, display) = match found {
+        let (seq, item, kind, display, turn, step) = match found {
             Ok(row) => row,
-            Err(rusqlite::Error::QueryReturnedNoRows) => return None,
-            Err(e) => return Some(Err(e.into())),
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(e.into()),
         };
         self.after_seq = seq;
         // The pictures ride in `display`, what the row recorded: a copy is read
         // when a request is built.
-        let pictures = match crate::store::Kind::parse(&kind) {
-            Some(
-                crate::store::Kind::Text
-                | crate::store::Kind::Inject
-                | crate::store::Kind::ToolResult,
-            ) => {
+        let pictures = match Kind::parse(&kind) {
+            Some(Kind::Text | Kind::Inject | Kind::ToolResult) => {
                 let value = serde_json::from_str(&display).unwrap_or_default();
                 crate::store::images_of(&value)
             }
             Some(
-                crate::store::Kind::Reasoning
-                | crate::store::Kind::ToolCall
-                | crate::store::Kind::Notice
-                | crate::store::Kind::ThinkingMark
-                | crate::store::Kind::System
-                | crate::store::Kind::Tools
-                | crate::store::Kind::BuiltinCall
-                | crate::store::Kind::LiveCompactRequest,
+                Kind::Reasoning
+                | Kind::Notice
+                | Kind::ThinkingMark
+                | Kind::System
+                | Kind::Tools
+                | Kind::ToolCall
+                | Kind::BuiltinCall
+                | Kind::LiveCompactRequest,
             ) => Vec::new(),
             None => Vec::new(),
         };
-        Some(Ok(crate::body::Stored { item, pictures }))
+        Ok(Some(Row {
+            seq,
+            stored: crate::body::Stored { item, pictures },
+            kind: Kind::parse(&kind),
+            step: turn.zip(step),
+        }))
+    }
+
+    /// Whether `step` still has a call to make after `seq`: what an output at `seq`
+    /// is waiting for.
+    fn call_after(&self, seq: i64, step: (i64, i64)) -> anyhow::Result<bool> {
+        let found = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM messages
+                             WHERE session_id = ?1 AND turn = ?2 AND step = ?3
+                               AND kind = 'tool_call' AND seq > ?4)",
+            params![self.session_id, step.0, step.1, seq],
+            |row| row.get::<_, bool>(0),
+        )?;
+        Ok(found)
     }
 }

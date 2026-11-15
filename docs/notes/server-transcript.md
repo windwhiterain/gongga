@@ -20,3 +20,25 @@ underneath it.
 The pictures ride in the row's `display`, which is what the row recorded when it
 was written. An item names a copy, and the copy is read when a request is built
 -- the provider's file is resolved then, and never stored in the transcript.
+
+## A step's outputs follow its calls
+
+The one thing the walk decides for itself is order, and only inside a step. A step
+with more than one call is stored as the calls ran -- `call, output, call, output`,
+because the agent executes each call inside the stream and answers it before the
+next one arrives. A request cannot carry that: the items are one assistant turn,
+and a provider reads `call, output, call` as two turns, the second having thought
+nothing.
+
+Measured on deepseek's Responses face, same key, same tools, same rows:
+
+```
+stored order  1,4,5,6,7,8,9  -> 400  The `reasoning_text` in the thinking mode must be passed back to the API.
+walk order    1,4,5,6,8,7,9  -> 200
+```
+
+So the walk holds an output whose step still has a call to make, and releases it
+when that step is over. Nothing is dropped or rewritten: every stored row still
+comes back exactly once, only later. The refusal it prevents used to be answered
+by a `thinking_mark` -- a fabricated user row saying a step was written without
+thinking, which was never true: the step thought, and the harness reordered it.
