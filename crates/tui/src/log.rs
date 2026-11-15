@@ -1673,6 +1673,11 @@ fn document_span(span: &client::render_wire::DocumentSpan) -> Span<'static> {
     let base = Style::default().fg(Color::White);
     let style = match span.class {
         SpanClass::Text => base,
+        // A heading is a kind of its own, not a bold word: it takes the accent the
+        // chrome already uses, so a document has more than one ink again.
+        SpanClass::Heading => Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::BOLD),
         SpanClass::Strong => base.add_modifier(Modifier::BOLD),
         SpanClass::Emphasis => base.add_modifier(Modifier::ITALIC),
         SpanClass::Strike => base.add_modifier(Modifier::CROSSED_OUT),

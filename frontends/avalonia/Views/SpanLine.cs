@@ -44,6 +44,13 @@ public sealed class SpanLine : TextBlock
 
     private Run Run(SpanItem span) => span.Class switch
     {
+        "heading" => new Run
+        {
+            Text = span.Text,
+            FontWeight = FontWeight.Bold,
+            FontSize = 15,
+            Foreground = KindBrushConverter.Lookup("AccentInkBrush"),
+        },
         "strong" => new Run { Text = span.Text, FontWeight = FontWeight.SemiBold },
         "emphasis" => new Run { Text = span.Text, FontStyle = FontStyle.Italic },
         "strike" => new Run { Text = span.Text, TextDecorations = Struck },

@@ -20,11 +20,15 @@ const STEP: usize = 2;
 /// `text` as the rows a body is drawn in, at most `width` columns wide.
 pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
     let width = width.max(1);
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<Vec<DocumentSpan>> = Vec::new();
     let mut code = false;
-    for line in text.replace("\r\n", "\n").replace('\r', "\n").split('\n') {
-        let line = line.trim_end();
+    let mut at = 0;
+    while at < lines.len() {
+        let line = lines[at].trim_end();
         let head = line.trim_start();
+        at += 1;
         if head.starts_with("```") {
             code = !code;
             continue;
@@ -43,9 +47,164 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
             out.push(Vec::new());
             continue;
         }
+        // A pipe row with an alignment row under it is a table, and a table is laid
+        // out here: columns are as wide as their widest cell, narrowed to the pane by
+        // taking a column at a time from the widest one.
+        if head.starts_with('|') {
+            let aligns = lines.get(at).and_then(|next| alignment_row(next.trim()));
+            if let Some(aligns) = aligns {
+                if aligns.len() != cells(head).len() {
+                    out.extend(wrap(&block(head), width));
+                    continue;
+                }
+                let mut body: Vec<Vec<String>> = Vec::new();
+                while at < lines.len() {
+                    let next = lines[at].trim();
+                    if !next.starts_with('|') {
+                        break;
+                    }
+                    body.push(cells(next));
+                    at += 1;
+                }
+                out.extend(table(&cells(head), &aligns, &body, width));
+                continue;
+            }
+        }
         out.extend(wrap(&block(head), width));
     }
     out
+}
+
+/// The cells of one `| a | b |` row, trimmed.
+fn cells(row: &str) -> Vec<String> {
+    let inner = row.strip_prefix('|').unwrap_or(row);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    inner.split('|').map(|cell| cell.trim().to_string()).collect()
+}
+
+/// The alignments an `|:--|--:|` row states, or nothing when the row is not one.
+fn alignment_row(row: &str) -> Option<Vec<Align>> {
+    if !row.starts_with('|') {
+        return None;
+    }
+    let mut aligns = Vec::new();
+    for cell in cells(row) {
+        let left = cell.starts_with(':');
+        let right = cell.ends_with(':');
+        let dashes = cell.trim_matches(':');
+        if dashes.is_empty() || !dashes.chars().all(|c| c == '-') {
+            return None;
+        }
+        aligns.push(match (left, right) {
+            (true, false) => Align::Left,
+            (false, true) => Align::Right,
+            (true, true) => Align::Center,
+            (false, false) => Align::None,
+        });
+    }
+    Some(aligns)
+}
+
+/// Which way one column's cells lean.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Align {
+    None,
+    Left,
+    Right,
+    Center,
+}
+
+/// The narrowest a column is ever drawn.
+const MIN_COLUMN: usize = 3;
+
+/// `header`, its alignment row and `body` as rows that fit `width` columns.
+fn table(header: &[String], aligns: &[Align], body: &[Vec<String>], width: usize) -> Vec<Vec<DocumentSpan>> {
+    let columns = header.len().max(1);
+    let mut widths: Vec<usize> = (0..columns)
+        .map(|column| {
+            let mut widest = text_width(header.get(column).map(String::as_str).unwrap_or(""));
+            for row in body {
+                widest = widest.max(text_width(row.get(column).map(String::as_str).unwrap_or("")));
+            }
+            widest.max(MIN_COLUMN)
+        })
+        .collect();
+    // One pipe and one space at each side of every cell, plus the row's own edges.
+    let used = |widths: &[usize]| widths.iter().sum::<usize>() + 3 * columns + 1;
+    while used(&widths) > width {
+        let Some((widest, _)) = widths
+            .iter()
+            .enumerate()
+            .filter(|(_, column)| **column > MIN_COLUMN)
+            .max_by_key(|(_, column)| **column)
+        else {
+            break;
+        };
+        widths[widest] -= 1;
+    }
+    let mut out: Vec<Vec<DocumentSpan>> = Vec::new();
+    out.push(compose(header, &widths, aligns, SpanClass::Heading));
+    out.push(vec![DocumentSpan::of(rule(&widths, aligns), SpanClass::Marker)]);
+    for row in body {
+        out.push(compose(row, &widths, aligns, SpanClass::Text));
+    }
+    out
+}
+
+/// One table row: the pipe, then each cell padded to its column.
+fn compose(row: &[String], widths: &[usize], aligns: &[Align], class: SpanClass) -> Vec<DocumentSpan> {
+    let mut spans: Vec<DocumentSpan> = vec![DocumentSpan::of("|", SpanClass::Marker)];
+    for (column, width) in widths.iter().enumerate() {
+        let text = row.get(column).map(String::as_str).unwrap_or("");
+        let body = clip(text, *width);
+        let spare = width.saturating_sub(text_width(&body));
+        let (before, after) = match aligns.get(column).copied().unwrap_or(Align::None) {
+            Align::Right => (spare, 0),
+            Align::Center => (spare / 2, spare - spare / 2),
+            Align::None | Align::Left => (0, spare),
+        };
+        spans.push(DocumentSpan::of(" ".repeat(before + 1), class));
+        spans.push(DocumentSpan::of(body, class));
+        spans.push(DocumentSpan::of(format!("{}{}", " ".repeat(after), " |"), SpanClass::Marker));
+    }
+    spans
+}
+
+/// The row that says how each column leans.
+fn rule(widths: &[usize], aligns: &[Align]) -> String {
+    let mut text = String::from("|");
+    for (column, width) in widths.iter().enumerate() {
+        let dashes = "-".repeat(*width + 2);
+        let body = match aligns.get(column).copied().unwrap_or(Align::None) {
+            Align::None => dashes,
+            Align::Left => format!(":{}", dashes),
+            Align::Right => format!("{}:", dashes),
+            Align::Center => format!(":{}:", dashes),
+        };
+        text.push_str(&body);
+        text.push('|');
+    }
+    text
+}
+
+/// `text` cut to at most `width` columns.
+fn clip(text: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for character in text.chars() {
+        let wide = character.width().unwrap_or(1);
+        if used + wide > width {
+            break;
+        }
+        used += wide;
+        out.push(character);
+    }
+    out
+}
+
+/// How many columns `text` takes when drawn.
+fn text_width(text: &str) -> usize {
+    text.chars().map(|c| c.width().unwrap_or(1)).sum()
 }
 
 /// One row of prose: its block structure as a marker run, then its words.
@@ -60,7 +219,7 @@ fn block(head: &str) -> Vec<DocumentSpan> {
     if level != 0 {
         // A heading is one run, strong: its own size is the front-end's to choose.
         let body = inline(text.trim_start());
-        spans.extend(body.into_iter().map(|span| span.strong()));
+        spans.extend(body.into_iter().map(|span| span.heading()));
         return spans;
     }
     if let Some(rest) = text.strip_prefix("- ").or_else(|| text.strip_prefix("* ")) {

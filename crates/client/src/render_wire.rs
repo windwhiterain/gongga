@@ -26,6 +26,14 @@ impl DocumentSpan {
         }
     }
 
+    /// The same words, drawn as a heading.
+    pub fn heading(self) -> Self {
+        Self {
+            class: SpanClass::Heading,
+            ..self
+        }
+    }
+
     /// The same words, drawn as a heading or an emphasised run.
     pub fn strong(self) -> Self {
         match self.class {
@@ -44,6 +52,9 @@ impl DocumentSpan {
 #[serde(rename_all = "snake_case")]
 pub enum SpanClass {
     Text,
+    /// A heading is not a bold word: a front-end draws it as one, and the words it
+    /// holds read as strong inside it.
+    Heading,
     Strong,
     Emphasis,
     Strike,
