@@ -38,14 +38,24 @@ pub fn is_json(tail: &str) -> bool {
 ///
 /// # Invariant
 ///
-/// Strict here, unlike the completion's split: a submission binds real values, so
-/// anything but a whole JSON object is refused with the parser's own reason.
+/// Forgiving in one thing only: the trailing comma a person's typing leaves
+/// before a closer, which the wire does not carry but a keyboard does. Anything
+/// else is refused with the parser's own reason, and a text that parses as it
+/// stands is never rewritten. See `docs/notes/client-complete.md`.
 pub fn parse_object(tail: &str) -> Result<Map<String, Value>, String> {
-    let value: Value = serde_json::from_str(tail)
-        .map_err(|e| format!("the arguments must be one JSON object: {e}"))?;
+    let value: Value = crate::json_text::parse_lenient(tail)
+        .ok_or_else(|| format!("the arguments must be one JSON object: {}", reason(tail)))?;
     match value {
         Value::Object(map) => Ok(map),
         _ => Err("the arguments must be a JSON object: {...}".to_string()),
+    }
+}
+
+/// Why `text` is not JSON, as the parser says it.
+fn reason(text: &str) -> String {
+    match serde_json::from_str::<Value>(text) {
+        Ok(_) => "it is not one object".to_string(),
+        Err(e) => e.to_string(),
     }
 }
 

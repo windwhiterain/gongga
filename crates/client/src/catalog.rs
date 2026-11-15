@@ -999,6 +999,22 @@ fn open_quote(line: &str) -> Option<char> {
     open
 }
 
+/// Whether the object has a member left for a sibling after the one being
+/// filled: a field the line has not stated yet.
+///
+/// # Invariant
+///
+/// Asked of the schema and the line together, because neither answers alone: the
+/// schema says what could follow, and the line says which of those are already
+/// written. A member after which nothing is left closes its object, and a comma
+/// before that close is a trailing one the server refuses.
+fn remaining(object: &StructSchema, written: &[(String, Read)], filling: Option<&str>) -> bool {
+    object.fields.iter().any(|field| {
+        field.name != filling.unwrap_or_default()
+            && !written.iter().any(|(name, _)| name == &field.name)
+    })
+}
+
 /// The object schema at a path of field names, or `None` when the path leaves
 /// the shape the catalog published.
 fn schema_at<'a>(schema: &'a StructSchema, path: &[String]) -> Option<&'a StructSchema> {
@@ -1027,6 +1043,7 @@ fn keys(
     prefix: &str,
     written: &[(String, Read)],
     closers: usize,
+    more: bool,
 ) -> Vec<Candidate> {
     let mut fields: Vec<&StructField> = object
         .fields
@@ -1053,17 +1070,23 @@ fn keys(
                 insert.push_str("\"\"");
                 inside = Some(insert.len() - 1);
             }
+            // A name writes the closers of the objects the token stands in: it is
+            // what closes an object nothing else has closed yet.
             for _ in 0..closers {
                 tail.push('}');
             }
             let caret = inside.unwrap_or(insert.len());
-            let closed = !tail.is_empty() || inside.is_some();
+            // The separator stands before the closers the object owes.
+            if more {
+                insert.push(',');
+            }
             insert.push_str(&tail);
             Candidate {
                 insert,
                 detail: field.description.clone(),
                 space: false,
-                cursor: closed.then_some(caret),
+                // Where the name opened something, never past it.
+                cursor: Some(caret),
             }
         })
         .collect()
@@ -1083,6 +1106,7 @@ fn values(
     ctx: &Ctx,
     words: &[String],
     closers: usize,
+    more: bool,
 ) -> Vec<Candidate> {
     let model = named_model(&spot.fields).or_else(|| model_named(ctx, words));
     let hint = field.value_hint.as_deref().unwrap_or("value");
@@ -1098,7 +1122,7 @@ fn values(
         0,
     );
     if offered.is_empty() {
-        return owed(field, leaf, spot, ctx, closers);
+        return owed(field, leaf, spot, ctx, closers, more);
     }
     offered
         .into_iter()
@@ -1107,13 +1131,16 @@ fn values(
                 true => model_value(&candidate.insert)?,
                 false => leaf.token(&candidate.insert),
             };
-            let caret = insert.len();
+            // The separator stands before the closers the object owes.
+            if more {
+                insert.push(',');
+            }
             insert.push_str(&"}".repeat(closers));
             Some(Candidate {
                 insert,
                 detail: candidate.detail,
                 space: false,
-                cursor: (closers > 0).then_some(caret),
+                cursor: None,
             })
         })
         .collect()
@@ -1133,6 +1160,7 @@ fn owed(
     spot: &json_value::Spot,
     ctx: &Ctx,
     closers: usize,
+    more: bool,
 ) -> Vec<Candidate> {
     if ctx.catalog.wants() {
         return Vec::new();
@@ -1151,18 +1179,21 @@ fn owed(
         .map(|text| {
             let mut insert = leaf.token(&text);
             // An empty string leaves the caret between its quotes, ready for the
-            // first character.
+            // first character; anything else ends at the cursor.
             let caret = match (leaf, text.is_empty()) {
-                (Leaf::Text, true) => insert.len() - 1,
-                _ => insert.len(),
+                (Leaf::Text, true) => Some(insert.len() - 1),
+                _ => None,
             };
             insert.push_str(&"}".repeat(closers));
-            let inside = caret < insert.len();
+            // The separator belongs to the member, not to the closers.
+            if more {
+                insert.push(',');
+            }
             Candidate {
                 insert,
                 detail: hint.to_string(),
                 space: false,
-                cursor: inside.then_some(caret),
+                cursor: caret,
             }
         })
         .collect()
@@ -1274,6 +1305,7 @@ fn command_names(ctx: &Ctx, fragment: &str, start: usize, end: usize) -> Offered
                     cursor: None,
                 }
             } else {
+                // The name opens the object, and the caret lands inside it.
                 Candidate {
                     insert: format!("/{}{{}}", c.name),
                     detail: c.description.clone(),
@@ -1309,17 +1341,19 @@ fn object_completion(
         return Offered::default();
     };
     let start = brace + spot.start;
+    // The token, never past it: an end past the comma eats what follows.
     let end = brace + spot.end;
-    // The braces still owed: the objects the token stands in, less those closed.
     let owed = spot.open.saturating_sub(spot.after);
     match spot.typing {
         json_value::Typing::Key => {
             let Some(object) = schema_at(schema, &spot.path) else {
                 return Offered::default();
             };
+            // A name the object still has makes this member not the last.
+            let more = remaining(object, &spot.fields, None);
             Offered {
                 subject: Some(subject_name(cmd, &spot.path)),
-                candidates: keys(object, &spot.fragment, "", &spot.fields, owed),
+                candidates: keys(object, &spot.fragment, "", &spot.fields, owed, more),
                 start: Some(start),
                 end: Some(end),
             }
@@ -1338,9 +1372,12 @@ fn object_completion(
             if field.object.is_some() {
                 return Offered::default();
             }
+            // The same question as for a name: whether another member may
+            // follow this one, given what the line already states.
+            let more = remaining(object, &spot.fields, Some(name));
             Offered {
                 subject: Some(subject_name(cmd, &spot.path)),
-                candidates: values(field, &spot, ctx, words, owed),
+                candidates: values(field, &spot, ctx, words, owed, more),
                 start: Some(start),
                 end: Some(end),
             }

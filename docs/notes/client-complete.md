@@ -121,9 +121,8 @@ A command line spells its arguments as one JSON object right after the name:
 `/set_session{"id":"abc","config":{...}}`. Completion offers this form alone --
 the flag/positional spelling still parses (a front-end's own click lines use it),
 but the popup never offers it, so there is one way to complete a command. The
-grammar split lives in `client/src/json_command.rs`, shared by the submission
-(strict: the object must parse) and the completion (tolerant: a half-typed line is
-a place, not an error).
+grammar split lives in `client/src/json_command.rs`, shared by the submission and the
+completion (tolerant: a half-typed line is a place, not an error).
 
 **The root shape.** The command's published arguments become one object schema
 (`root_schema`): each argument a field, a structured argument (`ArgSpec::structure`,
@@ -146,6 +145,15 @@ past the end is clamped, never refused.
 closing one; `Offered` carries `start` and `end` because the token ends where the
 JSON says, not at the next space. A fragment left behind would be the head of the
 value; a quote left behind would close the insertion in the middle.
+
+`end` stops at the token's own end and never runs past it -- the delimiter that
+ends it, or the text's end. Reaching further measured as a completion that ate the
+rest of the line: an end that ran to the object's close made accepting a member
+in the middle delete the comma and every sibling after it
+(`/set_session{"id":"a","model_config":{}}` completing `model_config` left
+`/set_session{"id":"a","mod`). An empty range (`start == end`) is how a place
+with nothing typed is stated -- the position after `{` or after `:` -- and it is a
+place to complete in, not a reason to offer nothing.
 
 **What it inserts.** A whole token, so what the popup leaves behind is JSON the
 server could read if the object were closed:
@@ -177,11 +185,21 @@ the cursor stands in, less the `}` already written after it
 (`json_value::Spot::open` and `after`). The caret goes before those closers
 (`Candidate::cursor`), so a chain of acceptances leaves balanced JSON: a lone `{`
 typed by hand is closed by the next acceptance, and no insertion ever leaves a
-bracket or a quote unmatched. A comma typed at the caret starts the next sibling.
+bracket or a quote unmatched.
 
-What a candidate does not do: write a comma, enter a list, or say anything after
-the object has closed. An object field's value place is entered by its name, so
-that is where its own candidates come from.
+**A member with a sibling after it writes the comma.** The separator belongs to the
+member, so a candidate for a member that is not its object's last appends `,` after
+what the value owes and past the caret, leaving the object open for the next one
+and leaving anything already typed after the caret alone. Whether a member is last
+is asked of the schema and the line together (`remaining`): the schema says what
+could follow, the line says which of those are already written. That is why
+`/set_session{` + Tab is `{"id":"",` (a second field, `mode`, can follow) while
+`/del_session{` + Tab is `{"path":""}` -- one argument, nothing to follow, and a
+comma before that close would be a trailing one.
+
+What a candidate does not do: enter a list, or say anything after the object has
+closed. An object field's value place is entered by its name, so that is where its
+own candidates come from.
 
 **Which model a value belongs to.** `accepts` is keyed by model, and a config
 states its own: a value inside `model_config` reads the `model` its enclosing

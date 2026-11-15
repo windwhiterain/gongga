@@ -32,11 +32,11 @@ pub struct Spot {
     ///
     /// # Invariant
     ///
-    /// `start` is the token's opening quote when it has one, and `end` is past
-    /// its closing quote. A candidate therefore replaces the whole token: a
-    /// fragment left behind would be the head of the value, and a quote left
-    /// behind would close the insertion in the middle.
+    /// `end` stops at the token's own end: an end that ran to the object's close
+    /// would make every acceptance delete what follows the caret.
     pub start: usize,
+    /// Where the token ends; `start` when nothing is typed there, so an
+    /// insertion goes in and takes nothing away.
     pub end: usize,
     /// The field names from the root to the object the cursor is in; with a
     /// value, the last one is the field being filled.
@@ -56,7 +56,13 @@ pub struct Spot {
     /// The fields of the enclosing object that are already written, for the
     /// values that depend on a sibling.
     pub fields: Vec<(String, Read)>,
-    /// How many objects enclose the token.
+    /// How many objects enclose the token, its own included.
+    ///
+    /// # Invariant
+    ///
+    /// Every object standing open at the token, and nothing else: what a
+    /// candidate owes is their closers, and a sibling member's braces are not
+    /// among them. See `docs/notes/client-complete.md`.
     pub open: usize,
     /// How many closers already stand after it, so what a candidate owes is
     /// `open - after`. See `Candidate::cursor`.
@@ -94,7 +100,6 @@ enum State {
     /// A value is read; `,` or `}` is next.
     Comma,
 }
-
 /// The cursor's place in `text`, or `None` when nothing here is completed.
 ///
 /// # Invariant
@@ -113,6 +118,7 @@ pub fn spot(text: &str, cursor: usize) -> Option<Spot> {
     let mut placed = None;
     while let Some((at, c)) = chars.next() {
         if at >= cursor {
+            // Only what stands before the cursor is read.
             placed = place(
                 text,
                 cursor,
@@ -291,8 +297,8 @@ fn place(
     quote_at: usize,
 ) -> Option<Spot> {
     let mut spot = place_token(text, cursor, opens, path, in_string, value_string, quote_at)?;
-    // A key's own object is open too; a value's path ends with its field.
-    spot.open = spot.path.len() + usize::from(spot.typing == Typing::Key);
+    // Every object standing open at the token, its own included.
+    spot.open = opens.len();
     spot.after = closers(text, spot.end).min(spot.open);
     Some(spot)
 }
@@ -337,9 +343,14 @@ fn place_token(
     let fields = open.fields.clone();
     if in_string {
         let closed = quoted_end(text, quote_at);
+        // A quoted value ends at the caret; a quoted name runs through its quote.
+        let end = match (value_string, closed) {
+            (true, _) | (false, None) => cursor,
+            (false, Some(end)) => end,
+        };
         return Some(Spot {
             start: quote_at,
-            end: closed.unwrap_or(text.len()),
+            end,
             path: if value_string {
                 with_field(path, open)
             } else {
@@ -360,9 +371,10 @@ fn place_token(
     match open.state {
         State::Key => {
             let start = open.key_token.unwrap_or(cursor);
+            let end = bare_end(text, cursor);
             Some(Spot {
                 start,
-                end: bare_end(text, cursor),
+                end,
                 path: path.to_vec(),
                 typing: Typing::Key,
                 fragment: between(text, start, cursor).to_string(),
@@ -395,10 +407,25 @@ fn place_token(
             })
         }
         State::Value => {
-            let start = open.value_token.unwrap_or(cursor);
+            // Nothing typed yet: the place is empty, and a candidate is inserted
+            // rather than replacing what follows the caret.
+            let Some(start) = open.value_token else {
+                return Some(Spot {
+                    start: cursor,
+                    end: cursor,
+                    path: with_field(path, open),
+                    typing: Typing::Value,
+                    fragment: String::new(),
+                    quoted: false,
+                    fields,
+                    open: 0,
+                    after: 0,
+                });
+            };
+            let end = bare_end(text, cursor);
             Some(Spot {
                 start,
-                end: bare_end(text, cursor),
+                end,
                 path: with_field(path, open),
                 typing: Typing::Value,
                 fragment: between(text, start, cursor).to_string(),
@@ -408,6 +435,8 @@ fn place_token(
                 after: 0,
             })
         }
+        // Between two members: nothing is being typed, so a candidate is inserted
+        // rather than replacing anything.
         State::Comma => None,
     }
 }
