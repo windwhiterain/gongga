@@ -9,6 +9,38 @@ keys, model catalogue, context windows. Reading it is what lets a session say
 `--model deepseek-official/deepseek-flash` and be understood, instead of every
 caller restating a base URL and the name of an environment variable.
 
+## three layers, one shape
+
+A roster that names a model once per way of reaching it repeats what the model is:
+`ernie-5.5-flash-preview` arrived twice (千帆's metered face and its Token Plan),
+`qwen3.8-max` twice, DeepSeek's models once per reseller. The repeated facts are the
+same facts; what differs is the price and the name on the wire, and both differ per
+route.
+
+So the file states three tables and this module reads them as one:
+
+- `[[model]]` -- what a model is, wherever it is sold: context, longest answer, the
+  levels it reasons at, modalities, parameter count.
+- `[[route]]` -- a way of reaching a provider: endpoints, the variable its key lives
+  in, cache lifetime, quota queries. It is what `[[provider]]` was.
+- `[[serving]]` -- one route selling one model: `route`, `model`, optionally
+  `wire_id` (the name that route's API takes, defaulting to the model's id) and any
+  field this route states differently, price mostly.
+
+`expand` turns the three into `[[provider]]` rows before anything else reads the file,
+so there is one parse path and no second way to assemble a catalog. It runs before
+`resolve_scripts`, so a route's `quota_query.script` is still resolved against the file
+that wrote it. A model row's `max_output` -- the roster's spelling -- becomes
+`max_output_tokens`, which is what this crate deserialises.
+
+A serving naming a route or a model no table declares is a refusal that names it: a
+typo must not become a provider selling nothing. A `[[route]]` that declares its own
+models is refused for the same reason -- that is the duplication this replaced. Two
+servings of one model on one route are refused too.
+
+`[[provider]]` still parses exactly as it did: the same row spelled inline, which is
+what a route that sells a single model keeps using.
+
 ## Price
 
 The roster records what each model charges -- `[provider.model.price]`, in whatever

@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::live::{Stamp, stamps};
 
+mod layers;
+
 /// Everything `providers.toml` says about one provider.
 #[derive(Debug, Clone)]
 pub struct Provider {
@@ -379,13 +381,16 @@ impl Catalog {
         };
         match std::fs::read_to_string(path) {
             Ok(text) => match toml::from_str::<toml::Value>(&text) {
-                Ok(mut value) => {
-                    resolve_scripts(&mut value, path.parent());
-                    match parse_value(value) {
-                        Ok(providers) => catalog.providers = providers,
-                        Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
+                Ok(mut value) => match layers::expand(&mut value) {
+                    Ok(()) => {
+                        resolve_scripts(&mut value, path.parent());
+                        match parse_value(value) {
+                            Ok(providers) => catalog.providers = providers,
+                            Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
+                        }
                     }
-                }
+                    Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
+                },
                 Err(e) => catalog.problem = Some(format!("{}: {e}", path.display())),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
