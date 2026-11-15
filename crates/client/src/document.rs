@@ -30,7 +30,11 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
             continue;
         }
         if code {
-            let body = if line.is_empty() { " ".to_string() } else { line.to_string() };
+            let body = if line.is_empty() {
+                " ".to_string()
+            } else {
+                line.to_string()
+            };
             out.extend(wrap(&[DocumentSpan::of(body, SpanClass::Code)], width));
             continue;
         }
@@ -60,17 +64,26 @@ fn block(head: &str) -> Vec<DocumentSpan> {
         return spans;
     }
     if let Some(rest) = text.strip_prefix("- ").or_else(|| text.strip_prefix("* ")) {
-        spans.push(DocumentSpan::of(format!("{}• ", " ".repeat(STEP)), SpanClass::Marker));
+        spans.push(DocumentSpan::of(
+            format!("{}• ", " ".repeat(STEP)),
+            SpanClass::Marker,
+        ));
         spans.extend(inline(rest));
         return spans;
     }
     if let Some(rest) = text.strip_prefix("> ") {
-        spans.push(DocumentSpan::of(format!("{}▏ ", " ".repeat(STEP)), SpanClass::Marker));
+        spans.push(DocumentSpan::of(
+            format!("{}▏ ", " ".repeat(STEP)),
+            SpanClass::Marker,
+        ));
         spans.extend(inline(rest));
         return spans;
     }
     if let Some((digits, rest)) = ordered(text) {
-        spans.push(DocumentSpan::of(format!("{}{digits}. ", " ".repeat(STEP)), SpanClass::Marker));
+        spans.push(DocumentSpan::of(
+            format!("{}{digits}. ", " ".repeat(STEP)),
+            SpanClass::Marker,
+        ));
         spans.extend(inline(rest));
         return spans;
     }

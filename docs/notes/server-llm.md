@@ -523,3 +523,23 @@ hands it to `build_head`, which writes `prompt_cache_options` only when the rost
 declared that spelling. A retry replays the same head bytes, so one stream cannot
 change tier halfway. The `usage` row records the tier actually sent, not the
 client's static setting. See `docs/notes/server-agent.md`.
+
+## A moderation verdict is retried, and a turn that keeps collecting them stops
+
+`DataInspectionFailed` / "Output data may contain inappropriate content" reads like a
+refusal and is not one. Measured on `qwen4-max-preview`: 5 refusals in 1,840 requests
+(0.27%), reproduced against the same key and the same stored input, and fired once with
+**zero** generated text -- with the verdict flipping on a field of the request rather
+than on a word of it. The prompt replays clean, the captured thinking is ordinary work,
+and a keyword scan of three sessions found nothing. So the inspection is misfiring, and
+the request is worth sending again.
+
+It is retried under `MODERATION_RETRIES` of its own, never under `max_retries`: this home
+sets that to 0, which this module reads as *no ceiling*, and a provider genuinely
+blocking content must not loop for ever. Exhausted, the verdict stands, the turn ends,
+and the failure is the monitor's -- which is the same path a refusal always took.
+
+`agent` adds the second half: each absorbed verdict is counted per turn, and the fourth
+stops the turn with a `ProviderFailure` naming the pattern. That is the case the retry
+must not hide: a provider that keeps refusing is not a bad minute, and only the monitor
+(and the person reading it) can decide about the tier.

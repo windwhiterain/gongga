@@ -301,6 +301,8 @@ impl LlmClient {
             let mut attempt: u32 = 0;
             // A dead file id is answered once by forgetting it, not through `retryable`.
             let mut recovered_file = false;
+            // Counted on its own: a moderation verdict is retried under a small budget.
+            let mut moderation_retries: u32 = 0;
             loop {
                 // Opened again for every attempt: a body is read once, and a retry
                 // has to send what the attempt before it sent.
@@ -405,6 +407,15 @@ impl LlmClient {
                          the request is sent again"
                     );
                     continue;
+                }
+                // A misfire worth sending again; its budget is its own. `docs/notes/server-llm.md`.
+                if let Some((message, again)) = failure.as_mut()
+                    && !*again
+                    && moderation_retries < MODERATION_RETRIES
+                    && moderation_refusal(message)
+                {
+                    moderation_retries += 1;
+                    *again = true;
                 }
                 // Empty completion or cut-short stream: both are retryable, so
                 // long as nothing said this attempt can never work.
@@ -893,6 +904,28 @@ fn event_produced(event: &LlmEvent) -> bool {
 pub fn thinking_refusal(message: &str) -> bool {
     message.contains("reasoning_text") && message.contains("thinking mode")
 }
+
+/// Whether the provider's own content inspection refused what it was generating.
+///
+/// # Invariant
+///
+/// Measured on `qwen4-max-preview`: 0.27% of 1,840 requests, reproducible with the same
+/// prompt, and fired once with zero generated text -- so it is the provider's misfire
+/// and not a statement about this request. See `docs/notes/server-llm.md`.
+pub fn moderation_refusal(message: &str) -> bool {
+    let said = message.to_ascii_lowercase();
+    said.contains("data_inspection")
+        || said.contains("datainspectionfailed")
+        || said.contains("inappropriate content")
+}
+
+/// How many times one request refused that way is sent again.
+///
+/// # Invariant
+///
+/// Its own budget, never `max_retries`: that one is 0 on this machine, which this module
+/// reads as no ceiling, and a provider genuinely blocking content must not loop.
+const MODERATION_RETRIES: u32 = 2;
 
 /// Whether another attempt is worth making.
 ///

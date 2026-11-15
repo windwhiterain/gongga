@@ -42,6 +42,9 @@ const ANSWER_LIMIT: usize = 32_000;
 #[derive(Debug)]
 pub struct ProviderFailure(pub String);
 
+/// How many of one turn's requests the provider's inspection may refuse before it stops.
+const MODERATION_PER_TURN: u32 = 3;
+
 impl std::fmt::Display for ProviderFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -243,6 +246,8 @@ impl Agent {
         // lands mid-turn is meant for the next one.
         let stated_tier = session.tuning().cache_tier;
 
+        // Inspection refusals this turn has absorbed; see `docs/notes/server-llm.md`.
+        let moderation = std::sync::atomic::AtomicU32::new(0);
         let outcome = loop {
             // A `cancel` ends the turn here, where it can be stored whole.
             if cancel.is_cancelled() {
@@ -287,6 +292,7 @@ impl Agent {
                 effort: effort.as_deref(),
                 cwd: &cwd,
                 tier: stated_tier.as_deref(),
+                moderation: &moderation,
             };
             match self.step(session, id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
@@ -976,6 +982,7 @@ impl Agent {
             effort,
             cwd,
             tier,
+            moderation,
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
@@ -1343,6 +1350,17 @@ impl Agent {
                     delay,
                     reason,
                 } => {
+                    // Absorb a misfire; the fourth in one turn is a provider that keeps refusing.
+                    if crate::llm::moderation_refusal(&reason) {
+                        let seen = moderation.fetch_add(1, Ordering::Relaxed) + 1;
+                        if seen > MODERATION_PER_TURN {
+                            return Err(anyhow::Error::new(ProviderFailure(format!(
+                                "the provider's content inspection refused {seen} of this turn's \
+                                 requests; the turn stopped so the monitor sees a provider that \
+                                 keeps refusing"
+                            ))));
+                        }
+                    }
                     self.bus.publish(Event::Log {
                         level: LogLevel::Warn,
                         message: retry_warning(attempt, max, delay, &reason),
@@ -1938,6 +1956,8 @@ enum StepResult {
 struct Attempt<'a> {
     number: u32,
     llm: &'a LlmClient,
+    /// The provider's inspection refusals this turn has already absorbed.
+    moderation: &'a std::sync::atomic::AtomicU32,
     /// The session's static tier, so every step sends the same one.
     tier: Option<&'a str>,
     /// How hard the model should think, when the session asked for a level.

@@ -120,7 +120,15 @@ impl PipeFrontend {
     /// SPEC draws one kind as a document -- `output` -- and the rest as text. Only
     /// that kind is accumulated, and a key reused by another kind drops what it held:
     /// a stale body would be drawn where the new one belongs.
-    fn answer(&mut self, window: &str, key: &str, kind: LineKind, tag: &str, delta: &str, done: bool) {
+    fn answer(
+        &mut self,
+        window: &str,
+        key: &str,
+        kind: LineKind,
+        tag: &str,
+        delta: &str,
+        done: bool,
+    ) {
         if kind != LineKind::Assistant {
             self.drop_answer(window, key);
             return;
