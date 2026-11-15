@@ -178,8 +178,13 @@ fn table(
     let mut out: Vec<Vec<DocumentSpan>> = Vec::new();
     out.extend(compose(header, &widths, aligns, SpanClass::Heading));
     out.push(vec![DocumentSpan::of(rule(&widths), SpanClass::Marker)]);
-    for row in body {
+    for (at, row) in body.iter().enumerate() {
         out.extend(compose(row, &widths, aligns, SpanClass::Text));
+        // A rule between the rows, so a cell that now takes two lines is still read
+        // as one row: without it two wrapped cells look like four rows.
+        if at + 1 != body.len() {
+            out.push(vec![DocumentSpan::of(rule(&widths), SpanClass::Marker)]);
+        }
     }
     out
 }
