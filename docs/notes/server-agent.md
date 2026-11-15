@@ -655,25 +655,17 @@ words and the copy as the record; nothing is uploaded when the row is written, b
 the provider's file is resolved when a request is built, so a replay months later still
 has something to name.
 
-**The tier's deadline.** `run_before_cache_expiry` gives every tool a child
-of the turn's cancel token and waits only until `window * (100 - margin_pct) / 100`
-since the last usage row. At that point it cancels the *child*, never the turn:
-`check_bash` and `wait` stop waiting and return with their background jobs still
-running, and the next request goes out before the prefix goes cold. This is SPEC's
-`check_bash` timeout, applied to every tool rather than only to a shell. `window`
-is the session's own tier's declared lifetime; a roster that states none leaves
-`fire_after` at zero and the tool runs as before.
-
-A deadline already spent is not one. `since` is read from the ledger, and at a
-step's *first* tool that row is still the previous one: the usage row for the
-request that just finished is appended when the stream completes, which is after
-the step's tools have run. A turn that starts after the window went cold therefore
-read `remaining == 0` for every call of its first step, and a call cancelled before
-it starts is a call that never runs -- the model saw `exit: null` with no output and
-sent the same `send_message` again. So a spent deadline now runs the call whole:
-there is nothing to protect, because the prefix is cold either way, and the next
-request is cold whether the tool ran or not. A cut that does happen says so; see
-`server-tools-mod.md`, "run_command (a command the harness cut)".
+**The tier's deadline belongs to the heartbeat.** `cache_fire_after_ms` answers
+`window * (100 - margin_pct) / 100` for the session's tier, and `commands::arm_keepalive`
+is its only reader: a session that named `keep_alive` gets a time notice, or a dream
+in its place, at that point, and the request it starts is what keeps the prefix warm.
+No tool is interrupted by it. Until 2026-11-15 one was: `run_before_cache_expiry` cut
+a tool's wait so the next request would go out before the prefix went cold, and it
+read a window already spent as "now", so a turn starting after one had every tool of
+its first step cancelled before it ran -- a `gongga_cli` `send_message` answered
+`exit: null` with no output and sent nothing. It is gone on the maintainer's ruling
+that `cache_keepalive` already keeps the prefix warm: a tool's wait is the tool's, and
+nothing in the turn shortens it.
 
 **One tier per session.** `run_turn` reads `Tuning::cache_tier` once before its
 first step, and every step of the turn sends that spelling. A session that named

@@ -770,53 +770,6 @@ impl Agent {
         window.unwrap_or(0).saturating_mul(pct) / 100
     }
 
-    /// Runs one tool only until the short tier's window is nearly spent.
-    ///
-    /// # Invariant
-    ///
-    /// The interrupt cancels a child token, never the turn: a tool that was waiting
-    /// returns with what it started still running, and the next request goes out
-    /// while the prefix is still warm. It fires only while a tool runs: a deadline
-    /// already spent runs the call whole, since nothing is left to protect.
-    async fn run_before_cache_expiry(
-        &self,
-        name: &str,
-        args: serde_json::Value,
-        ctx: &crate::tools::ToolContext,
-        cancel: &tokio_util::sync::CancellationToken,
-        model: &str,
-        tier: Option<&str>,
-        session_id: i64,
-    ) -> crate::tools::ToolOutcome {
-        let fire_after = self.cache_fire_after_ms(model, tier);
-        if fire_after == 0 {
-            return self.tools().run(name, args, ctx).await;
-        }
-        let since = self
-            .store
-            .last_usage_at(session_id)
-            .ok()
-            .flatten()
-            .map(|at| crate::store::now_millis().saturating_sub(at).max(0) as u64)
-            .unwrap_or(0);
-        let remaining = fire_after.saturating_sub(since);
-        // Held for the whole run: the table a call started in is the one it finishes in.
-        let table = self.tools();
-        let run = table.run(name, args, ctx);
-        tokio::pin!(run);
-        // A spent deadline protects nothing: the prefix is cold either way.
-        if remaining == 0 {
-            return run.await;
-        }
-        tokio::select! {
-            outcome = &mut run => outcome,
-            _ = tokio::time::sleep(std::time::Duration::from_millis(remaining)) => {
-                cancel.cancel();
-                run.await
-            }
-        }
-    }
-
     /// What a plan for `model` is priced at.
     ///
     /// # Invariant
@@ -1519,7 +1472,6 @@ impl Agent {
             self.answer_interrupted(id, name, &call_id, &tool, turn, step);
             return true;
         }
-        let model = llm.model().to_string();
         let arguments: serde_json::Value =
             serde_json::from_str(&arguments_given).unwrap_or_else(|_| json!({}));
 
@@ -1540,8 +1492,6 @@ impl Agent {
         });
 
         let machine = session.owner();
-        // SPEC: a timed-out tool leaves its job running; only the wait is dropped.
-        let tool_cancel = cancel.child_token();
         let ctx = ToolContext {
             session: name.to_string(),
             call_id: call_id.clone(),
@@ -1554,7 +1504,7 @@ impl Agent {
             machine,
             remote: session.remote_name(),
             events: Some(tx),
-            cancel: tool_cancel.clone(),
+            cancel: cancel.clone(),
             store: self.store.clone(),
             cwd: session.cwd(),
             env: session.env(),
@@ -1569,18 +1519,9 @@ impl Agent {
         let run_started = std::time::Instant::now();
         tracing::info!(session = %name, tool = %tool, "tool start");
         let printed_on = self.tools().machine_of(&tool, &arguments, &ctx);
-        let stated_tier = session.tuning().cache_tier;
-        let outcome = self
-            .run_before_cache_expiry(
-                &tool,
-                arguments,
-                &ctx,
-                &tool_cancel,
-                &model,
-                stated_tier.as_deref(),
-                id,
-            )
-            .await;
+        // Held for the whole run: the table a call started in is the one it finishes in.
+        let table = self.tools();
+        let outcome = table.run(&tool, arguments, &ctx).await;
         let run_ms = run_started.elapsed().as_millis() as u64;
         let attach_started = std::time::Instant::now();
         let scanned = self

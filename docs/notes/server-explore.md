@@ -91,9 +91,9 @@ before the look, having spawned nothing to look after.
 
 The look runs on a task of its own. The alternative is for the step to wait for a
 process, and a step already waits for the tool: the harness runs a tool call inside the
-stream's event loop, and `run_before_cache_expiry` exists because that wait can let the
-prefix cache expire. A 100 ms process added to every call would be paid from the budget
-that function protects, for a reminder the model reads a moment later either way.
+stream's event loop, so no request goes out until that tool answers. A 100 ms process
+added to every call would be one more thing the turn waits for, for a reminder the
+model reads a moment later either way.
 
 `remote.is_some()` is skipped and this is a real hole: a peer's workspace is not on this
 filesystem, so a remote call's writes are neither refused nor reported. `docs/notes/`

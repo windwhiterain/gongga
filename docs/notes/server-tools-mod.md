@@ -164,9 +164,9 @@ command ran: an empty `Result` (`"exit": null`, no output) reads to a model as "
 said nothing", and that is how one `send_message` was sent twice. The answer is
 therefore an error naming the cut and telling the reader to look at what the call
 would have changed before repeating it -- the same rule as `BashTool::run (a cancelled
-result)`: never let silence pass for success. The two ways a cut arrives are the turn's
-own cancel and the cache tier's deadline (`server-agent.md`, "The tier's deadline"),
-which no longer fires on a tool that has not started.
+result)`: never let silence pass for success. The only cut that arrives now is the
+turn's own cancel: the prefix cache stops interrupting a tool at all
+(`server-agent.md`, "The tier's deadline belongs to the heartbeat").
 
 ## Tool, Cmd::forwards_to
 

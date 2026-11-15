@@ -340,8 +340,8 @@ entry when the home says nothing; the anthropic face requires it, and a request 
 face with neither is refused rather than given a guessed length.
 
 `[model] cache_margin_pct` (or `GONGGA_CACHE_MARGIN_PCT`, 5 by default, capped
-at 50) sets where in the tier's window the tool interrupt and the next heartbeat
-fire: `window * (100 - pct) / 100`.
+at 50) sets where in the tier's window the next heartbeat fires:
+`window * (100 - pct) / 100`.
 
 Whether a session has a heartbeat at all is the session's own state, not a
 machine setting: `set_session <name> --cache_keepalive true` turns on a periodic
@@ -349,7 +349,7 @@ machine setting: `set_session <name> --cache_keepalive true` turns on a periodic
 likewise the session's: `set_session <name> --cache_tier <name>` fixes the tier
 every request sends, and omitting it takes the shortest tier the model declares.
 Both live in the `sessions` row, so a restart restores them. With no declared
-tiers the window is zero and the interrupt is inert. See
+tiers the window is zero and the heartbeat is inert. See
 `docs/notes/server-commands.md`.
 
 ## What is followed, and what placed the process

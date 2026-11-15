@@ -310,7 +310,7 @@ Those rows also carry `uncached`, `gap_ms`, `cache_tier` and `cache_write`.
 tier's real hit ratio against the lifetime its roster stated. The server itself
 does not price gaps or choose a tier from them: the tier is the session's own
 static setting, and the only timer it drives is `window * (100 - margin_pct) /
-100` for the interrupt and the heartbeat. See `docs/notes/server-commands.md`.
+100` for the heartbeat. See `docs/notes/server-commands.md`.
 
 ## the size is real tokens, not bytes
 

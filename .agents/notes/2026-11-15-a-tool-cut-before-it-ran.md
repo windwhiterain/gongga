@@ -30,28 +30,39 @@ two.
 `exec` is cut the same way when the condition holds (empty window, `exit: null`,
 70--130 ms), so its program starts and the call reports nothing.
 
-## What changed
+## What changed first, and then what the maintainer ruled
 
-- A deadline already spent runs the call whole: the prefix is cold either way, so
-  cancelling protects nothing and only stops work that never began.
-- A `run_command` cut answers `ToolOutcome::err`, naming the cut and telling the reader
-  to look at what the call would have changed before repeating a write.
+The first fix kept the cut and made it honest: a deadline already spent ran the call
+whole, and a cut `run_command` answered an error instead of an empty `Result`.
+
+Then the ruling: **delete the feature -- `keep_alive` already covers it.** `keep_alive`
+is what keeps the prefix warm: one heartbeat per turn at
+`window * (100 - margin_pct) / 100`, and the request it starts is the refresh. The tool
+cut was a second answer to the same problem and the one that could only lose: a tool cut
+mid-wait still has its job running, while a tool cut before it starts has done nothing
+and says so only if someone invents that sentence.
+
+So `run_before_cache_expiry` is gone, and the per-call child token with it: `ctx.cancel`
+is the turn's own token now, so the only cut a tool can see is the turn ending. What
+stays from the first fix is `run_command`'s answer, which is exactly that case.
+`cache_fire_after_ms` and `[model] cache_margin_pct` stay, with one reader left:
+`commands::arm_keepalive`.
 
 ## Verified
 
 - `cargo build` exit 0, 39 warnings and none new (the one near this code is
   `session.rs:1418`, which predates the change); `cargo fmt --check` exit 0.
 - `cargo test -p gongga-server --lib`: 28 passed, 0 failed.
-- `comments-check`: agent.rs 4 -> 4 and tools/mod.rs 5 -> 5 violations, so the two
-  blocks this change adds stay inside the 120-character preamble budget;
-  `test-layout-check`: 0 violations; `scripts/skill_contract.sh`: PASS;
-  `scripts/ship.sh --check`: protocol 13 == 13 and published. That last one ran in the
-  main checkout: a fresh worktree has no `ship` checkout, and `--check` there exits 1
-  on the missing checkout rather than on a drift.
+- `comments-check`: agent.rs 4 -> 4 and tools/mod.rs 5 -> 5 violations, so no comment
+  this change adds goes over the 120-character preamble budget; `test-layout-check`: 0
+  violations; `scripts/skill_contract.sh`: PASS; `scripts/ship.sh --check`: protocol
+  13 == 13 and published. That last one ran in the main checkout: a fresh worktree has
+  no `ship` checkout, and `--check` there exits 1 on the missing checkout, not on a
+  drift.
 
 ## Open
 
-- Whether the deadline should be measured from the request that just finished instead
-  of from the ledger row. The row arrives late, which is what made a spent deadline the
-  common case at a turn's first step; with the cut no longer firing before a call
-  starts, the mismatch now only means "no cut at step 0", which is the safe side.
+- A turn blocked inside one long tool wait no longer gets a heartbeat: `arm_keepalive`
+  skips a busy session, so the prefix can go cold there and the next request is a cold
+  one. That is the price of deleting the cut, and it is the right way round -- the wait
+  belongs to the tool.
