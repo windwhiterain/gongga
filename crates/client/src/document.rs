@@ -27,6 +27,7 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
     let mut at = 0;
     while at < lines.len() {
         let line = lines[at].trim_end();
+        let depth = (line.len() - line.trim_start().len()) / STEP;
         let head = line.trim_start();
         at += 1;
         // The fence is part of what was written, language included: a code block
@@ -52,6 +53,11 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
             }
             continue;
         }
+        // A horizontal rule is a line, not three hyphens: the row is the line.
+        if is_rule(head) {
+            out.push(vec![DocumentSpan::of("─".repeat(width), SpanClass::Marker)]);
+            continue;
+        }
         if head.is_empty() {
             // A blank source row is a blank row: a paragraph break has to stay one.
             out.push(Vec::new());
@@ -64,7 +70,7 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
             let aligns = lines.get(at).and_then(|next| alignment_row(next.trim()));
             if let Some(aligns) = aligns {
                 if aligns.len() != cells(head).len() {
-                    out.extend(wrap(&block(head), width));
+                    out.extend(wrap(&block(head, depth), width));
                     continue;
                 }
                 let mut body: Vec<Vec<String>> = Vec::new();
@@ -80,7 +86,7 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
                 continue;
             }
         }
-        out.extend(wrap(&block(head), width));
+        out.extend(wrap(&block(head, depth), width));
     }
     out
 }
@@ -131,6 +137,13 @@ enum Align {
 const MIN_COLUMN: usize = 3;
 
 /// `header`, its alignment row and `body` as rows that fit `width` columns.
+///
+/// # Invariant
+///
+/// A cell that does not fit its column is wrapped onto the row below, never cut:
+/// text a reader cannot see is worse than a tall row. The rule row carries no
+/// colons -- a colon is a column of its own, and one would shift every cell under
+/// it by a character.
 fn table(
     header: &[String],
     aligns: &[Align],
@@ -163,56 +176,57 @@ fn table(
         widths[widest] -= 1;
     }
     let mut out: Vec<Vec<DocumentSpan>> = Vec::new();
-    out.push(compose(header, &widths, aligns, SpanClass::Heading));
-    out.push(vec![DocumentSpan::of(
-        rule(&widths, aligns),
-        SpanClass::Marker,
-    )]);
+    out.extend(compose(header, &widths, aligns, SpanClass::Heading));
+    out.push(vec![DocumentSpan::of(rule(&widths), SpanClass::Marker)]);
     for row in body {
-        out.push(compose(row, &widths, aligns, SpanClass::Text));
+        out.extend(compose(row, &widths, aligns, SpanClass::Text));
     }
     out
 }
 
-/// One table row: the pipe, then each cell padded to its column.
+/// One table row as the physical rows it takes: a cell taller than one is wrapped.
 fn compose(
     row: &[String],
     widths: &[usize],
     aligns: &[Align],
     class: SpanClass,
-) -> Vec<DocumentSpan> {
-    let mut spans: Vec<DocumentSpan> = vec![DocumentSpan::of("|", SpanClass::Marker)];
-    for (column, width) in widths.iter().enumerate() {
-        let text = row.get(column).map(String::as_str).unwrap_or("");
-        let body = clip(text, *width);
-        let spare = width.saturating_sub(text_width(&body));
-        let (before, after) = match aligns.get(column).copied().unwrap_or(Align::None) {
-            Align::Right => (spare, 0),
-            Align::Center => (spare / 2, spare - spare / 2),
-            Align::None | Align::Left => (0, spare),
-        };
-        spans.push(DocumentSpan::of(" ".repeat(before + 1), class));
-        spans.push(DocumentSpan::of(body, class));
-        spans.push(DocumentSpan::of(
-            format!("{}{}", " ".repeat(after), " |"),
-            SpanClass::Marker,
-        ));
+) -> Vec<Vec<DocumentSpan>> {
+    let cells: Vec<Vec<String>> = widths
+        .iter()
+        .enumerate()
+        .map(|(column, width)| hard_wrap(row.get(column).map(String::as_str).unwrap_or(""), *width))
+        .collect();
+    let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    let mut rows: Vec<Vec<DocumentSpan>> = Vec::new();
+    for line in 0..height {
+        let mut spans: Vec<DocumentSpan> = vec![DocumentSpan::of("|", SpanClass::Marker)];
+        for (column, width) in widths.iter().enumerate() {
+            let text = cells[column].get(line).map(String::as_str).unwrap_or("");
+            let spare = width.saturating_sub(text_width(text));
+            let (before, after) = match aligns.get(column).copied().unwrap_or(Align::None) {
+                Align::Right => (spare, 0),
+                Align::Center => (spare / 2, spare - spare / 2),
+                Align::None | Align::Left => (0, spare),
+            };
+            spans.push(DocumentSpan::of(" ".repeat(before + 1), class));
+            if !text.is_empty() {
+                spans.push(DocumentSpan::of(text.to_string(), class));
+            }
+            spans.push(DocumentSpan::of(
+                format!("{}{}", " ".repeat(after), " |"),
+                SpanClass::Marker,
+            ));
+        }
+        rows.push(spans);
     }
-    spans
+    rows
 }
 
-/// The row that says how each column leans.
-fn rule(widths: &[usize], aligns: &[Align]) -> String {
+/// The row under the header: one dash run per column, nothing else.
+fn rule(widths: &[usize]) -> String {
     let mut text = String::from("|");
-    for (column, width) in widths.iter().enumerate() {
-        let dashes = "-".repeat(*width + 2);
-        let body = match aligns.get(column).copied().unwrap_or(Align::None) {
-            Align::None => dashes,
-            Align::Left => format!(":{}", dashes),
-            Align::Right => format!("{}:", dashes),
-            Align::Center => format!(":{}:", dashes),
-        };
-        text.push_str(&body);
+    for width in widths {
+        text.push_str(&"-".repeat(width + 2));
         text.push('|');
     }
     text
@@ -238,6 +252,19 @@ fn text_width(text: &str) -> usize {
     text.chars().map(|c| c.width().unwrap_or(1)).sum()
 }
 
+/// Whether a line is a horizontal rule: three or more of one mark and nothing else.
+fn is_rule(line: &str) -> bool {
+    let mut marks = line.chars();
+    let Some(first) = marks.next() else {
+        return false;
+    };
+    if !matches!(first, '-' | '*' | '_') {
+        return false;
+    }
+    let count = 1 + marks.clone().count();
+    count >= 3 && marks.all(|c| c == first || c == ' ')
+}
+
 /// What every row of a code block opens with: the rule that makes it one block.
 const CODE_MARGIN: &str = "  │ ";
 
@@ -261,7 +288,10 @@ fn hard_wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 /// One row of prose: its block structure as a marker run, then its words.
-fn block(head: &str) -> Vec<DocumentSpan> {
+fn block(head: &str, depth: usize) -> Vec<DocumentSpan> {
+    // A no-break space, because the wrapper collapses runs of spaces and an
+    // indent that collapses is a list that lost its shape.
+    let step = " ".repeat(STEP * depth);
     let mut spans: Vec<DocumentSpan> = Vec::new();
     let mut text = head;
     let mut level = 0;
@@ -276,10 +306,7 @@ fn block(head: &str) -> Vec<DocumentSpan> {
         return spans;
     }
     if let Some(rest) = text.strip_prefix("- ").or_else(|| text.strip_prefix("* ")) {
-        spans.push(DocumentSpan::of(
-            format!("{}• ", " ".repeat(STEP)),
-            SpanClass::Marker,
-        ));
+        spans.push(DocumentSpan::of(format!("{}• ", step), SpanClass::Marker));
         spans.extend(inline(rest));
         return spans;
     }
@@ -287,16 +314,13 @@ fn block(head: &str) -> Vec<DocumentSpan> {
         // A light vertical rule, not a left-eighth block: the block is missing from
         // the faces a body is drawn in, and a fallback glyph is an advance wider than
         // the column it claims -- one column of prose lost per quoted row.
-        spans.push(DocumentSpan::of(
-            format!("{}│ ", " ".repeat(STEP)),
-            SpanClass::Marker,
-        ));
+        spans.push(DocumentSpan::of(format!("{}│ ", step), SpanClass::Marker));
         spans.extend(inline(rest));
         return spans;
     }
     if let Some((digits, rest)) = ordered(text) {
         spans.push(DocumentSpan::of(
-            format!("{}{digits}. ", " ".repeat(STEP)),
+            format!("{}{digits}. ", step),
             SpanClass::Marker,
         ));
         spans.extend(inline(rest));
@@ -418,7 +442,9 @@ fn wrap(spans: &[DocumentSpan], width: usize) -> Vec<Vec<DocumentSpan>> {
             if used != 0 && used + space + wide > width {
                 flush_row(&mut row, &mut rows);
                 used = 0;
-            } else if pending_space && used != 0 {
+            // A leading space on a block's first row is its indent, and an indent
+            // is structure: dropped, a nested list is a flat one.
+            } else if pending_space && (used != 0 || rows.is_empty()) {
                 push(&mut row, " ", span.class);
                 used += 1;
             }
