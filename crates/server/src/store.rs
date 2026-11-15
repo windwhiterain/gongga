@@ -3685,6 +3685,8 @@ pub struct MessageRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub text: String,
+    /// The request this row answered, within its turn: 0 for a row no step wrote.
+    pub step: Option<u64>,
     /// A `tool_result`'s verdict, as the turn it belongs to recorded it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
@@ -3765,6 +3767,7 @@ impl MessageRow {
             call_id: None,
             name: None,
             text: String::new(),
+            step: value.get("step").and_then(|v| v.as_u64()),
             ok: None,
             elapsed_ms: None,
         };

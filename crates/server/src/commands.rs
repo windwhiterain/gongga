@@ -2622,6 +2622,9 @@ fn replay_transcript(
             Event::Response(ResponseEvent {
                 session: name.to_string(),
                 turn: part.turn,
+                // An open item carries no step of its own: a window that
+                // reconnected gets it as the step-0 item it began as.
+                step: 0,
                 part: part.part,
                 text: part.text.clone(),
                 done: false,
@@ -3200,6 +3203,7 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
         return Some(Event::Response(ResponseEvent {
             session: name.to_string(),
             turn: REPLAY_TURN,
+            step: row.step.unwrap_or(0),
             part: ResponsePart::Inject,
             text: row.text.clone(),
             done: true,
@@ -3211,6 +3215,7 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
         return Some(Event::Response(ResponseEvent {
             session: name.to_string(),
             turn: REPLAY_TURN,
+            step: row.step.unwrap_or(0),
             part: ResponsePart::Input,
             text: row.text.clone(),
             done: true,
@@ -3256,6 +3261,7 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
     Some(Event::Response(ResponseEvent {
         session: name.to_string(),
         turn: REPLAY_TURN,
+        step: row.step.unwrap_or(0),
         part,
         text: row.text.clone(),
         done: true,

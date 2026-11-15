@@ -1056,6 +1056,7 @@ impl Agent {
                             Some(Event::Response(ResponseEvent {
                                 session: name.to_string(),
                                 turn,
+                                step: u64::from(step),
                                 part,
                                 text: text.clone(),
                                 done: false,
@@ -1070,6 +1071,7 @@ impl Agent {
                     self.bus.publish(Event::Response(ResponseEvent {
                         session: name.to_string(),
                         turn,
+                        step: u64::from(step),
                         part,
                         text: String::new(),
                         done: true,
@@ -1118,6 +1120,7 @@ impl Agent {
                     self.bus.publish(Event::Response(ResponseEvent {
                         session: name.to_string(),
                         turn,
+                        step: u64::from(step),
                         part: ResponsePart::Activity,
                         text: text.clone(),
                         done: true,
@@ -1349,6 +1352,7 @@ impl Agent {
                 self.bus.publish(Event::Response(ResponseEvent {
                     session: name.to_string(),
                     turn,
+                    step: u64::from(step),
                     part,
                     text: String::new(),
                     done: true,
@@ -1733,6 +1737,7 @@ impl Agent {
             self.bus.publish(Event::Response(ResponseEvent {
                 session: session.to_string(),
                 turn: protocol::REPLAY_TURN,
+                step: 0,
                 part,
                 text: line.text.clone(),
                 done: true,
@@ -1805,6 +1810,7 @@ impl Agent {
             self.bus.publish(Event::Response(ResponseEvent {
                 session: name.to_string(),
                 turn,
+                step: 0,
                 part,
                 text: String::new(),
                 done: true,

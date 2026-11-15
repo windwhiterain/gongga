@@ -1753,7 +1753,7 @@ impl Client {
         // structured event fills the block it opened.
         let key = match (&e.call_id, e.part) {
             (Some(call_id), ResponsePart::ToolCall) => format!("c:{call_id}"),
-            _ => format!("r:{}:{}:{:?}", e.session, e.turn, e.part),
+            _ => format!("r:{}:{}:{}:{:?}", e.session, e.turn, e.step, e.part),
         };
         // The operator's own words, replayed: a line, exactly as the echo that
         // wrote them live put it there.

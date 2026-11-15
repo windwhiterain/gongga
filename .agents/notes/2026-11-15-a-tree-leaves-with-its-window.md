@@ -33,13 +33,24 @@ Measured after: hide then show a session whose turn had run gives the transcript
 rows in order -- `blocks = 6`, `total = 17` for rows 1, 4, 5, 6, 7, 8, 9 -- where it
 previously gave five rows and no answer.
 
-## Open
+## The other half: a turn's second output (same day)
 
-- A turn's second output still folds into the first output's block: the stream key is
-  `r:<session>:<turn>:<part>`, with no step or item. Replayed rows are per row, so a
-  rebuilt window shows them as separate blocks, but a live turn merges them, which is
-  the other half of "the output is not at the newest row". The narrow fix is to key by
-  item; the wider one is to give every block the row's `seq` and place blocks by it.
+The stream key was `r:<session>:<turn>:<part>`, with no step, so the text a model writes
+before a tool call and the text it writes after it were one block: the newest output was
+drawn inside the older block, which is the other half of "not at the newest row".
+`ResponseEvent` now carries `step` -- the request of the turn the part arrived in, which
+the transcript already stores (`messages.step`) -- and the key is
+`r:<session>:<turn>:<step>:<part>`. Both the live publish and `row_event` fill it, so a
+turn with two steps is two blocks and a rebuilt window agrees with the live one.
+
+Measured: the same turn now draws `answer(step 0)`, `reasoning(step 1)`, `answer(step 1)`
+in that order, where it drew one merged answer before; and hiding then showing the
+session repaints nothing at all -- the rebuilt window is byte-identical to the live one.
+
+A row this build cannot place keeps `step: 0`: an item still open when a window
+reconnected, an interrupted item's stored row, and the operator's own lines.
+
+## Open
 - The TUI still builds trees for windows it is not drawing until they leave the frame;
   dropping those writes outright is the remaining half of "a front-end holds only what
   it draws".

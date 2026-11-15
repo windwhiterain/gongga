@@ -645,6 +645,16 @@ pub struct ResponseEvent {
     /// Turns are numbered from 1 so the CLI can drop stale chunks after a
     /// cancel; a read uses `REPLAY_TURN`.
     pub turn: u64,
+    /// Which request of that turn the part arrived in, from 0.
+    ///
+    /// # Invariant
+    ///
+    /// A turn makes one request per step, and a step answers with its own items, so
+    /// this is what tells a turn's second answer from its first: the block a part
+    /// belongs to is keyed by it, and two steps of one turn are two blocks.
+    /// A read that cannot say leaves 0.
+    #[serde(default)]
+    pub step: u64,
     pub part: ResponsePart,
     pub text: String,
     /// True on the final chunk for this part of this turn.
