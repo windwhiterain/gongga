@@ -478,22 +478,18 @@ a request that reports no `input_tokens` keeps the last one it reported: the
 number is never recomputed from text, and "unknown" is not an argument for
 throwing away a measurement that still describes the session's context.
 
-## with_time
+## a_tool_result_is_what_the_tool_said
 
-A tool's result ends with `[elapsed 820ms]`, or `[elapsed 1.2s]` past a second:
-the time the call itself took, appended to the output the tool returned. The model
-is given no head and no label -- those are how a front-end draws SPEC's
-`tool_result{ok, time (spent)}` -- so the only place a model can learn that a call
-was slow is the text of the result it reads.
+A tool's result is exactly the string the tool returned. It used to end with
+`[elapsed 820ms]`, appended there because the model is shown no head and no label --
+those are how a front-end draws SPEC's `tool_result{ok, time (spent)}`.
 
-One string for both readers: `output` is what `append_message` stores and what the
-next request sends, so a replayed transcript says exactly what the run said.
-
-Measured around `tools.run` alone, so the picture uploads that follow are not
-counted as the call's time; `tool_timing` still reports that split, `run_ms`
-against `attach_ms`.
-
-`spent` is the spelling, shared with `result_head`: one duration, written one way.
+The verdict and the duration have carriers of their own now: the head the front-end
+draws, and the row's `elapsed_ms`, which `tool_timing` reports against `attach_ms`. A
+line in the text was a second copy of a number the answer already carries, and it made
+every answer unparseable -- a caller that read a tool's JSON result found `[elapsed
+4ms]` after it and could not parse it at all. `spent` stays: `result_head` still spells
+the duration, one way, for the label.
 
 ## Attempt
 
