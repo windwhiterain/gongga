@@ -43,8 +43,14 @@ impl Transcript {
                 |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()?;
-        let projection =
-            latest.and_then(|(origin, round_start)| origin.map(|origin| (origin, round_start)));
+        let projection = match latest
+            .and_then(|(origin, round_start)| origin.map(|origin| (origin, round_start)))
+        {
+            Some((origin, round_start)) => {
+                Some((whole_step_end(&conn, session_id, origin)?, round_start))
+            }
+            None => None,
+        };
         Ok(Self {
             conn,
             session_id,
@@ -53,6 +59,26 @@ impl Transcript {
             projection,
         })
     }
+}
+
+/// Where a permanent prefix may end: `origin` moved back off a call whose output it
+/// would not hold.
+///
+/// # Invariant
+///
+/// A `tool_call` never ends a prefix: its output is the row after it, so a cut there
+/// withholds half a pair and the provider refuses that request. The call that opens a
+/// checkpoint is the agent's own, so a checkpoint written before this rule names it,
+/// and moving the cut back is what lets it be read. See
+/// `docs/notes/server-live-compact.md`.
+fn whole_step_end(conn: &Connection, session_id: i64, origin: i64) -> anyhow::Result<i64> {
+    let end = conn.query_row(
+        "SELECT COALESCE(MAX(seq), 0) FROM messages
+          WHERE session_id = ?1 AND seq <= ?2 AND kind <> 'tool_call'",
+        params![session_id, origin],
+        |row| row.get(0),
+    )?;
+    Ok(end)
 }
 
 impl Iterator for Transcript {

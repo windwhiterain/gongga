@@ -54,3 +54,29 @@ invalidated the whole conversation at every checkpoint. It cannot follow the swi
 either: the head is written once, so a schema that depended on it would be missing
 from every session that switched the feature on afterwards, which is exactly the
 session that asked for it.
+
+## A cut never splits a call from its output
+
+The origin opens at plan finish, which is the agent's own act inside its turn: the
+newest row at that moment is the `tool_call` of the very command switching the mode,
+and its output is appended after the origin. Taking `MAX(seq)` therefore recorded a
+permanent prefix ending on a call the walk could not complete, because compaction
+drops everything between that origin and the latest round.
+
+The request carrying it was refused whole:
+
+```
+400 invalid_value  No tool output found for function call:  call_95e31c78e755489594fe7c54
+```
+
+Same key, same model, same endpoint: the identical call *with* its output answers
+200. So the provider was never at fault, and no other model could carry that
+transcript -- every conformant endpoint refuses a request holding half a pair, the
+Anthropic adapter included, since it turns the same rows into `tool_use` and
+`tool_result`.
+
+Two rules hold it now. `start_live_compact` takes the newest row that is not a
+`tool_call`, so a new checkpoint stops at the end of a step. And `Transcript::open`
+moves a projection's prefix end back the same way, which is what lets a checkpoint
+written under the old rule still be read: the row the checkpoint names is checked
+against the cut, not the other way round.

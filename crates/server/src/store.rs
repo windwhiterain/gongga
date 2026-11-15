@@ -2145,9 +2145,10 @@ impl Store {
             params![session_id],
             |row| row.get(0),
         )?;
-        // SPEC: origin is the transcript's end at plan finish; explore is the permanent prefix.
+        // SPEC: the origin ends a step, never a call. `docs/notes/server-live-compact.md`.
         let origin: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+            "SELECT COALESCE(MAX(seq), 0) FROM messages
+              WHERE session_id = ?1 AND kind <> 'tool_call'",
             params![session_id],
             |row| row.get(0),
         )?;
