@@ -1521,10 +1521,21 @@ impl Store {
                 params![checkpoint],
             )?;
         }
-        let count = tx.execute(
-            "DELETE FROM messages WHERE session_id = ?1 AND seq > ?2",
-            params![session_id, seq],
-        )?;
+        // One row at a time from the tail: the append-only trigger aborts a bulk delete.
+        let mut count = 0usize;
+        loop {
+            let removed = tx.execute(
+                "DELETE FROM messages
+                  WHERE session_id = ?1
+                    AND seq = (SELECT MAX(seq) FROM messages WHERE session_id = ?1)
+                    AND seq > ?2",
+                params![session_id, seq],
+            )?;
+            if removed == 0 {
+                break;
+            }
+            count += removed;
+        }
         if !discarded.is_empty() {
             let context_tokens = tx.query_row(
                 "SELECT context_tokens FROM sessions WHERE id = ?1",
