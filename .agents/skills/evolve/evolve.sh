@@ -561,7 +561,14 @@ cmd_stage() {
   # Content is refreshed before any claim: a successor installs what the local
   # official ref names, so a stale ref can make an otherwise valid bundle unstartable.
   echo "== ship =="
-  ( cd "$ROOT" && git -C ship fetch origin main && git -C ship rebase origin/main \
+  ( cd "$ROOT" && git -C ship fetch origin main \
+      && if git -C ship merge-base --is-ancestor origin/main HEAD; then
+           # Nothing to bring in. A rebase here refuses a working tree another agent is
+           # using, and it would refuse for no gain: `ship.sh --check` is the real gate.
+           echo "evolve: the content checkout already carries origin/main"
+         else
+           git -C ship rebase origin/main
+         fi \
       && scripts/ship.sh --check ) \
     || die "the ship checkout is not current and published; refusing to stage a handover"
   # The successor reads the home's fork, not the source checkout checked above.
@@ -571,8 +578,13 @@ cmd_stage() {
       || die "cannot refresh $home_ship; refusing to stage a handover"
     local home_tip=main
     if git -C "$home_ship" show-ref --verify --quiet refs/heads/local; then
-      git -C "$home_ship" rebase origin/main local \
-        || die "cannot rebase $home_ship/local; refusing to stage a handover"
+      # The same guard as above: rebase only what is behind, never for its own sake.
+      if git -C "$home_ship" merge-base --is-ancestor origin/main local; then
+        echo "evolve: $home_ship/local already carries origin/main"
+      else
+        git -C "$home_ship" rebase origin/main local \
+          || die "cannot rebase $home_ship/local; refusing to stage a handover"
+      fi
       home_tip=local
     elif [ "$(git -C "$home_ship" symbolic-ref --short -q HEAD || true)" = main ]; then
       git -C "$home_ship" merge --ff-only origin/main \
