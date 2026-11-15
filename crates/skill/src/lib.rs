@@ -109,20 +109,41 @@ impl Roots {
         self.named(name).into_iter().next()
     }
 
-    /// The skill one `id` names, read from the one root it belongs to.
+    /// The skill one `id` names.
     ///
     /// # Invariant
     ///
-    /// The inverse of [`Skill::id`] and nothing else: the bucket in the id decides the
-    /// root, so an id is answered by one `stat`, never by a walk of every root. A
-    /// directory with no `SKILL.md` there is no skill, as everywhere else.
+    /// A path: one word is a name, tried against [`Bucket::ALL`] in order (most specific
+    /// first, as [`Self::find`] reads it); two or more are directories under the bucket
+    /// the first word names (`harness/a/b`), answered by that root's `stat` alone.
     pub fn at(&self, id: &str) -> Option<Skill> {
-        let (word, name) = id.split_once('/')?;
-        let bucket = Bucket::ALL
-            .into_iter()
-            .find(|bucket| bucket.as_str() == word)?;
-        let dir = self.dir(bucket)?.join(name);
-        dir.join(SKILL).is_file().then(|| declared(bucket, &dir))
+        let mut parts = id
+            .trim_matches('/')
+            .split('/')
+            .filter(|part| !part.is_empty());
+        let first = parts.next()?;
+        // One word is a name, so every root is a candidate; more is a path, and its
+        // first word names the bucket.
+        let (buckets, rest): (Vec<Bucket>, &str) = match parts.next() {
+            Some(_) => (
+                Bucket::ALL
+                    .into_iter()
+                    .find(|bucket| bucket.as_str() == first)
+                    .map(|bucket| vec![bucket])?,
+                first,
+            ),
+            None => (Bucket::ALL.to_vec(), first),
+        };
+        for bucket in buckets {
+            let Some(root) = self.dir(bucket) else {
+                continue;
+            };
+            let dir = root.join(rest);
+            if dir.join(SKILL).is_file() {
+                return Some(declared(bucket, &dir));
+            }
+        }
+        None
     }
 }
 
@@ -144,15 +165,17 @@ impl Skill {
         self.path.parent().unwrap_or(Path::new("."))
     }
 
-    /// Where this skill stands in the namespace: `<bucket>/<name>`.
+    /// What a caller names it by: its own name.
     ///
     /// # Invariant
     ///
-    /// A path, and the same one every time: a name installed in two roots is two
-    /// skills, and the root is what tells them apart. SPEC's `Skill := path` is this
-    /// spelling, so a caller that has an `id` never has to guess a root.
+    /// The name is the skill, and where it came from is a field rather than a prefix:
+    /// a caller who has a name does not have to know which root holds it, and the root
+    /// a name came from is still on the row (`bucket`). Two roots spelling one name are
+    /// two rows that answer to one word, which is what [`Roots::find`] and `at` decide
+    /// by precedence.
     pub fn id(&self) -> String {
-        format!("{}/{}", self.bucket.as_str(), self.name)
+        self.name.clone()
     }
 }
 

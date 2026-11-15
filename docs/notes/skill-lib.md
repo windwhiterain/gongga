@@ -40,10 +40,13 @@ what `@skill(...)` reads, and the rest is what the editor's completion reports a
 specific layer wins and asks the implementation to say when it did -- but it is also not
 something to hide from the reader who typed the name.
 
-`at` is the inverse of `Skill::id`, and it is the one that does not walk: the
-bucket word in the id decides the root, so an id is answered by one `stat`. That is
-what lets the catalog ask a declared package what it publishes before any session
-exists to stand in a project root.
+`at` reads an id as a path, which is what keeps a nested skill addressable without
+putting a root into every name. One word is a skill's name and it is tried against every
+layer in `Bucket::ALL` order -- most specific first, the same precedence `find` uses; two
+words or more are directories under the layer the first word names, so that layer's `stat`
+alone answers and no walk happens. The catalog asks a declared package what it publishes
+before any session exists to stand in a project root, which is why the layer-by-name form
+must not need a walk.
 
 ## Skill
 
