@@ -123,6 +123,13 @@ stage → 起继任者 → swap(cancel) → 旧进程退出 → 继任者绑端�
 （`server --check-config`，解析完就退出，不 lock、不建 db、不 bind），拒绝就 `die`，旧服务端
 照常握着 home、回合照常跑。
 
+**但这个检查自己也得有个不属于这个 home 的家。** 跑的是 bundle 头，头在跑它要跑的程序**之前**
+就落 payload、retire 掉它替换的那个构建（`bundle-main.md`「There is no read-only run」），而它
+只认程序字面是 `server`，看不见后面的 `--check-config`。所以指着 live home 跑这个「只读」检查，
+retire 会 cancel 掉活服务端，连 detached 的继任者一起带走：2026-11-15 就是这么把 home 弄成
+既没服务端、也没人接班的。检查现在的形状是 `GONGGA_HOME=<.dev/check-home>`（头自己的安装落到
+scratch），`--home` 仍指真 home（要读的是它的 config）。
+
 为什么要用「当前的」：活着的服务端会重写自己的 `config.toml`，`stage` 那一刻看到的内容不是
 swap 这一刻的内容——这一次事故就是旧构建写进去的 `tunneled` / `timeout_ms` / `carrier` /
 `owns_its_wait`，而新构建已经不认这些字段了。为什么要用「继任者自己的」：认不认字段是二进制
