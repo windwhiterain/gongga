@@ -289,9 +289,10 @@ worktree 之间去重依赖**——省下的是编译时间与 incremental，不
 - **不要 `rm -rf target`**：它是 mbx 的符号链接，删它绕过记账。用 `cargo clean`（清当前
   checkout）或 `mbx clean`（连托管目录一起）。
 - **不要写 `CARGO_TARGET_DIR= cargo clean`**：cargo 1.98 起把空值当错误（`exit 101`），
-  一条都不删。用 `env -u CARGO_TARGET_DIR cargo clean`。
-  `.agents/skills/evolve/evolve.sh` 的 :103 与 :250 还是旧写法，两处都把失败吞掉，所以它的
-  clean 至今从未真正执行过。
+  一条都不删。用 `env -u CARGO_TARGET_DIR cargo clean`。`evolve.sh` 的两处（`clean_build_tree`
+  与接管前的 `--clean`）曾经是这个写法、把失败吞掉，所以它的 clean 一度从未真正执行过；
+  `4d25db10` 起两处都是 `env -u`，实测见 `.dev/verify/596a8c653f0e-evolve-clean-fix.json`
+  （旧写法 `exit 101`、target 还在；新写法 `exit 0`、target 消失）。
 - **不要在同一 checkout 里并发跑两个 cargo**：Cargo 的目录锁仍在，mbx 只解决跨 checkout
   的重复编译。
 - **别在关键构建中途让 gc 插进来**：托管 target 属于回收范围（checkout 消失、30 天未用、
