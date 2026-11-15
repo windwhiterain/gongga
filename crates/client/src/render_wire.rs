@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{protocol, Candidate, Layout, LineKind, Sink};
+use crate::{Candidate, Layout, LineKind, Sink, protocol};
 
 /// One run of a document row: its words, and the class that says how they look.
 ///
