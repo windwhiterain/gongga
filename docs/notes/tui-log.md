@@ -740,3 +740,20 @@ journal first, the server when the journal does not reach back.
 What this bounds: a session streaming for hours stops growing once the margin is spent.
 What it does not bound yet: paging further up grows the window again (the budget follows
 the scroll), so a strictly constant window needs the *downward* page before it is real.
+
+## A window states the rows it holds, and is bounded at both ends (2026-11-15)
+
+A block now carries its place: `Entry::from` is the row it began at and `Entry::seq` the
+newest row drawn into it, both stamped from `Log::mark`, which is `RenderMessage::Row`.
+`Log::held` answers `(first block's from, the row the sink is on)` -- the two ends of a
+window -- and the frame reports it once per trim. `Log::trim` (oldest end) and
+`Log::trim_newest` (newest end) share `Log::drop_blocks`; the newest end drops a block
+whole or not at all, so a block the pane is drawing always stays however far past the
+margin it reaches. `Log::append_page` inserts a page of what comes after behind the
+window's last block, through the same `insert_page` `Log::prepend` uses.
+
+Measured on the live harness with `keep_rows = 20` and eight short turns: the first rule
+(a fixed margin below the pane) yanked the view back to the bottom on one PageUp and took
+a 120-row block the pane was drawing with it; with the block rule the frames move to
+turns 3-5 and back to 6-7 with no repeated and no skipped turn, and one `get_messages`
+answers a push past the newest row.

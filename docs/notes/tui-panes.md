@@ -214,3 +214,13 @@ client re-sends.
 Measured on the live harness (`hide` then `show` a session whose tool call had already
 run): before, the window grew a second copy of the turn; after, the same window is the
 transcript's rows in order, `blocks = 6` for rows 1, 4, 5, 6, 7, 8, 9.
+
+## A window is bounded at both ends (2026-11-15)
+
+`Panes::trim` keeps one margin on each side of the viewport instead of only above it:
+the rows past the pane go first (`Log::trim_newest`, never a block the pane draws), then
+the rows above it down to what the reader has scrolled through (`Log::trim`). The held
+range moves when either end does, so the frame reports it (`Panes::take_held`) and the
+client replaces what it believed. A push against a window's newest row is the operator
+asking for what was dropped there (`Panes::take_newer`), which is the only gesture that
+brings those rows back.

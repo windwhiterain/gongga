@@ -51,6 +51,8 @@ A row this build cannot place keeps `step: 0`: an item still open when a window
 reconnected, an interrupted item's stored row, and the operator's own lines.
 
 ## Open
+
+Answered in "What the next session did", below.
 - The TUI still builds trees for windows it is not drawing until they leave the frame;
   dropping those writes outright is the remaining half of "a front-end holds only what
   it draws".
@@ -58,6 +60,8 @@ reconnected, an interrupted item's stored row, and the operator's own lines.
   running; this change was built and verified in `.dev/target-tc`.
 
 ## What the budget does not bound, and why it needs the downward page
+
+The page below exists now; this section is why it was needed.
 
 `Panes::trim` runs with `keep_rows + pane height + pane scroll`, so the margin follows
 the scroll: paging further up always grows the window again. What is bounded today is
@@ -82,7 +86,7 @@ and letting a position live in a per-window structure -- a change to how the log
 things, worth doing together with putting `seq` on a block, since that is the same
 "a block has a place that is a fact" idea.
 
-## Left undone in this session
+## Left undone in the session that wrote this
 
 - Nothing measured for the budget: to cross 800 rows in one live turn the harness needs
   an answer payload larger than a single command-line word (Windows truncates at ~8 KB),
@@ -92,3 +96,23 @@ things, worth doing together with putting `seq` on a block, since that is the sa
 - The downward page and the per-window block storage are not started. Everything that is
   committed compiles, and the two frames checks (a real 160-call transcript walked to the
 top, and hide-then-show) pass on the build that carries them.
+
+## What the next session did (same day)
+
+- **The downward page exists.** `UiIntent::Newer` is `Older`'s mirror; the client answers
+  it with `ask_newer`/`FillKind::Newer` and the page lands below the rows
+  (`RenderMessage::Newer`, `Log::append_page`).
+- **The budget no longer follows the scroll.** `Panes::trim` keeps one margin on each
+  side of the viewport: `Log::trim_newest` drops the newest blocks, whole blocks only, and
+  never one the pane is drawing.
+- **A window states its range.** `RenderMessage::Row` and `PastRow`'s `seq`/`from` give
+  the front-end the transcript's own coordinates, and `UiIntent::Held` tells the client
+  where the window now stops; `Sync::short` is what keeps that from looking like being
+  behind.
+- **Measured, with `keep_rows = 20`** on the live harness and eight short turns (the
+  default 800 needs an answer larger than a command-line word, which is why the harness
+  grew no option for it): every frame moves to the turns either side with no repeated and
+  no skipped turn, and a push past the newest row costs one `get_messages`. Numbers in
+  `.dev/verify/<sha>-window-budget.json`.
+- **Still open**: the O(n) `prepend`/`splice` + `reindex` noted below, and the operator's
+  own window must be restarted to run any of this.

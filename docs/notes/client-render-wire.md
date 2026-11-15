@@ -125,3 +125,13 @@ this shape. stderr must be drained or sent to a log: `NullSink::note` uses
 `WireSink` is a synchronous `&mut Sink`, so the writer has to be its own task
 with a bounded queue and `try_send`; the UI side must drain stdout continuously.
 See `DESIGN.md` §1 for the four hazards and the `--parent` question still open.
+
+## A row's place travels with it (2026-11-15)
+
+Three frames of this wire say where rows belong in the transcript rather than only
+what they say: `RenderMessage::Row { window, seq }` states the stored row the calls
+after it draw, `PastRow::Line`/`Block` carry their own `seq` (and a block its `from`,
+because a block spans rows), and `RenderMessage::Newer { window, rows }` is a page of
+what comes *after* what the window holds -- one frame of finished rows, the mirror of
+`Older`. Without the numbers a front-end could only guess at the range it holds, and a
+guess is what makes a page land twice or leave a hole.

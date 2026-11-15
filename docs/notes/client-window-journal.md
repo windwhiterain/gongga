@@ -91,3 +91,13 @@ A window that leaves the frame holds nothing, so its stamp is rewritten at seq 0
 the `created` it already had: the rows stay (a page above them is still read from
 here) and the next restore reads the page from the server rather than trusting a
 stamp that describes a tree that no longer exists. See `docs/notes/client-lib.md`.
+
+## The front-end states the range it holds (2026-11-15)
+
+`UiIntent::Held { windows: [(name, oldest, newest)] }` is the one writer of a window's
+held range in this journal: a window drops rows at either end to stay inside its budget,
+and only the frame that dropped them knows where it now stops. `WindowJournal::note_held`
+replaces the stamp and the floor with it -- an extension is not enough, because the range
+narrows -- and `Client::declare_held` replaces `Sync::held` with the same run, so
+`behind_one` answers nothing for a window that stops short on purpose (`Sync::short`).
+Without that flag the client would re-fetch the tail it had just trimmed, once per step.

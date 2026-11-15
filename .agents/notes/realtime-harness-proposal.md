@@ -58,13 +58,17 @@ derivable from timestamps+facts; decision->action gaps 3h-3d, revision deadlines
 0.5-2h before action. Pure text, our commercial API, exact rho/S/L/K labels.
 This ground alone can validate primitives 2+3.
 
-G2 (embodied real-time, GATED): ROAR — text/JSON + structured-audio observation
-channel exists (the paper's own heuristic bot is text-only); 7-dim discrete
-actions; turn-based / 250ms / 40ms modes; env thread decoupled from agent
-threads with observation version numbers. GATE: repo URL not recovered (fetch
-drops hrefs; OpenReview forum jrkcJgEwSy has browser verification), license and
-Windows build unverified (authors ran Ubuntu 24.04 only). Fallback if the gate
-fails: G1 only, plus a minimal MAAG-shaped synthetic loop if needed.
+G2 (embodied real-time, GATE RESOLVED 2026-11-15): ROAR — repo
+https://github.com/tb6147877/ROAR (found via browser skill: the GitHub href is
+invisible to web-search fetch). MIT license; environments/ ships BOTH windows
+and linux builds (updated 2026-11-05, repo active). Run: conda py3.10.12 from
+environment.yaml; unzip the level executable; set paths + API keys in
+roar_evaluation/const_string.py (OpenRouter by default, adaptable to our
+provider); run roar_evaluation/roar_benchmark.py. Text/JSON + structured-audio
+observation channel exists (the paper's own heuristic bot is text-only); 7-dim
+discrete actions; turn-based / 250ms / 40ms modes; env thread decoupled from
+agent threads with observation version numbers. Remaining: a turn-based smoke
+run on this machine (P0).
 
 ## Phases
 

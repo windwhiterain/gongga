@@ -24,3 +24,13 @@ stream order rather than replayed from that rendering buffer.
 
 `answer_completion` sends only missing directory listings and notifies the UI
 when their version changes.
+
+## Two pages, one fill (2026-11-15)
+
+A window is bounded at both ends, so it is owed pages in both directions: `UiIntent::Older`
+asks for the rows above its floor and `UiIntent::Newer` for the rows after its newest one.
+`answer_newer` mirrors `answer_older`, and `Client::ask_newer` anchors the page at
+`drawn + 1`, capped at the server's own end -- nothing is asked for a window that never
+received a page (`loaded`), because what an empty window is owed is the *tail*. `Fill`'s
+two booleans became one `FillKind` (`Whole`, `Tail`, `Older`, `Newer`): the pages never
+rewind and never restamp the end they are not anchored on.

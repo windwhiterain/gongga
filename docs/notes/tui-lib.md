@@ -647,3 +647,11 @@ that lays out before it knows the width cannot draw one, and a resize would have
 document left to lay out again. What is left here is one call for every kind, and the
 cost -- one layout per delta for the block that holds a document -- is the cost the
 accumulator paid anyway.
+
+## Rows have places, and a page can come from below (2026-11-15)
+
+`Tui::mark` records `RenderMessage::Row`: the row the frames after it draw, which every
+block made then is stamped with. `Tui::append_rows` draws a page of what comes after
+below what a window holds -- the mirror of `prepend_rows`. `next_event` hands the client
+three facts the drawing alone knows: the range a trim left (`UiIntent::Held`), a push
+past the newest row (`UiIntent::Newer`), and, as before, a pane's height and width.
