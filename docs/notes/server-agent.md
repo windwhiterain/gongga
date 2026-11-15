@@ -554,23 +554,39 @@ a cut: it must ask for `turn_interrupted` too, or read the session's status. The
 monitor's own query is unaffected: it reads `turn_end` for `origin = provider`,
 which is a failure, and a failure still ends the turn.
 
-## a_failure_states_its_reason_in_the_context
+## a_failure_is_a_row_of_its_own
 
-A failed turn writes two rows: a `notice`, which is what a reader sees and no
-request is built from, and an injection holding the same sentence, which is sent.
+A failed turn writes one row, of kind `error`: the sentence a reader sees and the
+turn the model is sent next.
 
-The notice alone left the reason outside the context. The session's next step
-resumed as if nothing had happened -- a provider that refused the answer it was
-generating, a key at its limit, a stream that never finished: none of it reached
-the model, so it could neither avoid the cause nor say what went wrong. The
-parent of a subagent has the same problem one level up: it drives the child by
-sending a message, and a child whose context never learned why its last turn
-died answers as though the work had been going on.
+A notice left the reason outside the context, because no request is built from one.
+The session's next step resumed as if nothing had happened -- a provider that refused
+the answer it was generating, a key at its limit, a stream that never finished -- so
+it could neither avoid the cause nor say what went wrong. The parent of a subagent
+has the same problem one level up: it drives the child by sending a message, and a
+child whose context never learned why its last turn died answers as though the work
+had been going on. An injection was bolted onto one of the failure sites instead;
+this kind replaces it, because an injection says "the harness is talking" and an
+error says "something went wrong", and the reader, the renderer and a replay all
+have to tell those apart.
 
-So the sentence is written twice, deliberately: the notice is the reader's record
-of the failure, and the injection is the model's. The prose is not in this binary
-either -- the injection is the same formatted sentence, wrapped by `harness_wrap`,
-so a home that carries no new prompt still states the reason.
+Three things have to agree for an error to be readable, and they did not:
+
+- **it is sent.** `wire_item` gives the row a `user` turn whose text is
+  `harness_wrap`ped at write time, so a home that carries no new prompt still states
+  the reason.
+- **it is drawn.** The writer publishes the `Event::Log { level: Error, session }`
+  that draws the line in that session's window, and only then the transcript stamp. A
+  client reads a stamp as "I have drawn that row", so a row announced without an event
+  is a line no window ever shows (`server-store.md`).
+- **it is attributed.** A replay draws it as a line about *that session*, not about
+  nobody, which is what an agent reading another session's transcript through
+  `get_messages` reads. The line the failure used to leave there said `level: info`
+  and named no session at all.
+
+One string, measured once: `Agent::error` formats it and `Agent::write_error` both
+stores and publishes it, so the reader and the model cannot drift apart. A panic in a
+turn goes through the same door; it used to leave a broadcast and no row.
 
 ## a_request_records_what_it_cost_and_how_long
 

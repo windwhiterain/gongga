@@ -148,11 +148,11 @@ impl Agent {
             Err(payload) => {
                 let message = panic_message(&payload);
                 tracing::error!(session = %session.name(), "turn panicked: {message}");
-                self.bus.publish(Event::Log {
-                    level: LogLevel::Error,
-                    message: format!("{}: turn panicked: {message}", session.name()),
-                    session: None,
-                });
+                self.write_error(
+                    session.id(),
+                    session.name(),
+                    &format!("{}: turn panicked: {message}", session.name()),
+                );
                 (TurnOutcome::Failed, 0, Some("harness"))
             }
         };
@@ -1877,14 +1877,6 @@ impl Agent {
         }
     }
 
-    /// Reports a failure, and leaves the reason somewhere it can be read later.
-    ///
-    /// # Invariant
-    ///
-    /// The line goes into the transcript as a `notice`, which no request is built
-    /// from. An `Event::Log` alone is broadcast and forgotten: "why did that
-    /// turn fail" was unanswerable a minute later, and the failure of the
-    /// *first* attempt of a request exists nowhere else at all.
     /// Appends the row that answers a refusal to continue a step written without thinking.
     ///
     /// # Invariant
@@ -1910,28 +1902,43 @@ impl Agent {
         }
     }
 
+    /// Reports a failure, and leaves the reason where both of its readers look.
+    ///
+    /// # Invariant
+    ///
+    /// One row, of kind `error`: the sentence is context the next request carries and
+    /// the line a window draws red. A notice would be neither (nothing is sent from
+    /// one), and a line no event drew is a row no window ever shows.
     fn error(&self, id: i64, session: &str, what: &str, e: anyhow::Error) {
         tracing::error!(session = %session, "failed to {what}: {e}");
-        let said = format!("{session}: failed to {what}: {e}");
-        self.announce_row(
-            session,
-            self.store
-                .append_message(id, Kind::Notice, &json!({"text": said})),
-        );
-        // Also context, not only the notice: nothing is built from one. `docs/notes/server-agent.md`.
-        self.announce_row(
-            session,
-            self.store.append_message(
-                id,
-                Kind::Inject,
-                &json!({"role": "user", "text": crate::prompts::harness_wrap(said.clone())}),
-            ),
-        );
-        self.bus.publish(Event::Log {
-            level: LogLevel::Error,
-            message: said,
-            session: None,
-        });
+        self.write_error(id, session, &format!("{session}: failed to {what}: {e}"));
+    }
+
+    /// Writes the failure and then draws it, in that order.
+    ///
+    /// # Invariant
+    ///
+    /// A window reads the stamp as "I have drawn that row", so the event that draws it
+    /// goes first. A row that could not be written leaves the log's own line and no
+    /// claim about a window. See `docs/notes/server-agent.md`.
+    fn write_error(&self, id: i64, session: &str, said: &str) {
+        match self
+            .store
+            .append_message(id, Kind::Error, &json!({"text": said}))
+        {
+            Ok(seq) => {
+                self.bus.publish(Event::Log {
+                    level: LogLevel::Error,
+                    message: said.to_string(),
+                    session: Some(session.to_string()),
+                });
+                self.bus.publish(Event::Transcript {
+                    session: session.to_string(),
+                    seq,
+                });
+            }
+            Err(e) => tracing::warn!(session = %session, error = %e, "the failure was not written"),
+        }
     }
 }
 
