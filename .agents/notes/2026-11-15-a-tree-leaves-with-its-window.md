@@ -56,3 +56,39 @@ reconnected, an interrupted item's stored row, and the operator's own lines.
   it draws".
 - `cargo build` could not relink `gongga-tui.exe` while the operator's window was
   running; this change was built and verified in `.dev/target-tc`.
+
+## What the budget does not bound, and why it needs the downward page
+
+`Panes::trim` runs with `keep_rows + pane height + pane scroll`, so the margin follows
+the scroll: paging further up always grows the window again. What is bounded today is
+the case that grows without a gesture -- a session streaming for hours. A strictly
+constant window needs the other half:
+
+1. An intent that asks for the page *after* the rows a window holds (`UiIntent::Newer`,
+the mirror of `Older`), with `Room`/`Columns` already carrying the size.
+2. The client answering it from the journal first and from the server second, exactly
+   as `answer_older` does, and stamping the result with `extend_drawn`'s mirror -- the
+   held range grows at the newest end instead of the oldest.
+3. The front-end appending that page and, only then, trimming the oldest blocks (the
+   budget no longer needs `scroll` in it, because nothing above the pane is kept).
+
+## Why `prepend` is O(all blocks)
+
+`Log::prepend` splices into `entries: Vec<Entry>` and calls `reindex()`, which renumbers
+every block of every window: `Entry::at` and each ledger's `blocks` are positions in
+that one vector. The cost is the flat, globally-indexed storage, not the splice. Making
+a page O(log n) means giving each window its own list of blocks (handles into an arena)
+and letting a position live in a per-window structure -- a change to how the log stores
+things, worth doing together with putting `seq` on a block, since that is the same
+"a block has a place that is a fact" idea.
+
+## Left undone in this session
+
+- Nothing measured for the budget: to cross 800 rows in one live turn the harness needs
+  an answer payload larger than a single command-line word (Windows truncates at ~8 KB),
+  so it needs either a `--answer-lines` file option in `scripts/tui_live.py` or a fake
+  endpoint that streams N rows. The budget's *rule* is also the thing to change first
+  (above), which makes the measurement meaningful.
+- The downward page and the per-window block storage are not started. Everything that is
+  committed compiles, and the two frames checks (a real 160-call transcript walked to the
+top, and hide-then-show) pass on the build that carries them.
