@@ -496,8 +496,14 @@ public partial class MainWindow : Window
                     .OfType<Views.SpanLine>()
                     .FirstOrDefault(line => line.Bounds.Width > 0);
                 var usable = (row?.Bounds.Width
-                    ?? viewer.Viewport.Width - viewer.Padding.Left - viewer.Padding.Right - BlockPadding)
-                    - 2 * _model.Edge;
+                    ?? viewer.Viewport.Width - viewer.Padding.Left - viewer.Padding.Right)
+                    // A row stretches to its block's box, and the box's own padding is
+                    // drawn inside that width, so it is a column the words cannot use.
+                    - BlockPadding
+                    - 2 * _model.Edge
+                    // The bar appears exactly when the body overflows, which is the case
+                    // that matters: a column it takes is a word broken at the edge.
+                    - Bar(viewer);
                 // One column of slack: a row that wraps a character early is a row, one
                 // that wraps late is a lost letter.
 columns.Add((pane.Name, Math.Max(20, (int)(usable / Advance))));
@@ -513,6 +519,13 @@ columns.Add((pane.Name, Math.Max(20, (int)(usable / Advance))));
             _client.Send(Intents.Columns(columns));
         }
     }
+
+    /// How wide the pane's own vertical bar is, or nothing when it is not drawn.
+    private static double Bar(ScrollViewer viewer) => viewer.GetVisualDescendants()
+        .OfType<global::Avalonia.Controls.Primitives.ScrollBar>()
+        .Where(bar => bar.Orientation == global::Avalonia.Layout.Orientation.Vertical && bar.IsVisible)
+        .Select(bar => bar.Bounds.Width)
+        .FirstOrDefault();
 
     /// How wide one character of a body is, in pixels.
     private double Advance
