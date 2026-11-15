@@ -478,7 +478,7 @@ impl Config {
         config_path: Option<&Path>,
         home_override: Option<&Path>,
     ) -> anyhow::Result<Self> {
-        let named = home_override.map(Path::to_path_buf);
+        let named = home_override.map(|path| expand(path.to_path_buf()));
         let mut home = named.clone().unwrap_or_else(home_dir);
         // The content's own file; `--config` names one instead.
         let (config_path, inside) = match config_path {
@@ -1023,14 +1023,28 @@ fn env_path(key: &str) -> Option<PathBuf> {
 }
 
 /// Expands a leading `~` and normalises separators.
+/// What the operator typed, as a directory this process and the ones it starts agree on.
+///
+/// # Invariant
+///
+/// Absolute. A relative path is meant against the directory the operator typed it in --
+/// this process's -- and this process hands the home to children that resolve their own
+/// names in their own directories: a relay, a peer's runner and a skill each read
+/// `GONGGA_HOME`, and `.gongga` in *their* directory is somebody else's home
+/// (`docs/notes/server-home.md`).
 pub(crate) fn expand(path: PathBuf) -> PathBuf {
     let s = path.to_string_lossy().to_string();
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    let expanded = match s.strip_prefix("~/") {
+        Some(rest) => match dirs::home_dir() {
+            Some(home) => home.join(rest),
+            None => path,
+        },
+        None => path,
+    };
+    if expanded.is_absolute() {
+        return expanded;
     }
-    path
+    std::path::absolute(&expanded).unwrap_or(expanded)
 }
 
 pub(crate) fn detect_git_bash() -> Option<PathBuf> {
