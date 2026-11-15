@@ -97,7 +97,11 @@ public static class ShotRun
         var opened = Blocks(window, "beta");
         Capture(window, Path.Combine(directory, "03-session-opened.png"));
         Fact("one pane opened", model.Panes.Count == 1, $"{model.Panes.Count}");
-        Fact("history refilled", opened >= 5, $"{opened} blocks");
+        // What the fact is about is that the transcript came back and is taller than
+        // the pane -- how many blocks the client made one turn into is its business.
+        Fact("history came back",
+            opened >= 1 && viewer is not null && viewer.Extent.Height > viewer.Viewport.Height,
+            $"{opened} blocks, {Scroller(viewer)}");
         Fact("capacity reported", Wire.Any(line => line.Contains("\"intent\":\"room\"")),
             Wire.FirstOrDefault(line => line.Contains("\"intent\":\"room\"")) ?? "never sent");
         var shortRoom = RowsFor(Wire.FirstOrDefault(line => line.Contains("\"intent\":\"room\"")), "beta");
@@ -117,8 +121,14 @@ public static class ShotRun
             var bottom = viewer.Offset.Y;
             window.FindControl<TextBox>("Input")?.Focus();
             Pump();
-            window.KeyPress(Key.PageUp, RawInputModifiers.None, PhysicalKey.PageUp, null);
-            SettleFor(TimeSpan.FromSeconds(2));
+            // A page is the pane's own height, so one press lands a page short of the
+            // top when the history is two pages tall: the reader presses until the
+            // oldest row is in view, and so does this run.
+            for (var press = 0; press < 6 && viewer.Offset.Y > 0.5; press++)
+            {
+                window.KeyPress(Key.PageUp, RawInputModifiers.None, PhysicalKey.PageUp, null);
+                SettleFor(TimeSpan.FromSeconds(1));
+            }
             var up = viewer.Offset.Y;
             Capture(window, Path.Combine(directory, "04-page-up.png"));
             Fact("PageUp scrolls up", up < bottom - 1, $"{bottom:0.#} -> {up:0.#}");
@@ -274,18 +284,40 @@ public static class ShotRun
             .FirstOrDefault(item => item.Tag is string tag && tag == name);
 
     /// The text of one block in a pane, in the order they are drawn.
+    ///
+    /// # Invariant
+    ///
+    /// A block's body is a `MarkdownText`, whose words are runs rather than `Text`:
+    /// what it was handed is the text, so that is what is read here.
     private static string TextAt(Window window, string name, int index)
     {
-        var texts = Viewer(window, name)?.GetVisualDescendants()
-            .OfType<SelectableTextBlock>()
-            .Select(block => block.Text ?? string.Empty)
-            .ToList() ?? [];
-        return index >= 0 && index < texts.Count ? texts[index] : "missing";
+        var blocks = BlockRows(window, name);
+        if (index < 0 || index >= blocks.Count)
+        {
+            return "missing";
+        }
+        var block = blocks[index];
+        return block.HasRows
+            ? string.Join(string.Empty, block.Rows.SelectMany(row => row.Spans).Select(span => span.Text))
+            : block.DisplayText;
     }
 
-    /// How many blocks a pane holds: one `SelectableTextBlock` each.
-    private static int Blocks(Window window, string name) =>
-        Viewer(window, name)?.GetVisualDescendants().OfType<SelectableTextBlock>().Count() ?? 0;
+    /// A pane's blocks, in the order they are drawn.
+    ///
+    /// # Invariant
+    ///
+    /// A block is a row of the log, whatever it draws with: an answer is a document
+    /// whose rows are their own controls, so counting text elements would count one
+    /// answer as many.
+    private static List<BlockRow> BlockRows(Window window, string name) =>
+        Viewer(window, name)?.GetVisualDescendants()
+            .OfType<Border>()
+            .Select(border => border.DataContext)
+            .OfType<BlockRow>()
+            .ToList() ?? [];
+
+    /// How many blocks a pane holds: one row of the log each.
+    private static int Blocks(Window window, string name) => BlockRows(window, name).Count;
 
     /// Presses the middle of a control, in window coordinates.
     private static bool Click(Window window, Control control, RawInputModifiers modifiers = default)

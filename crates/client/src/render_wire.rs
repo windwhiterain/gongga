@@ -6,6 +6,54 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Candidate, Layout, LineKind, Sink, protocol};
 
+/// One run of a document row: its words, and the class that says how they look.
+///
+/// # Invariant
+///
+/// A class is what a run *is* (strong, code, a marker), never a colour or a font: the
+/// front-end owns the ink, and two front-ends drawing one answer differ only there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentSpan {
+    pub text: String,
+    pub class: SpanClass,
+}
+
+impl DocumentSpan {
+    pub fn of(text: impl Into<String>, class: SpanClass) -> Self {
+        Self {
+            text: text.into(),
+            class,
+        }
+    }
+
+    /// The same words, drawn as a heading or an emphasised run.
+    pub fn strong(self) -> Self {
+        match self.class {
+            // A heading's words are often already strong: one class says it once.
+            SpanClass::Text => Self {
+                class: SpanClass::Strong,
+                ..self
+            },
+            _ => self,
+        }
+    }
+}
+
+/// What a run is, as SPEC's `colored markdown` spells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpanClass {
+    Text,
+    Strong,
+    Emphasis,
+    Strike,
+    Code,
+    /// A list's bullet, a quote's bar, a heading's own mark.
+    Marker,
+    /// An address, printed after the words that carry it.
+    Link,
+}
+
 /// What a front-end draws: semantic kinds and text, never colours or columns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -43,6 +91,23 @@ pub enum RenderMessage {
     Render {
         block_size: usize,
         box_edge: usize,
+    },
+    /// A body as finished rows: SPEC's `output`, already parsed and already fitted to
+    /// the width the front-end stated.
+    ///
+    /// # Invariant
+    ///
+    /// The rows are the whole body, not the part that grew: a document is derived from
+    /// its source, and one more delta can change a row above the last one, so a
+    /// front-end replaces what it holds by `key` instead of appending. See
+    /// `docs/notes/client-document.md`.
+    Document {
+        window: String,
+        key: String,
+        kind: LineKind,
+        tag: String,
+        rows: Vec<Vec<DocumentSpan>>,
+        done: bool,
     },
     Rewrite {
         window: String,
@@ -200,6 +265,13 @@ pub enum UiIntent {
     /// how tall a window is, and the page a wheel above the first row asks for is
     /// that height, not a constant. See `docs/notes/client-window-journal.md`.
     Room { windows: Vec<(String, usize)> },
+    /// How many columns each pane can draw: the width a document is fitted to.
+    ///
+    /// # Invariant
+    ///
+    /// A document is wrapped once, here, so every front-end of one answer sees the
+    /// same rows. Sent when a pane's width changes, for the same reason `Room` is.
+    Columns { windows: Vec<(String, usize)> },
     /// The client answers with candidates, so syntax stays out of the UI.
     Complete { line: String, cursor: usize },
     /// Alt+Q: leave.

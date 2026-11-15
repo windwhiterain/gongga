@@ -9,17 +9,14 @@
 mod clipboard;
 mod closing;
 mod cover;
-mod fold;
 mod input;
 mod log;
-mod markdown;
 mod notice;
 mod panes;
 pub mod pipe;
 pub mod program;
 mod render;
 pub mod run;
-mod table;
 mod tree;
 mod vt_input;
 
@@ -1023,6 +1020,20 @@ impl Tui {
     /// SPEC's `output (colored markdown)` is the block's own document: a delta joins
     /// it, and the rows are what it says at the width the block has. No other kind
     /// keeps a document, and none of them re-lays-out on a delta.
+    /// A body the client has already made rows of: SPEC's `output`, wrapped once.
+    pub fn document(
+        &mut self,
+        name: &str,
+        key: &str,
+        kind: LineKind,
+        tag: &str,
+        rows: &[Vec<client::render_wire::DocumentSpan>],
+        done: bool,
+    ) {
+        self.screen.panes.document(name, key, kind, tag, rows, done);
+        self.dirty = true;
+    }
+
     pub fn stream(
         &mut self,
         name: &str,
@@ -1032,10 +1043,12 @@ impl Tui {
         text: &str,
         done: bool,
     ) {
-        self.screen
-            .panes
-            .stream(name, key, kind, prefix, text, done);
-        self.dirty = true;
+        if kind != LineKind::Assistant {
+            self.screen
+                .panes
+                .stream(name, key, kind, prefix, text, done);
+            self.dirty = true;
+        }
     }
 
     /// Drops what one window holds: SPEC's command row shows only the last one.

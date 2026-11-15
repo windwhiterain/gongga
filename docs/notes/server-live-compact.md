@@ -2,39 +2,53 @@
 
 Clause 3 of the SPEC's Live Compact section is the trigger: the server asks, the
 agent writes the summary, and the server commits it with its result. What follows
-is how the code keeps that bargain, and the two decisions that surprised me.
+is how the code keeps that bargain, and the decisions that surprised me.
 
-## A call nobody asked for is a no-op
+## The ask backs off
 
-`append_live_compact_result` needs a durable request: the request row carries the
-segment, the retained round and the generation the summary is committed against.
-A `live_compact` call with no request outstanding therefore has nothing to commit
-against.
+The interval is a threshold, not a switch. With live compact switched on, a step
+whose context has grown a whole interval past the last checkpoint queues one
+notice; the interval doubles, and the next notice waits for that wider stretch.
+An agent that ignores a notice is asked again later instead of at every step, and
+one that answers is measured from the checkpoint it just wrote, at the configured
+interval again.
 
-It used to fail, and the failure was written into the transcript as an `ERROR`
-result. That is what invites a retry loop: the model sees an error, assumes the
-call was malformed, and calls again -- and the head it re-sends is paid for.
+The interval in force lives in `sessions.live_compact_interval_effective`, `NULL`
+meaning "the configured base", so a restart keeps the backoff. It is raised by
+`deliver_pending` and nowhere else: a task the step boundary drops (an incomplete
+round, a switch turned off, a context generation that moved) leaves it where it
+was, because an ask nobody saw must not raise the bar for the next one.
 
-A call with no outstanding request now returns a successful result that says
-plainly that no checkpoint was outstanding and that the history is untouched. It
-appends no checkpoint row, bumps no context generation, resets no baseline, and
-writes no message beyond that one result. Only the notice can make the server
-compact; a spontaneous call cannot.
+## A call commits what the transcript says now
 
-A request that *is* outstanding but belongs to an older context generation still
-fails: that is not a no-op, it is a summary written against a history that has
-moved, and the agent must know.
+A `live_compact` call commits a checkpoint from the transcript as it stands at
+the call: the segment starts at the last checkpoint's cutoff (or the origin) and
+ends at the newest complete ordinary round, which is kept verbatim. The summary
+is the agent's words and carries no row numbers, so nothing has to be frozen when
+the ask is queued.
 
-## Only a lineage that planned compacts
+That is what makes the tool usable without an ask: the checkpoint is opened for
+every work session, so an agent whose session has live compact switched off can
+still fold its own context. A call with nothing to fold -- no origin, or no
+complete round since the last checkpoint -- returns a successful result that says
+so, appends nothing, and changes nothing.
 
-A compaction origin opens at one place: plan finish, the explore -> work
-transition, which is the agent's own act inside its turn. A session created
-directly in work never opens one, so it has no baseline and is never asked for a
-summary. It still carries the `live_compact` schema when compaction is enabled --
-the schema is offered for the session's life, not gated on the origin -- but with
-no origin there is nothing to compact. An origin opened on the first operator row
-instead would give such a session a baseline taken from inside turn one, which is
-not the boundary clause 2 names.
+It used to fail when no ask was outstanding, and the failure was written into the
+transcript as an `ERROR` result. That is what invites a retry loop: the model sees
+an error, assumes the call was malformed, and calls again -- and the head it
+re-sends is paid for. "Nothing to compact" is an answer, not a failure.
+
+## Every work session has a checkpoint
+
+The origin opens in two places, neither of them looking at the switch. A session
+that starts in work mode opens it before its first user message (`deliver`, which
+is where the first true operator row lands); a session created in explore opens it
+at plan finish, the explore -> work transition. A session that never leaves
+explore has none, and its `live_compact` calls answer as above.
+
+The opt-in (`live_compact`) therefore governs exactly one thing: whether the
+server asks. It cannot govern whether the origin opens, or the tool would be
+unusable in the mode the operator chose.
 
 ## A summary may cite a file
 
@@ -54,3 +68,29 @@ invalidated the whole conversation at every checkpoint. It cannot follow the swi
 either: the head is written once, so a schema that depended on it would be missing
 from every session that switched the feature on afterwards, which is exactly the
 session that asked for it.
+
+## A cut never splits a call from its output
+
+The origin opens at plan finish, which is the agent's own act inside its turn: the
+newest row at that moment is the `tool_call` of the very command switching the mode,
+and its output is appended after the origin. Taking `MAX(seq)` therefore recorded a
+permanent prefix ending on a call the walk could not complete, because compaction
+drops everything between that origin and the latest round.
+
+The request carrying it was refused whole:
+
+```
+400 invalid_value  No tool output found for function call:  call_95e31c78e755489594fe7c54
+```
+
+Same key, same model, same endpoint: the identical call *with* its output answers
+200. So the provider was never at fault, and no other model could carry that
+transcript -- every conformant endpoint refuses a request holding half a pair, the
+Anthropic adapter included, since it turns the same rows into `tool_use` and
+`tool_result`.
+
+Two rules hold it now. `start_live_compact` takes the newest row that is not a
+`tool_call`, so a new checkpoint stops at the end of a step. And `Transcript::open`
+moves a projection's prefix end back the same way, which is what lets a checkpoint
+written under the old rule still be read: the row the checkpoint names is checked
+against the cut, not the other way round.

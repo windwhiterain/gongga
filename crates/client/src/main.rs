@@ -2,6 +2,7 @@
 //!
 //! See `docs/notes/client-pipe.md`.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -70,7 +71,24 @@ struct PipeFrontend {
     draft: bool,
     layout: Option<Layout>,
     status: Option<String>,
+    /// Every answer on screen, by window and key: the source a document is derived
+    /// from. A body is rows, and rows are made from the whole text, so the text has to
+    /// live here rather than in a front-end that may be replaced.
+    answers: HashMap<String, HashMap<String, Answer>>,
+    /// The columns each window's body is fitted to, as the pane last said.
+    widths: HashMap<String, usize>,
 }
+
+/// One answer being written, and the last state of it a frame carried.
+struct Answer {
+    kind: LineKind,
+    tag: String,
+    text: String,
+    done: bool,
+}
+
+/// What a window is fitted to before its pane has said: a comfortable line.
+const DEFAULT_COLUMNS: usize = 80;
 
 impl PipeFrontend {
     fn new(
@@ -90,7 +108,102 @@ impl PipeFrontend {
             draft: false,
             layout: None,
             status: None,
+            answers: HashMap::new(),
+            widths: HashMap::new(),
         }
+    }
+
+    /// Adds one delta of an answer, and re-states it as rows.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC draws one kind as a document -- `output` -- and the rest as text. Only
+    /// that kind is accumulated, and a key reused by another kind drops what it held:
+    /// a stale body would be drawn where the new one belongs.
+    fn answer(
+        &mut self,
+        window: &str,
+        key: &str,
+        kind: LineKind,
+        tag: &str,
+        delta: &str,
+        done: bool,
+    ) {
+        if kind != LineKind::Assistant {
+            self.drop_answer(window, key);
+            return;
+        }
+        let entry = self
+            .answers
+            .entry(window.to_string())
+            .or_default()
+            .entry(key.to_string())
+            .or_insert_with(|| Answer {
+                kind,
+                tag: tag.to_string(),
+                text: String::new(),
+                done,
+            });
+        entry.tag = tag.to_string();
+        entry.text.push_str(delta);
+        entry.done = done;
+        self.emit_document(window, key);
+    }
+
+    /// Replaces an answer's whole text: what a rewrite of a derived body means.
+    fn rewritten(&mut self, window: &str, key: &str, text: &str) {
+        let Some(entry) = self
+            .answers
+            .get_mut(window)
+            .and_then(|held| held.get_mut(key))
+        else {
+            return;
+        };
+        entry.text.clear();
+        entry.text.push_str(text);
+        self.emit_document(window, key);
+    }
+
+    fn drop_answer(&mut self, window: &str, key: &str) {
+        if let Some(held) = self.answers.get_mut(window) {
+            held.remove(key);
+        }
+    }
+
+    fn drop_window(&mut self, window: &str) {
+        self.answers.remove(window);
+    }
+
+    /// The columns a pane can draw: a width that changed re-states every body in it.
+    fn refit(&mut self, window: &str, columns: usize) {
+        if self.widths.insert(window.to_string(), columns.max(1)) == Some(columns.max(1)) {
+            return;
+        }
+        let keys: Vec<String> = self
+            .answers
+            .get(window)
+            .map(|held| held.keys().cloned().collect())
+            .unwrap_or_default();
+        for key in keys {
+            self.emit_document(window, &key);
+        }
+    }
+
+    /// Puts one body on the wire as the rows this window is fitted to.
+    fn emit_document(&mut self, window: &str, key: &str) {
+        let width = self.widths.get(window).copied().unwrap_or(DEFAULT_COLUMNS);
+        let Some(entry) = self.answers.get(window).and_then(|held| held.get(key)) else {
+            return;
+        };
+        let rows = gongga_client::document::rows(&entry.text, width);
+        self.send(RenderMessage::Document {
+            window: window.to_string(),
+            key: key.to_string(),
+            kind: entry.kind,
+            tag: entry.tag.clone(),
+            rows,
+            done: entry.done,
+        });
     }
 
     /// Puts one frame on the pipe. No cap and no `try_send`: dropping a frame
@@ -152,6 +265,10 @@ impl WindowFacts for PipeFrontend {
     }
     fn note_room(&mut self, window: &str, rows: usize) {
         self.journal.note_room(window, rows);
+    }
+    // A width is this daemon's own bookkeeping: the rows it already sent are refitted.
+    fn note_columns(&mut self, window: &str, columns: usize) {
+        self.refit(window, columns);
     }
     fn drawn(&self) -> &[String] {
         self.journal.drawn()
@@ -312,6 +429,9 @@ impl Sink for PipeSink<'_> {
         done: bool,
     ) {
         self.wire.stream(window, key, kind, prefix, text, done);
+        // The same words twice: the text every front-end drew before, and the rows the
+        // one that reads them draws now. See `docs/notes/client-document.md`.
+        self.front.answer(window, key, kind, prefix, text, done);
     }
     fn status(&mut self, text: &str) {
         self.wire.status(text);
@@ -324,6 +444,7 @@ impl Sink for PipeSink<'_> {
     }
     fn rewrite(&mut self, window: &str, key: &str, text: &str) {
         self.wire.rewrite(window, key, text);
+        self.front.rewritten(window, key, text);
     }
     fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
         self.wire.tool_call(window, key, head, streamed);
@@ -333,9 +454,11 @@ impl Sink for PipeSink<'_> {
     }
     fn forget(&mut self, window: &str) {
         self.wire.forget(window);
+        self.front.drop_window(window);
     }
     fn clear(&mut self, window: &str) {
         self.wire.clear(window);
+        self.front.drop_window(window);
     }
     fn sticky_session(&mut self, name: Option<&str>) {
         self.wire.sticky_session(name);

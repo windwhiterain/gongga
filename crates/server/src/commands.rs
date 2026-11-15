@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use protocol::{
     Args, CommandSpec, CommandTarget, CompletionSource, Event, LogLevel, REPLAY_TURN,
-    ResponseEvent, ResponsePart, ToolAnswerEvent, ToolStream,
+    ResponseEvent, ResponsePart, ToolAnswerEvent, ToolStream, TurnOutcome,
 };
 use serde_json::json;
 
@@ -16,8 +16,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
 use crate::bus::EventBus;
-use crate::session::SessionManager;
-use crate::store::{MessageRow, PendingTask, Store, Transcript};
+use crate::session::{SessionHandle, SessionManager, Tuning};
+use crate::store::{Dream, MessageRow, PendingTask, Store, Transcript};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
 /// still reaches whoever asked for it.
@@ -47,6 +47,14 @@ const OWN_CLOCK: &[&str] = &["input_channel", "run_skill", "cancel"];
 fn time_notice() -> String {
     format!("(time notice: {})", crate::clock::now())
 }
+
+/// A dream's whole instruction: documents only, and the turn ends when they are
+/// in order.
+const DREAM_NOTICE: &str = "(dream notice: you are a dream, a disposable copy of the session that spawned you. \
+Your only work is to organize the workspace's documents: consolidate, deduplicate and retire stale notes \
+under .agents/notes/ and docs/notes/. Write no code, write no tests, and make no git writes. \
+The files you leave are the memory; this session is discarded when your turn ends. \
+End the turn when the documents are in order.)";
 
 #[derive(Clone)]
 pub struct Dispatch {
@@ -195,7 +203,6 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
     let bus = d.bus.clone();
     let active: ActiveGuard = ActiveGuard::new(d.active.clone());
     // Read before the turn starts: its first step consumes the mark.
-    let keepalive_agent = d.agent.clone();
     let keepalive_d = Arc::new(d.clone());
     let keepalive_session = work.session.clone();
     let keepalive_model = d.agent.config.now().model.model();
@@ -203,7 +210,7 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
     tokio::spawn(async move {
         let _active = active;
         let session = work.session.clone();
-        agent
+        let (outcome, interrupted) = agent
             .run_turn(&work.session, work.tasks, work.epoch, work.gate)
             .await;
         // SPEC's card: what the worktree holds now that the turn is quiet, then the
@@ -234,33 +241,129 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
                 drop(gate);
             }
         }
+        // SPEC's Dreaming: a dream is disposable, and its true end discards it.
+        if keepalive_session.dream_of().is_some()
+            && (outcome != TurnOutcome::Cancelled || interrupted)
+        {
+            discard_dream(&keepalive_d, &keepalive_session).await;
+            return;
+        }
         // Each turn schedules the next notice, so the chain has no last one.
-        if !keepalive_tuning.cache_keepalive {
-            return;
-        }
-        let wait_ms = keepalive_agent
-            .cache_fire_after_ms(&keepalive_model, keepalive_tuning.cache_tier.as_deref());
-        if wait_ms == 0 {
-            return;
-        }
-        let ended_at = crate::store::now_millis();
-        let session_id = keepalive_session.id();
-        let name = keepalive_session.name().to_string();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-            // Any request during the wait already refreshed the prefix.
-            let refreshed = keepalive_d
-                .store
-                .last_usage_at(session_id)
-                .ok()
-                .flatten()
-                .is_some_and(|at| at > ended_at);
-            if refreshed || keepalive_session.busy() {
-                return;
-            }
-            let _ = deliver(keepalive_d.as_ref(), &name, time_notice()).await;
-        });
+        arm_keepalive(
+            keepalive_d,
+            keepalive_session,
+            keepalive_tuning,
+            keepalive_model,
+        );
     });
+}
+
+/// Arms the next heartbeat: a sleeper that sends the time notice, or dreams in
+/// its place.
+fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle, tuning: Tuning, model: String) {
+    if !tuning.cache_keepalive {
+        return;
+    }
+    let wait_ms = d
+        .agent
+        .cache_fire_after_ms(&model, tuning.cache_tier.as_deref());
+    if wait_ms == 0 {
+        return;
+    }
+    let ended_at = crate::store::now_millis();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+        // Any request during the wait already refreshed the prefix.
+        let refreshed = d
+            .store
+            .last_usage_at(session.id())
+            .ok()
+            .flatten()
+            .is_some_and(|at| at > ended_at);
+        if refreshed || session.busy() {
+            return;
+        }
+        // SPEC's Dreaming: the first fire of a generation dreams in the notice's place.
+        if !d.shutting_down.load(Ordering::SeqCst) && spawn_dream(&d, &session).await {
+            // The source stayed idle, so no turn re-arms the chain: this fire does.
+            let tuning = session.tuning();
+            let model = d.agent.config.now().model.model();
+            arm_keepalive(d, session, tuning, model);
+            return;
+        }
+        let _ = deliver(d.as_ref(), session.name(), time_notice()).await;
+    });
+}
+
+/// Clones the source for a generation not yet dreamed, and hands the clone its
+/// notice. Returns whether this fire dreamed.
+async fn spawn_dream(d: &Dispatch, source: &SessionHandle) -> bool {
+    let Ok(Some(row)) = d.store.get_session(source.name()) else {
+        return false;
+    };
+    let generation = d
+        .store
+        .latest_checkpoint_id(source.id())
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    if row.dreamed_checkpoint_id == Some(generation) {
+        return false;
+    }
+    // At most one live dream per session: a running one finishes its generation first.
+    if !d
+        .store
+        .dreams_of(source.id())
+        .is_ok_and(|dreams| dreams.is_empty())
+    {
+        return false;
+    }
+    let name = format!("{}/dream/{}", source.name(), generation);
+    let dream = Dream {
+        source: source.id(),
+        generation,
+    };
+    let report = match d.store.clone_session(source.name(), &name, Some(dream)) {
+        Ok(report) => report,
+        Err(e) => {
+            tracing::warn!(session = %source.name(), error = %e, "the dream was not cloned");
+            return false;
+        }
+    };
+    // Marked before the notice: a fire that races this one must not dream twice.
+    if let Err(e) = d.store.set_dreamed_checkpoint(source.id(), generation) {
+        tracing::warn!(session = %source.name(), error = %e, "could not mark the dreamed generation");
+    }
+    d.agent.log_event(
+        Some(source.id()),
+        "dream_spawn",
+        &json!({"dream": name, "generation": generation, "rows": report.rows}),
+    );
+    publish_sessions(d);
+    let said = deliver(d, &name, DREAM_NOTICE.to_string()).await;
+    if !said.ok {
+        // A dream with no notice is row-less work: the next start's sweep discards it.
+        tracing::warn!(session = %name, answer = %said.message, "the dream notice was not delivered");
+    }
+    tracing::info!(session = %name, source = %source.name(), generation, rows = report.rows, "dream spawned");
+    true
+}
+
+/// Discards a dream whose turn truly ended, through the whole delete machinery.
+async fn discard_dream(d: &Dispatch, session: &SessionHandle) {
+    if session.is_deleted() {
+        return;
+    }
+    let name = session.name().to_string();
+    // On the source: the dream's own events are deleted with its row.
+    d.agent
+        .log_event(session.dream_of(), "dream_discard", &json!({"dream": name}));
+    // A dream owns no worktree: the clone never copies one.
+    let (was_busy, dropped) = prepare_delete(d, &name);
+    let said = finish_delete(d, &name, was_busy, dropped, None).await;
+    if !said.ok {
+        tracing::warn!(session = %name, answer = %said.message, "the dream was not discarded");
+    }
 }
 
 /// Claims one idle session; an inject-only recovery gets a durable turn row before
@@ -936,17 +1039,18 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "ls_skill".into(),
             description: "List the skills a session can open, one row per skill, under \
-                      `path`. A skill's path is `<bucket>/<name>`: `project` for the 
-                      checkout's own, `harness` for the home's, `general` for the 
-                      machine's. A path names a subtree, so `ls_skill harness` is every 
+                      `path`. A row's `id` is the skill's own name, and `bucket` says \
+                      which root it came from: `project` for the checkout's own, `harness` \
+                      for the home's, `general` for the machine's. A path is either a \
+                      skill's name or a bucket's word, so `ls_skill harness` is every \
                       skill the home installed and no path is every skill there is."
                 .into(),
             args: vec![
                 pos(
                     "path",
-                    "Where to look, as the beginning of a skill's path: `harness`, \
-                     `harness/self-control`, or nothing for all of them. Matched by 
-                     component, so `har` matches no bucket.",
+                    "Where to look: a skill's name, or a bucket's word (`harness`, `general`, \
+                     `project`), or nothing for all of them. Matched by component, so `har` \
+                     matches nothing.",
                     false,
                     Some("path"),
                     CompletionSource::None,
@@ -977,7 +1081,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             args: vec![
                 pos(
                     "id",
-                    "The skill to run, as `ls_skill` spells it: `<bucket>/<name>`.",
+                    "The skill to run, as `ls_skill` spells it: its name, and nothing above it.",
                     true,
                     Some("path"),
                     CompletionSource::None,
@@ -1529,6 +1633,13 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
             Err(e) => Outcome::err(format!("could not record the pending message: {e}")),
         };
     }
+    // SPEC: a work session opens its checkpoint before its first message; a dream opens none.
+    if session.mode() == crate::explore::Mode::Work
+        && session.dream_of().is_none()
+        && let Err(e) = d.store.start_live_compact(session.id())
+    {
+        tracing::warn!(session = %name, error = %e, "could not open the live compact checkpoint");
+    }
     let epoch = session.cancel_epoch();
     if let Some(gate) = session.try_claim() {
         // The gate is claimed before the durable write, so a second sender can only
@@ -1915,6 +2026,21 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(tokens) = live_interval {
         tuning.live_compact_interval_tokens = Some(tokens);
     }
+    // Zero is not a threshold: enabled live compact needs a positive interval.
+    let config = d.agent.config.now();
+    let live_on = tuning
+        .live_compact_enabled
+        .unwrap_or(config.agent.live_compact_enabled);
+    let live_interval_now = tuning
+        .live_compact_interval_tokens
+        .unwrap_or(config.agent.live_compact_interval_tokens);
+    if live_on && live_interval_now == 0 {
+        return Outcome::err(
+            "--live_compact_interval_tokens is the threshold, not the switch: enable live \
+             compact only with a positive interval"
+                .to_string(),
+        );
+    }
     if changed || cache_changed || live_changed {
         // Persist before applying: a restart must restore what turns here read.
         if let Err(e) = d.store.set_session_tuning(
@@ -1944,31 +2070,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             ) {
                 return Outcome::err(format!("could not save the live compact settings: {e}"));
             }
-            // Switched on, the checkpoint starts where the transcript is now: there is
-            // no plan finish left to wait for.
-            let config = d.agent.config.now();
-            if tuning
-                .live_compact_enabled
-                .unwrap_or(config.agent.live_compact_enabled)
-                && let Err(e) = d.store.start_live_compact(session.id())
-            {
-                return Outcome::err(format!("could not open the live compact checkpoint: {e:#}"));
-            }
         }
         session.set_tuning(tuning.clone());
     }
     // A mode that changed says so: the agent hears it at the next step boundary.
     if let Some(mode) = mode.filter(|mode| *mode != session.mode()) {
-        // Plan finish (explore -> work) opens the starting checkpoint; a failed
-        // open refuses the mode change.
-        let config = d.agent.config.now();
-        let live_compact = session
-            .tuning()
-            .live_compact_enabled
-            .unwrap_or(config.agent.live_compact_enabled);
+        // Plan finish (explore -> work) opens the starting checkpoint.
         if mode == crate::explore::Mode::Work
             && session.mode() == crate::explore::Mode::Explore
-            && live_compact
             && let Err(e) = d.store.start_live_compact(session.id())
         {
             return Outcome::err(format!("could not open the live compact checkpoint: {e:#}"));
@@ -2576,7 +2685,7 @@ fn replay_transcript(
 async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
     let source = args.word("id").unwrap_or_default().to_string();
     let name = args.word("new_id").unwrap_or_default().to_string();
-    let report = match d.store.clone_session(&source, &name) {
+    let report = match d.store.clone_session(&source, &name, None) {
         Ok(report) => report,
         Err(e) => return Outcome::err(e.to_string()),
     };
@@ -2679,8 +2788,9 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
 /// # Invariant
 ///
 /// One walk: the same `installed_for` that `run_skill` and `@skill(...)` read, so a
-/// path this lists is a path `run_skill` takes. `path` is matched by component
-/// (`under`), which is what makes `harness` a subtree and `har` nothing.
+/// name this lists is a name `run_skill` takes. `path` is a bucket's own word or a
+/// skill's name, matched by component (`under`): `harness` is every skill the home
+/// installed, `har` is nothing, and a nested skill answers to the directories under it.
 async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let session = match caller_session("ls_skill", args, caller) {
         Ok(session) => session,
@@ -2691,12 +2801,12 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let listed: Vec<serde_json::Value> =
-        crate::tools::skill::installed_for(&handle.cwd(), handle.owner())
-            .iter()
-            .filter(|skill| under(&skill.id(), &path))
-            .map(crate::tools::skill::row)
-            .collect();
+    let installed = crate::tools::skill::installed_for(&handle.cwd(), handle.owner());
+    let listed: Vec<serde_json::Value> = installed
+        .iter()
+        .filter(|skill| under(&skill.id(), &path) || under(skill.bucket.as_str(), &path))
+        .map(crate::tools::skill::row)
+        .collect();
     if listed.is_empty() {
         return Outcome::ok(format!("{session}: no skill matches {path:?}"));
     }
@@ -2708,8 +2818,9 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
 /// # Invariant
 ///
 /// SPEC's `## Python Cmd`, and the one runner there is: the id is resolved here, because
-/// a path names one root where a name may name two, and what a skill *is* is decided in
-/// one place, [`skill::Skills::run`].
+/// a name two roots spell is two skills, and what a skill *is* is decided in
+/// one place, [`skill::Skills::run`]. The name answers with the most specific row, the
+/// same one `@skill(...)` reads.
 async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let session = match caller_session("run_skill", args, caller) {
         Ok(session) => session,
@@ -2721,9 +2832,10 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let installed = crate::tools::skill::installed_for(&handle.cwd(), handle.owner());
-    let Some(skill) = installed.iter().find(|skill| skill.id() == id) else {
-        let known: Vec<String> = installed.iter().map(|skill| skill.id()).collect();
+    let roots = crate::tools::skill::session_roots(&handle.cwd(), handle.owner());
+    // One resolver, and the walk behind it is `ls_skill`'s.
+    let Some(skill) = roots.at(&id) else {
+        let known: Vec<String> = roots.all().iter().map(|skill| skill.id()).collect();
         return Outcome::err(format!(
             "no skill is {id:?} here; `ls_skill` lists {}",
             if known.is_empty() {
@@ -2744,7 +2856,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(ctx) => ctx,
         Err(why) => return Outcome::err(why),
     };
-    let outcome = skills.run(skill, cmd, &ctx).await;
+    let outcome = skills.run(&skill, cmd, &ctx).await;
     match outcome.ok {
         true => Outcome::ok(outcome.output),
         false => Outcome::err(outcome.output),
@@ -2764,11 +2876,19 @@ async fn declared_command(
     args: &Args,
     caller: Option<&str>,
 ) -> Outcome {
+    // The shared arguments are the call layer's, so they are read off here: a function
+    // has no parameter of that name, and one that arrived as a keyword argument is a name
+    // the caller may not spell. The same list the tool layer takes, read in the other door
+    // a declared command comes in by.
+    let mut own = args.clone();
+    for (name, _, _) in crate::tools::laws::ALL {
+        own.remove(*name);
+    }
     let mut call = Args::new();
     call.insert("id", route.skill.clone());
     call.insert(
         "cmd",
-        serde_json::json!({"name": route.function, "args": args.as_json()}),
+        serde_json::json!({"name": route.function, "args": own.as_json()}),
     );
     run_skill(d, &call, caller).await
 }
@@ -3342,11 +3462,28 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
         Ok(rows) => rows,
         Err(e) => return Outcome::err(format!("could not read the sessions: {e}")),
     };
-    let doomed: Vec<String> = rows
-        .into_iter()
-        .map(|row| row.name)
-        .filter(|name| under(name, &path))
+    let mut doomed: Vec<String> = rows
+        .iter()
+        .filter(|row| under(&row.name, &path))
+        .map(|row| row.name.clone())
         .collect();
+    // SPEC's Dreaming: a source's delete discards its dreams, even ones a rename
+    // left outside the path.
+    let doomed_ids: std::collections::HashSet<i64> = rows
+        .iter()
+        .filter(|row| under(&row.name, &path))
+        .map(|row| row.id)
+        .collect();
+    let mut seen: std::collections::HashSet<String> = doomed.iter().cloned().collect();
+    for row in &rows {
+        if row
+            .dream_of
+            .is_some_and(|source| doomed_ids.contains(&source))
+            && seen.insert(row.name.clone())
+        {
+            doomed.push(row.name.clone());
+        }
+    }
     let Some((one, below)) = doomed.split_first() else {
         return Outcome::err(format!("no session named {path:?}"));
     };
@@ -3530,6 +3667,12 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
     // SPEC: `keep_alive` detaches every channel -- a job, not a row (`tools::job::arm`).
     let channels = match keep_alive {
         true => {
+            // The row carries the flag, so a later stop that asked for nothing spares
+            // these too, and the next start takes them over.
+            let marked = d.agent.channels.mark_kept().await;
+            if marked > 0 {
+                tracing::info!(marked, "cancel: every channel was marked to be kept");
+            }
             let released = crate::tools::detached::release_detached();
             if released > 0 {
                 tracing::info!(released, "cancel: every background tree was let go");
@@ -3734,6 +3877,36 @@ pub fn answer_open_calls(d: &Dispatch) -> usize {
         }
     }
     answered
+}
+
+/// Discards dreams whose true-end discard was lost to the last process exit.
+pub async fn sweep_orphan_dreams(d: &Dispatch) -> usize {
+    let Ok(orphans) = d.store.orphan_dreams() else {
+        return 0;
+    };
+    let mut swept = 0;
+    for (_, name, source, generation) in orphans {
+        let (was_busy, dropped) = prepare_delete(d, &name);
+        let said = finish_delete(d, &name, was_busy, dropped, None).await;
+        if !said.ok {
+            tracing::warn!(session = %name, answer = %said.message, "an orphan dream was not discarded");
+            continue;
+        }
+        swept += 1;
+        // The generation may dream again, but only if the source still marks it.
+        if let Some(generation) = generation {
+            if let Err(e) = d.store.reset_dreamed_checkpoint(source, generation) {
+                tracing::warn!(session = %name, error = %e, "could not reset the dreamed generation");
+            }
+        }
+        d.agent.log_event(
+            None,
+            "dream_sweep",
+            &json!({"dream": name, "source": source}),
+        );
+        tracing::info!(session = %name, "orphan dream discarded: its end was lost to a process exit");
+    }
+    swept
 }
 
 pub async fn resume_pending(d: &Dispatch) -> usize {

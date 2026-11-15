@@ -704,6 +704,10 @@ set to `cache_keepalive false` stops the chain at its next turn end.
 The timer is a task, not a process. A server that shuts down takes it with it;
 nothing survives the turn to be discovered later.
 
+A fire may dream instead of notifying: the first fire of a checkpoint generation
+clones the session into a disposable dream that organizes documents, and the chain
+is re-armed by the fire itself. `server-dream.md` has the whole mechanism.
+
 ## How an argument is spelled, and what a `path` means
 
 An argument type is SPEC spelling -- `optional[path]`, `list[str]`, `time`, `optional[str]` --
@@ -742,17 +746,25 @@ one at a time rather than batched.
 
 ## ls_skill
 
-SPEC's `## Python Cmd` gives skills a namespace, so a skill has a path and the path
-is `<bucket>/<name>`: `project/evolve` for the checkout's own, `harness/handoff` for the
-home's, `general/polity` for the machine's. `skill::Skill::id` is that spelling and
-nothing else, which is what lets a row this lists be pasted into `run_skill`.
+SPEC's `## Python Cmd` gives skills a namespace, so a skill has a path -- and the path is
+the skill's **name**: `evolve` for the checkout's own, `handoff` for the home's,
+`polity` for the machine's. `skill::Skill::id` is that name and nothing above it, which
+is what lets a row this lists be pasted into `run_skill` unchanged. Which root a row came
+from is a field of its own (`bucket`), not part of the name: a caller who holds a name
+should not have to know which of three directories answers to it.
 
 The walk is the one `run_skill` and `@skill(...)` already make (`tools::skill::installed_for`):
 the project layer needs the session *on this machine*, so a session whose directory is
 on a peer is handed the home's and the machine's rows instead. `path` is filtered with
-`commands::under`, so `harness` is every skill the home installed, `harness/handoff` is
-one, and `har` is nothing -- a component, never a string prefix. A row is
-`tools::skill::row`, so the listing and the call never disagree about an `id`.
+`commands::under` against a name **or** a bucket's word, so `harness` is every skill the
+home installed, `self-control` is one, and `har` is nothing -- a component, never a string
+prefix. A row is `tools::skill::row`, so the listing and the call never disagree about an
+`id`.
+
+A name two roots both hold is two rows with one name. `ls_skill` lists both, each with its
+`bucket`; `run_skill` runs the most specific one, the row `@skill(...)` already read. There
+is no second spelling for "the other one", because the point of dropping the prefix is that
+the name is the name.
 
 ## run_skill
 

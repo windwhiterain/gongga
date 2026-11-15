@@ -5,7 +5,7 @@
 The commands the *content* declares, published by this server like its own.
 
 `ship/ship.toml` names a function of one of its skills, and the harness offers it as a
-command of that name: `write` is `harness/file`'s `write`, reachable exactly as
+command of that name: `write` is `file`'s `write`, reachable exactly as
 `send_message` is -- `gongga-cli '{"name": "write", "args": {...}}'`, a tool row with
 `cmd = "write"`, a client's completion. Before this, a skill's functions were only
 reachable through `run_skill` and its generic `cmd` schema, which is a schema that says

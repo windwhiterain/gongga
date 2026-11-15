@@ -10,23 +10,28 @@ public sealed class ClientModel : ViewModelBase
 {
     public const string Help =
         "Enter submit \u00b7 Shift+Enter newline \u00b7 Tab complete \u00b7 PageUp/PageDown scroll \u00b7 " +
-        "Shift+\u2191/\u2193 history \u00b7 Shift+Delete delete session \u00b7 Ctrl+Q exit";
+        "Ctrl+\u2193 newest \u00b7 Shift+\u2191/\u2193 history \u00b7 Shift+Delete delete session \u00b7 Ctrl+Q exit";
+
+    /// The height one row of a block is drawn at, for SPEC's `block_size`: a cap is
+    /// a number of rows, and a window measures in pixels.
+    public const double LineHeight = 20;
 
     private readonly Dictionary<string, ObservableCollection<BlockRow>> _windows = new();
     private readonly Dictionary<string, BlockRow> _open = new();
     private readonly Dictionary<string, List<BlockRow>> _byKey = new();
     private readonly HashSet<string> _unseen = new();
-    private readonly Dictionary<string, Page> _olderPages = new();
+    private readonly HashSet<string> _folded = new();
     private readonly List<string> _history = new();
     private int _historyPosition;
-    private WindowLayout _layout = new([], [], string.Empty, null);
+    private WindowLayout _layout = new([], [], string.Empty, []);
+    private int _blockSize;
+    private int _boxEdge = 2;
     private string _sticky = string.Empty;
     private string _statusText = "starting";
     private LineKind _statusKind = LineKind.System;
     private string _serverText = string.Empty;
     private bool _serverOurs;
     private string _quotaText = string.Empty;
-    private LineKind _quotaKind = LineKind.System;
     private string _inputText = string.Empty;
     private int _inputCaret;
     private string _toast = string.Empty;
@@ -100,17 +105,14 @@ public sealed class ClientModel : ViewModelBase
         ? $"gongga \u00b7 {StatusText}"
         : $"gongga \u00b7 {ServerText} \u00b7 {StatusText}";
 
-    public string QuotaText
-    {
-        get => _quotaText;
-        private set => Set(ref _quotaText, value, nameof(QuotaText));
-    }
+    public string QuotaText => string.Join("   ", Quota.Select(row => row.Text));
 
-    public LineKind QuotaKind
-    {
-        get => _quotaKind;
-        private set => Set(ref _quotaKind, value, nameof(QuotaKind));
-    }
+    /// SPEC's `active_quota` block: one row per provider, in the client's order.
+    public ObservableCollection<QuotaItem> Quota { get; } = new();
+
+    /// Whether the block is drawn at all: a provider that reported nothing is not a
+    /// row of zeroes.
+    public bool HasQuota => Quota.Count != 0;
 
     public string Toast
     {
@@ -150,6 +152,10 @@ public sealed class ClientModel : ViewModelBase
 
     public string Sticky => _sticky;
 
+    /// The margin a body keeps from the events at each side, in pixels: SPEC's
+    /// `box_edge`, which the drawing subtracts before it states a width.
+    public double Edge => _boxEdge * BlockRow.EdgeColumn;
+
     public string HelpText => Help;
 
     public void Apply(RenderFrame frame)
@@ -161,14 +167,7 @@ public sealed class ClientModel : ViewModelBase
                 {
                     Sealed = true,
                 };
-                if (PageAt(value.Window, out var above))
-                {
-                    Insert(above, lined);
-                }
-                else
-                {
-                    Add(lined);
-                }
+                Add(lined);
                 break;
 
             case RenderFrame.Stream value:
@@ -191,8 +190,25 @@ public sealed class ClientModel : ViewModelBase
                 RebuildSessions(value.Value);
                 RebuildPanes(value.Value);
                 CommandBlocks = Window(value.Value.Command);
-                QuotaText = value.Value.Quota?.Text ?? string.Empty;
-                QuotaKind = value.Value.Quota?.Kind ?? LineKind.System;
+                SyncQuota(value.Value.Quota);
+                break;
+
+            case RenderFrame.Older value:
+                Prepend(value.Window, value.Rows);
+                break;
+
+            case RenderFrame.Document value:
+                ApplyDocument(value);
+                break;
+
+            case RenderFrame.Render value:
+                _blockSize = value.BlockSize;
+                _boxEdge = value.BoxEdge;
+                ApplyRender();
+                break;
+
+            case RenderFrame.Rewind value:
+                DropUnsealed(value.Window);
                 break;
 
             case RenderFrame.Rewrite value:
@@ -215,13 +231,11 @@ public sealed class ClientModel : ViewModelBase
                 break;
 
             case RenderFrame.Forget value:
-                ForgetPage(value.Window);
                 ForgetWindow(value.Window);
                 break;
 
             case RenderFrame.Clear value:
                 // Contract: crates/tui/src/log.rs clear keeps the pane, Forget does not.
-                ForgetPage(value.Window);
                 Window(value.Window).Clear();
                 foreach (var key in _open.Where(pair => pair.Value.Window == value.Window)
                              .Select(pair => pair.Key).ToList())
@@ -244,7 +258,6 @@ public sealed class ClientModel : ViewModelBase
                 break;
 
             case RenderFrame.Stopped value:
-                ForgetPage(value.Session);
                 if (!_layout.Shown.Contains(value.Session))
                 {
                     _unseen.Add(value.Session);
@@ -282,7 +295,6 @@ public sealed class ClientModel : ViewModelBase
                 _windows.Clear();
                 _open.Clear();
                 _byKey.Clear();
-                _olderPages.Clear();
                 CommandBlocks = Window(_layout.Command);
                 break;
 
@@ -323,14 +335,7 @@ public sealed class ClientModel : ViewModelBase
                 return;
             }
             live = new BlockRow(value.Window, value.Key, value.Kind, value.Prefix, value.Text);
-            if (PageAt(value.Window, out var above))
-            {
-                Insert(above, live);
-            }
-            else
-            {
-                Add(live);
-            }
+            Add(live);
             _open[value.Key] = live;
         }
         else
@@ -341,6 +346,35 @@ public sealed class ClientModel : ViewModelBase
         {
             live.Sealed = true;
             _open.Remove(value.Key);
+        }
+    }
+
+    /// A body as finished rows: the block it names is replaced whole.
+    ///
+    /// # Invariant
+    ///
+    /// A document is derived from its source, so the rows a window holds are the ones
+    /// this frame carried -- never an append, which would leave a row above the last
+    /// one saying what the model no longer says.
+    private void ApplyDocument(RenderFrame.Document value)
+    {
+        var block = FindByKey(value.Key);
+        if (block is null)
+        {
+            block = new BlockRow(value.Window, value.Key, value.Kind, value.Tag, string.Empty);
+            Add(block);
+        }
+        block.Kind = value.Kind;
+        block.Tag = value.Tag;
+        block.Rows = value.Rows.Select(row => new SpanRow(row, value.Kind)).ToList();
+        block.Sealed = value.Done;
+        if (value.Done)
+        {
+            _open.Remove(value.Key);
+        }
+        else
+        {
+            _open[value.Key] = block;
         }
     }
 
@@ -382,43 +416,208 @@ public sealed class ClientModel : ViewModelBase
 
     private void RebuildSessions(WindowLayout layout)
     {
+        var wanted = TreeRows(layout);
+        var names = wanted.Select(row => row.Name).ToHashSet();
         for (var index = Sessions.Count - 1; index >= 0; index--)
         {
-            if (!layout.Listed.Any(row => row.Name == Sessions[index].Name))
+            if (!names.Contains(Sessions[index].Name))
             {
                 Sessions.RemoveAt(index);
             }
         }
-        for (var wanted = 0; wanted < layout.Listed.Count; wanted++)
+        for (var place = 0; place < wanted.Count; place++)
         {
-            var row = layout.Listed[wanted];
-            var existing = Sessions.FirstOrDefault(item => item.Name == row.Name);
-            if (existing is null)
+            var want = wanted[place];
+            var row = Sessions.FirstOrDefault(item => item.Name == want.Name);
+            if (row is null)
             {
-                existing = new SessionRow(row.Name);
-                Sessions.Add(existing);
+                row = new SessionRow(want.Name);
+                Sessions.Add(row);
             }
-            existing.Status = row.Status;
-            existing.Title = row.Title;
-            existing.Unseen = _unseen.Contains(row.Name);
+            row.Label = want.Label;
+            row.Depth = want.Depth;
+            row.Session = want.Session;
+            row.Group = want.Group;
+            row.HasChildren = want.Group;
+            row.Collapsed = want.Collapsed;
+            row.Mark = want.Mark;
+            row.MarkKind = want.MarkKind;
+            row.Status = want.Status;
+            row.Title = want.Title;
+            row.Unseen = want.Unseen;
             // What the list lights up is which windows are open, not where a click
             // last landed: the layout is the only thing that knows.
-            existing.Shown = layout.Shown.Contains(row.Name);
-            var current = -1;
-            for (var scan = 0; scan < Sessions.Count; scan++)
+            row.Shown = want.Shown;
+            var current = Sessions.IndexOf(row);
+            if (current >= 0 && current != place)
             {
-                if (Sessions[scan] == existing)
-                {
-                    current = scan;
-                    break;
-                }
-            }
-            if (current >= 0 && current != wanted)
-            {
-                Sessions.Move(current, wanted);
+                Sessions.Move(current, place);
             }
         }
         _unseen.RemoveWhere(name => layout.Shown.Contains(name));
+    }
+
+    /// SPEC's session list as a tree: every prefix of a name is a row.
+    ///
+    /// Contract: crates/tui/src/tree.rs rows. Siblings keep the layout's order and a
+    /// group stands where its newest session stands, so a pane does not move under
+    /// the reader when a turn ends somewhere else.
+    private List<SessionRow> TreeRows(WindowLayout layout)
+    {
+        var nodes = new List<TreeNode>();
+        var index = new Dictionary<string, int>();
+        var roots = new List<int>();
+        for (var place = 0; place < layout.Listed.Count; place++)
+        {
+            var listed = layout.Listed[place];
+            var (mark, kind) = MarkOf(listed, _unseen.Contains(listed.Name));
+            var prefix = string.Empty;
+            var parent = -1;
+            var depth = 0;
+            foreach (var segment in listed.Name.Split('/'))
+            {
+                prefix = depth == 0 ? segment : $"{prefix}/{segment}";
+                if (!index.TryGetValue(prefix, out var at))
+                {
+                    at = nodes.Count;
+                    nodes.Add(new TreeNode
+                    {
+                        Name = prefix,
+                        Label = segment,
+                        Depth = depth,
+                        Latest = place,
+                    });
+                    index[prefix] = at;
+                    if (parent >= 0)
+                    {
+                        nodes[parent].Children.Add(at);
+                    }
+                    else
+                    {
+                        roots.Add(at);
+                    }
+                }
+                nodes[at].Under = Math.Max(nodes[at].Under, mark);
+                nodes[at].Latest = Math.Max(nodes[at].Latest, place);
+                parent = at;
+                depth++;
+            }
+            if (parent < 0)
+            {
+                continue;
+            }
+            nodes[parent].Session = true;
+            nodes[parent].Own = mark;
+            nodes[parent].Status = listed.Status;
+            nodes[parent].Title = listed.Title;
+            nodes[parent].Shown = layout.Shown.Contains(listed.Name);
+            nodes[parent].Unseen = _unseen.Contains(listed.Name);
+        }
+        roots.Sort((left, right) => nodes[left].Latest.CompareTo(nodes[right].Latest));
+        foreach (var node in nodes)
+        {
+            node.Children.Sort((left, right) => nodes[left].Latest.CompareTo(nodes[right].Latest));
+        }
+        var rows = new List<SessionRow>(nodes.Count);
+        var stack = new Stack<int>();
+        for (var at = roots.Count - 1; at >= 0; at--)
+        {
+            stack.Push(roots[at]);
+        }
+        while (stack.Count != 0)
+        {
+            var node = nodes[stack.Pop()];
+            var group = node.Children.Count != 0;
+            var collapsed = group && _folded.Contains(node.Name);
+            var rank = node.Session ? node.Own : node.Under;
+            var (mark, kind) = Symbol(rank);
+            rows.Add(new SessionRow(node.Name)
+            {
+                Label = node.Label,
+                Depth = node.Depth,
+                Session = node.Session,
+                Group = group,
+                HasChildren = group,
+                Collapsed = collapsed,
+                Mark = mark,
+                MarkKind = kind,
+                Status = node.Status,
+                Title = node.Title,
+                Shown = node.Shown,
+                Unseen = node.Unseen,
+            });
+            if (collapsed)
+            {
+                continue;
+            }
+            for (var at = node.Children.Count - 1; at >= 0; at--)
+            {
+                stack.Push(node.Children[at]);
+            }
+        }
+        return rows;
+    }
+
+    /// The mark of one session: what it is doing, or that it stopped unseen.
+    ///
+    /// # Invariant
+    ///
+    /// An error keeps its own mark, because the failure is the stronger fact.
+    private static (int Rank, LineKind Kind) MarkOf(ListedRow listed, bool unseen)
+    {
+        var rank = listed.Status switch
+        {
+            "running" => 1,
+            "error" => 3,
+            _ => 0,
+        };
+        if (rank == 0 && unseen)
+        {
+            rank = 2;
+        }
+        return (rank, rank switch
+        {
+            1 => LineKind.Result,
+            2 => LineKind.ToolCall,
+            3 => LineKind.Error,
+            _ => LineKind.System,
+        });
+    }
+
+    private static (string Mark, LineKind Kind) Symbol(int rank) => rank switch
+    {
+        1 => ("\u25cf", LineKind.Result),
+        2 => ("\u25cb", LineKind.ToolCall),
+        3 => ("\u2715", LineKind.Error),
+        _ => ("\u25cb", LineKind.System),
+    };
+
+    /// One node of the tree being built, before it is a row.
+    private sealed class TreeNode
+    {
+        public string Name = string.Empty;
+        public string Label = string.Empty;
+        public string Status = string.Empty;
+        public string Title = string.Empty;
+        public int Depth;
+        public int Latest;
+        public bool Session;
+        public bool Shown;
+        public bool Unseen;
+        /// The rank of this node's own session, and of the strongest under it.
+        public int Own;
+        public int Under;
+        public List<int> Children { get; } = new();
+    }
+
+    /// Folds or unfolds one group of the list; the client knows nothing of it.
+    public void ToggleFold(string name)
+    {
+        if (!_folded.Remove(name))
+        {
+            _folded.Add(name);
+        }
+        RebuildSessions(_layout);
     }
 
     private void RebuildPanes(WindowLayout layout)
@@ -485,14 +684,26 @@ public sealed class ClientModel : ViewModelBase
             Add(block);
             return;
         }
+        Dress(block);
         blocks.Insert(at, block);
         Remember(block);
     }
 
     private void Add(BlockRow block)
     {
+        Dress(block);
         Window(block.Window).Add(block);
         Remember(block);
+    }
+
+    /// Gives a block the window's own cap and margin, which the frame that sent a
+    /// `set_render` applied only to the blocks that existed then.
+    private void Dress(BlockRow block)
+    {
+        block.Cap = _blockSize <= 0
+            ? double.PositiveInfinity
+            : _blockSize * LineHeight;
+        block.Edge = _boxEdge * BlockRow.EdgeColumn;
     }
 
     private void Remember(BlockRow block)
@@ -617,56 +828,76 @@ public sealed class ClientModel : ViewModelBase
     ///
     /// # Invariant
     ///
-    /// The rows of the answer go above the ones already held, and the wire does not
-    /// say so: a page is the next `rows` lines that arrive for this window, which is
-    /// why the count is remembered here rather than guessed from the frames.
-    public void RequestOlder(string window, int rows)
+    /// The answer arrives as one `Older` frame that says it goes above what the pane
+    /// holds; nothing here counts rows or watches a clock, so a live row that arrives
+    /// while the page is on its way is never mistaken for history.
+    public void RequestOlder(string window) => Send?.Invoke(Intents.Older([window]));
+
+    /// Puts one page of the past above the rows this window already holds.
+    private void Prepend(string window, IReadOnlyList<PastRow> rows)
     {
-        if (_olderPages.ContainsKey(window))
+        var blocks = Window(window);
+        for (var index = 0; index < rows.Count; index++)
         {
-            return;
+            var row = rows[index];
+            var block = new BlockRow(window, row.Key, row.Kind, row.Tag, row.Text)
+            {
+                Sealed = true,
+            };
+            Dress(block);
+            blocks.Insert(index, block);
+            Remember(block);
         }
-        _olderPages[window] = new Page
-        {
-            Asked = Math.Max(1, rows),
-            Until = DateTime.UtcNow + PageWindow,
-        };
-        Send?.Invoke(Intents.Older([window]));
     }
 
-    /// Whether an answer for this window belongs above what it already draws.
-    private bool PageAt(string window, out int at)
+    /// Drops the blocks of one window that had not ended: the tail above the stamp
+    /// the client is about to replay. Contract: crates/tui/src/log.rs remove_blocks.
+    private void DropUnsealed(string window)
     {
-        at = 0;
-        if (!_olderPages.TryGetValue(window, out var page))
+        var blocks = Window(window);
+        for (var index = blocks.Count - 1; index >= 0; index--)
         {
-            return false;
+            if (blocks[index].Sealed)
+            {
+                continue;
+            }
+            blocks[index].Dropped = true;
+            blocks.RemoveAt(index);
         }
-        if (DateTime.UtcNow > page.Until)
+        foreach (var key in _open.Where(pair => pair.Value.Window == window)
+                     .Select(pair => pair.Key).ToList())
         {
-            // A page arrives as one burst; rows that turn up long after it are the
-            // session talking, and the top of the pane is not where they belong.
-            _olderPages.Remove(window);
-            return false;
+            _open.Remove(key);
         }
-        at = page.Placed;
-        if (++page.Placed >= page.Asked)
-        {
-            _olderPages.Remove(window);
-        }
-        return true;
     }
 
-    private void ForgetPage(string window) => _olderPages.Remove(window);
-
-    /// How long a refill's rows are taken to be one page.
-    private static readonly TimeSpan PageWindow = TimeSpan.FromSeconds(3);
-
-    private sealed class Page
+    /// Writes SPEC's `block_size` and `box_edge` into every block on screen, and into
+    /// the ones that arrive later.
+    private void ApplyRender()
     {
-        public int Asked { get; init; }
-        public int Placed { get; set; }
-        public DateTime Until { get; init; }
+        var cap = _blockSize <= 0
+            ? double.PositiveInfinity
+            : _blockSize * LineHeight;
+        foreach (var blocks in _windows.Values)
+        {
+            foreach (var block in blocks)
+            {
+                block.Cap = cap;
+                block.Edge = _boxEdge * BlockRow.EdgeColumn;
+            }
+        }
+    }
+
+    /// Replaces the block with what the client now says it holds.
+    private void SyncQuota(IReadOnlyList<QuotaItem> rows)
+    {
+        Quota.Clear();
+        foreach (var row in rows)
+        {
+            Quota.Add(row);
+        }
+        Raise(nameof(HasQuota));
+        Raise(nameof(QuotaText));
     }
 
     public void MoveCompletion(int delta)

@@ -36,6 +36,18 @@ public static class Intents
         windows = windows.Select(pane => new object[] { pane.Window, pane.Rows }).ToArray(),
     });
 
+    /// How many columns each open pane can draw: the width a body is fitted to.
+    ///
+    /// # Invariant
+    ///
+    /// Pairs, like `Room`: the wire wants `Vec<(String, usize)>`, which serde writes
+    /// as `["beta",78]`.
+    public static string Columns(IReadOnlyCollection<(string Window, int Columns)> windows) => Encode(new
+    {
+        intent = "columns",
+        windows = windows.Select(pane => new object[] { pane.Window, pane.Columns }).ToArray(),
+    });
+
     public static string StickySession(string session) => Encode(new
     {
         intent = "operate",

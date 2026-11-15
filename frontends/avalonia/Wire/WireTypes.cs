@@ -30,13 +30,27 @@ public enum HeadKind
 
 public sealed record ListedRow(string Name, string Status, string Title);
 
-public sealed record QuotaRow(string Text, LineKind Kind);
+/// One provider's row of SPEC's `active_quota`: the provider, then the figures it
+/// reported, already spelled by the client.
+///
+/// Contract: crates/client/src/lib.rs QuotaRow.
+public sealed record QuotaItem(string Provider, string Text, LineKind Kind);
+
+/// One finished row of a page of the past. Contract: crates/client/src/render_wire.rs
+/// PastRow -- a line, or a block that already ended and kept the key it lived by.
+public sealed record PastRow(string Key, LineKind Kind, string Tag, string Text);
+
+/// One run of a document row, already classified by the client.
+///
+/// Contract: crates/client/src/render_wire.rs DocumentSpan -- the class says what a
+/// run is, and this window owns the ink.
+public sealed record SpanItem(string Text, string Class);
 
 public sealed record WindowLayout(
     IReadOnlyList<ListedRow> Listed,
     IReadOnlyList<string> Shown,
     string Command,
-    QuotaRow? Quota);
+    IReadOnlyList<QuotaItem> Quota);
 
 public sealed record CandidateRow(string Insert, string Detail, bool Space);
 
@@ -159,6 +173,30 @@ public abstract record RenderFrame
         long End,
         string? Subject,
         IReadOnlyList<CandidateRow> Candidates) : RenderFrame;
+
+    /// A page of the past, drawn above what the window already holds.
+    ///
+    /// # Invariant
+    ///
+    /// The rows are already finished and already ordered, so nothing here guesses
+    /// which arrivals are history: the frame says so.
+    public sealed record Older(string Window, IReadOnlyList<PastRow> Rows) : RenderFrame;
+
+    /// The window's own cap and margin: SPEC's `block_size` and `box_edge`.
+    public sealed record Render(int BlockSize, int BoxEdge) : RenderFrame;
+
+    /// A body as finished rows: SPEC's `output`, parsed and wrapped by the client.
+    public sealed record Document(
+        string Window,
+        string Key,
+        LineKind Kind,
+        string Tag,
+        IReadOnlyList<IReadOnlyList<SpanItem>> Rows,
+        bool Done) : RenderFrame;
+
+    /// Everything above the session's last stamp is thrown away: a replayed fill
+    /// keeps the blocks that already ended and drops the ones still streaming.
+    public sealed record Rewind(string Window) : RenderFrame;
 }
 
 public static class WireReader
@@ -207,6 +245,18 @@ public static class WireReader
                 "server" => new RenderFrame.Server(OptionalText(root, "label"), Flag(root, "ours")),
                 "repoint" => new RenderFrame.Repoint(Text(root, "endpoint")),
                 "vocabulary" => new RenderFrame.Vocabulary(Number(root, "version")),
+                "older" => new RenderFrame.Older(Text(root, "window"), ReadPastRows(root)),
+                "render" => new RenderFrame.Render(
+                    (int)Number(root, "block_size"),
+                    (int)Number(root, "box_edge")),
+                "rewind" => new RenderFrame.Rewind(Text(root, "window")),
+                "document" => new RenderFrame.Document(
+                    Text(root, "window"),
+                    Text(root, "key"),
+                    Kind(root, "kind"),
+                    Text(root, "tag"),
+                    ReadDocumentRows(root),
+                    Flag(root, "done")),
                 "completion" => new RenderFrame.Completion(
                     Number(root, "start"),
                     Number(root, "end"),
@@ -250,12 +300,59 @@ public static class WireReader
                 }
             }
         }
-        QuotaRow? quota = null;
-        if (element.TryGetProperty("quota", out var value) && value.ValueKind == JsonValueKind.Object)
+        var quota = new List<QuotaItem>();
+        if (element.TryGetProperty("quota", out var quotaRows)
+            && quotaRows.ValueKind == JsonValueKind.Array)
         {
-            quota = new QuotaRow(Text(value, "text"), Kind(value, "kind"));
+            foreach (var row in quotaRows.EnumerateArray())
+            {
+                quota.Add(new QuotaItem(
+                    Text(row, "provider"),
+                    Text(row, "text"),
+                    Kind(row, "kind")));
+            }
         }
         return new WindowLayout(listed, shown, Text(element, "command"), quota);
+    }
+
+    /// A document's rows: each row a list of runs, each run its words and its class.
+    private static IReadOnlyList<IReadOnlyList<SpanItem>> ReadDocumentRows(JsonElement root)
+    {
+        var rows = new List<IReadOnlyList<SpanItem>>();
+        if (root.TryGetProperty("rows", out var values) && values.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var row in values.EnumerateArray())
+            {
+                var spans = new List<SpanItem>();
+                if (row.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var span in row.EnumerateArray())
+                    {
+                        spans.Add(new SpanItem(Text(span, "text"), Text(span, "class")));
+                    }
+                }
+                rows.Add(spans);
+            }
+        }
+        return rows;
+    }
+
+    /// A page of the past: each row is a line or a block, told apart by `row`.
+    private static IReadOnlyList<PastRow> ReadPastRows(JsonElement root)
+    {
+        var rows = new List<PastRow>();
+        if (root.TryGetProperty("rows", out var values) && values.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var row in values.EnumerateArray())
+            {
+                rows.Add(new PastRow(
+                    Text(row, "key"),
+                    Kind(row, "kind"),
+                    Text(row, "tag"),
+                    Text(row, "text")));
+            }
+        }
+        return rows;
     }
 
     private static HeadRow ReadHead(JsonElement element)

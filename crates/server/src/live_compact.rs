@@ -1,17 +1,18 @@
-//! Durable live-compaction state and the ordinary round a checkpoint retains.
+//! Durable live-compaction state: the checkpoint and the interval that asks for the next one.
 
 use std::collections::BTreeMap;
 
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
 
 pub const REQUEST_KIND: &str = "live_compact_request";
 
+/// What one step measures: the context, the last checkpoint, and the backoff.
 #[derive(Debug, Clone, Copy)]
 pub struct Measurement {
     pub tokens: u64,
     pub baseline_tokens: Option<u64>,
-    pub requested: bool,
+    /// The interval in force after every unanswered ask; `None` is the base.
+    pub interval: Option<u64>,
     pub generation: u64,
 }
 
@@ -21,20 +22,57 @@ pub struct Round {
     pub cutoff_seq: i64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Request {
-    pub request_seq: i64,
-    pub segment_after_seq: i64,
-    pub round_start_seq: i64,
-    pub cutoff_seq: i64,
-    pub generation: u64,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct Committed {
     pub checkpoint_id: i64,
     pub result_seq: i64,
     pub generation: u64,
+}
+
+/// What a `live_compact` call did: committed a checkpoint, or explained why not.
+///
+/// # Invariant
+///
+/// "Nothing to compact" is an answer, not a failure: an error invites a retry loop,
+/// and the head that loop re-sends is paid for every time. See
+/// `docs/notes/server-live-compact.md`.
+#[derive(Debug, Clone)]
+pub enum Commit {
+    Checkpointed(Committed),
+    Nothing(String),
+}
+
+/// Where the segment a checkpoint folds begins, and where the last one ended.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Bounds {
+    /// The last checkpoint's cutoff, or the origin: the first row a summary replaces.
+    pub segment_after: Option<i64>,
+    /// The last checkpoint's result row, so a request older than it is spent.
+    pub last_result_seq: Option<i64>,
+}
+
+/// Reads both boundaries in one look, so the delivery and the commit cannot disagree.
+pub fn bounds(conn: &Connection, session_id: i64) -> rusqlite::Result<Bounds> {
+    let origin = conn
+        .query_row(
+            "SELECT live_compact_origin_seq FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .optional()?
+        .flatten();
+    let last = conn
+        .query_row(
+            "SELECT cutoff_seq, result_seq FROM live_compact_checkpoints
+              WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+            params![session_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()?;
+    Ok(Bounds {
+        segment_after: last.map(|(cutoff, _)| cutoff).or(origin),
+        last_result_seq: last.map(|(_, result)| result),
+    })
 }
 
 /// Adds live compact to an existing home without inferring a baseline from old messages.
@@ -49,12 +87,8 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE sessions ADD COLUMN live_compact_baseline_tokens INTEGER",
         ),
         (
-            "live_compact_requested",
-            "ALTER TABLE sessions ADD COLUMN live_compact_requested INTEGER NOT NULL DEFAULT 0",
-        ),
-        (
-            "live_compact_started",
-            "ALTER TABLE sessions ADD COLUMN live_compact_started INTEGER NOT NULL DEFAULT 0",
+            "live_compact_interval_effective",
+            "ALTER TABLE sessions ADD COLUMN live_compact_interval_effective INTEGER",
         ),
     ] {
         if conn
@@ -64,6 +98,21 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute(ddl, [])?;
         }
     }
+    // The flags the backoff replaced: a column nothing reads is a lie about the schema.
+    for column in ["live_compact_requested", "live_compact_started"] {
+        if conn
+            .prepare(&format!("SELECT {column} FROM sessions LIMIT 1"))
+            .is_ok()
+        {
+            conn.execute(&format!("ALTER TABLE sessions DROP COLUMN {column}"), [])?;
+        }
+    }
+    conn.execute(
+        "DELETE FROM pending_tasks
+          WHERE kind = 'inject'
+            AND json_extract(payload, '$.live_compact') IS NOT NULL",
+        [],
+    )?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS live_compact_checkpoints (
             id                INTEGER PRIMARY KEY,

@@ -69,7 +69,9 @@ has 11 drawing + 6 control (`StickySession` is a control frame). The C# parser
 follows the code. `Option<T>` fields arrive as `null`, never omitted.
 
 `RenderMessage` is semantic: `LineKind` says what a row is, and the front-end
-owns colour, wrapping and columns. `Wire/WireTypes.cs` reads frames with
+owns colour. Wrapping is the client's (`crates/client/src/document.rs`), so the
+one thing a front-end has to answer is how wide its pane draws -- see "The width
+a body is wrapped at" below. `Wire/WireTypes.cs` reads frames with
 `JsonDocument` and skips an unreadable or unknown frame instead of throwing; a
 bad line must never close the window.
 
@@ -233,24 +235,71 @@ empty", these came from the same off-screen run once it asked for a page:
   and had to scroll to the end of it. A pane follows its newest row until it is
   scrolled away, and only while its content grows — dragging it back after
   PageUp would make the key useless.
-- **An older page was appended at the end**, so history read `...q26, q15, q16`
-  and a screenshot showed it plainly. `Older` asks for a page and the answer comes
-  back as ordinary `Line`/`Stream` frames in the window, oldest first, with no
-  frame saying they belong above the rows already drawn. The window remembers how
-  many rows it asked for and puts the next burst above what it holds, in order.
-  That window is three seconds wide so a live row arriving later is not mistaken
-  for history. A `RenderMessage` that marks a page would be better than a count
-  and a clock; the wire has none today.
+- **An older page was appended at the end**, so history read `...q26, q15, q16`.
+  The wire then gained `RenderMessage::Older`, one frame holding a finished page
+  that says it goes *above* what the window holds, so the window no longer counts
+  rows or watches a clock: the frame is the answer, and `WireReader` reads it.
+  A pane asks for the page it is short of by window name (`UiIntent::Older`), and a
+  reader who was not at the newest row keeps the rows under the pointer while the
+  page lands above them.
 
 ## Deliberate limits
 
 - `LineKind::Assistant` is shown as wrapped plain text, not rendered markdown.
   The wire carries text, not a document, and a GUI markdown engine would be a
   second renderer with its own layout rules.
-- `block_size` and `box_edge` are not on the wire (`client-render-wire.md`
-  "Not done yet"). The GUI keeps every block in memory and folds by kind only.
+- `Rewind` and `Render` are read: a replayed fill drops the blocks of a window
+  that never ended, and SPEC's `block_size` caps a folding block (which then
+  scrolls inside itself) while `box_edge` is the margin it keeps from the events.
 - The completion popup uses keyboard selection and a click to accept; it does
   not mirror the terminal's popup geometry.
+
+## The width a body is wrapped at
+
+A pane answers `UiIntent::Columns` with the width its rows are wrapped at, and
+the answer is **the width a realized row is given** -- `SpanLine.Bounds.Width`,
+not the pane's viewport less paddings. Between the pane and the row sit the
+block's padding, the fold's column, the kind's mark and SPEC's `box_edge`
+margin; each was subtracted as a constant for a while, and the constants were
+wrong in one direction only -- a body six columns narrower than the pane, in
+every pane, on every window (measured: 55 columns stated where the box held 61,
+`max_output` in `.dev/verify/<sha>-gui-width.json`). Before the first row exists
+there is nothing to measure, so the viewport less those paddings is the estimate,
+and it is replaced on the next layout pass.
+
+One column is still not enough slack for a glyph the body's face does not have.
+`UnicodeWidthChar` counts a fallback glyph as one column whatever the fallback
+draws it at, so a row that fits by column count can be a pixel too wide and take
+a second visual line. The rows are the measurement that catches it: a document
+row is one line, so `TextLayout.TextLines.Count > 1` says a pane is over, and one
+column comes off it. Two things keep that check honest:
+
+- it runs only when the statement did not change in this pass, and it ignores a
+  row holding more characters than the statement -- such a row was wrapped at an
+  older width and says nothing about this one. Without that filter the check
+  narrows a pane once per layout pass, forever, reading the row before the last;
+- the width it settles on is remembered per pane and per box width, because the
+  estimate is the same number every pass and would otherwise widen the pane back
+  and trade places with the row forever.
+
+What made the check fire at all was one character: the quote marker was `▏`
+(U+258F), which Consolas does not have, so it was drawn from a fallback at 7.9px
+where its column is 7.2px. It is `│` (U+2502) now, which the face draws at its
+advance exactly -- measured, in `crates/client/src/document.rs`. A marker is the
+client's choice of glyph, so the front-ends' column arithmetic can only be exact
+for a glyph the drawing can measure.
+
+## The look
+
+`App.axaml` holds the whole palette and the spacing scale: surfaces, hairlines,
+one accent, the same five semantic hues `crates/tui/src/render.rs style_for`
+assigns, and the radii. A screen names a token; it does not write a hex, so a
+kind has one ink and a panel has one border.
+
+`Views/KindBrushConverter` reads that dictionary rather than holding colours of
+its own, and `ContentBrushConverter` is SPEC's split between a mark and its words:
+the operator's message and the answer keep the brightest ink, everything else is
+quiet.
 
 ## Toolchain
 

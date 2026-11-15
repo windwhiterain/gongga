@@ -28,7 +28,7 @@ The four commands SPEC's `## Python Cmd` names are commands like the rest, so a
 package skill calls them the same way:
 
     server.ls_skill(path="harness", session="main")        # -> its id, bucket, SKILL.md
-    server.run_skill(id="harness/prefix-cache",            # one function of a package
+    server.run_skill(id="prefix-cache",                 # one function of a package
                      cmd={"name": "look", "args": {"path": "/tmp"}},
                      session="main")
     server.get_messages(session="main", range="-20:-1")    # a range of the transcript

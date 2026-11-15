@@ -23,6 +23,7 @@ pub mod exec;
 pub mod file;
 #[cfg(windows)]
 pub mod job;
+pub mod laws;
 pub mod live_compact;
 pub mod skill;
 pub mod spec;
@@ -712,12 +713,21 @@ impl ToolRegistry {
     ///
     /// # Invariant
     ///
-    /// Every tool call goes through here -- a model's call, a script's, a command
-    /// layer's -- so this is the one place a failing tool is noticed. What it
-    /// notices is not the tool's own words (`check_bash` sees a field, not a
-    /// sentence) but the room left where the harness writes: see
-    /// `docs/notes/server-disk.md`.
+    /// Every tool call, from whatever door, goes through here.
+    ///
+    /// # Invariant
+    ///
+    /// One place runs a tool, so it is the one place the shared arguments are taken off a
+    /// call: a model's, a script's and a command layer's are read the same way, and a new
+    /// tool gets them without knowing their names. It is also where a failing tool is
+    /// noticed -- what it notices is not the tool's own words but the room left where the
+    /// harness writes: see `docs/notes/server-disk.md`.
     pub async fn run(self: &Arc<Self>, name: &str, args: Value, ctx: &ToolContext) -> ToolOutcome {
+        // Before anything reads the arguments: the shared names are the call layer's, and
+        // a handler that took one would be answering for an argument it never declared.
+        // What they said is kept here, because the cap is applied by this layer too.
+        let mut args = args;
+        let shared = laws::Given::take(&mut args);
         let Some(tool) = self.get(name) else {
             // SPEC `fn <tool>(**args)`: an unregistered name is a cmd a skill taught; the command layer runs it.
             let words = match args.as_object() {
@@ -739,6 +749,26 @@ impl ToolRegistry {
             return ToolOutcome::err(message);
         }
         let outcome = invoke(name, tool, args, ctx).await;
+        // SPEC's `max_output`: over the cap the output spills, and the call answers with
+        // the file's metadata. Applied here, where the shared arguments were read, so a
+        // tool that never heard of the cap is held to it all the same.
+        let capped = shared
+            .max_output
+            .and_then(|max| {
+                cap_max_output(
+                    ctx,
+                    name,
+                    shared.description.as_deref(),
+                    &ctx.call_id,
+                    &outcome.output,
+                    max,
+                )
+            })
+            .unwrap_or(outcome.output);
+        let outcome = ToolOutcome {
+            output: capped,
+            ok: outcome.ok,
+        };
         // The call ended; the look is a task of its own, so nothing waits on it.
         crate::explore::after_job(ctx, name);
         outcome
@@ -816,55 +846,15 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
     }
 }
 
-/// The adapter's general parameters: every tool may carry them, none
-/// declares them by hand.
+/// The model-facing schema: what the row declares, plus the shared arguments.
 ///
 /// # Invariant
 ///
-/// Injected into the model-facing schema in `definitions` (a declared
-/// property wins), read back at the call layer; they never reach the
-/// command surface, which reads `Tool::parameters` raw.
-pub const GENERAL_ARGS: &[&str] = &["description", "max_output"];
-
-/// SPEC's adapter-level parameters added to every tool the model is offered.
-///
-/// # Invariant
-///
-/// Injected here, in the model-facing schema only, so a provider's validator
-/// accepts what the call layer reads. A property a tool already declares wins.
-/// No name carries a sentence: both are the call layer's, and what they are
-/// for is said once, in the session's `general_parameters` section.
+/// The one place a schema is rendered for a model, so the shared arguments are added
+/// here and nowhere else: [`laws`] holds the list, and every tool gets it whether its
+/// row knows the names or not. See `docs/notes/server-tools-mod.md`.
 pub(crate) fn general_parameters(tool: &dyn Tool) -> Value {
-    let mut schema = tool.spec().schema();
-    // SPEC gives every call `description`; `max_output` is the cap beside it.
-    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
-        properties
-            .entry("description".to_string())
-            .or_insert_with(|| json!({"type": "string"}));
-        properties
-            .entry("max_output".to_string())
-            .or_insert_with(|| json!({"type": "integer"}));
-    }
-    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
-        for property in properties.values_mut() {
-            without_null(property);
-        }
-    }
-    schema
-}
-
-/// One property without `null`: no model states it, and no provider compiles it beside a number.
-fn without_null(property: &mut Value) {
-    let Some(Value::Array(kinds)) = property.get("type") else {
-        return;
-    };
-    let mut kinds = kinds.clone();
-    kinds.retain(|kind| kind.as_str() != Some("null"));
-    if kinds.len() == 1 {
-        property["type"] = kinds.remove(0);
-    } else if !kinds.is_empty() {
-        property["type"] = Value::Array(kinds);
-    }
+    laws::schema(tool.spec().schema())
 }
 
 /// The JSON kind of one value, in a schema's own vocabulary.
@@ -949,7 +939,10 @@ fn argument_error_for(name: &str, schema: &Value, args: &Value) -> Option<String
     let declared = string_list(&schema["properties"]);
     let unexpected: Vec<String> = given
         .keys()
-        .filter(|k| !declared.contains(&k.as_str()) && !GENERAL_ARGS.contains(&k.as_str()))
+        .filter(|k| {
+            !declared.contains(&k.as_str())
+                && !laws::ALL.iter().any(|(name, _, _)| *name == k.as_str())
+        })
         .map(
             |wrong| match declared.iter().find(|d| is_shorthand_of(d, wrong)) {
                 Some(right) => format!("`{wrong}` (did you mean `{right}`?)"),
@@ -1293,6 +1286,62 @@ mod tests {
             argument_error_for("exec", &exec_schema(), &json!({"bin": "bash"})),
             None
         );
+    }
+
+    /// The point of the list: a schema is handed the shared arguments by the call layer,
+    /// so a row that declares none of them still offers them to a model.
+    #[test]
+    fn a_schema_that_declares_nothing_is_still_offered_the_shared_arguments() {
+        let offered = laws::schema(json!({"properties": {}}));
+        for (name, kind, _) in laws::ALL {
+            assert_eq!(offered["properties"][name]["type"], *kind, "{name}");
+        }
+    }
+
+    /// A declared property wins: the row's own kind and sentence are not overwritten.
+    #[test]
+    fn a_property_the_row_declares_keeps_what_it_said() {
+        let offered = laws::schema(json!({
+            "properties": {"description": {"type": "integer"}}
+        }));
+        assert_eq!(offered["properties"]["description"]["type"], "integer");
+    }
+
+    /// The check a call is held to must not refuse what the schema offers: a shared
+    /// argument is not an "argument it does not take".
+    #[test]
+    fn a_shared_argument_is_never_an_argument_the_tool_does_not_take() {
+        let offered = laws::schema(exec_schema());
+        for (name, _, _) in laws::ALL {
+            let given = if *name == "max_output" {
+                json!(8000)
+            } else {
+                json!("check the state")
+            };
+            let mut args = serde_json::Map::new();
+            args.insert("bin".to_string(), json!("bash"));
+            args.insert((*name).to_string(), given);
+            assert_eq!(
+                argument_error_for("exec", &offered, &Value::Object(args)),
+                None,
+                "{name}"
+            );
+        }
+    }
+
+    /// Taken off the arguments, and read: a command would answer for a name its handler
+    /// never declared, and a skill's function cannot bind one.
+    #[test]
+    fn the_shared_arguments_are_taken_off_and_read() {
+        let mut args = json!({
+            "description": "  check the state  ",
+            "max_output": 8000,
+            "path": "a-file",
+        });
+        let given = laws::Given::take(&mut args);
+        assert_eq!(given.description.as_deref(), Some("check the state"));
+        assert_eq!(given.max_output, Some(8000));
+        assert_eq!(args, json!({ "path": "a-file" }));
     }
 
     #[test]

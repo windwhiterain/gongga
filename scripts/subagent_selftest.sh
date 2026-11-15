@@ -143,7 +143,7 @@ wait_tcp "$fake_port" || hard "the fake endpoint never answered"
 start_wait_fake() {
   alive "${wait_fake_pid:-}" && taskkill //PID "$wait_fake_pid" //F >/dev/null 2>&1
   rm -f "$work/wait-fake.pid"
-  env FAKE_LLM_TOOL=wait FAKE_LLM_TOOL_ARGS='{"timeout_ms": 2500}' \
+  env FAKE_LLM_TOOL=wait FAKE_LLM_TOOL_ARGS='{"time": 2500}' \
     python - "$root" "$work" "$wait_port" <<'INNER' &
 import os, runpy, sys
 root, work, port = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -238,7 +238,7 @@ ok "0 the parent's head is stamped with its first message's references: $rooted"
 # SPEC's subagent skill publishes `self_config()` and `new_subagent(config, role)`: a
 # child's settings are the caller's own row with the keys it varies set on it, so the
 # test reads that row first instead of spelling a SessionConfig by hand.
-subagent() { "${cli[@]}" '{"name":"run_skill","args":{"session":"'"$1"'","id":"harness/subagent","cmd":'"$2"'}}'; }
+subagent() { "${cli[@]}" '{"name":"run_skill","args":{"session":"'"$1"'","id":"subagent","cmd":'"$2"'}}'; }
 base=$(subagent probe '{"name":"self_config"}' 2>"$work/self-config.err" | answer)
 [[ -n "$base" ]] || hard "self_config read nothing: $(head -1 "$work/self-config.err")"
 config=$(python - "$base" "$(native "$project")" <<'INNER'
@@ -433,12 +433,14 @@ ok "M the child's turn end interrupts it: '$last'" $?
 here=$("${cli[@]}" '{"name":"ls_skill","args":{"session":"probe"}}' 2>/dev/null)
 [[ "$here" == *"subagent"* && "$here" == *"SKILL.md"* ]]
 ok "I ls_skill names the subagent, and the SKILL.md the package sits beside: $(printf '%s' "$here" | head -c 160)" $?
-asked=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":"no_such_function"}}' 2>&1)
+asked=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"subagent","cmd":"no_such_function"}}' 2>&1)
 [[ "$asked" == *"publishes: self_config, new_subagent"* ]]
 ok "I the package publishes what it names: self_config and new_subagent" $?
-wrong=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":{"name":"new_subagent"}}}' 2>&1)
-[[ "$wrong" == *"new_subagent(config"*"needs config"* ]]
-ok "I and calling it without a config is refused with its signature" $?
+wrong=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"subagent","cmd":{"name":"new_subagent"}}}' 2>&1)
+# The package runner reads the refusal off Python's own bind: the parameter named, and
+# the signature it is missing from.
+[[ "$wrong" == *"missing a required argument: 'config'"* ]]
+ok "I and calling it without a config is refused by its signature" $?
 
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then printf 'PASS · subagent-skill · %s\n' "$sha"; else printf 'FAIL · subagent-skill · %s (%d)\n' "$sha" "$fails"; exit 1; fi

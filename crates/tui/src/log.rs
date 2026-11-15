@@ -15,7 +15,6 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::LineKind;
-use crate::markdown;
 use client::protocol;
 use client::render_wire::PastRow;
 use client::window_index::{Ledger, RowIndex};
@@ -57,6 +56,9 @@ struct Entry {
     call: Option<client::protocol::Head>,
     /// The expanded sections, cached at their measured width.
     sections: String,
+    /// Whether this block's rows came from the client: already parsed, already
+    /// fitted to the pane's width. Nothing here lays them out again.
+    document: bool,
     /// The markdown document this block was written as, when it is one.
     ///
     /// # Invariant
@@ -94,14 +96,9 @@ impl Entry {
             window: Arc::from(window),
             key: String::new(),
             tag: tag.to_string(),
-            source: match kind {
-                LineKind::Assistant => Some(text.clone()),
-                _ => None,
-            },
-            text: match kind {
-                LineKind::Assistant => String::new(),
-                _ => text,
-            },
+            document: false,
+            source: None,
+            text,
             width,
             expanded: false,
             inner: 0,
@@ -129,6 +126,7 @@ impl Entry {
         match self.source {
             // Not measured yet: a block still owes the frame its one blank row.
             Some(_) => self.styled.len().max(1),
+            None if self.document => self.styled.len().max(1),
             None => self.starts.len(),
         }
     }
@@ -354,20 +352,11 @@ impl Entry {
         };
         let structured = self.expanded && self.call.is_some();
         self.width = width;
-        if let Some(source) = &self.source {
-            self.styled = markdown::rows(source, width);
-            // The label is chrome on every block, and the first row carries it.
-            if !self.tag.is_empty() {
-                let room = width.saturating_sub(self.kind.mark().width());
-                let label = format!("{}{}", self.kind.mark(), cut(&self.tag, room));
-                if let Some(first) = self.styled.first_mut() {
-                    first.spans.insert(0, Span::styled(label, Style::default()));
-                }
-            }
+        if self.document {
+            // A row the client wrapped is a row this window draws.
             if self.styled.is_empty() {
                 self.styled.push(Line::default());
             }
-            self.col = self.styled.last().map_or(0, |row| row.width().min(width));
             return;
         }
         self.starts.clear();
@@ -459,6 +448,12 @@ impl Entry {
     /// about the drawing is decided again here -- not the ink, not the wrap.
     /// See `docs/notes/tui-log.md`.
     fn shown(&self, row: usize, labelled: bool) -> Shown<'_> {
+        if self.document {
+            return match self.styled.get(row) {
+                Some(line) => Shown::Styled(&line.spans),
+                None => Shown::Text(Cow::Borrowed("")),
+            };
+        }
         match self.source {
             Some(_) => match self.styled.get(row) {
                 Some(line) => Shown::Styled(&line.spans),
@@ -1346,6 +1341,56 @@ impl Log {
         }
     }
 
+    /// A body as finished rows, from the one process that parsed it.
+    ///
+    /// # Invariant
+    ///
+    /// The rows are the whole body, so they replace what the block held: a document is
+    /// derived from its source, and one more delta can change a row above the last one.
+    /// The block is made the way a stream makes one, because it is the same row.
+    pub fn document(
+        &mut self,
+        name: &str,
+        key: &str,
+        kind: LineKind,
+        tag: &str,
+        rows: &[Vec<client::render_wire::DocumentSpan>],
+        done: bool,
+    ) {
+        let at = match self.entry_by_key(key) {
+            Some(at) if self.entries[at].document && self.entries[at].window.as_ref() == name => at,
+            _ => {
+                let width = self.width_of(name);
+                let mut entry = Entry::with_tag(name, kind, tag, String::new(), width);
+                entry.key = key.to_string();
+                entry.document = true;
+                self.entries.push(entry);
+                let at = self.entries.len() - 1;
+                self.attach(at);
+                at
+            }
+        };
+        let before = self.contributions(at);
+        self.entries[at].kind = kind;
+        self.entries[at].tag = tag.to_string();
+        self.entries[at].document = true;
+        self.entries[at].sealed = done;
+        self.entries[at].styled = rows
+            .iter()
+            .map(|row| Line::from(row.iter().map(document_span).collect::<Vec<_>>()))
+            .collect();
+        if self.entries[at].styled.is_empty() {
+            self.entries[at].styled.push(Line::default());
+        }
+        let after = self.contributions(at);
+        self.shift(at, before, after);
+        if done {
+            self.open.remove(key);
+        } else {
+            self.open.insert(key.to_string(), at);
+        }
+    }
+
     /// Ends a block: no later chunk may append to it.
     fn seal(&mut self, key: &str, at: usize) {
         self.open.remove(key);
@@ -1613,4 +1658,27 @@ struct ShownBlock {
     shown: usize,
     boxed: bool,
     labelled: bool,
+}
+
+/// One run of a document, in the ink its class says.
+///
+/// # Invariant
+///
+/// The class decides, never the text: `code` is the mono ink whatever it holds, and a
+/// marker is quiet so the words beside it stay the loudest thing on the row.
+fn document_span(span: &client::render_wire::DocumentSpan) -> Span<'static> {
+    use client::render_wire::SpanClass;
+    use ratatui::style::{Color, Modifier};
+    // SPEC draws an answer in the brightest ink it has.
+    let base = Style::default().fg(Color::White);
+    let style = match span.class {
+        SpanClass::Text => base,
+        SpanClass::Strong => base.add_modifier(Modifier::BOLD),
+        SpanClass::Emphasis => base.add_modifier(Modifier::ITALIC),
+        SpanClass::Strike => base.add_modifier(Modifier::CROSSED_OUT),
+        SpanClass::Code => Style::default().fg(Color::LightBlue),
+        SpanClass::Marker => Style::default().fg(Color::DarkGray),
+        SpanClass::Link => Style::default().fg(Color::Cyan),
+    };
+    Span::styled(span.text.clone(), style)
 }

@@ -153,16 +153,40 @@ a name this build implements.
 Implemented with a boxed future rather than `async_trait` so the crate keeps
 one fewer macro dependency; the signature is the same either way.
 
-## general_parameters
+## laws: the arguments every call carries
 
-The model-facing schema, and the one place it differs from what `argument_error` holds a
-call to. Two things happen here: the adapter's own arguments (`description`,
-`max_output`) are added under names the tool does not already declare, and `null` comes
-out of every kind. A provider compiles a union of kinds only when the other branch is a
-string -- handed `["integer","null"]`, `qwen4-max-preview` wrote the string `"120000"`,
-and handed `["array","object"]` it wrote the JSON text of the array. So a model is
-offered the kind itself: one that wants the default omits the argument, and `none` is how
-it names this machine. The check keeps `null`, because a client may still state it.
+SPEC gives every tool call `description` and `max_output` beside the arguments its own
+row lists. They belong to the call layer, and `tools::laws` is where that is written
+down: one list of names, kinds and sentences, and every door reads it.
+
+- **The schema a model is offered.** `general_parameters` renders a tool's schema by
+  handing it to `laws::schema`, so a row that declares neither name still offers both. It
+  is one call rather than a per-tool block, which is the whole point: a tool added
+  tomorrow cannot forget them, and nothing in `tools/*.rs` names either one.
+- **The check a call is held to.** `argument_error` passes a shared name over, because the
+  schema it is judged against was rendered by the same list.
+- **The reader that takes them off.** `Registry::run` calls `Given::take` before anything
+  else sees the arguments, and applies `max_output` itself. A command would answer for a
+  name its handler has no parameter for, and a skill's function cannot bind one at all,
+  so taking them is what lets a new tool be added without knowing they exist.
+- **The operator's line.** `tool_cmd::catalog` appends them to every tool command, so a
+  person types what a model spells.
+- **The command doors.** `gongga_cli`'s route and `declared_command` are the two other
+  ways a call reaches a handler, and each reads the same list for the same reason: a
+  declared command's function is a Python signature that never declared the name.
+
+Why not a parameter on each tool: the failure being fixed is that a new tool is written
+against its own row and silently drops the two names SPEC says every call takes -- the
+model still writes them, and the call comes back "takes cwd, limit, offset, path,
+remote". One list makes that unrepresentable rather than a thing to remember.
+
+A shared name is still a schema name: `laws::schema` writes it under `properties` with its
+kind, so a provider's validator accepts what the call layer reads. `null` comes out of
+every kind, because a provider compiles a union only when the other branch is a string --
+handed `["integer","null"]`, `qwen4-max-preview` wrote the string `"120000"`, and handed
+`["array","object"]` it wrote the JSON text of the array. A model is offered the kind
+itself: one that wants the default omits the argument, and `none` is how it names this
+machine. The check keeps `null`, because a client may still state it.
 
 ## argument_error
 

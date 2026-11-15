@@ -109,7 +109,11 @@ ModelConfig := { # sticky
   ctx_limit = 70%, # re-default if model change
   cache_tier = provider_default() # re-default if model change
 }
-Workspace := {remote: optional[Remote] = none, cwd: path = ".", worktree: optional[str] = none}
+Workspace := {
+  remote: optional[Remote] = none,
+  cwd: path = ".",
+  worktree: optional[str] = none, # if any, auto create workspace bound to session's lifetime
+}
 SessionConfig := { # sticky
   model_config: ModelConfig,
   workspace: Workspace,
@@ -183,11 +187,26 @@ a cache tree is simulated for each model or (model, some config) that shares pre
 for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
 
 ## Live Compact
-- the opt-in is the session's own `live_compact`; a session that states none follows the home's `[agent]` setting. Switched on, it opens the starting checkpoint at the transcript's end, exactly where the plan finish below opens it.
-- when agent switch from explore to build, set the starting checkpoint of compaction.
-- after the starting checkpoint, every time reach a context increase limit, ask the agent to call `live_compact` to summary and replace the history since the last checkpoint, and create a new checkpoint.
+- every session that starts in work mode opens the starting checkpoint before its first user message; a session created in explore opens it when the agent switches from explore to build. The checkpoint does not depend on the opt-in: the `live_compact` tool is always available.
+- the opt-in is the session's own `live_compact`; a session that states none follows the home's `[agent]` setting. It governs one thing only: whether the server asks.
+- after the starting checkpoint, at a step boundary whose context has grown by the current interval since the last checkpoint, the server asks the agent to call `live_compact` to summary and replace the history since the last checkpoint, and creates a new checkpoint. An ask the agent ignores doubles the interval; a committed checkpoint resets it to the configured interval.
 - `live_compact` summary can reference meta that directly embed in the summary, creating a new checkpoint.
 - the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
+
+## Dreaming
+rides on keep_alive: the first fire of each checkpoint generation clones the session
+into `<session>/dream/<generation>`, tells the clone to organize documents only, and
+discards the clone when its turn truly ends.
+- the clone copies the transcript verbatim and re-renders nothing, so its first request
+  carries the session's whole prefix: the dream keeps the cache warm in place of the
+  empty time notice.
+- the clone's keep_alive is off and it opens no checkpoint; a dream never dreams. one
+  dream per generation, at most one live dream per session; a fire that does not dream
+  sends the time notice as before.
+- a true end is Done, Failed, or an interrupt; a cancel that restart will resume is not
+  an end -- the dream resumes with the session and is discarded only when it finishes.
+- the dream writes workspace documents and nothing else; the session is disposable, the
+  files are the memory. deleting the source discards its dreams.
 
 ## monitor
 - providers: spawn/notice when a session failed on an llm request (refused, or the

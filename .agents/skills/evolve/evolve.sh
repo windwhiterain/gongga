@@ -561,7 +561,14 @@ cmd_stage() {
   # Content is refreshed before any claim: a successor installs what the local
   # official ref names, so a stale ref can make an otherwise valid bundle unstartable.
   echo "== ship =="
-  ( cd "$ROOT" && git -C ship fetch origin main && git -C ship rebase origin/main \
+  ( cd "$ROOT" && git -C ship fetch origin main \
+      && if git -C ship merge-base --is-ancestor origin/main HEAD; then
+           # Nothing to bring in. A rebase here refuses a working tree another agent is
+           # using, and it would refuse for no gain: `ship.sh --check` is the real gate.
+           echo "evolve: the content checkout already carries origin/main"
+         else
+           git -C ship rebase origin/main
+         fi \
       && scripts/ship.sh --check ) \
     || die "the ship checkout is not current and published; refusing to stage a handover"
   # The successor reads the home's fork, not the source checkout checked above.
@@ -571,8 +578,13 @@ cmd_stage() {
       || die "cannot refresh $home_ship; refusing to stage a handover"
     local home_tip=main
     if git -C "$home_ship" show-ref --verify --quiet refs/heads/local; then
-      git -C "$home_ship" rebase origin/main local \
-        || die "cannot rebase $home_ship/local; refusing to stage a handover"
+      # The same guard as above: rebase only what is behind, never for its own sake.
+      if git -C "$home_ship" merge-base --is-ancestor origin/main local; then
+        echo "evolve: $home_ship/local already carries origin/main"
+      else
+        git -C "$home_ship" rebase origin/main local \
+          || die "cannot rebase $home_ship/local; refusing to stage a handover"
+      fi
       home_tip=local
     elif [ "$(git -C "$home_ship" symbolic-ref --short -q HEAD || true)" = main ]; then
       git -C "$home_ship" merge --ff-only origin/main \
@@ -824,9 +836,21 @@ a successor started from one with it -- run '$0 launch $stamp' and swap again"
   # and reading a roster spawns the discovery scripts, which inherit this
   # process's stdout. A command substitution waits for everyone holding that
   # handle, so it would hang on a script rather than on the answer.
-  local check_log code
+  #
+  # The check names its own home. `$exe` is the bundle head, and a head places its
+  # payload and retires the build it replaces *before* it runs the program it was
+  # asked for (`bundle-main.md`, "There is no read-only run"). Pointed at the live
+  # home -- which is what this guard was added to read -- that retire cancels the
+  # server the guard exists to protect, and the cancel takes every background tree
+  # with it, the detached successor included: a handover that lost the home and
+  # left nobody to take it (2026-11-15, see `.agents/notes/`). `--home` still names
+  # the real home, because that is the config being read; only the head's own
+  # install goes to a scratch, whose single payload is what the next build retires.
+  # A Windows path, because the environment is read by a native program.
+  local check_log check_home code
   check_log="$RUN/.config-check.log"
-  "$exe" server --home "$HOME_DIR" --check-config >"$check_log" 2>&1
+  check_home="$(cygpath -w "$RUN/check-home" 2>/dev/null || printf '%s' "$RUN/check-home")"
+  GONGGA_HOME="$check_home" "$exe" server --home "$HOME_DIR" --check-config >"$check_log" 2>&1
   code=$?
   if [ "$code" -ne 0 ]; then
     cat "$check_log" >&2

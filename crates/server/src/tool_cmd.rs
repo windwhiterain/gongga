@@ -136,6 +136,25 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                     update: false,
                 });
             }
+            // The shared arguments, from the one list: a person types them in a window
+            // exactly as a model spells them in a call, so an operator's line and the
+            // model's schema cannot disagree about what a tool takes.
+            for (name, kind, sentence) in crate::tools::laws::ALL {
+                args.push(protocol::ArgSpec {
+                    type_of: (*kind).into(),
+                    name: (*name).into(),
+                    description: (*sentence).into(),
+                    required: false,
+                    positional: false,
+                    kind: None,
+                    value_hint: None,
+                    completions: protocol::CompletionSource::None,
+                    accepts: None,
+                    sticky_to: None,
+                    structure: None,
+                    update: false,
+                });
+            }
             protocol::CommandSpec {
                 name: tool.name().to_string(),
                 description: format!("Run the `{}` tool for one session.", tool.name()),

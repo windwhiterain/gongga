@@ -496,6 +496,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // What a greeting hands every client: the picture a change is diffed against.
     commands::prime_sessions(&dispatch);
     clock.step("prime");
+    // SPEC's Dreaming: orphans go before anything resumes; owed dreams are left to it.
+    let swept = commands::sweep_orphan_dreams(&dispatch).await;
+    if swept > 0 {
+        tracing::info!(swept, "orphan dreams discarded before serving");
+    }
     // SPEC: this start adopts the channels the last one kept; a remote adoption asks a
     // peer over ssh.
     {
@@ -507,6 +512,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     adopted_channels,
                     "channels the last run kept, reported gone"
                 );
+            }
+            // And the relays it left running: `cancel(keep_alive)` marked them, so this
+            // start takes them over instead of ending what a handover kept.
+            let kept = channels.adopt_kept().await;
+            if kept > 0 {
+                tracing::info!(kept, "channels the last run kept were taken over");
             }
         });
     }

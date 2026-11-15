@@ -14,7 +14,7 @@ public partial class MainWindow : Window
     /// One line of a block: 13pt monospace on a 17px line, plus the template's
     /// 7px vertical padding. The client asks in text rows, so a pane's capacity is
     /// its viewport divided by this.
-    private const double PaneRowHeight = 24;
+    private const double PaneRowHeight = 30;
 
     /// The strip a pane draws its session name in, above the rows.
     private const double PaneHeaderHeight = 26;
@@ -27,6 +27,24 @@ public partial class MainWindow : Window
     private readonly HashSet<string> _follow = new();
     private readonly Dictionary<string, double> _seenBottom = new();
     private List<(string Window, int Rows)> _rooms = new();
+    private List<(string Window, int Columns)> _columns = new();
+
+    /// The widest statement a pane's rows have been proven to fit in, and the box it
+    /// was proven in: a column count is a fact about one box width, not about a pane.
+    private readonly Dictionary<string, (double Box, int Columns)> _proven = new();
+
+    /// A block's own horizontal padding, in pixels.
+    private const double BlockPadding = 12;
+
+    /// One row drawn by the body's own control, laid out to find the advance of a
+    /// character: measured on anything else it is a column of error, and every column
+    /// of it is a word broken at the pane's edge.
+    private readonly Views.SpanLine _ruler = new()
+    {
+        Spans = [new SpanItem("0123456789", "text")],
+        FontFamily = new global::Avalonia.Media.FontFamily("Consolas, Cascadia Mono, monospace"),
+        FontSize = 13,
+    };
     private bool _applying;
 
     /// The child this window drives, for a run that has to watch the wire.
@@ -80,7 +98,15 @@ public partial class MainWindow : Window
 
         var error = _client.Start(options, frame => Dispatcher.UIThread.Post(() =>
         {
+            // Measured before the frame lands: a page is inserted above the rows the
+            // pane already holds, and a reader who was not at the oldest row has to
+            // stay on the rows they were reading.
+            var extents = frame is RenderFrame.Older ? Extents() : null;
             _model.Apply(frame);
+            if (extents is not null)
+            {
+                KeepPlace(extents);
+            }
             if (frame is RenderFrame.Stopped)
             {
                 _toastTimer.Stop();
@@ -185,6 +211,15 @@ public partial class MainWindow : Window
                 }
                 break;
 
+            // SPEC's `Ctrl+Down: move sticky session to bottom`, told apart before the
+            // bare arrow: the popup and the caret are the plain key's business.
+            // Contract: crates/tui/src/lib.rs arrow_key.
+            case Key.Down when control:
+                e.Handled = true;
+                _follow.Add(_model.Sticky);
+                ScrollStickyToNewest();
+                break;
+
             case Key.Down:
                 e.Handled = true;
                 if (_model.CompletionVisible)
@@ -236,10 +271,28 @@ public partial class MainWindow : Window
         }
     }
 
+    /// A group's chevron folds the rows under it, and a name that only groups has
+    /// nothing else to do. Contract: crates/tui/src/tree.rs and SPEC's `session` row.
+    private void OnFoldPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is TextBlock { Tag: string name })
+        {
+            e.Handled = true;
+            _model.ToggleFold(name);
+        }
+    }
+
     private void OnSessionPressed(object? sender, PointerPressedEventArgs e)
     {
         if (sender is not Border { Tag: string name })
         {
+            return;
+        }
+        // A row that names no session is a group: opening a window for it would be a
+        // name the server does not have.
+        if (_model.Sessions.FirstOrDefault(row => row.Name == name) is not { Session: true })
+        {
+            _model.ToggleFold(name);
             return;
         }
         var toggle = e.KeyModifiers.HasFlag(KeyModifiers.Shift)
@@ -318,7 +371,7 @@ public partial class MainWindow : Window
         {
             // The page is the rows this pane can draw: the same count the client
             // sizes its refill by, so what comes back fills the pane.
-            _model.RequestOlder(name, Math.Max(1, (int)(viewer.Viewport.Height / PaneRowHeight)));
+            _model.RequestOlder(name);
         }
     }
 
@@ -333,6 +386,37 @@ public partial class MainWindow : Window
         _follow.Add(name);
         NotifyRooms();
         FollowNewest();
+    }
+
+    /// How tall each pane's rows were before a frame was applied.
+    private Dictionary<string, double> Extents()
+    {
+        var extents = new Dictionary<string, double>();
+        foreach (var (name, viewer) in _viewers)
+        {
+            extents[name] = viewer.Extent.Height;
+        }
+        return extents;
+    }
+
+    /// Adds what a page grew to its pane's offset, so the rows under the pointer stay
+    /// under the pointer. A pane at its newest row is moved to the new bottom by
+    /// `FollowNewest` instead.
+    private void KeepPlace(Dictionary<string, double> extents)
+    {
+        foreach (var (name, viewer) in _viewers)
+        {
+            if (!extents.TryGetValue(name, out var before) || _follow.Contains(name))
+            {
+                continue;
+            }
+            var grew = viewer.Extent.Height - before;
+            if (grew > 0)
+            {
+                viewer.Offset = new Vector(viewer.Offset.X, viewer.Offset.Y + grew);
+                _seenBottom[name] = Math.Max(0, viewer.Extent.Height - viewer.Viewport.Height);
+            }
+        }
     }
 
     /// Keeps a pane at its newest row while it is following.
@@ -387,15 +471,135 @@ public partial class MainWindow : Window
         }
         // A scrollbar appearing narrows the viewport by a row or two, and rows
         // arriving toggle it: only a real change is worth a line on the pipe.
-        if (SameRooms(rooms, _rooms))
+        if (!SameRooms(rooms, _rooms))
+        {
+            _rooms = rooms;
+            if (rooms.Count != 0)
+            {
+                _client.Send(Intents.Room(rooms));
+            }
+        }
+        NotifyColumns();
+    }
+
+    /// Tells the client how wide each open pane draws a body: the width its document
+    /// rows are wrapped at. A body is wrapped once, in the client, so this is the one
+    /// measurement only the drawing can make. See `docs/notes/client-document.md`.
+    ///
+    /// # Invariant
+    ///
+    /// A row is judged only once the rows in hand were wrapped at the width just
+    /// stated: a row still holding an older, wider wrap says nothing about this one.
+    private void NotifyColumns()
+    {
+        var panes = new List<(string Name, double Box, int Columns, List<Views.SpanLine> Rows)>();
+        foreach (var pane in _model.Panes)
+        {
+            if (!_viewers.TryGetValue(pane.Name, out var viewer) || viewer.Viewport.Width <= 0)
+            {
+                continue;
+            }
+            // The width a row is actually given: a row is the box its own words are
+            // drawn in, so its laid-out width is that width -- measured, not derived
+            // from paddings this file would have to know. The pane's viewport is not
+            // it: the block's padding, the fold's column, the kind's mark and SPEC's
+            // `box_edge` margin all sit between the two, and every guess at them cost
+            // prose one column per guess.
+            var rows = viewer.GetVisualDescendants()
+                .OfType<Views.SpanLine>()
+                .Where(line => line.Bounds.Width > 0)
+                .ToList();
+            var usable = rows.Count != 0
+                ? rows[0].Bounds.Width
+                : viewer.Viewport.Width - viewer.Padding.Left - viewer.Padding.Right
+                    - BlockPadding - 2 * _model.Edge;
+            // One column of slack: a row that wraps a character early is a row, one
+            // that wraps late is a lost letter.
+            var stated = Math.Max(20, (int)(usable / Advance));
+            // A width this pane's rows were already too wide for stays narrowed: the
+            // estimate is the same number every pass, so without the memory the pass
+            // that fits would widen it back and the two would trade places forever.
+            if (rows.Count != 0
+                && _proven.TryGetValue(pane.Name, out var proven)
+                && Math.Abs(proven.Box - usable) < 0.5)
+            {
+                stated = Math.Min(stated, proven.Columns);
+            }
+            panes.Add((pane.Name, usable, stated, rows));
+        }
+        var columns = panes.Select(pane => (pane.Name, pane.Columns)).ToList();
+        if (!SameColumns(columns, _columns))
+        {
+            _columns = columns;
+            if (columns.Count != 0)
+            {
+                _client.Send(Intents.Columns(columns));
+            }
+            return;
+        }
+        // A glyph the body's face does not have is drawn from a fallback at another
+        // advance, so a row that fits by column count can still be a pixel too wide
+        // and take a second line. A document row is one line, so the rows themselves
+        // say which pane is over, and one column comes off it.
+        //
+        // A row holding more characters than the width states was wrapped at an older
+        // width and says nothing about this one: the client answers a stated width one
+        // pass later, and judging before it does narrows a pane column by column for
+        // as long as the check keeps looking at the row before the last.
+        var narrowed = panes
+            .Where(pane => pane.Rows.Exists(row => row.TextLayout.TextLines.Count > 1
+                && Characters(row) <= pane.Columns))
+            .Where(pane => pane.Columns > 20)
+            .ToList();
+        if (narrowed.Count == 0)
         {
             return;
         }
-        _rooms = rooms;
-        if (rooms.Count != 0)
+        foreach (var pane in narrowed)
         {
-            _client.Send(Intents.Room(rooms));
+            _proven[pane.Name] = (pane.Box, pane.Columns - 1);
         }
+        var next = panes
+            .Select(pane => (pane.Name, pane.Columns - (narrowed.Exists(one => one.Name == pane.Name) ? 1 : 0)))
+            .ToList();
+        _columns = next;
+        _client.Send(Intents.Columns(next));
+    }
+
+    /// How wide one character of a body is, in pixels.
+    private double Advance
+    {
+        get
+        {
+            _ruler.Measure(global::Avalonia.Size.Infinity);
+            var width = _ruler.DesiredSize.Width / 10;
+            return width > 1 ? width : 8;
+        }
+    }
+
+    /// How many characters a row carries.
+    ///
+    /// # Invariant
+    ///
+    /// A row never holds more characters than the width it was wrapped at, so this is
+    /// how a row still holding an older, wider wrap is told from one drawn too wide.
+    private static int Characters(Views.SpanLine row) =>
+        row.Spans?.Sum(span => span.Text.Length) ?? 0;
+
+    private static bool SameColumns(List<(string, int)> left, List<(string, int)> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+        for (var index = 0; index < left.Count; index++)
+        {
+            if (left[index].Item1 != right[index].Item1 || left[index].Item2 != right[index].Item2)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private ScrollViewer? StickyViewer() => this.GetVisualDescendants()

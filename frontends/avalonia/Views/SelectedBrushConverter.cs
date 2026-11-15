@@ -10,7 +10,7 @@ namespace Gongga.Avalonia.Views;
 public sealed class SelectedBrushConverter : IValueConverter
 {
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        new SolidColorBrush(value is true ? Color.Parse("#1E2A35") : Colors.Transparent);
+        KindBrushConverter.Lookup(value is true ? "SelectedBrush" : "PageBrush");
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         BindingOperations.DoNothing;

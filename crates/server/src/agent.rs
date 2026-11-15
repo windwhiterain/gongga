@@ -42,6 +42,9 @@ const ANSWER_LIMIT: usize = 32_000;
 #[derive(Debug)]
 pub struct ProviderFailure(pub String);
 
+/// How many of one turn's requests the provider's inspection may refuse before it stops.
+const MODERATION_PER_TURN: u32 = 3;
+
 impl std::fmt::Display for ProviderFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
@@ -123,13 +126,19 @@ impl Agent {
     }
 
     /// Runs one already-claimed turn whose user messages and obligations are durable.
+    ///
+    /// # Invariant
+    ///
+    /// The outcome and the interrupted flag are captured here and returned: the
+    /// gate is free once `turn_inner` returns, so a next turn may reset the flags
+    /// before the caller's epilogue reads them. See `docs/notes/server-dream.md`.
     pub async fn run_turn(
         &self,
         session: &SessionHandle,
         tasks: Vec<i64>,
         epoch: u64,
         gate: tokio::sync::OwnedMutexGuard<()>,
-    ) {
+    ) -> (TurnOutcome, bool) {
         let started = std::time::Instant::now();
         let outcome = AssertUnwindSafe(self.turn_inner(session, epoch, gate))
             .catch_unwind()
@@ -147,6 +156,8 @@ impl Agent {
                 (TurnOutcome::Failed, 0, Some("harness"))
             }
         };
+        // Captured before anything else: a next turn may already be resetting the flags.
+        let interrupted = session.interrupted();
         // No part outlives its turn: what is left is text whose row was never written.
         session.open_clear();
         // The turn's own words ride the row: a subscriber reads them there.
@@ -184,7 +195,7 @@ impl Agent {
         let (status, detail) = match outcome {
             TurnOutcome::Done => (SessionStatus::Idle, None),
             // SPEC's split: cancel cancels and a restart continues; interrupt ends it.
-            TurnOutcome::Cancelled if session.interrupted() => {
+            TurnOutcome::Cancelled if interrupted => {
                 (SessionStatus::Idle, Some("interrupted".to_string()))
             }
             TurnOutcome::Cancelled => (SessionStatus::Idle, Some("cancelled".to_string())),
@@ -205,6 +216,7 @@ impl Agent {
                 outcome: Some(outcome),
             });
         }
+        (outcome, interrupted)
     }
 
     async fn turn_inner(
@@ -243,6 +255,8 @@ impl Agent {
         // lands mid-turn is meant for the next one.
         let stated_tier = session.tuning().cache_tier;
 
+        // Inspection refusals this turn has absorbed; see `docs/notes/server-llm.md`.
+        let moderation = std::sync::atomic::AtomicU32::new(0);
         let outcome = loop {
             // A `cancel` ends the turn here, where it can be stored whole.
             if cancel.is_cancelled() {
@@ -287,6 +301,7 @@ impl Agent {
                 effort: effort.as_deref(),
                 cwd: &cwd,
                 tier: stated_tier.as_deref(),
+                moderation: &moderation,
             };
             match self.step(session, id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
@@ -511,13 +526,16 @@ impl Agent {
         });
     }
 
-    /// Queues one durable agent-written checkpoint request for this token interval.
+    /// Asks for a checkpoint once the context has grown a whole interval since the
+    /// last one.
     ///
     /// # Invariant
     ///
-    /// Read from the session at every step: the switch and the interval are the
-    /// session's own, and a session that states neither reads the home's config as
-    /// it is now rather than as it was when this process started.
+    /// The interval is the base backed off by every ask that went unanswered, so an
+    /// agent that ignores one is asked again a wider stretch later rather than at
+    /// every step. The switch, the base and the backoff are all read now: a session
+    /// that states none follows the home's config as it is, not as this process
+    /// started. See `docs/notes/server-live-compact.md`.
     fn maybe_request_live_compact(&self, session: &SessionHandle, id: i64, name: &str) {
         let tuning = session.tuning();
         let config = self.config.now();
@@ -527,25 +545,24 @@ impl Agent {
         {
             return;
         }
-        let interval = tuning
+        let base = tuning
             .live_compact_interval_tokens
             .unwrap_or(config.agent.live_compact_interval_tokens);
         let Ok(measurement) = self.store.live_compact_measurement(id) else {
             return;
         };
-        if measurement.requested {
-            return;
-        }
         let Some(baseline) = measurement.baseline_tokens else {
             return;
         };
+        let interval = measurement.interval.unwrap_or(base);
         if measurement.tokens.saturating_sub(baseline) < interval {
             return;
         }
+        let next = interval.saturating_mul(2);
         let message = live_compact_notice();
         match self
             .store
-            .request_live_compact(id, name, measurement.generation, &message)
+            .request_live_compact(id, name, measurement.generation, &message, next)
         {
             Ok(true) => {
                 self.log_event(
@@ -555,6 +572,7 @@ impl Agent {
                         "tokens": measurement.tokens,
                         "baseline": baseline,
                         "interval": interval,
+                        "next_interval": next,
                         "generation": measurement.generation,
                     }),
                 );
@@ -976,6 +994,7 @@ impl Agent {
             effort,
             cwd,
             tier,
+            moderation,
         } = *attempt;
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
@@ -1343,6 +1362,17 @@ impl Agent {
                     delay,
                     reason,
                 } => {
+                    // Absorb a misfire; the fourth in one turn is a provider that keeps refusing.
+                    if crate::llm::moderation_refusal(&reason) {
+                        let seen = moderation.fetch_add(1, Ordering::Relaxed) + 1;
+                        if seen > MODERATION_PER_TURN {
+                            return Err(anyhow::Error::new(ProviderFailure(format!(
+                                "the provider's content inspection refused {seen} of this turn's \
+                                 requests; the turn stopped so the monitor sees a provider that \
+                                 keeps refusing"
+                            ))));
+                        }
+                    }
                     self.bus.publish(Event::Log {
                         level: LogLevel::Warn,
                         message: retry_warning(attempt, max, delay, &reason),
@@ -1537,15 +1567,6 @@ impl Agent {
         };
         let run_started = std::time::Instant::now();
         tracing::info!(session = %name, tool = %tool, "tool start");
-        // Read before the run moves the arguments: the adapter's general
-        // parameters title the call and cap its result.
-        let call_description = description_of(&arguments).to_string();
-        let max_output = arguments
-            .get("max_output")
-            .and_then(serde_json::Value::as_u64)
-            .map(|max| max as usize);
-        // Whose pictures these are: the machine the call's arguments name, if any.
-        // See `docs/notes/server-remote.md`.
         let printed_on = self.tools().machine_of(&tool, &arguments, &ctx);
         let stated_tier = session.tuning().cache_tier;
         let outcome = self
@@ -1567,18 +1588,9 @@ impl Agent {
         let attach_ms = attach_started.elapsed().as_millis() as u64;
         // SPEC's `max_output`: over the cap the output spills, and the model
         // reads the file's metadata.
-        let capped = max_output
-            .and_then(|max| {
-                crate::tools::cap_max_output(
-                    &ctx,
-                    &tool,
-                    (!call_description.is_empty()).then_some(call_description.as_str()),
-                    &call_id,
-                    &outcome.output,
-                    max,
-                )
-            })
-            .unwrap_or_else(|| outcome.output.clone());
+        // The cap was applied where the shared arguments were read, so this is the whole
+        // answer the call gave: the same bytes the model reads.
+        let capped = outcome.output.clone();
         // A tool that streamed nothing owes its output to the final chunk.
         let compacting = tool == crate::tools::live_compact::LIVE_COMPACT_TOOL;
         let mut tail = match sent.load(Ordering::Relaxed) {
@@ -1608,47 +1620,36 @@ impl Agent {
                     "turn": turn, "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
         let mut checkpointed = false;
         let mut checkpoint_error = None;
-        // Unasked-for call: a no-op, not an error (an error invites a retry loop).
+        // Nothing to fold: an answer, not an error (an error invites a retry loop).
         // See `docs/notes/server-live-compact.md`.
-        let mut unrequested = false;
+        let mut nothing = None;
         if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && outcome.ok {
-            if self
+            match self
                 .store
-                .live_compact_measurement(id)
-                .is_ok_and(|measurement| !measurement.requested)
+                .append_live_compact_result(id, &call_id, &content)
             {
-                unrequested = true;
-            } else {
-                match self
-                    .store
-                    .append_live_compact_result(id, &call_id, &content)
-                {
-                    Ok(committed) => {
-                        checkpointed = true;
-                        self.announce_row(name, Ok(committed.result_seq));
-                        self.log_event(
-                            Some(id),
-                            "live_compact",
-                            &json!({
-                                "checkpoint": committed.checkpoint_id,
-                                "result_seq": committed.result_seq,
-                                "generation": committed.generation,
-                            }),
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
-                        checkpoint_error = Some(format!("{e:#}"));
-                    }
+                Ok(crate::live_compact::Commit::Checkpointed(committed)) => {
+                    checkpointed = true;
+                    self.announce_row(name, Ok(committed.result_seq));
+                    self.log_event(
+                        Some(id),
+                        "live_compact",
+                        &json!({
+                            "checkpoint": committed.checkpoint_id,
+                            "result_seq": committed.result_seq,
+                            "generation": committed.generation,
+                        }),
+                    );
+                }
+                Ok(crate::live_compact::Commit::Nothing(reason)) => nothing = Some(reason),
+                Err(e) => {
+                    tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
+                    checkpoint_error = Some(format!("{e:#}"));
                 }
             }
         }
-        if unrequested {
-            output = concat!(
-                "No checkpoint was outstanding: nothing was compacted, ",
-                "and the history is untouched."
-            )
-            .to_string();
+        if let Some(reason) = nothing {
+            output = reason;
             content["output"] = json!(output.clone());
             self.announce_row(
                 name,
@@ -1665,7 +1666,6 @@ impl Agent {
                 name,
                 self.store.append_message(id, Kind::ToolResult, &content),
             );
-            let _ = self.store.reset_live_compact_request(id);
             tail = output.clone();
         } else if !checkpointed {
             self.announce_row(
@@ -1918,6 +1918,15 @@ impl Agent {
             self.store
                 .append_message(id, Kind::Notice, &json!({"text": said})),
         );
+        // Also context, not only the notice: nothing is built from one. `docs/notes/server-agent.md`.
+        self.announce_row(
+            session,
+            self.store.append_message(
+                id,
+                Kind::Inject,
+                &json!({"role": "user", "text": crate::prompts::harness_wrap(said.clone())}),
+            ),
+        );
         self.bus.publish(Event::Log {
             level: LogLevel::Error,
             message: said,
@@ -1947,6 +1956,8 @@ enum StepResult {
 struct Attempt<'a> {
     number: u32,
     llm: &'a LlmClient,
+    /// The provider's inspection refusals this turn has already absorbed.
+    moderation: &'a std::sync::atomic::AtomicU32,
     /// The session's static tier, so every step sends the same one.
     tier: Option<&'a str>,
     /// How hard the model should think, when the session asked for a level.
@@ -2204,6 +2215,23 @@ mod tests {
         assert!(notice.contains("handoff threshold 20"), "{notice}");
         assert!(!notice.contains("{{"), "{notice}");
     }
+    /// The row a call is drawn with keeps its shared arguments: a title is read, not taken.
+    ///
+    /// # Invariant
+    ///
+    /// Reading the title must not eat the other shared names -- a row that silently lost `max_output`
+    /// would show a call that never stated it.
+    #[test]
+    fn the_row_keeps_the_shared_arguments_it_drew_a_title_from() {
+        let value = serde_json::json!(
+            {"description": "check the state", "max_output": 8000, "path": "a-file"}
+        );
+        let head = call_head("read", &value.to_string());
+        assert_eq!(head.description, "check the state");
+        let keys: Vec<&str> = head.fields.iter().map(|f| f.label.as_str()).collect();
+        assert!(keys.contains(&"max_output"), "{keys:?}");
+        assert!(keys.contains(&"path"), "{keys:?}");
+    }
 }
 /// What a call is, and the words it is read with: the tool and its arguments.
 ///
@@ -2214,22 +2242,15 @@ mod tests {
 /// crate and nothing on the wire moves. See `docs/notes/protocol-message.md`.
 pub(crate) fn call_head(tool: &str, arguments: &str) -> protocol::Head {
     let value: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
-    protocol::Head::call(tool, description_of(&value), call_fields(tool, &value))
-}
-
-/// What the call is for, in the model's own words: the one argument read as a title.
-///
-/// # Invariant
-///
-/// It is never a [`protocol::Field`]: an argument with no label of its own would be
-/// spelled a second time under a name the row already said. Only ever a title -- a
-/// missing or nonsensical one costs an untitled row, not a failed call.
-fn description_of(value: &serde_json::Value) -> &str {
-    value
-        .get("description")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .unwrap_or_default()
+    // The title is read by the same list the call layer reads, never by a second literal
+    // here: two readers of one name are two answers to what a call said. Read, not taken:
+    // the row still carries `max_output`, a field like any other.
+    let title = crate::tools::laws::Given::take(&mut value.clone()).description;
+    protocol::Head::call(
+        tool,
+        title.as_deref().unwrap_or_default(),
+        call_fields(tool, &value),
+    )
 }
 
 /// A call's arguments, each marked with whether SPEC's `abstract` shows it.

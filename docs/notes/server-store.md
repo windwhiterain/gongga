@@ -438,6 +438,12 @@ also why `orphaned_blobs` may keep a file either session names.
 An empty source clones to a session with no rows, which is what `set_session` makes
 too. `rows` and `last_seq` come back so the command can say how much moved.
 
+A `Some(Dream)` parameter makes the copy a disposable dream: `cache_keepalive` off,
+the `live_compact` opt-in explicitly off, mode `work`, and `dream_of` /
+`dreamed_checkpoint_id` written on the copy. A plain clone (`None`) copies
+`cache_keepalive` and `mode` verbatim and leaves the dream columns NULL.
+`server-dream.md` has the rest.
+
 ## Store::set_usage_for_generation
 
 Called with the token counts from `usage`, never with a computed one: the provider

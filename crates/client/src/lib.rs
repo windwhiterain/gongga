@@ -5,6 +5,7 @@
 pub mod catalog;
 pub mod commands;
 pub mod complete;
+pub mod document;
 pub mod json_command;
 pub mod json_text;
 pub mod json_value;

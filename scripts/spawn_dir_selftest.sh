@@ -224,7 +224,7 @@ model='"model_config":{"model":{"provider":"fake","model":"flash-fake"}}'
 #    skill still runs -- in this server's directory, not in a failed spawn.
 out=$(call '{"name":"new_session","args":{"id":"probe","config":{'"$model"',"workspace":{"remote":"probe-vm"}}}}')
 say "new_session probe: $out"
-out=$(call '{"name":"run_skill","args":{"id":"harness/echo","cmd":{"name":"where","args":{"words":"hi"}},"session":"probe"}}')
+out=$(call '{"name":"run_skill","args":{"id":"echo","cmd":{"name":"where","args":{"words":"hi"}},"session":"probe"}}')
 say "run_skill on probe: $(printf '%s' "$out" | tail -2)"
 ok "a peer session's skill package runs here" "$(kind "$out" '[exit status 0]')"
 ok "and stands in this server's directory" "$(kind "$out" "dir=$(native "$root")")"
@@ -233,7 +233,7 @@ ok "not the empty directory it failed on" "$([[ "$out" != *'os error'* ]] && ech
 
 # 2. A skill in the form this harness dropped is refused before a process starts, in one
 #    sentence naming the change -- a package -- because a model has one door.
-out=$(call '{"name":"run_skill","args":{"id":"harness/scriptie","cmd":{"name":"run"},"session":"probe"}}')
+out=$(call '{"name":"run_skill","args":{"id":"scriptie","cmd":{"name":"run"},"session":"probe"}}')
 say "run_skill on scriptie: $out"
 ok "a skill that is not a package is refused" "$(kind "$out" 'runs only as a Python call')"
 ok "and the sentence names the change, not a missing file" \
@@ -244,7 +244,7 @@ ok "and no program was blamed for it" "$([[ "$out" != *'could not run'* ]] && ec
 mkdir -p "$work/gone"
 call '{"name":"new_session","args":{"id":"stale","config":{'"$model"',"workspace":{"cwd":"'"$(native "$work/gone")"'"}}}}' >/dev/null
 rm -rf "$work/gone"
-out=$(call '{"name":"run_skill","args":{"id":"harness/echo","cmd":{"name":"where","args":{"words":"gone"}},"session":"stale"}}')
+out=$(call '{"name":"run_skill","args":{"id":"echo","cmd":{"name":"where","args":{"words":"gone"}},"session":"stale"}}')
 say "run_skill on stale: $(printf '%s' "$out" | tail -2)"
 ok "a gone directory is not a failed skill" "$(kind "$out" '[exit status 0]')"
 ok "and the package still stands in this server's directory" "$(kind "$out" "dir=$(native "$root")")"

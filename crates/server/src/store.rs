@@ -188,7 +188,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- for the time that was left. Epoch milliseconds, NULL for a session that is
     -- not waiting. The same reason `canceled` is a column: a stop ends the
     -- process, and a deadline only it knew would be a wait nobody resumes.
-    waiting_until INTEGER
+    waiting_until INTEGER,
+    -- SPEC's Dreaming: the session this row is a disposable dream of, by id.
+    -- NULL is an ordinary session. No foreign key: a dream goes through the
+    -- delete machinery, which ends its channels and subscriptions too, and a
+    -- source's delete discards its dreams the same way.
+    -- See `docs/notes/server-dream.md`.
+    dream_of INTEGER,
+    -- The checkpoint generation this row's dreaming concerns: on a source, the
+    -- generation its last dream was spawned for; on a dream, the generation it
+    -- was spawned for. NULL is a row that has never dreamed.
+    dreamed_checkpoint_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -362,6 +372,22 @@ CREATE TABLE IF NOT EXISTS channels (
     -- The marker this channel's last write ended its reply with: SPEC's "sticky
     -- value", so a read that writes nothing still knows where a reply ends.
     until_sentinel TEXT NOT NULL DEFAULT '',
+    -- Whether a `cancel` was asked to keep this channel alive. A state, not a
+    -- moment: the flag is written by `cancel(keep_alive)`, read by whoever comes
+    -- next, and cleared only when the relay is adopted or the channel ends.
+    -- Without it a later stop that did not ask -- a window leaving, a signal --
+    -- ends what an earlier one kept, and `keep_alive` would mean only "until the
+    -- next stop". See `docs/notes/server-channel.md`.
+    detached INTEGER NOT NULL DEFAULT 0,
+    -- The relay's own pid, which is not the program's: `pid` is what the program
+    -- runs as, read from the relay's `status`. A successor that only has `pid`
+    -- can see the program is gone but cannot find the relay to adopt, so a kept
+    -- channel would be unadoptable. `NULL` is a row written before this column.
+    relay_pid INTEGER,
+    -- When the relay started, to prove a pid is still the same process. A pid is
+    -- only unique until it is recycled, and adoption arms a job that kills on
+    -- close, so a recycled pid would make this server's death somebody else's.
+    relay_started_at INTEGER,
     UNIQUE (session, path)
 );
 
@@ -526,6 +552,14 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
             "live_compact_interval_tokens",
             "ALTER TABLE sessions ADD COLUMN live_compact_interval_tokens INTEGER",
         ),
+        (
+            "dream_of",
+            "ALTER TABLE sessions ADD COLUMN dream_of INTEGER",
+        ),
+        (
+            "dreamed_checkpoint_id",
+            "ALTER TABLE sessions ADD COLUMN dreamed_checkpoint_id INTEGER",
+        ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
@@ -542,6 +576,27 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         "channels",
         "wait_marker",
         "ALTER TABLE channels ADD COLUMN wait_marker TEXT",
+    )?;
+    // A channel a `cancel` was asked to keep alive: a state on the row, so the
+    // next stop can tell it from a channel nobody asked for.
+    add_column_if_missing(
+        conn,
+        "channels",
+        "detached",
+        "ALTER TABLE channels ADD COLUMN detached INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // The relay's own pid and start: `pid` alone cannot find a relay to adopt.
+    add_column_if_missing(
+        conn,
+        "channels",
+        "relay_pid",
+        "ALTER TABLE channels ADD COLUMN relay_pid INTEGER",
+    )?;
+    add_column_if_missing(
+        conn,
+        "channels",
+        "relay_started_at",
+        "ALTER TABLE channels ADD COLUMN relay_started_at INTEGER",
     )?;
     add_column_if_missing(
         conn,
@@ -944,7 +999,13 @@ impl Store {
     /// must exist. See `docs/notes/server-store.md`.
     ///
     /// It owns no worktree even when the source does: a branch has one session.
-    pub fn clone_session(&self, source: &str, name: &str) -> anyhow::Result<CloneReport> {
+    /// A `dream` copy: see `Dream`.
+    pub fn clone_session(
+        &self,
+        source: &str,
+        name: &str,
+        dream: Option<Dream>,
+    ) -> anyhow::Result<CloneReport> {
         if name.trim().is_empty() {
             anyhow::bail!("session name must not be empty");
         }
@@ -958,13 +1019,23 @@ impl Store {
                                        updated_at, context_limit, thinking_effort,
                                        context_tokens, context_generation, cached_tokens,
                                        tps, ttft_ms, remote, monitor_seq,
-                                       cache_tier, cache_keepalive, mode)
+                                       cache_tier, cache_keepalive, mode, live_compact,
+                                       dream_of, dreamed_checkpoint_id)
                  SELECT ?2, 'idle', model, model_name, cwd, ?3, ?3, context_limit,
                         thinking_effort, context_tokens, context_generation, cached_tokens,
                         tps, ttft_ms, remote, monitor_seq, cache_tier,
-                        cache_keepalive, mode
+                        CASE WHEN ?4 IS NULL THEN cache_keepalive ELSE 0 END,
+                        CASE WHEN ?4 IS NULL THEN mode ELSE 'work' END,
+                        CASE WHEN ?4 IS NULL THEN NULL ELSE 0 END,
+                        ?4, ?5
                    FROM sessions WHERE name = ?1",
-                params![source, name, now],
+                params![
+                    source,
+                    name,
+                    now,
+                    dream.map(|d| d.source),
+                    dream.map(|d| d.generation)
+                ],
             )
             .map_err(|e| duplicate_session(name, e))?;
         // No row means the source is not there; the transaction drops unwritten.
@@ -986,6 +1057,69 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(CloneReport { id, rows, last_seq })
+    }
+
+    /// The latest checkpoint of a session: the generation a dream is named for.
+    /// `None` is generation 0.
+    pub fn latest_checkpoint_id(&self, session_id: i64) -> anyhow::Result<Option<i64>> {
+        let conn = self.lock();
+        let id = conn
+            .query_row(
+                "SELECT id FROM live_compact_checkpoints
+                  WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
+    /// Every live dream of a source, oldest first: at most one is allowed.
+    pub fn dreams_of(&self, source: i64) -> anyhow::Result<Vec<(i64, String)>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare("SELECT id, name FROM sessions WHERE dream_of = ?1 ORDER BY id")?;
+        let rows = stmt
+            .query_map(params![source], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Marks the generation a source last dreamed, so the next fire of the same
+    /// generation sends the time notice instead.
+    pub fn set_dreamed_checkpoint(&self, id: i64, generation: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET dreamed_checkpoint_id = ?2 WHERE id = ?1",
+            params![id, generation],
+        )?;
+        Ok(())
+    }
+
+    /// Lets a generation dream again, but only while the source still marks that
+    /// generation.
+    pub fn reset_dreamed_checkpoint(&self, id: i64, generation: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET dreamed_checkpoint_id = NULL
+              WHERE id = ?1 AND dreamed_checkpoint_id = ?2",
+            params![id, generation],
+        )?;
+        Ok(())
+    }
+
+    /// Dreams whose true-end discard was lost to a process exit: no owed row, no stop flag.
+    pub fn orphan_dreams(&self) -> anyhow::Result<Vec<(i64, String, i64, Option<i64>)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.name, s.dream_of, s.dreamed_checkpoint_id FROM sessions s
+              WHERE s.dream_of IS NOT NULL
+                AND s.canceled = 0 AND s.waiting_until IS NULL
+                AND NOT EXISTS (SELECT 1 FROM pending_tasks p
+                                 WHERE p.session = s.name AND p.kind IN ('turn', 'inject'))",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Keeps a row's directory equal to where an endpoint put the session's shell.
@@ -1117,7 +1251,8 @@ impl Store {
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote,
                     s.cache_tier, s.cache_keepalive, s.ended_at, s.mode,
                     s.live_compact, s.live_compact_interval_tokens, s.worktree,
-                    s.worktree_merged, s.worktree_changed
+                    s.worktree_merged, s.worktree_changed,
+                    s.dream_of, s.dreamed_checkpoint_id
              FROM sessions s";
 
     /// Every session in `error` because of a provider, with what a monitor turn
@@ -1256,6 +1391,8 @@ impl Store {
             worktree: r.get(21)?,
             worktree_merged: r.get::<_, Option<i64>>(22)?.map(|v| v != 0),
             worktree_changed: r.get::<_, Option<i64>>(23)?.map(|v| v != 0),
+            dream_of: r.get(24)?,
+            dreamed_checkpoint_id: r.get(25)?,
         })
     }
 
@@ -1340,11 +1477,14 @@ impl Store {
                 id
             ],
         )?;
-        if enabled == Some(false) {
+        // Off, or a new base: the backoff measured a stretch this session left.
+        if enabled == Some(false) || interval_tokens.is_some() {
             tx.execute(
-                "UPDATE sessions SET live_compact_requested = 0 WHERE id = ?1",
+                "UPDATE sessions SET live_compact_interval_effective = NULL WHERE id = ?1",
                 params![id],
             )?;
+        }
+        if enabled == Some(false) {
             tx.execute(
                 "DELETE FROM pending_tasks
                   WHERE session = ?1 AND kind = 'inject'
@@ -1521,10 +1661,21 @@ impl Store {
                 params![checkpoint],
             )?;
         }
-        let count = tx.execute(
-            "DELETE FROM messages WHERE session_id = ?1 AND seq > ?2",
-            params![session_id, seq],
-        )?;
+        // One row at a time from the tail: the append-only trigger aborts a bulk delete.
+        let mut count = 0usize;
+        loop {
+            let removed = tx.execute(
+                "DELETE FROM messages
+                  WHERE session_id = ?1
+                    AND seq = (SELECT MAX(seq) FROM messages WHERE session_id = ?1)
+                    AND seq > ?2",
+                params![session_id, seq],
+            )?;
+            if removed == 0 {
+                break;
+            }
+            count += removed;
+        }
         if !discarded.is_empty() {
             let context_tokens = tx.query_row(
                 "SELECT context_tokens FROM sessions WHERE id = ?1",
@@ -1539,7 +1690,8 @@ impl Store {
                 // was billed for is gone, so its rate and its delay describe nothing
                 // left in this row. See `docs/notes/server-store.md`.
                 "UPDATE sessions SET live_compact_baseline_tokens = NULL,
-                        live_compact_requested = 0, context_tokens = 0, cached_tokens = NULL,
+                        live_compact_interval_effective = NULL,
+                        context_tokens = 0, cached_tokens = NULL,
                         tps = NULL, ttft_ms = NULL,
                         context_generation = context_generation - ?2
                  WHERE id = ?1",
@@ -2039,14 +2191,14 @@ impl Store {
         let conn = self.lock();
         let row = conn.query_row(
             "SELECT context_tokens, live_compact_baseline_tokens,
-                    live_compact_requested, context_generation
+                    live_compact_interval_effective, context_generation
              FROM sessions WHERE id = ?1",
             params![session_id],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, Option<i64>>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(2)?,
                     row.get::<_, i64>(3)?,
                 ))
             },
@@ -2054,23 +2206,9 @@ impl Store {
         Ok(crate::live_compact::Measurement {
             tokens: row.0.max(0) as u64,
             baseline_tokens: row.1.map(|tokens| tokens.max(0) as u64),
-            requested: row.2 != 0,
+            interval: row.2.map(|tokens| tokens.max(0) as u64),
             generation: row.3.max(0) as u64,
         })
-    }
-
-    /// Whether this lineage has a compaction origin: what puts the schema in.
-    pub fn has_live_compact_origin(&self, session_id: i64) -> anyhow::Result<bool> {
-        let origin: Option<i64> = self
-            .lock()
-            .query_row(
-                "SELECT live_compact_origin_seq FROM sessions WHERE id = ?1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .flatten();
-        Ok(origin.is_some())
     }
 
     /// Records the first provider measurement for the current visible checkpoint.
@@ -2090,42 +2228,49 @@ impl Store {
         Ok(())
     }
 
-    /// Marks the request and its durable injection together, so a restart cannot nag twice.
+    /// Queues one ask, unless one is already waiting to be delivered.
+    ///
+    /// # Invariant
+    ///
+    /// The interval the ask raises rides in the payload, so a task the step boundary
+    /// drops leaves the interval where it was: only a delivered ask may raise it.
     pub fn request_live_compact(
         &self,
         session_id: i64,
         session: &str,
         generation: u64,
         message: &str,
+        next_interval: u64,
     ) -> anyhow::Result<bool> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
-        let marked = tx.execute(
-            "UPDATE sessions SET live_compact_requested = 1
-             WHERE id = ?1 AND context_generation = ?2
-               AND live_compact_origin_seq IS NOT NULL
-               AND live_compact_baseline_tokens IS NOT NULL
-               AND live_compact_requested = 0",
-            params![session_id, generation as i64],
-        )?;
-        if marked == 0 {
-            return Ok(false);
-        }
-        tx.execute(
+        let queued = tx.execute(
             "INSERT INTO pending_tasks (session, kind, payload, created_at)
-             VALUES (?1, 'inject', ?2, ?3)",
+             SELECT ?1, 'inject', ?2, ?3
+              WHERE EXISTS (SELECT 1 FROM sessions
+                             WHERE id = ?4 AND context_generation = ?5
+                               AND live_compact_origin_seq IS NOT NULL
+                               AND live_compact_baseline_tokens IS NOT NULL)
+                AND NOT EXISTS (SELECT 1 FROM pending_tasks
+                                 WHERE session = ?1 AND kind = 'inject'
+                                   AND json_extract(payload, '$.live_compact') IS NOT NULL)",
             params![
                 session,
                 serde_json::to_string(&json!({
                     "session": session,
                     "message": message,
-                    "live_compact": {"generation": generation},
+                    "live_compact": {
+                        "generation": generation,
+                        "next_interval": next_interval,
+                    },
                 }))?,
-                now_millis()
+                now_millis(),
+                session_id,
+                generation as i64
             ],
         )?;
         tx.commit()?;
-        Ok(true)
+        Ok(queued > 0)
     }
 
     /// Opens live compaction: where the plan finished, or where the session
@@ -2145,17 +2290,17 @@ impl Store {
             params![session_id],
             |row| row.get(0),
         )?;
-        // SPEC: origin is the transcript's end at plan finish; explore is the permanent prefix.
+        // SPEC: the origin ends a step, never a call. `docs/notes/server-live-compact.md`.
         let origin: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?1",
+            "SELECT COALESCE(MAX(seq), 0) FROM messages
+              WHERE session_id = ?1 AND kind <> 'tool_call'",
             params![session_id],
             |row| row.get(0),
         )?;
         // Zero rows is a session that has not spoken: nothing is held back.
         tx.execute(
             "UPDATE sessions SET live_compact_origin_seq = ?2,
-                    live_compact_baseline_tokens = CASE WHEN ?3 > 0 THEN ?3 ELSE NULL END,
-                    live_compact_started = 1
+                    live_compact_baseline_tokens = CASE WHEN ?3 > 0 THEN ?3 ELSE NULL END
              WHERE id = ?1 AND live_compact_origin_seq IS NULL",
             params![session_id, origin, context_tokens],
         )?;
@@ -2163,68 +2308,96 @@ impl Store {
         Ok(())
     }
 
-    /// Lets a failed or stale summary request be asked again without deleting its marker.
-    pub fn reset_live_compact_request(&self, session_id: i64) -> anyhow::Result<()> {
-        self.lock().execute(
-            "UPDATE sessions SET live_compact_requested = 0 WHERE id = ?1",
-            params![session_id],
-        )?;
-        Ok(())
-    }
-
-    /// Persists the summary and its complete artifact set in the checkpoint's transaction.
+    /// Commits the checkpoint a `live_compact` call describes, as the transcript
+    /// stands now.
+    ///
+    /// # Invariant
+    ///
+    /// The segment is read here, not when the ask was queued: the summary is the
+    /// agent's words, and what it replaces is whatever the transcript says at the
+    /// call. A call with nothing to fold answers so and appends nothing -- an error
+    /// would invite the retry loop that pays for the same head twice. See
+    /// `docs/notes/server-live-compact.md`.
     pub fn append_live_compact_result(
         &self,
         session_id: i64,
         call_id: &str,
         content: &serde_json::Value,
-    ) -> anyhow::Result<crate::live_compact::Committed> {
+    ) -> anyhow::Result<crate::live_compact::Commit> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
-        let request = tx
-            .query_row(
-                "SELECT display FROM messages
-                 WHERE session_id = ?1 AND kind = ?2
-                 ORDER BY seq DESC LIMIT 1",
-                params![session_id, crate::live_compact::REQUEST_KIND],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let request = request
-            .map(|display| serde_json::from_str::<crate::live_compact::Request>(&display))
-            .transpose()?
-            .ok_or_else(|| anyhow::anyhow!("live_compact has no durable request"))?;
-        let (call_seq, call_display) = tx.query_row(
-            "SELECT seq, display FROM messages
-             WHERE session_id = ?1 AND kind = 'tool_call' AND call_id = ?2",
+        let (call_seq, call_display, call_turn, call_step) = tx.query_row(
+            "SELECT seq, display, turn, step FROM messages
+             WHERE session_id = ?1 AND kind = 'tool_call' AND call_id = ?2
+             ORDER BY seq DESC LIMIT 1",
             params![session_id, call_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
         )?;
         let call: serde_json::Value = serde_json::from_str(&call_display)?;
         if call.get("name").and_then(serde_json::Value::as_str)
             != Some(crate::tools::live_compact::LIVE_COMPACT_TOOL)
-            || call_seq <= request.request_seq
         {
-            anyhow::bail!("live_compact call does not belong to the latest request");
+            anyhow::bail!("call {call_id} is not a live_compact call");
         }
+        let bounds = crate::live_compact::bounds(&tx, session_id)?;
+        let Some(segment_after_seq) = bounds.segment_after else {
+            return Ok(crate::live_compact::Commit::Nothing(
+                "No compaction checkpoint has been opened for this session: nothing was \
+                 compacted, and the history is untouched."
+                    .to_string(),
+            ));
+        };
+        let Some(round) = crate::live_compact::ordinary_round(&tx, session_id, segment_after_seq)?
+        else {
+            return Ok(crate::live_compact::Commit::Nothing(
+                "No completed tool round since the last checkpoint: nothing was compacted, \
+                 and the history is untouched. Ask again once a step's calls have all \
+                 returned."
+                    .to_string(),
+            ));
+        };
         let (current_generation, context_tokens) = tx.query_row(
             "SELECT context_generation, context_tokens FROM sessions WHERE id = ?1",
             params![session_id],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )?;
-        if current_generation.max(0) as u64 != request.generation {
-            anyhow::bail!("live_compact request belongs to an older context generation");
-        }
+        // What the summary answers: an ask newer than the last checkpoint, or the call.
+        let asked: Option<i64> = tx.query_row(
+            "SELECT MAX(seq) FROM messages
+              WHERE session_id = ?1 AND kind = ?2 AND seq > ?3",
+            params![
+                session_id,
+                crate::live_compact::REQUEST_KIND,
+                bounds.last_result_seq.unwrap_or(0)
+            ],
+            |row| row.get(0),
+        )?;
 
+        // The reasoning this step reached the call by, plus the call and its result:
+        // rows a later checkpoint still has to send.
         let mut statement = tx.prepare(
             "SELECT seq FROM messages
              WHERE session_id = ?1 AND kind = 'reasoning'
-               AND seq > ?2 AND seq < ?3 ORDER BY seq",
+               AND seq > ?2 AND seq < ?3 AND turn IS ?4 AND step IS ?5
+             ORDER BY seq",
         )?;
-        let rows = statement
-            .query_map(params![session_id, request.request_seq, call_seq], |row| {
-                row.get::<_, i64>(0)
-            })?;
+        let rows = statement.query_map(
+            params![
+                session_id,
+                segment_after_seq,
+                call_seq,
+                call_turn,
+                call_step
+            ],
+            |row| row.get::<_, i64>(0),
+        )?;
         let mut artifacts = rows.collect::<Result<Vec<_>, _>>()?;
         drop(statement);
         artifacts.push(call_seq);
@@ -2237,10 +2410,10 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 session_id,
-                request.segment_after_seq,
-                request.request_seq,
-                request.round_start_seq,
-                request.cutoff_seq,
+                segment_after_seq,
+                asked.unwrap_or(call_seq),
+                round.start_seq,
+                round.cutoff_seq,
                 result_seq,
                 now_millis()
             ],
@@ -2277,16 +2450,16 @@ impl Store {
             )?;
         }
 
-        // Nonzero resets trigger +1; zero needs an explicit advance so old usage stays stale.
-        // The rate and the delay go with the context: they measured the transcript the
-        // checkpoint replaced.
+        // The interval, the baseline and the rates all measured the replaced transcript.
         tx.execute(
             "UPDATE sessions SET live_compact_baseline_tokens = NULL,
-                    live_compact_requested = 0, context_tokens = 0, cached_tokens = NULL,
+                    live_compact_interval_effective = NULL,
+                    context_tokens = 0, cached_tokens = NULL,
                     tps = NULL, ttft_ms = NULL
              WHERE id = ?1",
             params![session_id],
         )?;
+        // Zero context needs an explicit +1; the trigger covers the rest.
         if context_tokens == 0 {
             tx.execute(
                 "UPDATE sessions SET context_generation = context_generation + 1 WHERE id = ?1",
@@ -2294,11 +2467,13 @@ impl Store {
             )?;
         }
         tx.commit()?;
-        Ok(crate::live_compact::Committed {
-            checkpoint_id,
-            result_seq,
-            generation: request.generation + 1,
-        })
+        Ok(crate::live_compact::Commit::Checkpointed(
+            crate::live_compact::Committed {
+                checkpoint_id,
+                result_seq,
+                generation: (current_generation.max(0) as u64).saturating_add(1),
+            },
+        ))
     }
 
     /// The transcript a request reads, closed at the row that exists right now.
@@ -2486,9 +2661,10 @@ impl Store {
     /// # Invariant
     ///
     /// Heir empties a transcript from under a still-running turn, keeping only
-    /// the in-flight call and its result, and its lesson lands as an injection —
-    /// so "fresh" means no `text` row survives, never a physically empty table,
-    /// and the reset lives here rather than on `begin_turn`.
+    /// the in-flight call and its result, and its lesson lands as an injection --
+    /// so an emptied transcript holds rows and no `text` one, which is what the
+    /// reset keys on. A fresh session holds no rows, so the checkpoint opened
+    /// before its first message survives. The reset lives here, not on `begin_turn`.
     fn append_user_conn(
         &self,
         tx: &rusqlite::Transaction<'_>,
@@ -2496,9 +2672,11 @@ impl Store {
         expanded: &crate::meta::Expanded,
         kind: Kind,
     ) -> anyhow::Result<i64> {
+        // Emptied: rows but no `text` one. Fresh: no rows, so its checkpoint stands.
         let no_text = tx.query_row(
-            "SELECT NOT EXISTS (SELECT 1 FROM messages
-                 WHERE session_id = ?1 AND kind = 'text')",
+            "SELECT EXISTS (SELECT 1 FROM messages WHERE session_id = ?1)
+                 AND NOT EXISTS (SELECT 1 FROM messages
+                                  WHERE session_id = ?1 AND kind = 'text')",
             params![session_id],
             |row| row.get::<_, bool>(0),
         )?;
@@ -2515,8 +2693,8 @@ impl Store {
             )?;
             tx.execute(
                 "UPDATE sessions SET live_compact_origin_seq = NULL,
-                        live_compact_baseline_tokens = NULL, live_compact_requested = 0,
-                        live_compact_started = 0
+                        live_compact_baseline_tokens = NULL,
+                        live_compact_interval_effective = NULL
                  WHERE id = ?1",
                 params![session_id],
             )?;
@@ -2688,14 +2866,10 @@ impl Store {
                 )?;
                 if !stated.map_or(live_compact, |stated| stated != 0) {
                     tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
-                    tx.execute(
-                        "UPDATE sessions SET live_compact_requested = 0 WHERE id = ?1",
-                        params![session_id],
-                    )?;
                     continue;
                 }
             }
-            let mut compact_round = None;
+            let mut next_interval = None;
             if let Some(request) = payload.get("live_compact") {
                 let generation = request
                     .get("generation")
@@ -2703,36 +2877,32 @@ impl Store {
                     .ok_or_else(|| {
                         anyhow::anyhow!("pending live compact {id} has no generation")
                     })?;
-                let (current_generation, origin_seq) = tx.query_row(
-                    "SELECT context_generation, live_compact_origin_seq
-                     FROM sessions WHERE id = ?1",
+                let current_generation: i64 = tx.query_row(
+                    "SELECT context_generation FROM sessions WHERE id = ?1",
                     params![session_id],
-                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+                    |row| row.get(0),
                 )?;
-                let previous_cutoff = tx
-                    .query_row(
-                        "SELECT cutoff_seq FROM live_compact_checkpoints
-                         WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
-                        params![session_id],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .optional()?;
-                let segment_after = previous_cutoff.or(origin_seq);
-                let round = match segment_after {
+                let after = crate::live_compact::bounds(&tx, session_id)?.segment_after;
+                let round = match after {
                     Some(after) if (current_generation.max(0) as u64) == generation => {
                         crate::live_compact::ordinary_round(&tx, session_id, after)?
                     }
                     _ => None,
                 };
-                let Some(round) = round else {
+                // An ask the boundary cannot honour is dropped, and the interval stays
+                // where it was: only a delivered ask raises it.
+                if round.is_none() {
                     tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
-                    tx.execute(
-                        "UPDATE sessions SET live_compact_requested = 0 WHERE id = ?1",
-                        params![session_id],
-                    )?;
                     continue;
-                };
-                compact_round = segment_after.map(|after| (round, after, generation));
+                }
+                next_interval = Some(
+                    request
+                        .get("next_interval")
+                        .and_then(serde_json::Value::as_u64)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("pending live compact {id} has no next interval")
+                        })?,
+                );
             }
 
             let expanded = crate::meta::Expanded::from_json(&payload)
@@ -2742,19 +2912,16 @@ impl Store {
                 text: expanded.text.clone(),
                 injected: true,
             });
-            if let Some((round, segment_after, generation)) = compact_round {
-                let request = crate::live_compact::Request {
-                    request_seq: written.seq,
-                    segment_after_seq: segment_after,
-                    round_start_seq: round.start_seq,
-                    cutoff_seq: round.cutoff_seq,
-                    generation,
-                };
+            if let Some(next) = next_interval {
+                tx.execute(
+                    "UPDATE sessions SET live_compact_interval_effective = ?1 WHERE id = ?2",
+                    params![i64::try_from(next).unwrap_or(i64::MAX), session_id],
+                )?;
                 Self::append_message_conn(
                     &tx,
                     session_id,
                     Kind::LiveCompactRequest,
-                    &serde_json::to_value(request)?,
+                    &serde_json::json!({}),
                 )?;
             }
             tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
@@ -2954,11 +3121,16 @@ impl Store {
         // The machine's own spelling: a peer's directory is not a path this one has.
         dir: &str,
         pid: u32,
+        // The relay's own pid and its start, when this machine started the relay. A
+        // successor cannot adopt what it cannot name: `pid` is the program's, and
+        // the relay is reachable only as the parent of a pid that may be gone.
+        relay: Option<(u32, i64)>,
     ) -> anyhow::Result<i64> {
         let conn = self.lock();
         conn.execute(
-            "INSERT INTO channels (session, path, program, remote, dir, pid, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO channels (session, path, program, remote, dir, pid, started_at, \
+             relay_pid, relay_started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 session,
                 path,
@@ -2966,7 +3138,9 @@ impl Store {
                 remote,
                 dir,
                 i64::from(pid),
-                now_millis()
+                now_millis(),
+                relay.map(|(pid, _)| i64::from(pid)),
+                relay.map(|(_, at)| at),
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -2976,7 +3150,7 @@ impl Store {
     pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at
              FROM channels WHERE session = ?1 ORDER BY path",
         )?;
         let rows = stmt
@@ -2994,7 +3168,7 @@ impl Store {
     pub fn every_channel(&self) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at
              FROM channels ORDER BY id",
         )?;
         let rows = stmt
@@ -3007,7 +3181,7 @@ impl Store {
     pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at
              FROM channels WHERE session = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query(params![session, path])?;
@@ -3072,6 +3246,49 @@ impl Store {
             params![session, path, sentinel],
         )?;
         Ok(())
+    }
+
+    /// Marks every channel of every session as one a `cancel` was asked to keep.
+    ///
+    /// # Invariant
+    ///
+    /// A state, not an argument: the flag outlives the stop that wrote it, so a
+    /// later stop that asked for nothing spares these too. This is the whole of
+    /// SPEC's "make every channel detached" -- a row that carries it is one the next
+    /// start may adopt.
+    pub fn mark_detached(&self) -> anyhow::Result<usize> {
+        Ok(self
+            .lock()
+            .execute("UPDATE channels SET detached = 1", [])?)
+    }
+
+    /// Clears the flag on one channel: the relay was adopted, or the channel ended.
+    ///
+    /// # Invariant
+    ///
+    /// Adoption is what clears it, so a second start does not offer the same relay
+    /// again. A row that ends takes its flag with it either way.
+    pub fn clear_detached(&self, id: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET detached = 0 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// The channels a start may adopt: a `cancel` marked them, and this is where the
+    /// relay's identity lives.
+    pub fn detached_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, \
+             wait_marker, until_sentinel, detached, relay_pid, relay_started_at
+             FROM channels WHERE detached = 1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], channel_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Clears the flag, and says whether this caller cleared it: one delivery, claimed.
@@ -3306,6 +3523,19 @@ pub struct ChannelRow {
     pub wait_marker: Option<String>,
     /// The marker this channel's last write ended its reply with; `''` before one.
     pub until_sentinel: String,
+    /// Whether a `cancel(keep_alive)` asked for this channel to outlive the stop.
+    ///
+    /// # Invariant
+    ///
+    /// A state, not an argument: it survives the stop that set it, so a later stop
+    /// that did not ask spares it too. `stop_every` reads this; nothing else writes
+    /// it but `mark_detached` and `clear_detached`.
+    pub detached: bool,
+    /// The relay's pid, which is not [`Self::pid`]: that one is the program's.
+    /// `None` is a row written before the column, or a channel on a peer.
+    pub relay_pid: Option<i64>,
+    /// When that relay started, so a recycled pid is refused before a job is armed.
+    pub relay_started_at: Option<i64>,
 }
 
 fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
@@ -3322,6 +3552,9 @@ fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
         wrote_at: row.get(9)?,
         wait_marker: row.get(10)?,
         until_sentinel: row.get(11)?,
+        detached: row.get::<_, i64>(12)? != 0,
+        relay_pid: row.get(13)?,
+        relay_started_at: row.get(14)?,
     })
 }
 
@@ -3372,6 +3605,18 @@ pub struct SessionRow {
     pub worktree_merged: Option<bool>,
     /// Whether it holds anything the main line does not; `None` is unread.
     pub worktree_changed: Option<bool>,
+    /// The session this row is a disposable dream of; `None` is an ordinary one.
+    pub dream_of: Option<i64>,
+    /// The checkpoint generation this row's dreaming concerns; `None` never dreamed.
+    pub dreamed_checkpoint_id: Option<i64>,
+}
+
+/// A dream clone: keep_alive off, live compact explicitly off, mode `work`.
+/// See `docs/notes/server-dream.md`.
+#[derive(Debug, Clone, Copy)]
+pub struct Dream {
+    pub source: i64,
+    pub generation: i64,
 }
 
 /// What a clone wrote: the new session, its rows, and where it ends.

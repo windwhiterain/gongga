@@ -31,8 +31,9 @@ The schema is the full set for the life of the session. A remote tool and the
 whatever a session's own switch says, because the switch is a setting and this head
 is context: a schema that followed it would have to be re-stamped at every toggle,
 and a toggle after the head was written would reach nobody. Whether a call is
-honoured is decided when it runs; a call with no checkpoint requested already
-answers as a no-op rather than an error.
+honoured is decided when it runs: it commits whatever the transcript holds at the
+call, and one with nothing to fold answers so rather than as an error. See
+`docs/notes/server-live-compact.md`.
 
 This is the append-only rule made structural. The schema used to be re-stamped when
 an origin opened or a session moved, and each re-stamp was a second set of bytes for
