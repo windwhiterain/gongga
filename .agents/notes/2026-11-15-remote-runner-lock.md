@@ -115,6 +115,13 @@ What a peer needs, learned the hard way:
 - the channel's own `status` file is what `evolve launch` probes, and a channel
   whose program exits at once (`bash -lc "sleep 2"`) is a deaf candidate.
 
+And one isolation bug of mine: the test server was given `--home` but inherited the
+session's exported `GONGGA_HOME`, so it put two channel directories in **the
+operator's home** and started their relays there. `--home` is not enough; an
+isolated run must `env -u GONGGA_HOME` as well. Both directories had no row naming
+them and were removed, and both relays were ended by pid after their command line
+confirmed they were this worktree's build.
+
 
 ## Consequence for SPEC
 
