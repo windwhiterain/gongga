@@ -86,6 +86,8 @@ fn gongga_cli(
 - time: time cost since last input.
 
 ## Server Cmd
+each cmd has internal timeout that timeout will abort with a harness bug result.
+
 sytax:
 - `<struct>{..}`: struct update type, e.g. `{a: int, b: float}: {a: int, b: float, c: str}{..}`.
 

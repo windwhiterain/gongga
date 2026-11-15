@@ -102,3 +102,14 @@ back to the newest commit that speaks 11 and keeps installing it.
   two calls. That is the concrete case `write` exists for.
 - still open: the live home runs a new build with an old `<home>/lib` contract, so package
   skills (including `new_subagent`) are unusable there until a restart/evolve installs it.
+
+## Closed 2026-11-15
+
+- main `12731475`; content `d69520d` (protocol 13); `scripts/publish.sh` is the one publish
+  front end (`ship.sh` a front end over it); `scripts/git_check.sh` reads the three repos;
+  `docs/notes/git-workflow.md` states the flow once.
+- selftests, run by me on main: two concurrent `content_selftest` both PASS (17 lines each),
+  `spawn_dir` PASS, `ship` PASS 149s, stale-binary guard refuses with exit 1 and no longer
+  counts test sources as making the binary stale.
+- NOT yet live: the running server predates all of it. One restart installs the live-track
+  build and the protocol-13 content, and `read`/`write`/`edit` appear as commands and tools.
