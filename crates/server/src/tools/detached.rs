@@ -1122,6 +1122,30 @@ pub fn names_process(pid: u32, started_at: i64) -> anyhow::Result<bool> {
     }
 }
 
+/// Takes over a channel's relay, the one a `cancel(keep_alive)` left running.
+///
+/// # Invariant
+///
+/// `Ok(false)` is a relay that already ended, and the caller ends the row rather than
+/// leaving a name that answers for nothing. A pid that belongs to another process now
+/// is the same answer: a recycled pid is not this channel's relay, and arming it would
+/// kill somebody else's tree with this server.
+///
+/// Only a relay this machine started can be adopted: a remote channel's relay is the
+/// peer's, and this side holds no handle for it at all.
+pub(crate) fn adopt_kept_relay(pid: u32, started_at: Option<i64>) -> anyhow::Result<bool> {
+    let Some(started_at) = started_at else {
+        // A row written before the column, or one whose relay this machine never held.
+        return Ok(false);
+    };
+    // Unknown is not ended: a caller that cannot tell must not claim the channel died.
+    if !names_process(pid, started_at)? {
+        return Ok(false);
+    }
+    arm_adopted(pid);
+    Ok(true)
+}
+
 /// Puts a process a previous run left under this server's life.
 ///
 /// # Invariant

@@ -3538,6 +3538,12 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
     // SPEC: `keep_alive` detaches every channel -- a job, not a row (`tools::job::arm`).
     let channels = match keep_alive {
         true => {
+            // The row carries the flag, so a later stop that asked for nothing spares
+            // these too, and the next start takes them over.
+            let marked = d.agent.channels.mark_kept().await;
+            if marked > 0 {
+                tracing::info!(marked, "cancel: every channel was marked to be kept");
+            }
             let released = crate::tools::detached::release_detached();
             if released > 0 {
                 tracing::info!(released, "cancel: every background tree was let go");

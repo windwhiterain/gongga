@@ -362,6 +362,22 @@ CREATE TABLE IF NOT EXISTS channels (
     -- The marker this channel's last write ended its reply with: SPEC's "sticky
     -- value", so a read that writes nothing still knows where a reply ends.
     until_sentinel TEXT NOT NULL DEFAULT '',
+    -- Whether a `cancel` was asked to keep this channel alive. A state, not a
+    -- moment: the flag is written by `cancel(keep_alive)`, read by whoever comes
+    -- next, and cleared only when the relay is adopted or the channel ends.
+    -- Without it a later stop that did not ask -- a window leaving, a signal --
+    -- ends what an earlier one kept, and `keep_alive` would mean only "until the
+    -- next stop". See `docs/notes/server-channel.md`.
+    detached INTEGER NOT NULL DEFAULT 0,
+    -- The relay's own pid, which is not the program's: `pid` is what the program
+    -- runs as, read from the relay's `status`. A successor that only has `pid`
+    -- can see the program is gone but cannot find the relay to adopt, so a kept
+    -- channel would be unadoptable. `NULL` is a row written before this column.
+    relay_pid INTEGER,
+    -- When the relay started, to prove a pid is still the same process. A pid is
+    -- only unique until it is recycled, and adoption arms a job that kills on
+    -- close, so a recycled pid would make this server's death somebody else's.
+    relay_started_at INTEGER,
     UNIQUE (session, path)
 );
 
@@ -542,6 +558,27 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         "channels",
         "wait_marker",
         "ALTER TABLE channels ADD COLUMN wait_marker TEXT",
+    )?;
+    // A channel a `cancel` was asked to keep alive: a state on the row, so the
+    // next stop can tell it from a channel nobody asked for.
+    add_column_if_missing(
+        conn,
+        "channels",
+        "detached",
+        "ALTER TABLE channels ADD COLUMN detached INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // The relay's own pid and start: `pid` alone cannot find a relay to adopt.
+    add_column_if_missing(
+        conn,
+        "channels",
+        "relay_pid",
+        "ALTER TABLE channels ADD COLUMN relay_pid INTEGER",
+    )?;
+    add_column_if_missing(
+        conn,
+        "channels",
+        "relay_started_at",
+        "ALTER TABLE channels ADD COLUMN relay_started_at INTEGER",
     )?;
     add_column_if_missing(
         conn,
@@ -2955,11 +2992,16 @@ impl Store {
         // The machine's own spelling: a peer's directory is not a path this one has.
         dir: &str,
         pid: u32,
+        // The relay's own pid and its start, when this machine started the relay. A
+        // successor cannot adopt what it cannot name: `pid` is the program's, and
+        // the relay is reachable only as the parent of a pid that may be gone.
+        relay: Option<(u32, i64)>,
     ) -> anyhow::Result<i64> {
         let conn = self.lock();
         conn.execute(
-            "INSERT INTO channels (session, path, program, remote, dir, pid, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO channels (session, path, program, remote, dir, pid, started_at, \
+             relay_pid, relay_started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 session,
                 path,
@@ -2967,7 +3009,9 @@ impl Store {
                 remote,
                 dir,
                 i64::from(pid),
-                now_millis()
+                now_millis(),
+                relay.map(|(pid, _)| i64::from(pid)),
+                relay.map(|(_, at)| at),
             ],
         )?;
         Ok(conn.last_insert_rowid())
@@ -2977,7 +3021,7 @@ impl Store {
     pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at
              FROM channels WHERE session = ?1 ORDER BY path",
         )?;
         let rows = stmt
@@ -2995,7 +3039,7 @@ impl Store {
     pub fn every_channel(&self) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at
              FROM channels ORDER BY id",
         )?;
         let rows = stmt
@@ -3008,7 +3052,7 @@ impl Store {
     pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at
              FROM channels WHERE session = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query(params![session, path])?;
@@ -3073,6 +3117,49 @@ impl Store {
             params![session, path, sentinel],
         )?;
         Ok(())
+    }
+
+    /// Marks every channel of every session as one a `cancel` was asked to keep.
+    ///
+    /// # Invariant
+    ///
+    /// A state, not an argument: the flag outlives the stop that wrote it, so a
+    /// later stop that asked for nothing spares these too. This is the whole of
+    /// SPEC's "make every channel detached" -- a row that carries it is one the next
+    /// start may adopt.
+    pub fn mark_detached(&self) -> anyhow::Result<usize> {
+        Ok(self
+            .lock()
+            .execute("UPDATE channels SET detached = 1", [])?)
+    }
+
+    /// Clears the flag on one channel: the relay was adopted, or the channel ended.
+    ///
+    /// # Invariant
+    ///
+    /// Adoption is what clears it, so a second start does not offer the same relay
+    /// again. A row that ends takes its flag with it either way.
+    pub fn clear_detached(&self, id: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET detached = 0 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    /// The channels a start may adopt: a `cancel` marked them, and this is where the
+    /// relay's identity lives.
+    pub fn detached_channels(&self) -> anyhow::Result<Vec<ChannelRow>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, \
+             wait_marker, until_sentinel, detached, relay_pid, relay_started_at
+             FROM channels WHERE detached = 1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], channel_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Clears the flag, and says whether this caller cleared it: one delivery, claimed.
@@ -3307,6 +3394,19 @@ pub struct ChannelRow {
     pub wait_marker: Option<String>,
     /// The marker this channel's last write ended its reply with; `''` before one.
     pub until_sentinel: String,
+    /// Whether a `cancel(keep_alive)` asked for this channel to outlive the stop.
+    ///
+    /// # Invariant
+    ///
+    /// A state, not an argument: it survives the stop that set it, so a later stop
+    /// that did not ask spares it too. `stop_every` reads this; nothing else writes
+    /// it but `mark_detached` and `clear_detached`.
+    pub detached: bool,
+    /// The relay's pid, which is not [`Self::pid`]: that one is the program's.
+    /// `None` is a row written before the column, or a channel on a peer.
+    pub relay_pid: Option<i64>,
+    /// When that relay started, so a recycled pid is refused before a job is armed.
+    pub relay_started_at: Option<i64>,
 }
 
 fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
@@ -3323,6 +3423,9 @@ fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
         wrote_at: row.get(9)?,
         wait_marker: row.get(10)?,
         until_sentinel: row.get(11)?,
+        detached: row.get::<_, i64>(12)? != 0,
+        relay_pid: row.get(13)?,
+        relay_started_at: row.get(14)?,
     })
 }
 
