@@ -61,10 +61,35 @@ Scripts: `.dev/repro-hang.sh`, `.dev/repro-lock2.sh` (removed after the run).
 ## Not established
 
 Why `lichen-vm` and `lichen-vm/templates` never returned at all, while `fix`
-returned once its cache-expiry cancel fired. Two candidates remain: the abort
-(`tools/mod.rs:809` `task.abort(); task.await`) landing on a task parked in a
-`std::sync::Mutex`, or the dial path simply being re-entered forever because the
-peer's runner never comes back. Neither was separable without a stack dump.
+returned once its cache-expiry cancel fired. `interrupt_session` on the two was
+accepted (10ms) and changed nothing: no `why="interrupt"`, no `tool end`, no
+`turn end`. So they are parked outside every place a cancel is read, and outside
+`waited`'s abort — which is what the mechanism below leaves as the one gap.
+
+## What was changed (`7ce53992`)
+
+- `Channels::runner_for` dials outside the runners table: a per-machine `dialing`
+  mutex is held for the dial, the table only for a look and for the insert.
+- `read_from` and `Reader::read_whole` refuse a chunk that does not move the
+  cursor, so a runner that omits `offset` is reported instead of re-read.
+- `dispatch` gives every command the internal timeout SPEC `## Server Cmd` now
+  states, answering `CALL_TIMEOUT_MS` overruns as a harness bug; `input_channel`,
+  `run_skill` and `cancel` keep their own clocks.
+
+## What is still open
+
+- **No end-to-end proof of the lock fix.** The stand-in peer (`notepad.exe`) never
+  greets, and `set_session remote=<that peer>` dials during placement, so the
+  session whose channel would hold the dial cannot be created at all — the run
+  that reported `PASS 279ms` had no dial in flight and proves nothing. Proving it
+  needs a peer that greets and then answers slowly.
+- **`set_session` can spend the whole answer timeout on a peer that will not
+  greet** (observed as `gongga-cli: set_session was sent and never answered`),
+  which is the same dial, reached from placement rather than from a channel.
+- **The running home still serves the old build.** `cargo build` into `target/`
+  fails with `os error 5` while the window holds `gongga-tui.exe` and the server
+  holds `gongga-server.exe`, so installing this needs the window closed first (or
+  a build directory the running pair does not hold).
 
 ## Consequence for SPEC
 
