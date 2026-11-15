@@ -16,7 +16,7 @@
 - Auto image reference replacement, so that agent can create arbitary tool return any contents with images embedded, no need seperate `read_image` tool call.
 - Heir based context compact, new session can ask mentor session about the history.
 - Infinite forward compatibility via chain of migraters.
-- Elegant server cancle, restart auto continue, interrupt no session, tasks nor client, covinent for long running agents and self-evolving.
+- Hot reload like restart, auto continue interripted session, auto detach and re-adop jobs, covinent for long running agents and self-evolving.
 - Server watchdog auto restart server if crashed.
 - Monitor session auto wakened to fix the harness when any session report an error.
 - Git managed configuration.
@@ -31,6 +31,7 @@
 - Provider quota update in realtime.
 - Reasoning abstraction show both first line and second line so you know the reaction of the agents, and what it gonna do.
 - Vscode terminal compatible.
+- Worktree management: session auto create its own worktree bound to its lifetime, display worktree merged/dirty in session UI.
 
 ## Environment Requirement
 
