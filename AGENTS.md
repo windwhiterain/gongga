@@ -150,10 +150,13 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
 
 ### 多 agent 共机的硬约束
 
-- **每个 worktree 自己的 `CARGO_TARGET_DIR`**。共用一个 `target/` 时并发 cargo 排队等锁，
-  而且 Windows 锁着正在跑的 `.exe`，会直接 `拒绝访问 (os error 5)`。
+- **每个 checkout 自己的 target，由 mbx 托管；不要手写 `CARGO_TARGET_DIR`**。共用一个
+  `target/` 时并发 cargo 排队等锁，而且 Windows 锁着正在跑的 `.exe`，会直接
+  `拒绝访问 (os error 5)`。mbx 给每个 checkout 一棵托管 target，正是这条要的形状；手设
+  `CARGO_TARGET_DIR` 只让 mbx 跳过托管（缓存仍然生效），所以只有需要一棵独立侧树时才这么做。
 - **`.dev/` 会长到 GB 级**：`evolve.sh stage` 把构建放 `.dev/target`（为了绕开 exe 锁），
   历次 `*-home/` 各带一份 `ship` checkout。验证脚本自带清理，或别在这里攒。
+  `.dev/` 下的树是显式 `CARGO_TARGET_DIR`，**不在 mbx 的托管与回收范围内**（缓存仍然生效）。
 - **不要并发跑 `evolve`**：它靠 `.dev/evolve-current` 单指针决定谁接管 home，两个 agent
   同时 stage 会互相判成被 supersede。
 
@@ -243,13 +246,63 @@ git config core.hooksPath scripts/hooks
 
 跑新代码就这两步：`cargo build`（default-members 把 server/relay/client/tui 一次编到
 同一个 BUILD），再 `cargo run -p gongga-server`。别手动替换二进制，也别只重编单个
-crate 就指望跑着的 server 用上。
+crate 就指望跑着的 server 用上。两步都经 mbx 的 shim（下节）走共享缓存：新 worktree 的
+第一次构建是 3 GB 量级（不含 `cargo bundle` 的 payload），不是十几 GB。
 
 机制是 SPEC「Bundled binary」那条：同目录的二进制互相 detect/validate/install。server
 启动时 `ensure_pair` 把自己和身旁的 relay 装进 `home/bin`，channel 用的就是**这份装好的
 副本**（`relay_for_channel`）——所以跑着的 server 始终用它启动时的那一对，构建树后来被
 重编也不影响它。要用新代码，就 `cargo build` + `cargo run` 起一个新进程（它装新的配对）；
 接管一个在用的 home 走 `evolve`（下节），不是手动换二进制。
+
+## 构建缓存（mbx）
+
+`cargo` 解析到 `%LOCALAPPDATA%\mbx\bin\cargo.exe`（用户级 PATH 第一位），普通
+`cargo build` / `run` / `test` 都经它包一层。缓存、托管 target、shims 都在
+`%LOCALAPPDATA%\mbx`。
+
+一个 checkout 的 target 第一次经 mbx 构建时被接管：`<checkout>/target` 变成指向
+`%LOCALAPPDATA%\mbx\targets\v1\<checkout digest>` 的符号链接。
+
+诊断三件事，都别靠猜：
+
+```bash
+mbx doctor            # 工具、缓存、restore 方式、shim 是否在手
+mbx explain --last    # 上一次构建为什么命中/未命中/被绕过
+mbx gc --dry-run      # 它会删什么（托管 target、incremental、store）
+```
+
+**它买到什么**（本机实测，数字在 `.dev/verify/596a8c653f0e-mbx-*.json`）：
+
+- 换一个 worktree 构建：210 命中 / 47 未命中，省下 7m34s 编译器工作；占盘 3.10 GiB，
+  而同一依赖图的冷构建占 8.81 GiB。
+- `debug/incremental` 按需生成、总量由 `gc.incremental_max_size` 兜住，不再每个 worktree
+  各自长到 6.8–11.5 GB。
+
+**它不买什么**：本机是 NTFS，没有 reflink，恢复输出走的是**字节拷贝**（实测
+`copied_output_*` 有值，`hardlinked_*` 与 `reflinked_*` 全是 0）。所以**不要指望 mbx 在
+worktree 之间去重依赖**——省下的是编译时间与 incremental，不是 deps。真去重只有 ReFS
+（Dev Drive）一条路，那需要单独腾 50 GB 以上并分区。
+
+**用它时不许做的**：
+
+- **不要 `rm -rf target`**：它是 mbx 的符号链接，删它绕过记账。用 `cargo clean`（清当前
+  checkout）或 `mbx clean`（连托管目录一起）。
+- **不要写 `CARGO_TARGET_DIR= cargo clean`**：cargo 1.98 起把空值当错误（`exit 101`），
+  一条都不删。用 `env -u CARGO_TARGET_DIR cargo clean`。
+  `.agents/skills/evolve/evolve.sh` 的 :103 与 :250 还是旧写法，两处都把失败吞掉，所以它的
+  clean 至今从未真正执行过。
+- **不要在同一 checkout 里并发跑两个 cargo**：Cargo 的目录锁仍在，mbx 只解决跨 checkout
+  的重复编译。
+- **别在关键构建中途让 gc 插进来**：托管 target 属于回收范围（checkout 消失、30 天未用、
+  `target.max_size` 预算）。删了能重建，但会打断正在跑的构建。
+
+**一个继承坑**：shim 在用户 PATH 里，**新起的进程**自动走 mbx；在这个 PATH 写入之前启动的
+服务端，它的 channel 继承的是旧环境——从那种会话里跑 `cargo` 就是裸 cargo。重启那个服务端，
+或在命令里自己把 `%LOCALAPPDATA%\mbx\bin` 置顶。
+
+冷构建报 `0 hits, 0 misses, N not looked up` 是正常态：第一次还没有可用的 dep-info，编译完
+仍会入 store，从第二次起才可能命中。
 
 ## 改过服务端代码之后
 
