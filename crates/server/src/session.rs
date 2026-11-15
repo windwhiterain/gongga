@@ -294,6 +294,8 @@ struct SessionInner {
     /// it again, so the mode a call runs under is the one in force when it was made.
     /// See `docs/notes/server-explore.md`.
     explore: Mutex<Option<Arc<crate::explore::Watch>>>,
+    /// The session this row is a dream of, fixed at birth; `None` is ordinary.
+    dream_of: Option<i64>,
     /// Set once the rows are gone, so a queued turn gives up instead of writing.
     deleted: AtomicBool,
     /// Set by a `cancel` that found the turn in `wait`: the next start resumes it.
@@ -485,6 +487,12 @@ impl SessionHandle {
         } else {
             crate::explore::Mode::Work
         }
+    }
+
+    /// The session this one is a disposable dream of, if it is one. Fixed at
+    /// birth. See `docs/notes/server-dream.md`.
+    pub fn dream_of(&self) -> Option<i64> {
+        self.inner.dream_of
     }
 
     /// The look a program call of this session takes when it ends, if it takes one.
@@ -1320,6 +1328,9 @@ impl SessionManager {
                 // A worktree is made at the main line's commit and touches nothing.
                 worktree_merged: worktree.map(|_| true),
                 worktree_changed: worktree.map(|_| false),
+                // A session a person named is nobody's dream.
+                dream_of: None,
+                dreamed_checkpoint_id: None,
             },
             &mut live,
         )
@@ -1612,6 +1623,7 @@ impl SessionManager {
                     live_compact_interval_tokens: row.live_compact_interval_tokens,
                 }),
                 explore: Mutex::new(crate::explore::watch_of(row.mode)),
+                dream_of: row.dream_of,
                 deleted: AtomicBool::new(false),
                 resumable: Arc::new(AtomicBool::new(false)),
                 interrupted: Arc::new(AtomicBool::new(false)),

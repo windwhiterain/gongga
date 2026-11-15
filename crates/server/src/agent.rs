@@ -126,13 +126,19 @@ impl Agent {
     }
 
     /// Runs one already-claimed turn whose user messages and obligations are durable.
+    ///
+    /// # Invariant
+    ///
+    /// The outcome and the interrupted flag are captured here and returned: the
+    /// gate is free once `turn_inner` returns, so a next turn may reset the flags
+    /// before the caller's epilogue reads them. See `docs/notes/server-dream.md`.
     pub async fn run_turn(
         &self,
         session: &SessionHandle,
         tasks: Vec<i64>,
         epoch: u64,
         gate: tokio::sync::OwnedMutexGuard<()>,
-    ) {
+    ) -> (TurnOutcome, bool) {
         let started = std::time::Instant::now();
         let outcome = AssertUnwindSafe(self.turn_inner(session, epoch, gate))
             .catch_unwind()
@@ -150,6 +156,8 @@ impl Agent {
                 (TurnOutcome::Failed, 0, Some("harness"))
             }
         };
+        // Captured before anything else: a next turn may already be resetting the flags.
+        let interrupted = session.interrupted();
         // No part outlives its turn: what is left is text whose row was never written.
         session.open_clear();
         // The turn's own words ride the row: a subscriber reads them there.
@@ -187,7 +195,7 @@ impl Agent {
         let (status, detail) = match outcome {
             TurnOutcome::Done => (SessionStatus::Idle, None),
             // SPEC's split: cancel cancels and a restart continues; interrupt ends it.
-            TurnOutcome::Cancelled if session.interrupted() => {
+            TurnOutcome::Cancelled if interrupted => {
                 (SessionStatus::Idle, Some("interrupted".to_string()))
             }
             TurnOutcome::Cancelled => (SessionStatus::Idle, Some("cancelled".to_string())),
@@ -208,6 +216,7 @@ impl Agent {
                 outcome: Some(outcome),
             });
         }
+        (outcome, interrupted)
     }
 
     async fn turn_inner(

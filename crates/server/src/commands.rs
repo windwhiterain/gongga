@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use protocol::{
     Args, CommandSpec, CommandTarget, CompletionSource, Event, LogLevel, REPLAY_TURN,
-    ResponseEvent, ResponsePart, ToolAnswerEvent, ToolStream,
+    ResponseEvent, ResponsePart, ToolAnswerEvent, ToolStream, TurnOutcome,
 };
 use serde_json::json;
 
@@ -16,8 +16,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
 use crate::bus::EventBus;
-use crate::session::SessionManager;
-use crate::store::{MessageRow, PendingTask, Store, Transcript};
+use crate::session::{SessionHandle, SessionManager, Tuning};
+use crate::store::{Dream, MessageRow, PendingTask, Store, Transcript};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
 /// still reaches whoever asked for it.
@@ -47,6 +47,14 @@ const OWN_CLOCK: &[&str] = &["input_channel", "run_skill", "cancel"];
 fn time_notice() -> String {
     format!("(time notice: {})", crate::clock::now())
 }
+
+/// A dream's whole instruction: documents only, and the turn ends when they are
+/// in order.
+const DREAM_NOTICE: &str = "(dream notice: you are a dream, a disposable copy of the session that spawned you. \
+Your only work is to organize the workspace's documents: consolidate, deduplicate and retire stale notes \
+under .agents/notes/ and docs/notes/. Write no code, write no tests, and make no git writes. \
+The files you leave are the memory; this session is discarded when your turn ends. \
+End the turn when the documents are in order.)";
 
 #[derive(Clone)]
 pub struct Dispatch {
@@ -195,7 +203,6 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
     let bus = d.bus.clone();
     let active: ActiveGuard = ActiveGuard::new(d.active.clone());
     // Read before the turn starts: its first step consumes the mark.
-    let keepalive_agent = d.agent.clone();
     let keepalive_d = Arc::new(d.clone());
     let keepalive_session = work.session.clone();
     let keepalive_model = d.agent.config.now().model.model();
@@ -203,7 +210,7 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
     tokio::spawn(async move {
         let _active = active;
         let session = work.session.clone();
-        agent
+        let (outcome, interrupted) = agent
             .run_turn(&work.session, work.tasks, work.epoch, work.gate)
             .await;
         // SPEC's card: what the worktree holds now that the turn is quiet, then the
@@ -234,33 +241,129 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
                 drop(gate);
             }
         }
+        // SPEC's Dreaming: a dream is disposable, and its true end discards it.
+        if keepalive_session.dream_of().is_some()
+            && (outcome != TurnOutcome::Cancelled || interrupted)
+        {
+            discard_dream(&keepalive_d, &keepalive_session).await;
+            return;
+        }
         // Each turn schedules the next notice, so the chain has no last one.
-        if !keepalive_tuning.cache_keepalive {
-            return;
-        }
-        let wait_ms = keepalive_agent
-            .cache_fire_after_ms(&keepalive_model, keepalive_tuning.cache_tier.as_deref());
-        if wait_ms == 0 {
-            return;
-        }
-        let ended_at = crate::store::now_millis();
-        let session_id = keepalive_session.id();
-        let name = keepalive_session.name().to_string();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-            // Any request during the wait already refreshed the prefix.
-            let refreshed = keepalive_d
-                .store
-                .last_usage_at(session_id)
-                .ok()
-                .flatten()
-                .is_some_and(|at| at > ended_at);
-            if refreshed || keepalive_session.busy() {
-                return;
-            }
-            let _ = deliver(keepalive_d.as_ref(), &name, time_notice()).await;
-        });
+        arm_keepalive(
+            keepalive_d,
+            keepalive_session,
+            keepalive_tuning,
+            keepalive_model,
+        );
     });
+}
+
+/// Arms the next heartbeat: a sleeper that sends the time notice, or dreams in
+/// its place.
+fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle, tuning: Tuning, model: String) {
+    if !tuning.cache_keepalive {
+        return;
+    }
+    let wait_ms = d
+        .agent
+        .cache_fire_after_ms(&model, tuning.cache_tier.as_deref());
+    if wait_ms == 0 {
+        return;
+    }
+    let ended_at = crate::store::now_millis();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+        // Any request during the wait already refreshed the prefix.
+        let refreshed = d
+            .store
+            .last_usage_at(session.id())
+            .ok()
+            .flatten()
+            .is_some_and(|at| at > ended_at);
+        if refreshed || session.busy() {
+            return;
+        }
+        // SPEC's Dreaming: the first fire of a generation dreams in the notice's place.
+        if !d.shutting_down.load(Ordering::SeqCst) && spawn_dream(&d, &session).await {
+            // The source stayed idle, so no turn re-arms the chain: this fire does.
+            let tuning = session.tuning();
+            let model = d.agent.config.now().model.model();
+            arm_keepalive(d, session, tuning, model);
+            return;
+        }
+        let _ = deliver(d.as_ref(), session.name(), time_notice()).await;
+    });
+}
+
+/// Clones the source for a generation not yet dreamed, and hands the clone its
+/// notice. Returns whether this fire dreamed.
+async fn spawn_dream(d: &Dispatch, source: &SessionHandle) -> bool {
+    let Ok(Some(row)) = d.store.get_session(source.name()) else {
+        return false;
+    };
+    let generation = d
+        .store
+        .latest_checkpoint_id(source.id())
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+    if row.dreamed_checkpoint_id == Some(generation) {
+        return false;
+    }
+    // At most one live dream per session: a running one finishes its generation first.
+    if !d
+        .store
+        .dreams_of(source.id())
+        .is_ok_and(|dreams| dreams.is_empty())
+    {
+        return false;
+    }
+    let name = format!("{}/dream/{}", source.name(), generation);
+    let dream = Dream {
+        source: source.id(),
+        generation,
+    };
+    let report = match d.store.clone_session(source.name(), &name, Some(dream)) {
+        Ok(report) => report,
+        Err(e) => {
+            tracing::warn!(session = %source.name(), error = %e, "the dream was not cloned");
+            return false;
+        }
+    };
+    // Marked before the notice: a fire that races this one must not dream twice.
+    if let Err(e) = d.store.set_dreamed_checkpoint(source.id(), generation) {
+        tracing::warn!(session = %source.name(), error = %e, "could not mark the dreamed generation");
+    }
+    d.agent.log_event(
+        Some(source.id()),
+        "dream_spawn",
+        &json!({"dream": name, "generation": generation, "rows": report.rows}),
+    );
+    publish_sessions(d);
+    let said = deliver(d, &name, DREAM_NOTICE.to_string()).await;
+    if !said.ok {
+        // A dream with no notice is row-less work: the next start's sweep discards it.
+        tracing::warn!(session = %name, answer = %said.message, "the dream notice was not delivered");
+    }
+    tracing::info!(session = %name, source = %source.name(), generation, rows = report.rows, "dream spawned");
+    true
+}
+
+/// Discards a dream whose turn truly ended, through the whole delete machinery.
+async fn discard_dream(d: &Dispatch, session: &SessionHandle) {
+    if session.is_deleted() {
+        return;
+    }
+    let name = session.name().to_string();
+    // On the source: the dream's own events are deleted with its row.
+    d.agent
+        .log_event(session.dream_of(), "dream_discard", &json!({"dream": name}));
+    // A dream owns no worktree: the clone never copies one.
+    let (was_busy, dropped) = prepare_delete(d, &name);
+    let said = finish_delete(d, &name, was_busy, dropped, None).await;
+    if !said.ok {
+        tracing::warn!(session = %name, answer = %said.message, "the dream was not discarded");
+    }
 }
 
 /// Claims one idle session; an inject-only recovery gets a durable turn row before
@@ -1530,8 +1633,9 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
             Err(e) => Outcome::err(format!("could not record the pending message: {e}")),
         };
     }
-    // SPEC: a work session opens its checkpoint before its first user message.
+    // SPEC: a work session opens its checkpoint before its first message; a dream opens none.
     if session.mode() == crate::explore::Mode::Work
+        && session.dream_of().is_none()
         && let Err(e) = d.store.start_live_compact(session.id())
     {
         tracing::warn!(session = %name, error = %e, "could not open the live compact checkpoint");
@@ -2581,7 +2685,7 @@ fn replay_transcript(
 async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
     let source = args.word("id").unwrap_or_default().to_string();
     let name = args.word("new_id").unwrap_or_default().to_string();
-    let report = match d.store.clone_session(&source, &name) {
+    let report = match d.store.clone_session(&source, &name, None) {
         Ok(report) => report,
         Err(e) => return Outcome::err(e.to_string()),
     };
@@ -3358,11 +3462,28 @@ async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
         Ok(rows) => rows,
         Err(e) => return Outcome::err(format!("could not read the sessions: {e}")),
     };
-    let doomed: Vec<String> = rows
-        .into_iter()
-        .map(|row| row.name)
-        .filter(|name| under(name, &path))
+    let mut doomed: Vec<String> = rows
+        .iter()
+        .filter(|row| under(&row.name, &path))
+        .map(|row| row.name.clone())
         .collect();
+    // SPEC's Dreaming: a source's delete discards its dreams, even ones a rename
+    // left outside the path.
+    let doomed_ids: std::collections::HashSet<i64> = rows
+        .iter()
+        .filter(|row| under(&row.name, &path))
+        .map(|row| row.id)
+        .collect();
+    let mut seen: std::collections::HashSet<String> = doomed.iter().cloned().collect();
+    for row in &rows {
+        if row
+            .dream_of
+            .is_some_and(|source| doomed_ids.contains(&source))
+            && seen.insert(row.name.clone())
+        {
+            doomed.push(row.name.clone());
+        }
+    }
     let Some((one, below)) = doomed.split_first() else {
         return Outcome::err(format!("no session named {path:?}"));
     };
@@ -3756,6 +3877,36 @@ pub fn answer_open_calls(d: &Dispatch) -> usize {
         }
     }
     answered
+}
+
+/// Discards dreams whose true-end discard was lost to the last process exit.
+pub async fn sweep_orphan_dreams(d: &Dispatch) -> usize {
+    let Ok(orphans) = d.store.orphan_dreams() else {
+        return 0;
+    };
+    let mut swept = 0;
+    for (_, name, source, generation) in orphans {
+        let (was_busy, dropped) = prepare_delete(d, &name);
+        let said = finish_delete(d, &name, was_busy, dropped, None).await;
+        if !said.ok {
+            tracing::warn!(session = %name, answer = %said.message, "an orphan dream was not discarded");
+            continue;
+        }
+        swept += 1;
+        // The generation may dream again, but only if the source still marks it.
+        if let Some(generation) = generation {
+            if let Err(e) = d.store.reset_dreamed_checkpoint(source, generation) {
+                tracing::warn!(session = %name, error = %e, "could not reset the dreamed generation");
+            }
+        }
+        d.agent.log_event(
+            None,
+            "dream_sweep",
+            &json!({"dream": name, "source": source}),
+        );
+        tracing::info!(session = %name, "orphan dream discarded: its end was lost to a process exit");
+    }
+    swept
 }
 
 pub async fn resume_pending(d: &Dispatch) -> usize {

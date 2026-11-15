@@ -188,7 +188,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- for the time that was left. Epoch milliseconds, NULL for a session that is
     -- not waiting. The same reason `canceled` is a column: a stop ends the
     -- process, and a deadline only it knew would be a wait nobody resumes.
-    waiting_until INTEGER
+    waiting_until INTEGER,
+    -- SPEC's Dreaming: the session this row is a disposable dream of, by id.
+    -- NULL is an ordinary session. No foreign key: a dream goes through the
+    -- delete machinery, which ends its channels and subscriptions too, and a
+    -- source's delete discards its dreams the same way.
+    -- See `docs/notes/server-dream.md`.
+    dream_of INTEGER,
+    -- The checkpoint generation this row's dreaming concerns: on a source, the
+    -- generation its last dream was spawned for; on a dream, the generation it
+    -- was spawned for. NULL is a row that has never dreamed.
+    dreamed_checkpoint_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -541,6 +551,14 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         (
             "live_compact_interval_tokens",
             "ALTER TABLE sessions ADD COLUMN live_compact_interval_tokens INTEGER",
+        ),
+        (
+            "dream_of",
+            "ALTER TABLE sessions ADD COLUMN dream_of INTEGER",
+        ),
+        (
+            "dreamed_checkpoint_id",
+            "ALTER TABLE sessions ADD COLUMN dreamed_checkpoint_id INTEGER",
         ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
@@ -981,7 +999,13 @@ impl Store {
     /// must exist. See `docs/notes/server-store.md`.
     ///
     /// It owns no worktree even when the source does: a branch has one session.
-    pub fn clone_session(&self, source: &str, name: &str) -> anyhow::Result<CloneReport> {
+    /// A `dream` copy: see `Dream`.
+    pub fn clone_session(
+        &self,
+        source: &str,
+        name: &str,
+        dream: Option<Dream>,
+    ) -> anyhow::Result<CloneReport> {
         if name.trim().is_empty() {
             anyhow::bail!("session name must not be empty");
         }
@@ -995,13 +1019,23 @@ impl Store {
                                        updated_at, context_limit, thinking_effort,
                                        context_tokens, context_generation, cached_tokens,
                                        tps, ttft_ms, remote, monitor_seq,
-                                       cache_tier, cache_keepalive, mode)
+                                       cache_tier, cache_keepalive, mode, live_compact,
+                                       dream_of, dreamed_checkpoint_id)
                  SELECT ?2, 'idle', model, model_name, cwd, ?3, ?3, context_limit,
                         thinking_effort, context_tokens, context_generation, cached_tokens,
                         tps, ttft_ms, remote, monitor_seq, cache_tier,
-                        cache_keepalive, mode
+                        CASE WHEN ?4 IS NULL THEN cache_keepalive ELSE 0 END,
+                        CASE WHEN ?4 IS NULL THEN mode ELSE 'work' END,
+                        CASE WHEN ?4 IS NULL THEN NULL ELSE 0 END,
+                        ?4, ?5
                    FROM sessions WHERE name = ?1",
-                params![source, name, now],
+                params![
+                    source,
+                    name,
+                    now,
+                    dream.map(|d| d.source),
+                    dream.map(|d| d.generation)
+                ],
             )
             .map_err(|e| duplicate_session(name, e))?;
         // No row means the source is not there; the transaction drops unwritten.
@@ -1023,6 +1057,69 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(CloneReport { id, rows, last_seq })
+    }
+
+    /// The latest checkpoint of a session: the generation a dream is named for.
+    /// `None` is generation 0.
+    pub fn latest_checkpoint_id(&self, session_id: i64) -> anyhow::Result<Option<i64>> {
+        let conn = self.lock();
+        let id = conn
+            .query_row(
+                "SELECT id FROM live_compact_checkpoints
+                  WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
+    /// Every live dream of a source, oldest first: at most one is allowed.
+    pub fn dreams_of(&self, source: i64) -> anyhow::Result<Vec<(i64, String)>> {
+        let conn = self.lock();
+        let mut stmt =
+            conn.prepare("SELECT id, name FROM sessions WHERE dream_of = ?1 ORDER BY id")?;
+        let rows = stmt
+            .query_map(params![source], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Marks the generation a source last dreamed, so the next fire of the same
+    /// generation sends the time notice instead.
+    pub fn set_dreamed_checkpoint(&self, id: i64, generation: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET dreamed_checkpoint_id = ?2 WHERE id = ?1",
+            params![id, generation],
+        )?;
+        Ok(())
+    }
+
+    /// Lets a generation dream again, but only while the source still marks that
+    /// generation.
+    pub fn reset_dreamed_checkpoint(&self, id: i64, generation: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET dreamed_checkpoint_id = NULL
+              WHERE id = ?1 AND dreamed_checkpoint_id = ?2",
+            params![id, generation],
+        )?;
+        Ok(())
+    }
+
+    /// Dreams whose true-end discard was lost to a process exit: no owed row, no stop flag.
+    pub fn orphan_dreams(&self) -> anyhow::Result<Vec<(i64, String, i64, Option<i64>)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.name, s.dream_of, s.dreamed_checkpoint_id FROM sessions s
+              WHERE s.dream_of IS NOT NULL
+                AND s.canceled = 0 AND s.waiting_until IS NULL
+                AND NOT EXISTS (SELECT 1 FROM pending_tasks p
+                                 WHERE p.session = s.name AND p.kind IN ('turn', 'inject'))",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     /// Keeps a row's directory equal to where an endpoint put the session's shell.
@@ -1154,7 +1251,8 @@ impl Store {
                     s.context_tokens, s.cached_tokens, s.tps, s.ttft_ms, s.remote,
                     s.cache_tier, s.cache_keepalive, s.ended_at, s.mode,
                     s.live_compact, s.live_compact_interval_tokens, s.worktree,
-                    s.worktree_merged, s.worktree_changed
+                    s.worktree_merged, s.worktree_changed,
+                    s.dream_of, s.dreamed_checkpoint_id
              FROM sessions s";
 
     /// Every session in `error` because of a provider, with what a monitor turn
@@ -1293,6 +1391,8 @@ impl Store {
             worktree: r.get(21)?,
             worktree_merged: r.get::<_, Option<i64>>(22)?.map(|v| v != 0),
             worktree_changed: r.get::<_, Option<i64>>(23)?.map(|v| v != 0),
+            dream_of: r.get(24)?,
+            dreamed_checkpoint_id: r.get(25)?,
         })
     }
 
@@ -3505,6 +3605,18 @@ pub struct SessionRow {
     pub worktree_merged: Option<bool>,
     /// Whether it holds anything the main line does not; `None` is unread.
     pub worktree_changed: Option<bool>,
+    /// The session this row is a disposable dream of; `None` is an ordinary one.
+    pub dream_of: Option<i64>,
+    /// The checkpoint generation this row's dreaming concerns; `None` never dreamed.
+    pub dreamed_checkpoint_id: Option<i64>,
+}
+
+/// A dream clone: keep_alive off, live compact explicitly off, mode `work`.
+/// See `docs/notes/server-dream.md`.
+#[derive(Debug, Clone, Copy)]
+pub struct Dream {
+    pub source: i64,
+    pub generation: i64,
 }
 
 /// What a clone wrote: the new session, its rows, and where it ends.

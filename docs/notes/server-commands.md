@@ -704,6 +704,10 @@ set to `cache_keepalive false` stops the chain at its next turn end.
 The timer is a task, not a process. A server that shuts down takes it with it;
 nothing survives the turn to be discovered later.
 
+A fire may dream instead of notifying: the first fire of a checkpoint generation
+clones the session into a disposable dream that organizes documents, and the chain
+is re-armed by the fire itself. `server-dream.md` has the whole mechanism.
+
 ## How an argument is spelled, and what a `path` means
 
 An argument type is SPEC spelling -- `optional[path]`, `list[str]`, `time`, `optional[str]` --

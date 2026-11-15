@@ -193,6 +193,21 @@ for the first user message to a empty session, find all meta references recursiv
 - `live_compact` summary can reference meta that directly embed in the summary, creating a new checkpoint.
 - the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
 
+## Dreaming
+rides on keep_alive: the first fire of each checkpoint generation clones the session
+into `<session>/dream/<generation>`, tells the clone to organize documents only, and
+discards the clone when its turn truly ends.
+- the clone copies the transcript verbatim and re-renders nothing, so its first request
+  carries the session's whole prefix: the dream keeps the cache warm in place of the
+  empty time notice.
+- the clone's keep_alive is off and it opens no checkpoint; a dream never dreams. one
+  dream per generation, at most one live dream per session; a fire that does not dream
+  sends the time notice as before.
+- a true end is Done, Failed, or an interrupt; a cancel that restart will resume is not
+  an end -- the dream resumes with the session and is discarded only when it finishes.
+- the dream writes workspace documents and nothing else; the session is disposable, the
+  files are the memory. deleting the source discards its dreams.
+
 ## monitor
 - providers: spawn/notice when a session failed on an llm request (refused, or the
   answer never finished). Reasons are the provider's, the roster's or the key's;

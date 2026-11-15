@@ -496,6 +496,11 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // What a greeting hands every client: the picture a change is diffed against.
     commands::prime_sessions(&dispatch);
     clock.step("prime");
+    // SPEC's Dreaming: orphans go before anything resumes; owed dreams are left to it.
+    let swept = commands::sweep_orphan_dreams(&dispatch).await;
+    if swept > 0 {
+        tracing::info!(swept, "orphan dreams discarded before serving");
+    }
     // SPEC: this start adopts the channels the last one kept; a remote adoption asks a
     // peer over ssh.
     {
