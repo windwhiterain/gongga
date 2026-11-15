@@ -1,5 +1,11 @@
 # Explore mode is a reminder, not a jail
 
+> **Superseded in part, 2026-11-15**: the sentence below that gives
+> `run_before_cache_expiry` the job of bounding a tool's wait no longer holds -- that
+> function is deleted, and a tool's wait is the tool's now. The conclusion it supports
+> (a check awaited in the tool path is not free) still stands, because the step still
+> waits for the tool. See `.agents/notes/2026-11-15-a-tool-cut-before-it-ran.md`.
+
 Decided with the user on 2026-11-06. **No code yet.** This note is the record of what was
 decided and of how much of it the server already gives; the contract moves into
 `docs/notes/server-commands.md` and SPEC when the first line of it exists.

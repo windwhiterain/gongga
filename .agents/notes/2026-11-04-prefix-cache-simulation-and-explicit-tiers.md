@@ -1,5 +1,11 @@
 # 让 prefix cache 真实模拟、并按策略调用显式缓存 API（WIP）
 
+> **2026-11-15 更正**：下面写的「工具：`run_before_cache_expiry`…」那一项已被删除。
+> 那个剪辑（cut）会在窗口"已经过期"时把还没开始的工具取消掉，模型于是收到空的
+> `Result`（`exit: null`）当成失败。保活（`cache_keepalive`）本来就是让前缀不冷的
+> 那个机制，所以整条 deadline 剪辑被移除；`cache_margin_pct` 现在只剩保活一个读者。
+> 见 `.agents/notes/2026-11-15-a-tool-cut-before-it-ran.md`。
+
 2026-11-04。User 的指令：「阅读该项目关于各家 LLM 厂商的缓存计费模型，思考如何让
 Prefix Cache 系统能真实地模拟并且使用策略调用显式缓存 API」→ 第二轮「记，然后开工」。
 
