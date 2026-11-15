@@ -299,6 +299,9 @@ impl WindowFacts for PipeFrontend {
     fn drawn(&self) -> &[String] {
         self.journal.drawn()
     }
+    fn note_held(&mut self, window: &str, oldest: i64, newest: i64) {
+        self.journal.note_held(window, oldest, newest);
+    }
     fn events(&self, window: &str, before: u64, count: usize) -> Vec<(u64, protocol::Event)> {
         self.journal.events(window, before, count)
     }

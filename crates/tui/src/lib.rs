@@ -1186,6 +1186,12 @@ impl Tui {
                     self.columns = columns.clone();
                     return Some(UiEvent::Intent(UiIntent::Columns { windows: columns }));
                 }
+                // Rows a trim took out of a window: the client's belief about where
+                // it now stops cannot be anything but a guess.
+                let held = self.screen.panes.take_held();
+                if !held.is_empty() {
+                    return Some(UiEvent::Intent(UiIntent::Held { windows: held }));
+                }
             }
             // A frame that could not fill its pane is the one asking, for the row above
             // the one the window holds.

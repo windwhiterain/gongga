@@ -921,6 +921,15 @@ struct Sync {
     /// Cleared by a greeting and nothing else: a refusal answers one range, not a moment.
     blocked: bool,
     snapshot_cursor: Option<u64>,
+    /// Whether the front-end said its window stops short of the server on purpose.
+    ///
+    /// # Invariant
+    ///
+    /// Said by [`UiIntent::Held`] and cleared by the two calls that want the tail
+    /// again: a window that dropped the newest rows to stay inside its budget is
+    /// not behind, and answering it as if it were would send rows it has just
+    /// trimmed away, once per step. See `docs/notes/client-window-journal.md`.
+    short: bool,
 }
 
 /// The rows a copy holds, as runs that touch.
@@ -1899,6 +1908,7 @@ impl Client {
             loaded: false,
             blocked: false,
             snapshot_cursor: None,
+            short: false,
         });
         if entry.created != row.created_at {
             entry.created = row.created_at;
@@ -2227,6 +2237,9 @@ impl Client {
             return;
         }
         sync.loaded = true;
+        // A journal's run wants the rows the server has after it: the window is
+        // drawn from the copy, not stopped short of it.
+        sync.short = false;
         sync.drawn = Drawn::At {
             created,
             seq: drawn,
@@ -2236,6 +2249,33 @@ impl Client {
         if let Some(floor) = floor {
             sync.held.insert_run(floor, drawn);
         }
+    }
+
+    /// The rows a window holds now, as the frame that trimmed it says.
+    ///
+    /// # Invariant
+    ///
+    /// Replaces the client's belief about the window, which only ever guesses: a
+    /// window drops rows at either end to stay inside its budget, and the frame is
+    /// the one that knows where it now stops. A window that stops short of the
+    /// server is not behind -- the rows below it are the operator's to page for --
+    /// and one that reaches the server is following it again. See
+    /// `docs/notes/client-window-journal.md`.
+    pub fn declare_held(&mut self, name: &str, oldest: i64, newest: i64) {
+        if oldest > newest {
+            return;
+        }
+        let Some(sync) = self.sync.get_mut(name) else {
+            return;
+        };
+        sync.held.clear();
+        sync.held.insert_run(oldest, newest);
+        sync.loaded = true;
+        sync.drawn = Drawn::At {
+            created: sync.created,
+            seq: newest,
+        };
+        sync.short = newest < sync.server;
     }
 
     /// The sessions whose window is behind the server, and the row a refill
@@ -2258,6 +2298,12 @@ impl Client {
     pub fn behind_one(&self, name: &str) -> Option<i64> {
         let sync = self.sync.get(name)?;
         if sync.fill.is_some() || sync.blocked {
+            return None;
+        }
+        // A window that stops short of the server on purpose is not behind: the
+        // rows below it are the operator's to read, and sending them back would
+        // draw what the frame has just trimmed.
+        if sync.short {
             return None;
         }
         match sync.drawn {
@@ -2298,6 +2344,7 @@ impl Client {
             };
             sync.held.clear();
             sync.loaded = false;
+            sync.short = false;
         }
     }
 
@@ -2309,6 +2356,7 @@ impl Client {
             sync.loaded = false;
             sync.fill = None;
             sync.blocked = false;
+            sync.short = false;
         }
     }
 

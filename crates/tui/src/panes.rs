@@ -141,6 +141,8 @@ pub struct Panes {
     quota: Vec<crate::QuotaRow>,
     /// Windows the operator asked to read above what they hold.
     wants: BTreeSet<String>,
+    /// Windows a trim took rows out of this frame: what the client is told.
+    trimmed: BTreeSet<String>,
 }
 
 impl Panes {
@@ -154,6 +156,7 @@ impl Panes {
             unseen: std::collections::BTreeSet::new(),
             quota: Vec::new(),
             wants: BTreeSet::new(),
+            trimmed: BTreeSet::new(),
         }
     }
 
@@ -333,6 +336,7 @@ impl Panes {
         self.log.forget(name);
         self.panes.retain(|pane| pane.name != name);
         self.wants.remove(name);
+        self.trimmed.remove(name);
     }
 
     /// The panes of one kind, in order.
@@ -479,16 +483,51 @@ impl Panes {
     /// trim happens here rather than in the log. See `docs/notes/tui-panes.md`.
     pub fn trim(&mut self, window: &str, height: usize) {
         let keep = self.log.keep_rows();
-        let scroll = self
-            .panes
-            .iter()
-            .find(|pane| pane.name == window)
-            .map(|pane| pane.scroll)
-            .unwrap_or(0);
         if keep == 0 {
             return;
         }
-        self.log.trim(window, keep + height + scroll);
+        let mut gone = 0;
+        if self.scroll_of(window) > keep {
+            // The rows below the pane go first: a window scrolled this far into the
+            // past is not following the session, so what it is over its budget by is
+            // the newest end -- the rows the operator pages for on the way back down.
+            gone += self.log.trim_newest(window, keep + height);
+        }
+        let scroll = self.scroll_of(window);
+        // Then the rows above it, down to what the reader has scrolled through plus
+        // one margin: the past a pane is not drawing is the client's to hand back.
+        gone += self.log.trim(window, keep + height + scroll);
+        if gone > 0 {
+            self.trimmed.insert(window.to_string());
+        }
+    }
+
+    /// The rows each window whose rows changed a frame ago holds now.
+    ///
+    /// # Invariant
+    ///
+    /// Taken once per change: a window that dropped rows is the client's only
+    /// account of where it now stops, and a window whose rows carry no number says
+    /// nothing rather than a range it would be guessing. See
+    /// `docs/notes/tui-panes.md`.
+    pub fn take_held(&mut self) -> Vec<(String, i64, i64)> {
+        let names = std::mem::take(&mut self.trimmed);
+        names
+            .into_iter()
+            .filter_map(|name| {
+                let (oldest, newest) = self.log.held(&name)?;
+                Some((name, oldest, newest))
+            })
+            .collect()
+    }
+
+    /// How far a window is scrolled up from its newest row.
+    fn scroll_of(&self, window: &str) -> usize {
+        self.panes
+            .iter()
+            .find(|pane| pane.name == window)
+            .map(|pane| pane.scroll)
+            .unwrap_or(0)
     }
 
     /// How many rows of history a window keeps as blocks: the front-end budget.

@@ -32,6 +32,14 @@ pub trait WindowFacts {
     fn note_columns(&mut self, _window: &str, _columns: usize) {}
     /// The windows a frame drew last.
     fn drawn(&self) -> &[String];
+    /// Records the rows a window holds now: the range it dropped itself down to.
+    ///
+    /// # Invariant
+    ///
+    /// The only writer of a held range, and a replacement: a window that stopped
+    /// short of the server is not behind, and the rows below it are the operator's
+    /// to page for. See `UiIntent::Held`.
+    fn note_held(&mut self, window: &str, oldest: i64, newest: i64);
     /// The vocabulary changed; `version` names the new one so a UI can dedupe.
     fn refresh_completion(&mut self, version: u64);
     /// The rows this window's journal holds above `before`, newest first.

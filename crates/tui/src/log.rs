@@ -846,12 +846,12 @@ impl Log {
     /// The newest block is never dropped: a window always shows where the session is.
     /// What goes is history a pane is not drawing, and the client's journal is where
     /// it is asked for again. See `docs/notes/tui-log.md`.
-    pub fn trim(&mut self, window: &str, budget: usize) {
+    pub fn trim(&mut self, window: &str, budget: usize) -> usize {
         let Some(ledger) = self.views.get(window) else {
-            return;
+            return 0;
         };
         if budget == 0 || ledger.index.total() <= budget || ledger.blocks.len() < 2 {
-            return;
+            return 0;
         }
         let cap = ledger.cap;
         let block_size = self.block_size;
@@ -865,9 +865,79 @@ impl Log {
             total = total.saturating_sub(entry.visible(room(entry.kind, cap, block_size)));
             dropping.push(at);
         }
-        if dropping.is_empty() {
-            return;
+        self.drop_blocks(dropping)
+    }
+
+    /// Drops the newest blocks of one window that `budget` rows no longer cover,
+    /// and answers the rows that went.
+    ///
+    /// # Invariant
+    ///
+    /// The other end of [`Log::trim`]: a window that has stopped following a
+    /// session keeps the rows below its pane down to `budget`, and the operator
+    /// pages for the rest. The last block is never dropped, and neither is one
+    /// still streaming -- its later chunks would have no block to land in -- so
+    /// what goes is history behind the newest row, never where the session is.
+    /// The window's stamp moves down with it: the row the sink last said is a row
+    /// this window no longer has. See `docs/notes/tui-log.md`.
+    pub fn trim_newest(&mut self, window: &str, budget: usize) -> usize {
+        let dropping = {
+            let Some(ledger) = self.views.get(window) else {
+                return 0;
+            };
+            if budget == 0 || ledger.index.total() <= budget || ledger.blocks.len() < 2 {
+                return 0;
+            }
+            let cap = ledger.cap;
+            let block_size = self.block_size;
+            let mut total = ledger.index.total();
+            let mut dropping: Vec<usize> = Vec::new();
+            for &at in ledger.blocks.iter().rev() {
+                // One block, and one still streaming, are what a window is: the
+                // rest of the newest end is history behind it.
+                if total <= budget || dropping.len() + 1 >= ledger.blocks.len() {
+                    break;
+                }
+                let entry = &self.entries[at];
+                if !entry.sealed {
+                    break;
+                }
+                total = total.saturating_sub(entry.visible(room(entry.kind, cap, block_size)));
+                dropping.push(at);
+            }
+            dropping
+        };
+        let gone = self.drop_blocks(dropping);
+        if gone == 0 {
+            return 0;
         }
+        // What the window holds now ends at its newest surviving block.
+        if let Some(seq) = self
+            .views
+            .get(window)
+            .and_then(|ledger| ledger.blocks.last())
+            .map(|at| self.entries[*at].seq)
+        {
+            if seq > 0 {
+                self.stamps.insert(window.to_string(), seq);
+            }
+        }
+        gone
+    }
+
+    /// Removes blocks `dropping` from the log, renumbering every window, and
+    /// answers the rows they held.
+    ///
+    /// # Invariant
+    ///
+    /// The one removal both ends of a trim take: a block's position is an index into
+    /// this one list, so every block after a dropped one moves and every ledger is
+    /// rebuilt. An open stream whose block survived keeps pointing at it.
+    fn drop_blocks(&mut self, dropping: Vec<usize>) -> usize {
+        if dropping.is_empty() {
+            return 0;
+        }
+        let gone: usize = dropping.iter().map(|at| self.contributions(*at)).sum();
         let dropped: std::collections::HashSet<usize> = dropping.into_iter().collect();
         let mut kept: Vec<Entry> = Vec::with_capacity(self.entries.len());
         let mut remap: Vec<Option<usize>> = Vec::with_capacity(self.entries.len());
@@ -885,6 +955,7 @@ impl Log {
             .filter_map(|(key, at)| remap.get(at).copied().flatten().map(|at| (key, at)))
             .collect();
         self.reindex();
+        gone
     }
 
     /// Takes a window's blocks and its ledger out of memory.

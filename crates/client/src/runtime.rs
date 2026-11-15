@@ -369,6 +369,14 @@ pub async fn run(
             }
             // A scroll past the oldest row a window holds: a page above it.
             Step::Input(FrontendEvent::Intent(UiIntent::Older { windows })) => owed.extend(windows),
+            // What each window holds now: the rows it dropped to stay inside its
+            // budget, at whichever end. The client believed otherwise.
+            Step::Input(FrontendEvent::Intent(UiIntent::Held { windows })) => {
+                for (name, oldest, newest) in windows {
+                    client.declare_held(&name, oldest, newest);
+                    WindowFacts::note_held(&mut *ui, &name, oldest, newest);
+                }
+            }
             // How tall each pane is drawn: what one page of the past is sized by.
             Step::Input(FrontendEvent::Intent(UiIntent::Room { windows })) => {
                 for (name, rows) in windows {

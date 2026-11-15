@@ -121,6 +121,31 @@ impl WindowJournal {
         }
     }
 
+    /// Records the rows a window holds now, as the frame that dropped them says.
+    ///
+    /// # Invariant
+    ///
+    /// A replacement, never an extension: the two numbers are the whole of what is
+    /// left, so a trim at either end is stated rather than inferred. The
+    /// transcript's own `created` is kept -- the rows are still that transcript's
+    /// -- and a page owed for the window is answered again from the new range. See
+    /// `docs/notes/client-window-journal.md`.
+    pub fn note_held(&mut self, window: &str, oldest: i64, newest: i64) {
+        if oldest > newest {
+            return;
+        }
+        let created = self
+            .stamps
+            .get(window)
+            .map(|(created, _)| *created)
+            .unwrap_or(0);
+        self.cache.append(window, &Record::Floor { seq: oldest });
+        self.cache.stamp(window, created, newest);
+        self.stamps.insert(window.to_string(), (created, newest));
+        self.floors.insert(window.to_string(), oldest);
+        self.wants.remove(window);
+    }
+
     /// Records that every row up to `seq` of the session is on screen.
     pub fn stamp(&mut self, window: &str, created: i64, seq: i64) {
         self.cache.stamp(window, created, seq);

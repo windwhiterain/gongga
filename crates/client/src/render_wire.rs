@@ -290,6 +290,15 @@ pub enum UiIntent {
     Operate { operation: protocol::Operation },
     /// The operator asked to read above what these windows hold.
     Older { windows: Vec<String> },
+    /// The rows each window holds now, oldest and newest.
+    ///
+    /// # Invariant
+    ///
+    /// A fact, never a request: a window drops the rows it is over its budget by,
+    /// at either end, and only the frame that dropped them knows where it now
+    /// stops. Said once per change, so the client's belief is replaced rather than
+    /// guessed at. See `docs/notes/client-window-journal.md`.
+    Held { windows: Vec<(String, i64, i64)> },
     /// How many rows each pane could draw: what one page of the past is sized by.
     ///
     /// # Invariant
