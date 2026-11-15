@@ -124,6 +124,16 @@ pub struct Channels {
     /// The server's own, not a session's: a channel outlives the session's shells,
     /// and the relay it reads runs on the peer whether this process is here or not.
     runners: tokio::sync::Mutex<HashMap<String, Arc<Runner>>>,
+    /// One dial per peer, so a peer that will not greet holds up neither another
+    /// peer nor the table `runners` keeps.
+    ///
+    /// # Invariant
+    ///
+    /// Held across `pick::runner`, which is bounded per step and not per call: the
+    /// table's own lock is taken only to read it, so a slow peer cannot stall a
+    /// remote call aimed at a different machine. See
+    /// `docs/notes/server-channel.md`.
+    dialing: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// The channels a call is inside right now.
     ///
     /// # Invariant
@@ -163,6 +173,7 @@ impl Channels {
             notify,
             remotes,
             runners: tokio::sync::Mutex::new(HashMap::new()),
+            dialing: tokio::sync::Mutex::new(HashMap::new()),
             attached: std::sync::Mutex::new(HashSet::new()),
         }
     }
@@ -454,11 +465,8 @@ impl Channels {
     /// One per peer name, and a connection that has ended is not reused: a peer that
     /// was restarted must not answer with the silence of the run before it.
     async fn runner_for(&self, machine: &str) -> Result<Arc<Runner>, String> {
-        let mut runners = self.runners.lock().await;
-        if let Some(runner) = runners.get(machine)
-            && runner.connected()
-        {
-            return Ok(Arc::clone(runner));
+        if let Some(runner) = self.connected_runner(machine).await {
+            return Ok(runner);
         }
         let Some(endpoint) = self.remotes.find(machine).map(|remote| remote.endpoint) else {
             let mut known = self.remotes.names();
@@ -472,12 +480,43 @@ impl Channels {
                 }
             ));
         };
+        // Dialled outside the table's lock: one silent peer must not hold up the rest.
+        let dialing = {
+            let mut guards = self.dialing.lock().await;
+            Arc::clone(
+                guards
+                    .entry(machine.to_string())
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+            )
+        };
+        let _one_dial = dialing.lock_owned().await;
+        // Whoever held this dial before this caller may have finished it.
+        if let Some(runner) = self.connected_runner(machine).await {
+            return Ok(runner);
+        }
         let spawned = crate::remote::pick::runner(&endpoint, endpoint.answer_timeout())
             .await
             .map_err(|e| format!("{e}"))?;
         let runner = Arc::new(spawned);
-        runners.insert(machine.to_string(), Arc::clone(&runner));
+        self.runners
+            .lock()
+            .await
+            .insert(machine.to_string(), Arc::clone(&runner));
         Ok(runner)
+    }
+
+    /// One peer's kept connection, while it is still the one that answers.
+    ///
+    /// # Invariant
+    ///
+    /// The table is locked for the look alone: no caller may wait on a peer while
+    /// holding what every other caller needs.
+    async fn connected_runner(&self, machine: &str) -> Option<Arc<Runner>> {
+        let runners = self.runners.lock().await;
+        runners
+            .get(machine)
+            .filter(|runner| runner.connected())
+            .map(Arc::clone)
     }
 
     /// Where one channel's files are, for a call that has its row.
@@ -1231,6 +1270,15 @@ impl Where {
                     // empty chunk, from a peer that raced the file's growth.
                     if chunk.eof || fresh == 0 {
                         return Ok(bytes);
+                    }
+                    // Every chunk moves the cursor; one that does not is a broken
+                    // runner, not a long file.
+                    if chunk.next <= offset {
+                        return Err(format!(
+                            "the endpoint answered {path:?} at offset {offset} without moving \
+                             its cursor to {}: this runner cannot be read",
+                            chunk.next
+                        ));
                     }
                     offset = chunk.next;
                 }
