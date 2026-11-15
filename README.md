@@ -33,9 +33,8 @@
 - Vscode terminal compatible.
 - Worktree management: session auto create its own worktree bound to its lifetime, display worktree merged/dirty in session UI.
 
-## Environment Requirement
+## Environment requirement
 
-- bash
 - python, uv (package manager)
 - git
 - Github access
