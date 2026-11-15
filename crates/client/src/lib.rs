@@ -1146,6 +1146,20 @@ impl Client {
     /// A view the front-end owns: this layer keeps the names so the layout can
     /// answer with them, and never decides one itself.
     pub fn set_shown(&mut self, names: Vec<String>) {
+        // A front-end draws the windows a frame draws and nothing else: the set that
+        // changes loses and gains trees, so both sides of the change are declared
+        // empty and the next frame re-sends them whole. See docs/notes/client-lib.md.
+        let before = std::mem::take(&mut self.shown);
+        for name in &before {
+            if !names.contains(name) {
+                self.forget_held(name);
+            }
+        }
+        for name in &names {
+            if !before.contains(name) {
+                self.forget_held(name);
+            }
+        }
         self.shown = names;
     }
 
@@ -2254,6 +2268,25 @@ impl Client {
     /// A window with no record is behind by everything, never "in sync": a session
     /// that ran before this window existed is exactly what the operator came to
     /// read. Declaring `0` says so without claiming to know where its record ends.
+    /// The front-end holds nothing of this window, and a fill on its way stands.
+    ///
+    /// # Invariant
+    ///
+    /// What a frame draws is what the front-end holds: a window that left the
+    /// frame has no tree, so its rows must be asked for again rather than
+    /// appended to. A fill already in flight is left alone -- its rows are the
+    /// page a fresh tree is made of. See docs/notes/client-lib.md.
+    pub(crate) fn forget_held(&mut self, name: &str) {
+        if let Some(sync) = self.sync.get_mut(name) {
+            sync.drawn = Drawn::At {
+                created: sync.created,
+                seq: 0,
+            };
+            sync.held.clear();
+            sync.loaded = false;
+        }
+    }
+
     pub fn declare_empty(&mut self, name: &str) {
         if let Some(sync) = self.sync.get_mut(name) {
             let created = sync.created;

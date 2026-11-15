@@ -84,3 +84,10 @@ stamps, floors, drawn, room and settled are answered here and only here. See
   room at 1 anyway, so a fresh window asks for one row rather than nothing.
 - Nothing here is a query protocol. A frame *reports* what it drew; the client
   never asks a front-end what it holds. See `DESIGN.md` §1, "形态 2".
+
+## forget_held — the stamp says what a frame draws (2026-11-15)
+
+A window that leaves the frame holds nothing, so its stamp is rewritten at seq 0 with
+the `created` it already had: the rows stay (a page above them is still read from
+here) and the next restore reads the page from the server rather than trusting a
+stamp that describes a tree that no longer exists. See `docs/notes/client-lib.md`.

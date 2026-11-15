@@ -222,6 +222,23 @@ impl WindowJournal {
         }
     }
 
+    /// Says this window holds nothing, keeping the rows it can still be paged from.
+    ///
+    /// # Invariant
+    ///
+    /// A front-end draws the windows a frame draws and nothing else, so a window
+    /// that leaves the frame loses its tree and the stamp has to say so: the next
+    /// restore would otherwise append a page under a window that starts empty.
+    /// The rows stay, because a page above them is still read from here. See
+    /// `docs/notes/client-window-journal.md`.
+    pub fn forget_held(&mut self, window: &str) {
+        let Some((created, _)) = self.stamp_of(window) else {
+            return;
+        };
+        self.cache.stamp(window, created, 0);
+        self.stamps.insert(window.to_string(), (created, 0));
+    }
+
     /// Records how many rows a pane could draw this frame.
     pub fn note_room(&mut self, window: &str, rows: usize) {
         self.room.insert(window.to_string(), rows.max(1));

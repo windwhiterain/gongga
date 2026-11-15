@@ -118,3 +118,16 @@ run used only `--home` and therefore read the operator's real
 That is what a TUI start does too, but a verification must never touch it. Pass
 both `--home`, `--client-home`, `GONGGA_HOME` and `GONGGA_CLIENT_HOME` pointing
 at the throwaway directory.
+
+## A frame is queued, never sent around the queue (2026-11-15)
+
+Every drawing frame travels in the sink's `WireSink` and is written when the sink is
+dropped, in the order the rows were handled. The answer's `Document` used to be built
+and sent immediately by `PipeFrontend::emit_document`, and that one exception was
+enough to lose a whole answer: the fill's `Clear` was still queued behind it, so the
+document was drawn and then wiped, and the window showed the turn without its output.
+`answer` and `rewritten` now answer with the frame and the sink queues it after the
+row's own `Stream`.
+
+Measured on the live harness: a session hidden and shown again went from "five rows,
+no answer" to `total = 17, blocks = 6` -- every row of the turn, in row order.

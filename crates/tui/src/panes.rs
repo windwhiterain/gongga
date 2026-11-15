@@ -281,6 +281,16 @@ impl Panes {
         // to what the session is doing.
         let shown: std::collections::BTreeSet<&str> =
             layout.shown.iter().map(|name| name.as_str()).collect();
+        // A window this frame stops drawing holds nothing: the client re-sends it.
+        let leaving: Vec<String> = self
+            .panes
+            .iter()
+            .filter(|pane| pane.kind == Kind::Shown && !shown.contains(pane.name.as_str()))
+            .map(|pane| pane.name.clone())
+            .collect();
+        for name in leaving {
+            self.log.forget(&name);
+        }
         self.unseen.retain(|name| !shown.contains(name.as_str()));
         self.rebuild_rows();
         self.quota = layout.quota.clone();

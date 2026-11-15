@@ -66,6 +66,9 @@ struct PipeFrontend {
     roster: Roster,
     server: Option<Server>,
     sticky: Option<String>,
+    /// The windows the last layout drew: a change on either side is a tree that
+    /// has to be asked for again. See `docs/notes/client-pipe.md`.
+    shown: Vec<String>,
     /// The cap and margin last put on the wire, so a repeat costs no frame.
     render: Option<(usize, usize)>,
     draft: bool,
@@ -104,6 +107,7 @@ impl PipeFrontend {
             roster,
             server: None,
             sticky: None,
+            shown: Vec::new(),
             render: None,
             draft: false,
             layout: None,
@@ -128,10 +132,10 @@ impl PipeFrontend {
         tag: &str,
         delta: &str,
         done: bool,
-    ) {
+    ) -> Option<RenderMessage> {
         if kind != LineKind::Assistant {
             self.drop_answer(window, key);
-            return;
+            return None;
         }
         let entry = self
             .answers
@@ -147,21 +151,18 @@ impl PipeFrontend {
         entry.tag = tag.to_string();
         entry.text.push_str(delta);
         entry.done = done;
-        self.emit_document(window, key);
+        self.document_of(window, key)
     }
 
     /// Replaces an answer's whole text: what a rewrite of a derived body means.
-    fn rewritten(&mut self, window: &str, key: &str, text: &str) {
-        let Some(entry) = self
+    fn rewritten(&mut self, window: &str, key: &str, text: &str) -> Option<RenderMessage> {
+        let entry = self
             .answers
             .get_mut(window)
-            .and_then(|held| held.get_mut(key))
-        else {
-            return;
-        };
+            .and_then(|held| held.get_mut(key))?;
         entry.text.clear();
         entry.text.push_str(text);
-        self.emit_document(window, key);
+        self.document_of(window, key)
     }
 
     fn drop_answer(&mut self, window: &str, key: &str) {
@@ -191,19 +192,30 @@ impl PipeFrontend {
 
     /// Puts one body on the wire as the rows this window is fitted to.
     fn emit_document(&mut self, window: &str, key: &str) {
+        if let Some(message) = self.document_of(window, key) {
+            self.send(message);
+        }
+    }
+
+    /// The frame that states one answer as rows, for the caller to queue.
+    ///
+    /// # Invariant
+    ///
+    /// Built here and sent by whoever got it: a document that overtook the row's
+    /// own frames would be drawn into a window that is about to be cleared. See
+    /// `docs/notes/client-pipe.md`.
+    fn document_of(&mut self, window: &str, key: &str) -> Option<RenderMessage> {
         let width = self.widths.get(window).copied().unwrap_or(DEFAULT_COLUMNS);
-        let Some(entry) = self.answers.get(window).and_then(|held| held.get(key)) else {
-            return;
-        };
+        let entry = self.answers.get(window).and_then(|held| held.get(key))?;
         let rows = gongga_client::document::rows(&entry.text, width);
-        self.send(RenderMessage::Document {
+        Some(RenderMessage::Document {
             window: window.to_string(),
             key: key.to_string(),
             kind: entry.kind,
             tag: entry.tag.clone(),
             rows,
             done: entry.done,
-        });
+        })
     }
 
     /// Puts one frame on the pipe. No cap and no `try_send`: dropping a frame
@@ -220,6 +232,20 @@ impl PipeFrontend {
                 return;
             }
             self.layout = Some(layout.clone());
+            // A window that leaves the frame holds nothing afterwards, and one
+            // that joins it has no tree yet: both are declared empty, so the next
+            // frame asks for the page instead of appending to a tree that is gone.
+            for name in &self.shown {
+                if !layout.shown.contains(name) {
+                    self.journal.forget_held(name);
+                }
+            }
+            for name in &layout.shown {
+                if !self.shown.contains(name) {
+                    self.journal.forget_held(name);
+                }
+            }
+            self.shown = layout.shown.clone();
             self.journal.begin_frame();
             for name in &layout.shown {
                 self.journal.mark_drawn(name);
@@ -430,8 +456,11 @@ impl Sink for PipeSink<'_> {
     ) {
         self.wire.stream(window, key, kind, prefix, text, done);
         // The same words twice: the text every front-end drew before, and the rows the
-        // one that reads them draws now. See `docs/notes/client-document.md`.
-        self.front.answer(window, key, kind, prefix, text, done);
+        // one that reads them draws now. Queued after the stream, so a `Clear` this
+        // row was preceded by still comes first. See `docs/notes/client-document.md`.
+        if let Some(message) = self.front.answer(window, key, kind, prefix, text, done) {
+            self.wire.push(message);
+        }
     }
     fn status(&mut self, text: &str) {
         self.wire.status(text);
@@ -444,7 +473,9 @@ impl Sink for PipeSink<'_> {
     }
     fn rewrite(&mut self, window: &str, key: &str, text: &str) {
         self.wire.rewrite(window, key, text);
-        self.front.rewritten(window, key, text);
+        if let Some(message) = self.front.rewritten(window, key, text) {
+            self.wire.push(message);
+        }
     }
     fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
         self.wire.tool_call(window, key, head, streamed);

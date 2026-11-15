@@ -1054,3 +1054,11 @@ session appearing anywhere else on the line.
 
 Both stdout and stderr carry the tag and stay separate streams, so a tool's
 error output is attributable without being merged into its output.
+
+## Client::set_shown — drawn is held (2026-11-15)
+
+`set_shown` is the set of windows a frame draws, which is also the set a front-end
+holds. A name that joins or leaves it is declared empty on the client's side
+(`forget_held`: nothing held, not loaded), so the next frame's restore asks for the
+page instead of appending to a tree that was dropped. Without this, a window hidden
+while rows arrived was considered loaded, and showing it drew nothing.

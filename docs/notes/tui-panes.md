@@ -201,3 +201,16 @@ so pinning the list would be a scroll nobody asked for -- SPEC's "if scrolled fr
 bottom, do not auto scroll" applied to the one view that has an offset and no new
 rows to follow.
 
+
+## Panes::layout — a tree leaves with its window (2026-11-15)
+
+A front-end holds what a frame draws and nothing else: `Panes::layout` drops the log
+of every shown window the new layout no longer draws. The pane for it is gone either
+way, so a tree kept past that point is state nobody can see -- and the client, which
+reports what a frame drew, then believes the front-end still holds rows that it will
+never draw again. Showing the window again is a fresh tree, filled by the page the
+client re-sends.
+
+Measured on the live harness (`hide` then `show` a session whose tool call had already
+run): before, the window grew a second copy of the turn; after, the same window is the
+transcript's rows in order, `blocks = 6` for rows 1, 4, 5, 6, 7, 8, 9.

@@ -317,6 +317,18 @@ impl WireSink {
         });
     }
 
+    /// Queues a frame another part of this process built, in the order the rest
+    /// of the same row's frames were queued.
+    ///
+    /// # Invariant
+    ///
+    /// There is one queue per sink call: a frame sent around it can arrive before
+    /// the `Clear` that was meant to precede it, which is a row drawn into a
+    /// window that then empties. See `docs/notes/client-pipe.md`.
+    pub fn push(&mut self, message: RenderMessage) {
+        self.render.push(message);
+    }
+
     pub fn take_render(&mut self) -> Vec<RenderMessage> {
         std::mem::take(&mut self.render)
     }
