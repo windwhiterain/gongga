@@ -183,9 +183,9 @@ a cache tree is simulated for each model or (model, some config) that shares pre
 for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
 
 ## Live Compact
-- the opt-in is the session's own `live_compact`; a session that states none follows the home's `[agent]` setting. Switched on, it opens the starting checkpoint at the transcript's end, exactly where the plan finish below opens it.
-- when agent switch from explore to build, set the starting checkpoint of compaction.
-- after the starting checkpoint, every time reach a context increase limit, ask the agent to call `live_compact` to summary and replace the history since the last checkpoint, and create a new checkpoint.
+- every session that starts in work mode opens the starting checkpoint before its first user message; a session created in explore opens it when the agent switches from explore to build. The checkpoint does not depend on the opt-in: the `live_compact` tool is always available.
+- the opt-in is the session's own `live_compact`; a session that states none follows the home's `[agent]` setting. It governs one thing only: whether the server asks.
+- after the starting checkpoint, at a step boundary whose context has grown by the current interval since the last checkpoint, the server asks the agent to call `live_compact` to summary and replace the history since the last checkpoint, and creates a new checkpoint. An ask the agent ignores doubles the interval; a committed checkpoint resets it to the configured interval.
 - `live_compact` summary can reference meta that directly embed in the summary, creating a new checkpoint.
 - the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
 

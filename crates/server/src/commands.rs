@@ -1529,6 +1529,12 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
             Err(e) => Outcome::err(format!("could not record the pending message: {e}")),
         };
     }
+    // SPEC: a work session opens its checkpoint before its first user message.
+    if session.mode() == crate::explore::Mode::Work
+        && let Err(e) = d.store.start_live_compact(session.id())
+    {
+        tracing::warn!(session = %name, error = %e, "could not open the live compact checkpoint");
+    }
     let epoch = session.cancel_epoch();
     if let Some(gate) = session.try_claim() {
         // The gate is claimed before the durable write, so a second sender can only
@@ -1915,6 +1921,21 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(tokens) = live_interval {
         tuning.live_compact_interval_tokens = Some(tokens);
     }
+    // Zero is not a threshold: enabled live compact needs a positive interval.
+    let config = d.agent.config.now();
+    let live_on = tuning
+        .live_compact_enabled
+        .unwrap_or(config.agent.live_compact_enabled);
+    let live_interval_now = tuning
+        .live_compact_interval_tokens
+        .unwrap_or(config.agent.live_compact_interval_tokens);
+    if live_on && live_interval_now == 0 {
+        return Outcome::err(
+            "--live_compact_interval_tokens is the threshold, not the switch: enable live \
+             compact only with a positive interval"
+                .to_string(),
+        );
+    }
     if changed || cache_changed || live_changed {
         // Persist before applying: a restart must restore what turns here read.
         if let Err(e) = d.store.set_session_tuning(
@@ -1944,31 +1965,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             ) {
                 return Outcome::err(format!("could not save the live compact settings: {e}"));
             }
-            // Switched on, the checkpoint starts where the transcript is now: there is
-            // no plan finish left to wait for.
-            let config = d.agent.config.now();
-            if tuning
-                .live_compact_enabled
-                .unwrap_or(config.agent.live_compact_enabled)
-                && let Err(e) = d.store.start_live_compact(session.id())
-            {
-                return Outcome::err(format!("could not open the live compact checkpoint: {e:#}"));
-            }
         }
         session.set_tuning(tuning.clone());
     }
     // A mode that changed says so: the agent hears it at the next step boundary.
     if let Some(mode) = mode.filter(|mode| *mode != session.mode()) {
-        // Plan finish (explore -> work) opens the starting checkpoint; a failed
-        // open refuses the mode change.
-        let config = d.agent.config.now();
-        let live_compact = session
-            .tuning()
-            .live_compact_enabled
-            .unwrap_or(config.agent.live_compact_enabled);
+        // Plan finish (explore -> work) opens the starting checkpoint.
         if mode == crate::explore::Mode::Work
             && session.mode() == crate::explore::Mode::Explore
-            && live_compact
             && let Err(e) = d.store.start_live_compact(session.id())
         {
             return Outcome::err(format!("could not open the live compact checkpoint: {e:#}"));

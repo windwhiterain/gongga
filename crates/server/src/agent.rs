@@ -517,13 +517,16 @@ impl Agent {
         });
     }
 
-    /// Queues one durable agent-written checkpoint request for this token interval.
+    /// Asks for a checkpoint once the context has grown a whole interval since the
+    /// last one.
     ///
     /// # Invariant
     ///
-    /// Read from the session at every step: the switch and the interval are the
-    /// session's own, and a session that states neither reads the home's config as
-    /// it is now rather than as it was when this process started.
+    /// The interval is the base backed off by every ask that went unanswered, so an
+    /// agent that ignores one is asked again a wider stretch later rather than at
+    /// every step. The switch, the base and the backoff are all read now: a session
+    /// that states none follows the home's config as it is, not as this process
+    /// started. See `docs/notes/server-live-compact.md`.
     fn maybe_request_live_compact(&self, session: &SessionHandle, id: i64, name: &str) {
         let tuning = session.tuning();
         let config = self.config.now();
@@ -533,25 +536,24 @@ impl Agent {
         {
             return;
         }
-        let interval = tuning
+        let base = tuning
             .live_compact_interval_tokens
             .unwrap_or(config.agent.live_compact_interval_tokens);
         let Ok(measurement) = self.store.live_compact_measurement(id) else {
             return;
         };
-        if measurement.requested {
-            return;
-        }
         let Some(baseline) = measurement.baseline_tokens else {
             return;
         };
+        let interval = measurement.interval.unwrap_or(base);
         if measurement.tokens.saturating_sub(baseline) < interval {
             return;
         }
+        let next = interval.saturating_mul(2);
         let message = live_compact_notice();
         match self
             .store
-            .request_live_compact(id, name, measurement.generation, &message)
+            .request_live_compact(id, name, measurement.generation, &message, next)
         {
             Ok(true) => {
                 self.log_event(
@@ -561,6 +563,7 @@ impl Agent {
                         "tokens": measurement.tokens,
                         "baseline": baseline,
                         "interval": interval,
+                        "next_interval": next,
                         "generation": measurement.generation,
                     }),
                 );
@@ -1608,47 +1611,36 @@ impl Agent {
                     "turn": turn, "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
         let mut checkpointed = false;
         let mut checkpoint_error = None;
-        // Unasked-for call: a no-op, not an error (an error invites a retry loop).
+        // Nothing to fold: an answer, not an error (an error invites a retry loop).
         // See `docs/notes/server-live-compact.md`.
-        let mut unrequested = false;
+        let mut nothing = None;
         if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && outcome.ok {
-            if self
+            match self
                 .store
-                .live_compact_measurement(id)
-                .is_ok_and(|measurement| !measurement.requested)
+                .append_live_compact_result(id, &call_id, &content)
             {
-                unrequested = true;
-            } else {
-                match self
-                    .store
-                    .append_live_compact_result(id, &call_id, &content)
-                {
-                    Ok(committed) => {
-                        checkpointed = true;
-                        self.announce_row(name, Ok(committed.result_seq));
-                        self.log_event(
-                            Some(id),
-                            "live_compact",
-                            &json!({
-                                "checkpoint": committed.checkpoint_id,
-                                "result_seq": committed.result_seq,
-                                "generation": committed.generation,
-                            }),
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
-                        checkpoint_error = Some(format!("{e:#}"));
-                    }
+                Ok(crate::live_compact::Commit::Checkpointed(committed)) => {
+                    checkpointed = true;
+                    self.announce_row(name, Ok(committed.result_seq));
+                    self.log_event(
+                        Some(id),
+                        "live_compact",
+                        &json!({
+                            "checkpoint": committed.checkpoint_id,
+                            "result_seq": committed.result_seq,
+                            "generation": committed.generation,
+                        }),
+                    );
+                }
+                Ok(crate::live_compact::Commit::Nothing(reason)) => nothing = Some(reason),
+                Err(e) => {
+                    tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
+                    checkpoint_error = Some(format!("{e:#}"));
                 }
             }
         }
-        if unrequested {
-            output = concat!(
-                "No checkpoint was outstanding: nothing was compacted, ",
-                "and the history is untouched."
-            )
-            .to_string();
+        if let Some(reason) = nothing {
+            output = reason;
             content["output"] = json!(output.clone());
             self.announce_row(
                 name,
@@ -1665,7 +1657,6 @@ impl Agent {
                 name,
                 self.store.append_message(id, Kind::ToolResult, &content),
             );
-            let _ = self.store.reset_live_compact_request(id);
             tail = output.clone();
         } else if !checkpointed {
             self.announce_row(
