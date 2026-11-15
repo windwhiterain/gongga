@@ -246,21 +246,6 @@ fn rule(widths: &[usize]) -> String {
     text
 }
 
-/// `text` cut to at most `width` columns.
-fn clip(text: &str, width: usize) -> String {
-    let mut out = String::new();
-    let mut used = 0;
-    for character in text.chars() {
-        let wide = character.width().unwrap_or(1);
-        if used + wide > width {
-            break;
-        }
-        used += wide;
-        out.push(character);
-    }
-    out
-}
-
 /// How many columns `text` takes when drawn.
 fn text_width(text: &str) -> usize {
     text.chars().map(|c| c.width().unwrap_or(1)).sum()
