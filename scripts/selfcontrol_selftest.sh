@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
 # SPEC's `## Skill: Self Control`, on a real server with a fake provider: the one
-# function the content in `ship/skills/self-control` publishes, and the script form of
-# the same question.
+# function the content in `ship/skills/self-control` publishes, and the two ways a
+# caller reaches it.
 #
 #   E  the package publishes `ask`, and nothing else
 #   F  `ask` asks another session, waits, and prints its answer
-#   H  the script form of `ask` still runs
+#   H  the contract as a process takes the same call on stdin
 #
 # What this file used to drive -- `new_session` through the skill, copying the caller's
 # row column by column -- is gone: a skill function is not a server command any more,
 # and `set_session` applies a config rather than inheriting one. Those behaviours belong
 # to the command layer, and `cmd_selftest.sh` is where a command's own arguments are
-# proved.
+# proved. So is the script form of `ask`: since every skill is a Python call there is no
+# launcher to run, and the process form is the contract reading one JSON request on
+# stdin -- which is what H checks.
 #
 # One server lifecycle, one fake endpoint, one temporary home. `--keep` leaves the
 # home for a failing run; the default removes it.
 set -uo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# A path this machine opens: bash hands out `/c/...`, and a Windows program -- the
+# server is one, and so is the Python the contract runs under -- reads `C:/...`.
+native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
 bin="$root/target/debug"
 work="$root/.dev/selftest"
 home="$work/selfcontrol-home"
@@ -216,18 +221,26 @@ ok "$e_label" $?
 
 # --- F: `ask` asks, waits and prints the answer ---------------------------------
 "${cli[@]}" '{"name":"set_session","args":{"id":"mentor","model":"fake/flash-fake","cwd":"'"$project_native"'"}}' >"$work/mentor.out" 2>&1
-answer=$(timeout -k 5 120 "${cli[@]}" '{"name":"run_skill","args":{"session":"source","id":"self-control","cmd":{"args":["ask","mentor","What did I ask?"]}}}' 2>"$work/ask-f.err")
+# SPEC's `Cmd.args` is a dict end to end, and a function's arguments are its keyword
+# arguments: the call names `ask`'s own parameters, never a word list.
+answer=$(timeout -k 5 120 "${cli[@]}" '{"name":"run_skill","args":{"session":"source","id":"self-control","cmd":{"name":"ask","args":{"session":"mentor","question":"What did I ask?"}}}}' 2>"$work/ask-f.err")
 f=$?
 printf '%s' "$answer" > "$work/ask-f.out"
 f_label="ask asks, waits and prints the answer: exit $f, '$answer' $(first_line "$work/ask-f.out" "$work/ask-f.err")"
 [[ $f == 0 && "$answer" == *"hello from the fake"* ]]
 ok "$f_label" $?
 
-# --- H: the script form of `ask` still runs -------------------------------------
-answer=$(timeout -k 5 120 "$home/ship/skills/self-control/ask_session.py" mentor "What did I ask?" 2>"$work/ask-h.err")
+# --- H: the contract as a process runs the same call ----------------------------
+# One JSON request on stdin, the same two names: the skill has no argv form, so this
+# is the whole of "run it without the command layer". The contract is the content's
+# own `python/gongga_skill.py`, which is what `GONGGA_SKILL_LIB` names: the home
+# reads the contract in place, and the runner points that variable at it. A bare
+# process has to be told, or the skill's client has nowhere to look for `gongga.py`.
+answer=$(printf '{"skill": "%s", "function": "ask", "args": {"session": "mentor", "question": "What did I ask?"}}\n' "$(native "$home/ship/skills/self-control")" \
+  | GONGGA_SKILL_LIB="$(native "$home/ship/python")" timeout -k 5 120 python "$home/ship/python/gongga_skill.py" 2>"$work/ask-h.err")
 h=$?
 printf '%s' "$answer" > "$work/ask-h.out"
-h_label="the script form of ask still runs: exit $h, '$answer' $(first_line "$work/ask-h.out" "$work/ask-h.err")"
+h_label="the contract as a process runs ask: exit $h, '$answer' $(first_line "$work/ask-h.out" "$work/ask-h.err")"
 [[ $h == 0 && "$answer" == *"hello from the fake"* ]]
 ok "$h_label" $?
 
