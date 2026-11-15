@@ -156,6 +156,18 @@ execution it runs, to call a hung mechanism a fault. `CALL_TIMEOUT_MS` is the
 one such number today, the skill program's. No caller sets it, no caller reads
 it, and while the harness is correct the interface is unchanged by it.
 
+## run_command (a command the harness cut)
+
+The call is a `select!` between the command layer and the caller's cancel token, so a
+cut can land before the command answered. Nothing in that state says whether the
+command ran: an empty `Result` (`"exit": null`, no output) reads to a model as "ran,
+said nothing", and that is how one `send_message` was sent twice. The answer is
+therefore an error naming the cut and telling the reader to look at what the call
+would have changed before repeating it -- the same rule as `BashTool::run (a cancelled
+result)`: never let silence pass for success. The two ways a cut arrives are the turn's
+own cancel and the cache tier's deadline (`server-agent.md`, "The tier's deadline"),
+which no longer fires on a tool that has not started.
+
 ## Tool, Cmd::forwards_to
 
 The pair answers one question nothing else can: is this row a command's spelling, or

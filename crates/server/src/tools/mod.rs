@@ -405,8 +405,8 @@ fn object_of(value: &Value) -> Option<serde_json::Map<String, Value>> {
 ///
 /// SPEC's `fn <tool>(**args)`: the command layer is the whole door, so a name it does
 /// not know is refused there in the command's own words, and the caller's session
-/// rides along. A waiting call returns early when the turn is cancelled; a command
-/// that said nothing has nothing to answer.
+/// rides along. A call the harness cuts before its command answered says so: a
+/// command's silence is not a result. See `docs/notes/server-tools-mod.md`.
 pub(crate) async fn run_command(
     session: &str,
     name: &str,
@@ -423,35 +423,29 @@ pub(crate) async fn run_command(
         outcome = layer.run(session, name, words) => Some(outcome),
         _ = cancel.cancelled() => None,
     };
-    let ended = match &outcome {
-        Some(done) => {
-            let rows = answer_rows(&done.events);
-            let mut answer = json!({
-                "id": Value::Null,
-                "output": done.message,
-                "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
-                "matched": false,
-                "exit": if done.ok { 0 } else { 1 },
-                "data": done.data,
-            });
-            if !rows.is_empty() {
-                answer["events"] = Value::Array(rows);
-            }
-            answer
-        }
-        None => json!({
-            "id": Value::Null,
-            "output": "",
-            "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
-            "matched": false,
-            "exit": Value::Null,
-        }),
+    let Some(done) = outcome else {
+        // A cut is not silence: the answer has to say the command did not finish.
+        return ToolOutcome::err(format!(
+            "`{name}` was cut short by the harness before it answered, so it may not 
+             have run at all: read what it would have changed before running it again"
+        ));
     };
-    // Ended early is not a failure: the command said nothing, because it was not
-    // given the time to.
-    match outcome {
-        Some(done) if !done.ok => ToolOutcome::err(ended.to_string()),
-        _ => ToolOutcome::ok(ended.to_string()),
+    let rows = answer_rows(&done.events);
+    let mut answer = json!({
+        "id": Value::Null,
+        "output": done.message,
+        "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
+        "matched": false,
+        "exit": if done.ok { 0 } else { 1 },
+        "data": done.data,
+    });
+    if !rows.is_empty() {
+        answer["events"] = Value::Array(rows);
+    }
+    if done.ok {
+        ToolOutcome::ok(answer.to_string())
+    } else {
+        ToolOutcome::err(answer.to_string())
     }
 }
 

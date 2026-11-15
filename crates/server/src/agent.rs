@@ -776,7 +776,8 @@ impl Agent {
     ///
     /// The interrupt cancels a child token, never the turn: a tool that was waiting
     /// returns with what it started still running, and the next request goes out
-    /// while the prefix is still warm.
+    /// while the prefix is still warm. It fires only while a tool runs: a deadline
+    /// already spent runs the call whole, since nothing is left to protect.
     async fn run_before_cache_expiry(
         &self,
         name: &str,
@@ -803,8 +804,8 @@ impl Agent {
         let table = self.tools();
         let run = table.run(name, args, ctx);
         tokio::pin!(run);
+        // A spent deadline protects nothing: the prefix is cold either way.
         if remaining == 0 {
-            cancel.cancel();
             return run.await;
         }
         tokio::select! {

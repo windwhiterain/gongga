@@ -664,6 +664,17 @@ running, and the next request goes out before the prefix goes cold. This is SPEC
 is the session's own tier's declared lifetime; a roster that states none leaves
 `fire_after` at zero and the tool runs as before.
 
+A deadline already spent is not one. `since` is read from the ledger, and at a
+step's *first* tool that row is still the previous one: the usage row for the
+request that just finished is appended when the stream completes, which is after
+the step's tools have run. A turn that starts after the window went cold therefore
+read `remaining == 0` for every call of its first step, and a call cancelled before
+it starts is a call that never runs -- the model saw `exit: null` with no output and
+sent the same `send_message` again. So a spent deadline now runs the call whole:
+there is nothing to protect, because the prefix is cold either way, and the next
+request is cold whether the tool ran or not. A cut that does happen says so; see
+`server-tools-mod.md`, "run_command (a command the harness cut)".
+
 **One tier per session.** `run_turn` reads `Tuning::cache_tier` once before its
 first step, and every step of the turn sends that spelling. A session that named
 none falls back to the server's `cache_tier` and then to the shortest tier its
