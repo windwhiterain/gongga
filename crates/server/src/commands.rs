@@ -3,7 +3,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use protocol::{
@@ -70,9 +70,6 @@ pub struct Dispatch {
     pub declared: Arc<crate::content_commands::ContentCommands>,
     /// The machine's LLM roster: what `set_session --model` is checked against.
     pub providers: crate::providers::Handle,
-    /// Turns currently running. `cancel` waits for this to drain before the
-    /// process is allowed to exit.
-    pub active: Arc<AtomicUsize>,
     /// Set as soon as cancellation starts, before the delayed socket shutdown.
     pub shutting_down: Arc<AtomicBool>,
     /// Pulled after the cancel acknowledgement has had a chance to leave.
@@ -87,27 +84,6 @@ pub struct Dispatch {
     /// stored table it never saw would announce rows nobody needs. See
     /// [`publish_sessions`].
     pub published: std::sync::Arc<std::sync::Mutex<Vec<protocol::SessionInfo>>>,
-}
-
-/// Owns one slot in [`Dispatch::active`], releasing it even on a panic.
-///
-/// # Invariant
-///
-/// A slot is what a stop waits for, so everything that must finish before the
-/// process leaves holds one: a turn, and a subscription's action.
-pub(crate) struct ActiveGuard(Arc<AtomicUsize>);
-
-impl ActiveGuard {
-    pub(crate) fn new(active: Arc<AtomicUsize>) -> Self {
-        active.fetch_add(1, Ordering::SeqCst);
-        Self(active)
-    }
-}
-
-impl Drop for ActiveGuard {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 /// Who asked for a command, as far as the server can tell.
@@ -185,14 +161,14 @@ struct TurnWork {
     gate: tokio::sync::OwnedMutexGuard<()>,
 }
 
-/// Hands one durable turn to the agent, counted in [`Dispatch::active`] before
-/// the task exists.
+/// Hands one durable turn to the agent.
 ///
 /// # Invariant
 ///
-/// The slot is taken by the caller's thread, not inside the spawned task: the
-/// drain after `cancel` reads the count, and a task queued but not yet polled
-/// would leave it reading zero and let the process exit mid-turn.
+/// A turn's survival is its pending row in the database, not an in-memory count:
+/// `cancel` interrupts the turn and the process leaves without waiting for it, and
+/// the next start resumes whatever the row still owes. See
+/// `docs/notes/server-commands.md`.
 fn spawn_turn(d: &Dispatch, work: TurnWork) {
     if d.shutting_down.load(Ordering::SeqCst) {
         // The turn's pending row stays in the database, so the next start owes it.
@@ -201,14 +177,12 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
     let agent = d.agent.clone();
     let sessions = d.sessions.clone();
     let bus = d.bus.clone();
-    let active: ActiveGuard = ActiveGuard::new(d.active.clone());
     // Read before the turn starts: its first step consumes the mark.
     let keepalive_d = Arc::new(d.clone());
     let keepalive_session = work.session.clone();
     let keepalive_model = d.agent.config.now().model.model();
     let keepalive_tuning = work.session.tuning();
     tokio::spawn(async move {
-        let _active = active;
         let session = work.session.clone();
         let (outcome, interrupted) = agent
             .run_turn(&work.session, work.tasks, work.epoch, work.gate)

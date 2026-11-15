@@ -36,8 +36,6 @@ pub struct Action {
 pub struct Subscriptions {
     store: Store,
     bus: EventBus,
-    /// The same slot a turn takes: a stop waits for the action too.
-    active: Arc<std::sync::atomic::AtomicUsize>,
     /// The database's rows, compiled: the pattern is parsed once, not per event.
     armed: tokio::sync::Mutex<Vec<Armed>>,
 }
@@ -49,11 +47,7 @@ struct Armed {
 
 impl Subscriptions {
     /// Reads what a previous run left armed, so a restart resumes where it stopped.
-    pub fn load(
-        store: Store,
-        bus: EventBus,
-        active: Arc<std::sync::atomic::AtomicUsize>,
-    ) -> Arc<Self> {
+    pub fn load(store: Store, bus: EventBus) -> Arc<Self> {
         let armed = match store.subscriptions() {
             Ok(rows) => rows
                 .into_iter()
@@ -67,7 +61,6 @@ impl Subscriptions {
         Arc::new(Self {
             store,
             bus,
-            active,
             armed: tokio::sync::Mutex::new(armed),
         })
     }
@@ -127,10 +120,10 @@ impl Subscriptions {
     ///
     /// # Invariant
     ///
-    /// `stop` is the end of the drain, not the ask that started it. A turn that
-    /// ends while the server is stopping is exactly the news a subscriber is owed,
-    /// and the ask arrives minutes before the last turn does; closing the matcher on
-    /// the ask loses every event in between. See `docs/notes/server-subscriptions.md`.
+    /// `stop` is pulled only after `serve` returns, not when `cancel` is asked: the
+    /// notice window still publishes events a subscriber is owed, and closing the
+    /// matcher on the ask would lose them. This waits for the matcher loop, not for
+    /// the actions it spawns. See `docs/notes/server-subscriptions.md`.
     pub async fn watch(self: Arc<Self>, stop: tokio_util::sync::CancellationToken) {
         let mut events = self.bus.subscribe();
         loop {
@@ -176,16 +169,16 @@ impl Subscriptions {
     ///
     /// # Invariant
     ///
-    /// The send is the whole of what a match does. It holds a slot in
-    /// `Dispatch::active`, so a stop waits for it -- a `send_message` issued during
-    /// a drain lands as a pending row instead of dying with the process.
+    /// The send is the whole of what a match does, and it runs as a detached task
+    /// the stop does not wait for. What survives a stop is the durable pending row
+    /// `send_message` writes, which the next start delivers -- not this task. See
+    /// `docs/notes/server-subscriptions.md`.
     async fn run_action(
         self: Arc<Self>,
         row: SubscriptionRow,
         action: Action,
         event: protocol::Event,
     ) {
-        let _slot = crate::commands::ActiveGuard::new(self.active.clone());
         let (ok, said) = match self.run_cmd(&row.session, &action).await {
             Ok(outcome) => (outcome.ok, outcome.message),
             Err(why) => (false, why),

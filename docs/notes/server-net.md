@@ -36,13 +36,14 @@ peer's entry.
 ## serve (accept loop)
 
 `cancel` stops *acceptance* -- `Dispatch::shutting_down` refuses to start another
-turn -- and nothing else. The socket stays open and the loop keeps answering while
-the turns that are already running finish, because the drain can take minutes and a
-window attached to this server has to be able to ask what is happening. It used to
-break out of the loop on the shutdown token, which left the socket bound but unread:
-every datagram a window sent went nowhere, so the window saw silence, called it a
-disconnection, and printed "reconnecting" for the whole of a cancel that was in fact
-going fine.
+turn -- and interrupts the turns already running; it does not wait for them. The
+socket stays open and the loop keeps answering through the `SHUTDOWN_NOTICE` window,
+so the acknowledgement and the `server_stop` notice reach a window attached to this
+server. Then the loop breaks on the shutdown token, at most one `DRAIN_TICK` later.
+Breaking the instant `cancel` was asked -- before the acknowledgement had left --
+was the bug this replaces: the socket stayed bound but unread, every datagram a
+window sent went nowhere, and the window saw silence, called it a disconnection,
+and printed "reconnecting" for a cancel that was in fact going fine.
 
 ## serve (recv error)
 
@@ -81,7 +82,7 @@ unless the same address has already been re-inserted for a newer connection.
 There used to be a 30s deadline here, and it was a budget like any other: it
 decided that a turn had had long enough, and a turn still committing a tool
 result when it expired lost that work. Nothing needs the deadline now, because
-the loop does not wait for the count at all: `cancel` fires every turn's token and
+the loop does not wait for running turns at all: `cancel` fires every turn's token and
 pulls the shutdown, and the loop breaks on `shutdown.is_cancelled()` -- one
 `DRAIN_TICK` later, at most. A call stuck in a shell write never reaches a step
 boundary, and holding the port for it was the bug this replaced.

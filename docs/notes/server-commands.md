@@ -59,14 +59,6 @@ making a caller read the entire history.
 The machine's LLM roster, which is what `set_session --model` is checked against
 and where its completion list comes from.
 
-## ActiveGuard
-
-The decrement lives in `Drop` rather than at the end of the spawned task, so it
-happens even when the turn panics. That matters now that shutdown waits on the
-count with no deadline: a task that died on its last line would leave the
-counter at one forever and stop the process from ever exiting -- the exact
-failure a deadline used to hide.
-
 ## session_info
 
 A stored row as a client is told about it. One function, because more than one place
@@ -542,9 +534,10 @@ with the answer already in the queue. An idle session gets neither -- it has not
 continue.
 
 The listen loop breaks as soon as
-`shutdown` is pulled, without waiting for `active` to drain -- a call stuck in a
-shell write or a model stream has no step boundary to reach, and a flag it may
-never read is not worth holding the port for.
+`shutdown` is pulled, without waiting for running turns to finish -- a call stuck
+in a shell write or a model stream has no step boundary to reach, and a flag it
+may never read is not worth holding the port for. What a turn did not finish
+survives as its pending row, which the next start resumes.
 
 Which rows those are is the channel's wait flag, not the row kind: an end something was
 waiting for owes a turn, and one a `cancel` leaves behind only because it ended the

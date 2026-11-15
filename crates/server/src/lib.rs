@@ -54,7 +54,7 @@ mod worktree;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::AtomicBool;
 
 use std::io::IsTerminal;
 use tokio_util::sync::CancellationToken;
@@ -456,12 +456,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     });
     clock.step("tools");
 
-    // Turns in flight and subscription actions: a stop waits for both.
-    let active = Arc::new(AtomicUsize::new(0));
     // Read from the database, so a restart resumes what was asked for; the
     // actions it runs take the agent's tools.
-    let subscriptions =
-        crate::subscriptions::Subscriptions::load(store.clone(), bus.clone(), active.clone());
+    let subscriptions = crate::subscriptions::Subscriptions::load(store.clone(), bus.clone());
     clock.step("subscriptions");
 
     let dispatch = Arc::new(Dispatch {
@@ -473,7 +470,6 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         scripts: scripts.clone(),
         declared,
         providers: providers::Handle,
-        active: active.clone(),
         shutting_down: Arc::new(AtomicBool::new(false)),
         shutdown: CancellationToken::new(),
         // Nothing has been announced yet: the first publish states every row.

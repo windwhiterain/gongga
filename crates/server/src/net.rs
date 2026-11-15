@@ -250,7 +250,7 @@ pub async fn serve(
         });
     }
 
-    // The loop left only after the last turn finished; a reader looks for this line.
+    // The loop left on the shutdown token, not after the last turn. See `docs/notes/server-net.md`.
     if d.shutdown.is_cancelled() {
         tracing::info!("server stopped");
     }

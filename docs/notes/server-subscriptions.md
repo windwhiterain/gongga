@@ -61,13 +61,14 @@ process and one round trip, and it survives a stop only because the two things b
 hold. Both are worth paying only because the alternative is a server that speaks for
 statements it was not asked to make.
 
-- **The matcher outlives the ask.** A stop request arrives minutes before the last
-  turn ends, and a turn that ends *during* the drain is exactly the news a subscriber
-  is owed. The matcher therefore stops at the end of the drain, not at the ask.
-- **An action holds a slot in the drain.** It is counted where a turn is counted, so
-  the process waits for it. An action that says what happened -- `send_message` --
-  then lands as a pending row while the server is stopping, and the next start
-  delivers it like any other owed message.
+- **The matcher outlives the ask.** `stop` is pulled only after `serve` returns, not
+  when `cancel` is asked, so events published during the shutdown-notice window still
+  reach a subscriber. `matcher.await` waits for that loop to end, not for the actions
+  it spawns.
+- **An action's news is a durable row, not a wait.** The action runs as a detached
+  task the stop does not wait for. An action that says what happened -- `send_message`
+  -- lands as a pending row, and the next start delivers it like any other owed
+  message; that row, not the task, is what survives the stop.
 
 An action that fails leaves one `subscription` row with `ok: false` and the reason.
 That is the whole of what a lost notice looks like now, so the row names the

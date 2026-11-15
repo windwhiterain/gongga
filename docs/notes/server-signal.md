@@ -31,7 +31,7 @@ the server is answered from the log, and a signal has no client to name.
 ## A second ask is the user insisting
 
 The first ask interrupts every turn's token and pulls the shutdown, so
-`net::serve` leaves without waiting for `active` to drain. A second ask still
+`net::serve` leaves without waiting for running turns to finish. A second ask still
 leaves at once with exit code 130, for a process whose turn ignored the token or
 whose console is owned by something that will not yield. The `server_stop` row is
 already written by the first ask, and no work is kept for the next start.
