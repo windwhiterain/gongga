@@ -507,11 +507,17 @@ impl Panes {
             return;
         }
         let mut gone = 0;
-        if self.scroll_of(window) > keep {
+        let below = self.scroll_of(window);
+        if below > keep {
             // The rows below the pane go first: a window scrolled this far into the
             // past is not following the session, so what it is over its budget by is
             // the newest end -- the rows the operator pages for on the way back down.
-            gone += self.log.trim_newest(window, keep + height);
+            // What went is the pane's own measure: the same rows are still on screen.
+            let dropped = self.log.trim_newest(window, below, keep);
+            if let Some(pane) = self.panes.iter_mut().find(|pane| pane.name == window) {
+                pane.scroll = pane.scroll.saturating_sub(dropped);
+            }
+            gone += dropped;
         }
         let scroll = self.scroll_of(window);
         // Then the rows above it, down to what the reader has scrolled through plus

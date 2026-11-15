@@ -82,7 +82,13 @@ struct Entry {
     fold: Vec<String>,
     /// Where this block sits among the blocks of its own window.
     at: usize,
-    /// The transcript row this block's rows came from: its window's own coordinate.
+    /// The first and newest transcript rows this block's rows came from.
+    ///
+    /// # Invariant
+    ///
+    /// A block spans rows: `from` is where it began and `seq` where the last row
+    /// drawn into it was, so the two ends of a window are both facts and neither is
+    /// inferred from the other. `from` is stamped once, when the block is made.
     ///
     /// # Invariant
     ///
@@ -91,6 +97,7 @@ struct Entry {
     /// newest number drawn into it, so a window's held range ends where its sink
     /// last was. See `docs/notes/tui-log.md`.
     seq: i64,
+    from: i64,
 }
 
 impl Entry {
@@ -120,6 +127,7 @@ impl Entry {
             fold: Vec::new(),
             at: 0,
             seq: 0,
+            from: 0,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
         if width > 0 {
@@ -826,17 +834,26 @@ impl Log {
             .get(window)?
             .blocks
             .first()
-            .map(|at| self.entries[*at].seq)?;
+            .map(|at| self.entries[*at].from)?;
         (oldest > 0 && newest >= oldest).then_some((oldest, newest))
     }
 
     /// Stamps block `at` with the row its window's sink is on.
+    ///
+    /// # Invariant
+    ///
+    /// A block that already began keeps where it began: only a block made now takes
+    /// the row as its `from`, and every write moves its newest row.
     fn stamp_block(&mut self, at: usize) {
         let window = self.entries[at].window.clone();
         let seq = self.stamps.get(window.as_ref()).copied().unwrap_or(0);
-        if seq > 0 {
-            self.entries[at].seq = seq;
+        if seq == 0 {
+            return;
         }
+        if self.entries[at].from == 0 {
+            self.entries[at].from = seq;
+        }
+        self.entries[at].seq = seq;
     }
 
     /// Drops the oldest blocks of one window that `budget` rows no longer cover.
@@ -868,41 +885,50 @@ impl Log {
         self.drop_blocks(dropping)
     }
 
-    /// Drops the newest blocks of one window that `budget` rows no longer cover,
-    /// and answers the rows that went.
+    /// Drops the newest blocks of one window that lie entirely in the `below` rows
+    /// past its pane, and answers the rows that went.
     ///
     /// # Invariant
     ///
     /// The other end of [`Log::trim`]: a window that has stopped following a
-    /// session keeps the rows below its pane down to `budget`, and the operator
-    /// pages for the rest. The last block is never dropped, and neither is one
+    /// session keeps the rows below its pane down to one margin, and the operator
+    /// pages for the rest. A block is dropped whole or not at all: one the pane is
+    /// drawing stays, however far past the margin it reaches, and the pane's own
+    /// scroll is corrected by exactly what went. The last block is never dropped, and neither is one
     /// still streaming -- its later chunks would have no block to land in -- so
     /// what goes is history behind the newest row, never where the session is.
     /// The window's stamp moves down with it: the row the sink last said is a row
     /// this window no longer has. See `docs/notes/tui-log.md`.
-    pub fn trim_newest(&mut self, window: &str, budget: usize) -> usize {
+    pub fn trim_newest(&mut self, window: &str, below: usize, margin: usize) -> usize {
         let dropping = {
             let Some(ledger) = self.views.get(window) else {
                 return 0;
             };
-            if budget == 0 || ledger.index.total() <= budget || ledger.blocks.len() < 2 {
+            let want = below.saturating_sub(margin);
+            if want == 0 || ledger.blocks.len() < 2 {
                 return 0;
             }
             let cap = ledger.cap;
             let block_size = self.block_size;
-            let mut total = ledger.index.total();
+            let mut gone = 0;
             let mut dropping: Vec<usize> = Vec::new();
             for &at in ledger.blocks.iter().rev() {
                 // One block, and one still streaming, are what a window is: the
                 // rest of the newest end is history behind it.
-                if total <= budget || dropping.len() + 1 >= ledger.blocks.len() {
+                if gone >= want || dropping.len() + 1 >= ledger.blocks.len() {
                     break;
                 }
                 let entry = &self.entries[at];
                 if !entry.sealed {
                     break;
                 }
-                total = total.saturating_sub(entry.visible(room(entry.kind, cap, block_size)));
+                let rows = entry.visible(room(entry.kind, cap, block_size));
+                // A block the pane is drawing is not history: a window that cut it
+                // in half would drop the rows the operator is reading.
+                if gone + rows > below {
+                    break;
+                }
+                gone += rows;
                 dropping.push(at);
             }
             dropping
@@ -1117,9 +1143,12 @@ impl Log {
         };
         // A page says where each of its rows came from: the number travels with
         // the row, or a window could not say what it holds.
-        entry.seq = match row {
-            PastRow::Line { seq, .. } | PastRow::Block { seq, .. } => *seq,
+        let (seq, from) = match row {
+            PastRow::Line { seq, .. } => (*seq, *seq),
+            PastRow::Block { seq, from, .. } => (*seq, *from),
         };
+        entry.seq = seq;
+        entry.from = from;
         // A page is what already happened: nothing of it streams in later.
         entry.sealed = true;
         entry

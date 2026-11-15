@@ -707,6 +707,7 @@ impl Sink for Page {
         } else {
             self.rows.push(PastRow::Block {
                 seq: self.seq,
+                from: self.seq,
                 key: key.to_string(),
                 kind,
                 tag: tag.to_string(),

@@ -244,6 +244,8 @@ pub enum PastRow {
     Block {
         /// The newest transcript row drawn into this block.
         seq: i64,
+        /// The first one: a block spans rows, and a window states both ends.
+        from: i64,
         key: String,
         kind: LineKind,
         tag: String,
