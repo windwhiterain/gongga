@@ -79,7 +79,10 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
 fn cells(row: &str) -> Vec<String> {
     let inner = row.strip_prefix('|').unwrap_or(row);
     let inner = inner.strip_suffix('|').unwrap_or(inner);
-    inner.split('|').map(|cell| cell.trim().to_string()).collect()
+    inner
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
 }
 
 /// The alignments an `|:--|--:|` row states, or nothing when the row is not one.
@@ -118,13 +121,20 @@ enum Align {
 const MIN_COLUMN: usize = 3;
 
 /// `header`, its alignment row and `body` as rows that fit `width` columns.
-fn table(header: &[String], aligns: &[Align], body: &[Vec<String>], width: usize) -> Vec<Vec<DocumentSpan>> {
+fn table(
+    header: &[String],
+    aligns: &[Align],
+    body: &[Vec<String>],
+    width: usize,
+) -> Vec<Vec<DocumentSpan>> {
     let columns = header.len().max(1);
     let mut widths: Vec<usize> = (0..columns)
         .map(|column| {
             let mut widest = text_width(header.get(column).map(String::as_str).unwrap_or(""));
             for row in body {
-                widest = widest.max(text_width(row.get(column).map(String::as_str).unwrap_or("")));
+                widest = widest.max(text_width(
+                    row.get(column).map(String::as_str).unwrap_or(""),
+                ));
             }
             widest.max(MIN_COLUMN)
         })
@@ -144,7 +154,10 @@ fn table(header: &[String], aligns: &[Align], body: &[Vec<String>], width: usize
     }
     let mut out: Vec<Vec<DocumentSpan>> = Vec::new();
     out.push(compose(header, &widths, aligns, SpanClass::Heading));
-    out.push(vec![DocumentSpan::of(rule(&widths, aligns), SpanClass::Marker)]);
+    out.push(vec![DocumentSpan::of(
+        rule(&widths, aligns),
+        SpanClass::Marker,
+    )]);
     for row in body {
         out.push(compose(row, &widths, aligns, SpanClass::Text));
     }
@@ -152,7 +165,12 @@ fn table(header: &[String], aligns: &[Align], body: &[Vec<String>], width: usize
 }
 
 /// One table row: the pipe, then each cell padded to its column.
-fn compose(row: &[String], widths: &[usize], aligns: &[Align], class: SpanClass) -> Vec<DocumentSpan> {
+fn compose(
+    row: &[String],
+    widths: &[usize],
+    aligns: &[Align],
+    class: SpanClass,
+) -> Vec<DocumentSpan> {
     let mut spans: Vec<DocumentSpan> = vec![DocumentSpan::of("|", SpanClass::Marker)];
     for (column, width) in widths.iter().enumerate() {
         let text = row.get(column).map(String::as_str).unwrap_or("");
@@ -165,7 +183,10 @@ fn compose(row: &[String], widths: &[usize], aligns: &[Align], class: SpanClass)
         };
         spans.push(DocumentSpan::of(" ".repeat(before + 1), class));
         spans.push(DocumentSpan::of(body, class));
-        spans.push(DocumentSpan::of(format!("{}{}", " ".repeat(after), " |"), SpanClass::Marker));
+        spans.push(DocumentSpan::of(
+            format!("{}{}", " ".repeat(after), " |"),
+            SpanClass::Marker,
+        ));
     }
     spans
 }
