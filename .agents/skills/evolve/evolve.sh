@@ -124,9 +124,13 @@ disk_line() {
 clean_build_tree() {
   local before after
   before="$(df -h "$ROOT" 2>/dev/null | tail -n 1 | awk '{print $4}')"
-  # CARGO_TARGET_DIR would send this somewhere else; the tree that grows is the
-  # default one at $ROOT/target.
-  if ! ( cd "$ROOT" && CARGO_TARGET_DIR= cargo clean ) >/dev/null 2>&1; then
+  # Unsetting CARGO_TARGET_DIR is the point: set, it sends the build somewhere
+  # else, while the tree that grows is the default one at $ROOT/target. An empty
+  # assignment no longer does it -- cargo 1.98 reads it as a configured empty
+  # path and exits 101 without cleaning anything -- so the variable is removed
+  # instead. Under mbx that path is a symlink to a managed target, and the tree
+  # is restored from the shared cache rather than recompiled.
+  if ! ( cd "$ROOT" && env -u CARGO_TARGET_DIR cargo clean ) >/dev/null 2>&1; then
     echo "evolve: cargo clean failed; keeping the tree and carrying on"
     return 0
   fi
@@ -279,7 +283,7 @@ while :; do
     # busy until it exits. This is the one moment when it is not.
     if [ "$CLEAN" = 1 ]; then
       echo "evolve: cargo clean before taking the home"
-      CARGO_TARGET_DIR= cargo clean || echo "evolve: cargo clean failed; carrying on"
+      env -u CARGO_TARGET_DIR cargo clean || echo "evolve: cargo clean failed; carrying on"
     fi
     # The successor runs in the directory the old server ran in, not in the home:
     # that inherited directory is what a new session with no `--cwd` opens in
