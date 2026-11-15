@@ -336,8 +336,10 @@ the one the live stream sealed), `log` for a notice or the prompt in force -- th
 harness talking to the reader, which `error` already sends that way. A row with nothing
 to show sends nothing.
 
-The result keeps `session`, `status` and `last_seq` and drops the rows, so there is one
-way to get a row rather than two. `last_seq` stays because a poller advances its cursor
+A *connection's* result keeps `session`, `status` and `last_seq` and drops the rows, so
+there is one way to get a row rather than two. A caller with no connection -- an agent's
+`gongga_cli` tool call -- has nowhere else to read them, so its own result carries them
+(`server-tools-mod.md`). `last_seq` stays because a poller advances its cursor
 with it, and the snapshot rule -- rows, status and end from one read -- still holds.
 
 ## get_messages --range

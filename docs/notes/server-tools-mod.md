@@ -48,6 +48,22 @@ the ones the call stated (`words_of`), because SPEC's `args` is `dict[str, any]`
 value is never its text. Anything else is refused by name rather than guessed at: a
 route that ran a command the call did not mean would be read as a success.
 
+## the rows a connection would have been sent
+
+A server cmd's answer can be made of rows: `get_messages` and `events` return one event
+per stored row, and `net.rs` writes them to the asking connection before the result. An
+agent's tool call has no connection, so `run_command` puts the same rows in its own
+result instead, under `events`, as `{"seq": n, "event": {...}}`: the event and its
+number, never a rendering of it, so a model that parses them and a window that draws
+them are reading one shape. The field is absent when the answer had no rows, which is
+most commands.
+
+It is not a second way for a client: a client's `cmd_result` still carries only `data`,
+and its rows still arrive as `row` messages. It is the first way for the caller that had
+none -- without it `get_messages` answered a model with "N row(s) at seq 1..40" and no
+row at all, so a parent driving a subagent could not read what the child had said, nor
+why its last turn died.
+
 ## Descriptions point at `bash` instead of repeating it
 
 Every tool's description rides every request, so a sentence said twice is paid on
