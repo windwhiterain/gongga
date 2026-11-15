@@ -29,12 +29,15 @@ public partial class MainWindow : Window
     private List<(string Window, int Rows)> _rooms = new();
     private List<(string Window, int Columns)> _columns = new();
 
-    /// One row of the body's own face, laid out to find the advance of a character:
-    /// a width guessed one pixel wide is a row clipped at the pane's edge.
+    /// A block's own horizontal padding, in pixels.
     private const double BlockPadding = 12;
-    private readonly TextBlock _ruler = new()
+
+    /// One row drawn by the body's own control, laid out to find the advance of a
+    /// character: measured on anything else it is a column of error, and every column
+    /// of it is a word broken at the pane's edge.
+    private readonly Views.SpanLine _ruler = new()
     {
-        Text = "0123456789",
+        Spans = [new SpanItem("0123456789", "text")],
         FontFamily = new global::Avalonia.Media.FontFamily("Consolas, Cascadia Mono, monospace"),
         FontSize = 13,
     };

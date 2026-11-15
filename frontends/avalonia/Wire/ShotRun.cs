@@ -97,7 +97,11 @@ public static class ShotRun
         var opened = Blocks(window, "beta");
         Capture(window, Path.Combine(directory, "03-session-opened.png"));
         Fact("one pane opened", model.Panes.Count == 1, $"{model.Panes.Count}");
-        Fact("history refilled", opened >= 5, $"{opened} blocks");
+        // What the fact is about is that the transcript came back and is taller than
+        // the pane -- how many blocks the client made one turn into is its business.
+        Fact("history came back",
+            opened >= 1 && viewer is not null && viewer.Extent.Height > viewer.Viewport.Height,
+            $"{opened} blocks, {Scroller(viewer)}");
         Fact("capacity reported", Wire.Any(line => line.Contains("\"intent\":\"room\"")),
             Wire.FirstOrDefault(line => line.Contains("\"intent\":\"room\"")) ?? "never sent");
         var shortRoom = RowsFor(Wire.FirstOrDefault(line => line.Contains("\"intent\":\"room\"")), "beta");
