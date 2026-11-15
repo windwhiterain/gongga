@@ -157,7 +157,7 @@ created=$("${cli[@]}" '{"name":"set_session","args":{"id":"reader","model":"fake
 ok "a session stands in the checkout that holds the three skills" $?
 
 # (a) the package runs, and what it answers is what it printed
-out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"project/pkg","session":"reader","cmd":{"name":"probe","args":{"text":"hello"}}}}' 2>&1)
+out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"pkg","session":"reader","cmd":{"name":"probe","args":{"text":"hello"}}}}' 2>&1)
 say "$out"
 [[ "$out" == *"pkg:hello|"* && "$out" == *"[exit status 0]"* ]]
 ok "a package's function is called with keyword arguments and its output returned" $?
@@ -173,14 +173,14 @@ imported=1
 ok "the package imports gongga from this home's lib/" $imported
 
 # (b) a body is refused: one sentence naming the package to make, and the SKILL.md it read
-out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"project/body","session":"reader","cmd":{"name":"anything","args":{}}}}' 2>&1)
+out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"body","session":"reader","cmd":{"name":"anything","args":{}}}}' 2>&1)
 say "$out"
 [[ "$out" == *"only as a Python call"* && "$out" == *"__init__.py"* && "$out" == *"SKILL.md"* && "$out" != *"pkg:"* ]]
 ok "a body is refused, naming the package to make and the SKILL.md it read" $?
 
 # (c) a declared entry is refused the same way: no code of this build reads the declaration,
 # so the file it names is not run either.
-out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"project/entryonly","session":"reader","cmd":{"name":"anything","args":{}}}}' 2>&1)
+out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"entryonly","session":"reader","cmd":{"name":"anything","args":{}}}}' 2>&1)
 say "$out"
 [[ "$out" == *"only as a Python call"* && "$out" == *"__init__.py"* && "$out" == *"SPEC"* && "$out" != *"entry-ran"* ]]
 ok "a declared entry is refused, naming the package that would run instead" $?

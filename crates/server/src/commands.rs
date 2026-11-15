@@ -936,17 +936,18 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             target: CommandTarget::Server,
             name: "ls_skill".into(),
             description: "List the skills a session can open, one row per skill, under \
-                      `path`. A skill's path is `<bucket>/<name>`: `project` for the 
-                      checkout's own, `harness` for the home's, `general` for the 
-                      machine's. A path names a subtree, so `ls_skill harness` is every 
+                      `path`. A row's `id` is the skill's own name, and `bucket` says \
+                      which root it came from: `project` for the checkout's own, `harness` \
+                      for the home's, `general` for the machine's. A path is either a \
+                      skill's name or a bucket's word, so `ls_skill harness` is every \
                       skill the home installed and no path is every skill there is."
                 .into(),
             args: vec![
                 pos(
                     "path",
-                    "Where to look, as the beginning of a skill's path: `harness`, \
-                     `harness/self-control`, or nothing for all of them. Matched by 
-                     component, so `har` matches no bucket.",
+                    "Where to look: a skill's name, or a bucket's word (`harness`, `general`, \
+                     `project`), or nothing for all of them. Matched by component, so `har` \
+                     matches nothing.",
                     false,
                     Some("path"),
                     CompletionSource::None,
@@ -977,7 +978,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             args: vec![
                 pos(
                     "id",
-                    "The skill to run, as `ls_skill` spells it: `<bucket>/<name>`.",
+                    "The skill to run, as `ls_skill` spells it: its name, and nothing above it.",
                     true,
                     Some("path"),
                     CompletionSource::None,
@@ -2683,8 +2684,9 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
 /// # Invariant
 ///
 /// One walk: the same `installed_for` that `run_skill` and `@skill(...)` read, so a
-/// path this lists is a path `run_skill` takes. `path` is matched by component
-/// (`under`), which is what makes `harness` a subtree and `har` nothing.
+/// name this lists is a name `run_skill` takes. `path` is a bucket's own word or a
+/// skill's name, matched by component (`under`): `harness` is every skill the home
+/// installed, `har` is nothing, and a nested skill answers to the directories under it.
 async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let session = match caller_session("ls_skill", args, caller) {
         Ok(session) => session,
@@ -2695,12 +2697,12 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let listed: Vec<serde_json::Value> =
-        crate::tools::skill::installed_for(&handle.cwd(), handle.owner())
-            .iter()
-            .filter(|skill| under(&skill.id(), &path))
-            .map(crate::tools::skill::row)
-            .collect();
+    let installed = crate::tools::skill::installed_for(&handle.cwd(), handle.owner());
+    let listed: Vec<serde_json::Value> = installed
+        .iter()
+        .filter(|skill| under(&skill.id(), &path) || under(skill.bucket.as_str(), &path))
+        .map(crate::tools::skill::row)
+        .collect();
     if listed.is_empty() {
         return Outcome::ok(format!("{session}: no skill matches {path:?}"));
     }
@@ -2712,8 +2714,9 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
 /// # Invariant
 ///
 /// SPEC's `## Python Cmd`, and the one runner there is: the id is resolved here, because
-/// a path names one root where a name may name two, and what a skill *is* is decided in
-/// one place, [`skill::Skills::run`].
+/// a name two roots spell is two skills, and what a skill *is* is decided in
+/// one place, [`skill::Skills::run`]. The name answers with the most specific row, the
+/// same one `@skill(...)` reads.
 async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let session = match caller_session("run_skill", args, caller) {
         Ok(session) => session,
@@ -2725,9 +2728,10 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let installed = crate::tools::skill::installed_for(&handle.cwd(), handle.owner());
-    let Some(skill) = installed.iter().find(|skill| skill.id() == id) else {
-        let known: Vec<String> = installed.iter().map(|skill| skill.id()).collect();
+    let roots = crate::tools::skill::session_roots(&handle.cwd(), handle.owner());
+    // One resolver, and the walk behind it is `ls_skill`'s.
+    let Some(skill) = roots.at(&id) else {
+        let known: Vec<String> = roots.all().iter().map(|skill| skill.id()).collect();
         return Outcome::err(format!(
             "no skill is {id:?} here; `ls_skill` lists {}",
             if known.is_empty() {
@@ -2748,7 +2752,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(ctx) => ctx,
         Err(why) => return Outcome::err(why),
     };
-    let outcome = skills.run(skill, cmd, &ctx).await;
+    let outcome = skills.run(&skill, cmd, &ctx).await;
     match outcome.ok {
         true => Outcome::ok(outcome.output),
         false => Outcome::err(outcome.output),

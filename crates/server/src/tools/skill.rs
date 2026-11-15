@@ -201,15 +201,26 @@ fn call_of(cmd: Option<&Value>) -> Result<Call, String> {
     })
 }
 
+/// The three roots a session standing on `machine` in `cwd` reads.
+///
+/// # Invariant
+///
+/// One construction: the walk ([`installed_for`]) and the path resolver (`Roots::at`)
+/// come from the same three directories, so a name this lists is a name that resolves.
+/// The project layer is the checkout's, so a session whose directory is on a remote is
+/// handed the home's and the machine's rows. See `docs/notes/server-tools-skill.md`.
+pub fn session_roots(cwd: &Path, machine: Machine) -> skill::Roots {
+    roots((machine == Machine::Local).then_some(cwd))
+}
+
 /// Every skill a session standing on `machine` in `cwd` can open.
 ///
 /// # Invariant
 ///
-/// One walk, shared with the command layer and with `@skill(...)`: the project layer
-/// is the checkout's, so a session whose directory is on a remote is handed the home's
-/// and the machine's rows. See `docs/notes/server-tools-skill.md`.
+/// One walk, shared with the command layer and with `@skill(...)`: a name this lists is
+/// a name `run_skill` takes. See `docs/notes/server-tools-skill.md`.
 pub fn installed_for(cwd: &Path, machine: Machine) -> Vec<Skill> {
-    roots((machine == Machine::Local).then_some(cwd)).all()
+    session_roots(cwd, machine).all()
 }
 
 /// The same three roots, for a caller with no session to stand in a project root.
@@ -230,7 +241,8 @@ pub fn roots(project: Option<&Path>) -> skill::Roots {
 ///
 /// `id` is `skill::Skill::id` and nothing else: `ls_skill` filters a `path` against it
 /// and `run_skill` hands it back unchanged, so the row a reader copies is the word the
-/// call takes.
+/// call takes. The bucket is a field beside it rather than part of it, so a row says
+/// where a skill came from without the call having to spell it.
 pub(crate) fn row(skill: &Skill) -> Value {
     json!({
         "id": skill.id(),

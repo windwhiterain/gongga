@@ -238,7 +238,7 @@ ok "0 the parent's head is stamped with its first message's references: $rooted"
 # SPEC's subagent skill publishes `self_config()` and `new_subagent(config, role)`: a
 # child's settings are the caller's own row with the keys it varies set on it, so the
 # test reads that row first instead of spelling a SessionConfig by hand.
-subagent() { "${cli[@]}" '{"name":"run_skill","args":{"session":"'"$1"'","id":"harness/subagent","cmd":'"$2"'}}'; }
+subagent() { "${cli[@]}" '{"name":"run_skill","args":{"session":"'"$1"'","id":"subagent","cmd":'"$2"'}}'; }
 base=$(subagent probe '{"name":"self_config"}' 2>"$work/self-config.err" | answer)
 [[ -n "$base" ]] || hard "self_config read nothing: $(head -1 "$work/self-config.err")"
 config=$(python - "$base" "$(native "$project")" <<'INNER'
@@ -433,10 +433,10 @@ ok "M the child's turn end interrupts it: '$last'" $?
 here=$("${cli[@]}" '{"name":"ls_skill","args":{"session":"probe"}}' 2>/dev/null)
 [[ "$here" == *"subagent"* && "$here" == *"SKILL.md"* ]]
 ok "I ls_skill names the subagent, and the SKILL.md the package sits beside: $(printf '%s' "$here" | head -c 160)" $?
-asked=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":"no_such_function"}}' 2>&1)
+asked=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"subagent","cmd":"no_such_function"}}' 2>&1)
 [[ "$asked" == *"publishes: self_config, new_subagent"* ]]
 ok "I the package publishes what it names: self_config and new_subagent" $?
-wrong=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"harness/subagent","cmd":{"name":"new_subagent"}}}' 2>&1)
+wrong=$("${cli[@]}" '{"name":"run_skill","args":{"session":"probe","id":"subagent","cmd":{"name":"new_subagent"}}}' 2>&1)
 [[ "$wrong" == *"new_subagent(config"*"needs config"* ]]
 ok "I and calling it without a config is refused with its signature" $?
 
