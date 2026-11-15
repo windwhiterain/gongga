@@ -62,20 +62,40 @@ live home（`~/.gongga`）现在挂着 4 个 `gongga-relay.exe`，**行没了、
 `sweep` 删目录但不动进程。**这类进程只能靠 pid 收**，而 pid 只在 `status` 里、
 `status` 又只在这个目录里。
 
-## 修法（未做，等指令）
+## 修法：已做（`0c7553de`）
 
-`keep_alive` 应该是**行上的一个状态**，不是 `cancel` 一个瞬间的参数：
+`keep_alive` 现在是**行上的一个状态**，不是 `cancel` 一个瞬间的参数：
 
-- `channels` 表加一列（如 `kept_at`），`cancel{keep_alive}` 写它；
-- `stop_every` 只对**没有** `kept_at` 的行写 `kill`；`cancel{keep_alive:true}` 之后的
-  默认 stop 不再收走它们；
-- `stop_every` 删行之前先收 relay（`disarm_detached` / `kill_tree`），否则就留下孤儿。
+| 列 | 作用 |
+| --- | --- |
+| `detached` | `cancel(keep_alive)` 写 1；`stop_every` 跳过带它的行；继任者 adopt 后清 0 |
+| `relay_pid` | relay 自己的 pid（不是 `pid`，那个是**程序**的） |
+| `relay_started_at` | 那个 relay 的启动时间，adopt 前先核对，防 pid 被回收 |
 
-这是 SPEC 层的语义决定（`cancel` 的 `keep_alive` 现在是一次性的），按规矩要先过
-justice/advisor，不该我直接改。
+后两列是必须的：行上的 `pid` 是程序的，只拿它无法找到 relay——程序没了能看出来，
+relay 却无法 adopt。没有它们，`keep_alive` 就只是「让这一行留着」。
+
+实测（`.dev/keepalive-check/check2.sh`，隔离 home）：
+
+| 步骤 | program | relay | 结果 |
+| --- | --- | --- | --- |
+| `cancel{keep_alive}` × 3 轮，每轮后重启 | ALIVE | ALIVE | 每轮都答话 |
+| adopt 之后的默认 `cancel` | gone | — | `1 channel(s) ended with this server` |
+
+最后一行**不是** bug：adopt 之后 flag 已清，这个 channel 就是本 server 的了，
+默认 `cancel` 收走它——这是 SPEC 的默认，也是 11-12 的判决（关窗口就关掉它拥有的）。
+flag 只管**换手那一段**。
+
+## 仍未查完的
+
+- **孤儿 relay**：`stop_every` 删行之前不收 relay，于是留下一批「行没了、目录在、
+  程序没了」的 relay（live home 现在有 4 个）。本次改动让带 flag 的行不再被误删，
+  但**不带 flag**的行走到 `stop_every` 时仍会留下孤儿。这是独立的一处。
+- **remote channel**：本 side 没有 relay 的句柄，所以 `adopt_kept` 对它是 no-op。
+  你说的「本地 relay 持远端进程」是另一条路，单独谈。
 
 ## 验证脚本
 
-`.dev/keepalive-verify/`（跑完自删）：`moment.sh` 是两个 cancel 的对比，
-`adopt.sh` 是「adopted 的 relay 也活」，`kill.sh` 是不走 cancel 的 kill。
-三条都是隔离 home + 内核分配端口 + 显式 key，不碰 `~/.gongga`。
+`.dev/keepalive-check/`（跑完自删）：`check2.sh` 是三轮换手 + 一次默认 cancel，
+隔离 home + 内核分配端口 + 显式 key，不碰 `~/.gongga`。
+（早期探过 `.dev/keepalive-verify/`，已删。）
