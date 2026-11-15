@@ -1671,19 +1671,21 @@ fn document_span(span: &client::render_wire::DocumentSpan) -> Span<'static> {
     use ratatui::style::{Color, Modifier};
     // SPEC draws an answer in the brightest ink it has.
     let base = Style::default().fg(Color::White);
+    // # Invariant
+    //
+    // A body is drawn in the brightest ink there is, and the only other ink is the
+    // grey a mark is quiet in. No dark hue: a dark blue on a dark background is a
+    // document whose shape has to be guessed, and weight, slant and rule already
+    // say what a run is.
     let style = match span.class {
         SpanClass::Text => base,
-        // A heading is a kind of its own, not a bold word: it takes the accent the
-        // chrome already uses, so a document has more than one ink again.
-        SpanClass::Heading => Style::default()
-            .fg(Color::LightCyan)
-            .add_modifier(Modifier::BOLD),
+        SpanClass::Heading => base.add_modifier(Modifier::BOLD),
         SpanClass::Strong => base.add_modifier(Modifier::BOLD),
         SpanClass::Emphasis => base.add_modifier(Modifier::ITALIC),
         SpanClass::Strike => base.add_modifier(Modifier::CROSSED_OUT),
-        SpanClass::Code => Style::default().fg(Color::LightBlue),
+        SpanClass::Code => base,
         SpanClass::Marker => Style::default().fg(Color::DarkGray),
-        SpanClass::Link => Style::default().fg(Color::Cyan),
+        SpanClass::Link => base.add_modifier(Modifier::UNDERLINED),
     };
     Span::styled(span.text.clone(), style)
 }
