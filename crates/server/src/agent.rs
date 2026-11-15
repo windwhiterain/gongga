@@ -1540,13 +1540,8 @@ impl Agent {
             0 => capped.clone(),
             _ => String::new(),
         };
-        // A checkpoint artifact is exactly the agent's summary, not a timing annotation.
-        let mut output = if compacting {
-            outcome.output.clone()
-        } else {
-            // The model is shown no head and no label, so the time ends the text it reads.
-            with_time(capped, run_ms)
-        };
+        // What the tool said: the duration rides the head, not the text. `server-agent.md`.
+        let mut output = capped;
         drop(ctx);
         // A shell on an endpoint starts in a directory only that endpoint knows.
         session.adopt_reported_cwd();
@@ -2326,21 +2321,6 @@ pub(crate) fn spent(millis: u64) -> String {
     match millis {
         0..1000 => format!("{millis}ms"),
         _ => format!("{:.1}s", millis as f64 / 1000.0),
-    }
-}
-
-/// A call's output as the model receives it: what the tool said, then how long it took.
-///
-/// # Invariant
-///
-/// The same text is stored, so a read shows the line the run produced and the model's
-/// next request carries the number. See `docs/notes/server-agent.md`.
-fn with_time(output: String, run_ms: u64) -> String {
-    let note = format!("[elapsed {}]", spent(run_ms));
-    if output.is_empty() || output.ends_with('\n') {
-        format!("{output}{note}")
-    } else {
-        format!("{output}\n{note}")
     }
 }
 
