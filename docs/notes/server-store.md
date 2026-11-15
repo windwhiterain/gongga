@@ -74,6 +74,11 @@ One row's answer to "what do I send": a standard Responses input item, computed 
 the row is written and stored beside the payload the reader reads. A request writes
 those bytes and parses none of them, which is what lets it stream.
 
+`error` is the one row of the harness's own prose that is sent *as a failure*: a `user`
+turn whose text is `harness_wrap`ped on the way in, because a session that failed has to
+read why on its next step, and an agent reading the transcript has to find it there
+rather than in a notice nothing is built from. See `server-agent.md`.
+
 `None` is not "no item yet" but "no request is built from this row": a notice, the
 prompt in force, a reasoning entry whose encrypted blob was never recorded, a
 provider tool item whose payload could not be kept. Deciding that at write time is why
@@ -363,8 +368,8 @@ replay the same bytes as the attempt it follows. Without it, a row landing
 mid-request would make attempt two send a longer transcript than attempt one --
 and a retry that is not the same request is not a retry.
 
-A notice is written for the operator, not for the model: it explains why a turn
-stopped. Feeding it back would put our own bookkeeping in the transcript the
+A notice is written for the operator, not for the model: it records what the harness
+did. Feeding it back would put our own bookkeeping in the transcript the
 provider sees, and make the model answer questions nobody asked. That is decided
 where the row is written (`wire_item`), not here, so the walk has no drop rules
 of its own.
@@ -595,9 +600,10 @@ every later turn. The transcript closes the call on the way out instead.
 
 ## a_notice_is_readable_but_never_sent_back_to_the_model
 
-A notice explains a stopped turn to the operator. It belongs in the transcript
-they read and must not leak into the request the model sees, or the model ends up
-replying to the harness instead of the user.
+A notice records what the harness did. It belongs in the transcript the operator reads
+and must not leak into the request the model sees, or the model ends up replying to the
+harness instead of the user. A *failure* is not a notice: it is an `error` row, which is
+sent on purpose -- see `server-agent.md`.
 
 ## the_report_reads_the_schema_so_a_tool_does_not
 

@@ -3707,6 +3707,7 @@ pub(crate) enum Kind {
     Notice,
     ThinkingMark,
     Inject,
+    Error,
     System,
     Tools,
     BuiltinCall,
@@ -3723,6 +3724,7 @@ impl Kind {
             Kind::Notice => "notice",
             Kind::ThinkingMark => "thinking_mark",
             Kind::Inject => "inject",
+            Kind::Error => "error",
             Kind::System => "system",
             Kind::Tools => "tools",
             Kind::BuiltinCall => "builtin_call",
@@ -3740,6 +3742,7 @@ impl Kind {
             "notice" => Some(Kind::Notice),
             "thinking_mark" => Some(Kind::ThinkingMark),
             "inject" => Some(Kind::Inject),
+            "error" => Some(Kind::Error),
             "system" => Some(Kind::System),
             "tools" => Some(Kind::Tools),
             "builtin_call" => Some(Kind::BuiltinCall),
@@ -3784,8 +3787,8 @@ impl MessageRow {
                 row.ok = value.get("ok").and_then(|v| v.as_bool());
                 row.elapsed_ms = value.get("elapsed_ms").and_then(|v| v.as_u64());
             }
-            // The harness talking to the reader: no role, no answer in the model's mouth.
-            Some(Kind::Notice | Kind::ThinkingMark | Kind::Inject) => {
+            // The harness talking: a notice to the reader alone, an error to both.
+            Some(Kind::Notice | Kind::ThinkingMark | Kind::Inject | Kind::Error) => {
                 row.text = str_of("text").unwrap_or_default()
             }
             // The reader sees which prompt was in force, not 10k characters of it.
@@ -3872,6 +3875,11 @@ fn wire_item(kind: Kind, value: &serde_json::Value) -> Option<serde_json::Value>
                 json!({"role": role, "content": text_of("text")})
             })
         }
+        // Sent as well as shown: the session that failed reads why. `server-agent.md`.
+        Kind::Error => Some(json!({
+            "role": "user",
+            "content": crate::prompts::harness_wrap(text_of("text")),
+        })),
         Kind::Reasoning => {
             // Byte for byte, never rebuilt; see `docs/notes/server-store.md`.
             if let Some(item) = value.get("item").filter(|item| item.is_object()) {

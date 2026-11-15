@@ -189,6 +189,7 @@ impl Transcript {
             }
             Some(
                 Kind::Reasoning
+                | Kind::Error
                 | Kind::Notice
                 | Kind::ThinkingMark
                 | Kind::System

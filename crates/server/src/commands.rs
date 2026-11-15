@@ -3186,6 +3186,14 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
     if row.text.trim().is_empty() {
         return None;
     }
+    // A failure: the session's own line, on the wire and on replay. `server-agent.md`.
+    if row.kind == "error" {
+        return Some(Event::Log {
+            level: LogLevel::Error,
+            message: row.text.clone(),
+            session: Some(name.to_string()),
+        });
+    }
     // The harness's own words: a row the model reads as a user turn, drawn as the
     // harness rather than as the operator.
     if row.kind == "inject" {
