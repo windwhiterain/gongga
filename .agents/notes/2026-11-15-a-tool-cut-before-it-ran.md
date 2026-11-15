@@ -39,7 +39,7 @@ two.
 
 ## Verified
 
-- `cargo build` exit 0, 40 warnings and none new (the one near this code is
+- `cargo build` exit 0, 39 warnings and none new (the one near this code is
   `session.rs:1418`, which predates the change); `cargo fmt --check` exit 0.
 - `cargo test -p gongga-server --lib`: 28 passed, 0 failed.
 - `comments-check`: agent.rs 4 -> 4 and tools/mod.rs 5 -> 5 violations, so the two
