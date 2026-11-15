@@ -554,6 +554,24 @@ a cut: it must ask for `turn_interrupted` too, or read the session's status. The
 monitor's own query is unaffected: it reads `turn_end` for `origin = provider`,
 which is a failure, and a failure still ends the turn.
 
+## a_failure_states_its_reason_in_the_context
+
+A failed turn writes two rows: a `notice`, which is what a reader sees and no
+request is built from, and an injection holding the same sentence, which is sent.
+
+The notice alone left the reason outside the context. The session's next step
+resumed as if nothing had happened -- a provider that refused the answer it was
+generating, a key at its limit, a stream that never finished: none of it reached
+the model, so it could neither avoid the cause nor say what went wrong. The
+parent of a subagent has the same problem one level up: it drives the child by
+sending a message, and a child whose context never learned why its last turn
+died answers as though the work had been going on.
+
+So the sentence is written twice, deliberately: the notice is the reader's record
+of the failure, and the injection is the model's. The prose is not in this binary
+either -- the injection is the same formatted sentence, wrapped by `harness_wrap`,
+so a home that carries no new prompt still states the reason.
+
 ## a_request_records_what_it_cost_and_how_long
 
 The `usage` row carries the step it belonged to and the wall time the stream

@@ -1900,6 +1900,15 @@ impl Agent {
             self.store
                 .append_message(id, Kind::Notice, &json!({"text": said})),
         );
+        // Also context, not only the notice: nothing is built from one. `docs/notes/server-agent.md`.
+        self.announce_row(
+            session,
+            self.store.append_message(
+                id,
+                Kind::Inject,
+                &json!({"role": "user", "text": crate::prompts::harness_wrap(said.clone())}),
+            ),
+        );
         self.bus.publish(Event::Log {
             level: LogLevel::Error,
             message: said,
