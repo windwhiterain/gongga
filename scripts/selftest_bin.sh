@@ -29,7 +29,11 @@ selftest_bin() { # root -> the directory on stdout, or a refusal on stderr and 1
   fi
   # Any one newer file is enough to refuse, so this stops at the first: naming it is
   # what tells a reader this is staleness rather than a missing build.
-  newer=$(find "$root/crates" -name '*.rs' -newer "$exe" -print -quit 2>/dev/null)
+  # Test sources cannot change the binary, and another session's uncommitted test edit
+# must not refuse a run: only a source file that links into it is evidence.
+newer=$(find "$root/crates" \
+  \( -name '*.rs' ! -name 'tests.rs' ! -name '*_test.rs' ! -path '*/tests/*' \) \
+  -newer "$exe" -print -quit 2>/dev/null)
   if [[ -n "$newer" ]]; then
     printf 'build first: cargo build -p gongga-server\n' >&2
     printf '  %s is older than %s\n' "$exe" "$newer" >&2
