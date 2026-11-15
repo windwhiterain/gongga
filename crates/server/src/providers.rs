@@ -15,6 +15,9 @@ use crate::live::{Stamp, stamps};
 
 mod layers;
 
+#[cfg(test)]
+mod tests;
+
 /// Everything `providers.toml` says about one provider.
 #[derive(Debug, Clone)]
 pub struct Provider {
@@ -150,6 +153,65 @@ pub struct Model {
     /// re-derived it would disagree with the file it read.
     #[serde(default)]
     pub tier: Option<String>,
+}
+
+impl Model {
+    /// Takes what a discovered row states and this one does not.
+    ///
+    /// # Invariant
+    ///
+    /// Only gaps are filled: a field the roster wrote is never replaced. The file
+    /// is the curated fact, and a relay's catalogue is one route's claim about it,
+    /// so a route may add the price and the title it alone knows but cannot
+    /// restate a context the roster states. See `docs/notes/server-providers.md`.
+    fn fill_gaps_from(&mut self, found: &Model) -> bool {
+        let mut filled = false;
+        if self.name == self.id && found.name != found.id {
+            self.name = found.name.clone();
+            filled = true;
+        }
+        if self.context.is_none() && found.context.is_some() {
+            self.context = found.context;
+            filled = true;
+        }
+        if self.endpoints.is_empty() && !found.endpoints.is_empty() {
+            self.endpoints = found.endpoints.clone();
+            filled = true;
+        }
+        if self.max_output_tokens.is_none() && found.max_output_tokens.is_some() {
+            self.max_output_tokens = found.max_output_tokens;
+            filled = true;
+        }
+        if self.reasoning_levels.is_empty() && !found.reasoning_levels.is_empty() {
+            self.reasoning_levels = found.reasoning_levels.clone();
+            filled = true;
+        }
+        if self.reasoning_default.is_none() && found.reasoning_default.is_some() {
+            self.reasoning_default = found.reasoning_default.clone();
+            filled = true;
+        }
+        if self.reasoning_mapping.is_empty() && !found.reasoning_mapping.is_empty() {
+            self.reasoning_mapping = found.reasoning_mapping.clone();
+            filled = true;
+        }
+        if self.modalities.is_empty() && !found.modalities.is_empty() {
+            self.modalities = found.modalities.clone();
+            filled = true;
+        }
+        if self.builtin_tools.is_empty() && !found.builtin_tools.is_empty() {
+            self.builtin_tools = found.builtin_tools.clone();
+            filled = true;
+        }
+        if self.price.is_none() && found.price.is_some() {
+            self.price = found.price;
+            filled = true;
+        }
+        if self.tier.is_none() && found.tier.is_some() {
+            self.tier = found.tier.clone();
+            filled = true;
+        }
+        filled
+    }
 }
 
 /// A model's prices, in whatever currency and unit the roster records them.
@@ -976,8 +1038,9 @@ fn spawn_scripts(catalog: &Arc<Catalog>) {
 /// # Invariant
 ///
 /// A generation bump is what makes the server republish, so this is the only door
-/// scripted models come through. A static row naming the same id wins: the file
-/// said it, and a script does not get to restate a row its reader wrote.
+/// scripted models come through. A static row naming the same id keeps every field
+/// it states and is handed the rest: that is how a relay sells a model whose facts
+/// the roster already carries, without a second copy of them.
 fn merge_scripted(provider: &str, scripted: Vec<Model>) {
     let Some(live) = LIVE.get() else {
         return;
@@ -989,14 +1052,19 @@ fn merge_scripted(provider: &str, scripted: Vec<Model>) {
     let Some(entry) = catalog.providers.iter_mut().find(|p| p.id == provider) else {
         return;
     };
-    let fresh: Vec<Model> = scripted
-        .into_iter()
-        .filter(|m| !entry.models.iter().any(|known| known.id == m.id))
-        .collect();
-    if fresh.is_empty() {
+    let mut merged = false;
+    for found in scripted {
+        match entry.models.iter_mut().find(|known| known.id == found.id) {
+            Some(known) => merged |= known.fill_gaps_from(&found),
+            None => {
+                entry.models.push(found);
+                merged = true;
+            }
+        }
+    }
+    if !merged {
         return;
     }
-    entry.models.extend(fresh);
     catalog.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     let generation = catalog.generation;
     guard.catalog = Arc::new(catalog);

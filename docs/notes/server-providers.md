@@ -125,12 +125,16 @@ and prints a `FileModel` array on stdout, which is read exactly like a static
 row. The key is never an argument -- the script reads the variable the entry's
 `key_env` names, the same contract the quota scripts use.
 
-`attach_scripted_models` joins the scripted rows to whatever static rows exist.
-A scripted id a static row already names is skipped and the static row is kept, so
-the two sources never duplicate an id; a provider with no static rows is simply
-all script. The script's output is parsed through `model_from_file`, so the JSON
-field names are the ones this crate deserialises -- `max_output_tokens`, not the
-TOML-only `max_output`.
+`merge_scripted` joins the scripted rows to whatever static rows exist. A
+scripted id a static row already names fills that row's gaps instead of adding a
+second one: `Model::fill_gaps_from` sets only the fields the file left empty, so
+a relay supplies the price and the title it alone knows and cannot restate a
+context the roster states. That is what lets a relay sell a model whose facts
+another route already carries -- the serving names the shared model, the script
+hands it a price, and no second copy exists. A provider with no static rows is
+simply all script. Either way the two sources never duplicate an id; the script's
+output is parsed through `model_from_file`, so the JSON field names are the ones
+this crate deserialises -- `max_output_tokens`, not the TOML-only `max_output`.
 
 The run is a bounded child process (`run_bounded`): stdout and stderr are pumped
 on their own threads so a pipe that fills cannot deadlock the child, and a
