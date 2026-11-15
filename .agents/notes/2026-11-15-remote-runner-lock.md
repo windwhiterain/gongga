@@ -91,6 +91,31 @@ accepted (10ms) and changed nothing: no `why="interrupt"`, no `tool end`, no
   holds `gongga-server.exe`, so installing this needs the window closed first (or
   a build directory the running pair does not hold).
 
+## The proof attempt, and four things it taught about `Endpoint::Direct`
+
+`.worktrees/fix2/.dev/lock-proof.sh` aims at the assertion the fix is about: two
+peers that will not greet, two calls fired at once, wall clock ~one answer timeout
+if the dials overlap and ~two if they are serialized. Four runs, no assertion yet:
+
+| run | what it actually measured | why |
+| --- | --- | --- |
+| 1 | 279ms | no session existed: `ls_channel` on a session with no channel row never asks for a runner |
+| 2 | 279ms | sessions refused: the runner path in `remotes.toml` was MSYS `C:/...`-less, so `Command::new` could not find it |
+| 3 | 3.5s | sessions and channels fine, but no dial: the kept connections were still alive |
+| 4 | 4.1s | the kill matched nothing (`lock-proof` is not in the runner's path), then the live re-read of `remotes.toml` did not produce a slow endpoint within the window |
+
+What a peer needs, learned the hard way:
+
+- a `Direct` remote is `[remotes.<name>] runner = "C:/.../gongga-runner.exe"` with
+  **no `host`**, and the path must be Windows-spelled: an MSYS `/c/...` path is not
+  something `Command::new` can start.
+- `gongga-relay.exe` must sit **beside** that runner, or `new_channel` is refused
+  with "no relay beside ...". A build of `-p gongga-server` alone does not put one
+  there.
+- the channel's own `status` file is what `evolve launch` probes, and a channel
+  whose program exits at once (`bash -lc "sleep 2"`) is a deaf candidate.
+
+
 ## Consequence for SPEC
 
 `## Server Cmd` now states that **each cmd has an internal timeout that aborts
