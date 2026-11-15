@@ -15,6 +15,7 @@ name = "gongga-client"
 path = "src/main.rs"
 
 [dependencies]
+bindir = { workspace = true }
 protocol = { workspace = true }
 console = { workspace = true }
 skill = { workspace = true }

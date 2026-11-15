@@ -18,43 +18,13 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// executable. A different copy is written beside it and renamed in, so no
 /// launch ever sees half of one.
 pub fn place(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
-    let dest = dir.join(file_name(name));
-    let want = fnv(bytes);
-    if fnv_of(&dest).ok() == Some(want) {
-        return Ok(dest);
+    match bindir::install(dir, name, bindir::Source::Bytes(bytes))? {
+        bindir::Outcome::Pinned { installed, why } => Err(std::io::Error::other(format!(
+            "{} is held by a running copy: {why}",
+            installed.display()
+        ))),
+        outcome => Ok(outcome.path().to_path_buf()),
     }
-    let temp = dir.join(format!(".{}.{}", file_name(name), std::process::id()));
-    {
-        let mut out = std::fs::File::create(&temp)?;
-        out.write_all(bytes)?;
-        out.sync_all()?;
-    }
-    // The payload is a program: `take_over` spawns it directly, so it needs the
-    // execute bit. Windows has none to set.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755))?;
-    }
-    // A fresh 20 MB exe is what a scanner opens, and Windows answers a rename
-    // over one with "access denied" for a moment.
-    let mut last = std::io::Error::other("no attempt");
-    for attempt in 0..5 {
-        match std::fs::rename(&temp, &dest) {
-            Ok(()) => return Ok(dest),
-            Err(e) => last = e,
-        }
-        // The running copy could not be replaced; if it is this one, that is the
-        // answer the caller wanted anyway.
-        if fnv_of(&dest).ok() == Some(want) {
-            let _ = std::fs::remove_file(&temp);
-            return Ok(dest);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50 * (attempt + 1)));
-    }
-    let _ = std::fs::remove_file(&temp);
-    Err(last)
 }
 
 /// FNV-1a, 64 bit: the whole of what "is this the same copy" needs here.

@@ -830,6 +830,9 @@ dependencies = [
 [[package]]
 name = "gongga-bundle"
 version = "0.2.0"
+dependencies = [
+ "gongga-bindir",
+]
 
 [[package]]
 name = "gongga-client"
@@ -838,6 +841,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs",
+ "gongga-bindir",
  "gongga-console",
  "gongga-lock",
  "gongga-protocol",

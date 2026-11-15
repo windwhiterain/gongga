@@ -371,9 +371,9 @@ fn find_server(home: &Path, named: Option<&Path>, me: Option<&Path>) -> anyhow::
         .into_iter()
         .chain(
             me.and_then(Path::parent)
-                .map(|dir| dir.join(program_name(SERVER))),
+                .map(|dir| dir.join(bindir::file_name(SERVER))),
         )
-        .chain([home.join("bin").join(program_name(SERVER))]);
+        .chain([home.join("bin").join(bindir::file_name(SERVER))]);
     for candidate in candidates {
         if candidate.is_file() {
             return Ok(candidate);
@@ -415,7 +415,7 @@ fn install_commands(home: &Path, server: &Path) {
 /// target whose `runner` names a path on the peer never reads this copy. The
 /// bundle carries all four programs, which is what puts one here to copy.
 fn install_runner(home: &Path, me: &Path) {
-    let Some(sibling) = me.parent().map(|dir| dir.join(program_name(RUNNER))) else {
+    let Some(sibling) = me.parent().map(|dir| dir.join(bindir::file_name(RUNNER))) else {
         return;
     };
     if !sibling.is_file() {
@@ -440,7 +440,7 @@ fn install_pair(home: &Path, cli: &Path, server: &Path) {
     for (name, program) in [(SERVER, server), (COMMAND, cli)] {
         if let Err(e) = place(home, name, program) {
             // A copy in use is not worth a red line; missing is the case to report.
-            if home.join("bin").join(program_name(name)).is_file() {
+            if home.join("bin").join(bindir::file_name(name)).is_file() {
                 continue;
             }
             eprintln!(
@@ -455,90 +455,17 @@ fn install_pair(home: &Path, cli: &Path, server: &Path) {
 ///
 /// See `docs/notes/cli-server.md`.
 fn place(home: &Path, name: &str, program: &Path) -> std::io::Result<PathBuf> {
-    let bin = home.join("bin");
-    std::fs::create_dir_all(&bin)?;
-    let target = bin.join(program_name(name));
-    if this_build(&target, program) {
-        return Ok(target);
-    }
-    // Beside it, then renamed: the command may be running now, and half an
-    // executable is worse than yesterday's.
-    let temp = bin.join(format!(".{}.{}", program_name(name), std::process::id()));
-    let _ = std::fs::remove_file(&temp);
-    link_or_copy(program, &temp)?;
-    let placed = std::fs::rename(&temp, &target);
-    match placed {
-        Ok(()) => {
-            // One directory holds one answer to the lookup `PATH` does: the other
-            // spelling is what an older install left behind.
-            if let Some(other) = other_name(name) {
-                let _ = std::fs::remove_file(bin.join(other));
-            }
-            Ok(target)
+    match bindir::install(&home.join("bin"), name, bindir::Source::File(program))? {
+        bindir::Outcome::Pinned { installed, why } => {
+            eprintln!(
+                "warning: `{name}` in {} is {}; {why}",
+                home.join("bin").display(),
+                installed.display()
+            );
+            Ok(installed)
         }
-        Err(e) => {
-            // A running command cannot be replaced on Windows; the old one stays.
-            let _ = std::fs::remove_file(&temp);
-            Err(e)
-        }
+        outcome => Ok(outcome.path().to_path_buf()),
     }
-}
-
-/// The spelling this platform does not use, if the other one is possible at all.
-fn other_name(name: &str) -> Option<String> {
-    (program_name(name) != name).then(|| name.to_string())
-}
-
-/// Whether `target` is already the program running now.
-///
-/// # Invariant
-///
-/// Size and modification time, because a rebuild replaces the file: a hard link
-/// then still names yesterday's bytes, while a symlink follows the path by itself.
-fn this_build(target: &Path, program: &Path) -> bool {
-    let (Ok(here), Ok(there)) = (std::fs::metadata(target), std::fs::metadata(program)) else {
-        return false;
-    };
-    here.len() == there.len()
-        && here
-            .modified()
-            .ok()
-            .zip(there.modified().ok())
-            .is_some_and(|(a, b)| a == b)
-}
-
-/// One program's file name on this platform.
-fn program_name(name: &str) -> String {
-    if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    }
-}
-
-/// A link where one can be made, a copy only where it cannot.
-///
-/// # Invariant
-///
-/// A hard link cannot cross a volume, and a home may sit on another drive than the
-/// program that serves it; the copy is the fallback that keeps the name working,
-/// at the price of going stale on the next rebuild like any other copy.
-fn link_or_copy(program: &Path, target: &Path) -> std::io::Result<()> {
-    if link(program, target).is_ok() {
-        return Ok(());
-    }
-    std::fs::copy(program, target).map(|_| ())
-}
-
-#[cfg(windows)]
-fn link(program: &Path, target: &Path) -> std::io::Result<()> {
-    std::fs::hard_link(program, target)
-}
-
-/// A symlink, so a rebuild is picked up without this module noticing.
-#[cfg(unix)]
-fn link(program: &Path, target: &Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(program, target)
 }
 
 /// Gives this process's console to `server`, and reports how it ended.

@@ -10,6 +10,7 @@ description = "One file that carries the programs: the head of a release, nothin
 # No dependencies at all, on purpose: this program is the head of every
 # distribution and has to build on a machine that has nothing.
 [dependencies]
+bindir = { workspace = true }
 
 [features]
 # Builds the programs and embeds them, so the file `cargo install` gives you is
