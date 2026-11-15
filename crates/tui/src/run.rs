@@ -171,6 +171,16 @@ fn draw(sink: &mut TuiSink<'_>, frame: RenderMessage) {
         RenderMessage::Clear { window } => sink.clear(&window),
         RenderMessage::Rewind { window } => sink.0.rewind(&window),
         RenderMessage::Stopped { session, failed } => sink.stopped(&session, failed),
+        // SPEC's `output` as finished rows: the client parsed and wrapped it once, so
+        // this window draws what it was handed. See `docs/notes/client-document.md`.
+        RenderMessage::Document {
+            window,
+            key,
+            kind,
+            tag,
+            rows,
+            done,
+        } => sink.0.document(&window, &key, kind, &tag, &rows, done),
         // The control frames were answered by `apply_frame`.
         RenderMessage::Draft { .. }
         | RenderMessage::Server { .. }

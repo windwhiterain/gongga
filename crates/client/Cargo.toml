@@ -27,6 +27,9 @@ clap = { version = "4", features = ["derive", "wrap_help"] }
 dirs = "6"
 toml = "0.8"
 shell-words = "1"
+# A document is wrapped here, at the width the drawing states: its rows are what a
+# front-end draws, so the same answer wraps the same way in every one of them.
+unicode-width = "0.2"
 
 [dev-dependencies]
 # The tests dial a server in-process, as `crates/server`'s own do.

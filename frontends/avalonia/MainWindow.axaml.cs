@@ -14,7 +14,7 @@ public partial class MainWindow : Window
     /// One line of a block: 13pt monospace on a 17px line, plus the template's
     /// 7px vertical padding. The client asks in text rows, so a pane's capacity is
     /// its viewport divided by this.
-    private const double PaneRowHeight = 24;
+    private const double PaneRowHeight = 30;
 
     /// The strip a pane draws its session name in, above the rows.
     private const double PaneHeaderHeight = 26;
@@ -27,6 +27,17 @@ public partial class MainWindow : Window
     private readonly HashSet<string> _follow = new();
     private readonly Dictionary<string, double> _seenBottom = new();
     private List<(string Window, int Rows)> _rooms = new();
+    private List<(string Window, int Columns)> _columns = new();
+
+    /// One row of the body's own face, laid out to find the advance of a character:
+    /// a width guessed one pixel wide is a row clipped at the pane's edge.
+    private const double BlockPadding = 12;
+    private readonly TextBlock _ruler = new()
+    {
+        Text = "0123456789",
+        FontFamily = new global::Avalonia.Media.FontFamily("Consolas, Cascadia Mono, monospace"),
+        FontSize = 13,
+    };
     private bool _applying;
 
     /// The child this window drives, for a run that has to watch the wire.
@@ -80,7 +91,15 @@ public partial class MainWindow : Window
 
         var error = _client.Start(options, frame => Dispatcher.UIThread.Post(() =>
         {
+            // Measured before the frame lands: a page is inserted above the rows the
+            // pane already holds, and a reader who was not at the oldest row has to
+            // stay on the rows they were reading.
+            var extents = frame is RenderFrame.Older ? Extents() : null;
             _model.Apply(frame);
+            if (extents is not null)
+            {
+                KeepPlace(extents);
+            }
             if (frame is RenderFrame.Stopped)
             {
                 _toastTimer.Stop();
@@ -185,6 +204,15 @@ public partial class MainWindow : Window
                 }
                 break;
 
+            // SPEC's `Ctrl+Down: move sticky session to bottom`, told apart before the
+            // bare arrow: the popup and the caret are the plain key's business.
+            // Contract: crates/tui/src/lib.rs arrow_key.
+            case Key.Down when control:
+                e.Handled = true;
+                _follow.Add(_model.Sticky);
+                ScrollStickyToNewest();
+                break;
+
             case Key.Down:
                 e.Handled = true;
                 if (_model.CompletionVisible)
@@ -236,10 +264,28 @@ public partial class MainWindow : Window
         }
     }
 
+    /// A group's chevron folds the rows under it, and a name that only groups has
+    /// nothing else to do. Contract: crates/tui/src/tree.rs and SPEC's `session` row.
+    private void OnFoldPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is TextBlock { Tag: string name })
+        {
+            e.Handled = true;
+            _model.ToggleFold(name);
+        }
+    }
+
     private void OnSessionPressed(object? sender, PointerPressedEventArgs e)
     {
         if (sender is not Border { Tag: string name })
         {
+            return;
+        }
+        // A row that names no session is a group: opening a window for it would be a
+        // name the server does not have.
+        if (_model.Sessions.FirstOrDefault(row => row.Name == name) is not { Session: true })
+        {
+            _model.ToggleFold(name);
             return;
         }
         var toggle = e.KeyModifiers.HasFlag(KeyModifiers.Shift)
@@ -318,7 +364,7 @@ public partial class MainWindow : Window
         {
             // The page is the rows this pane can draw: the same count the client
             // sizes its refill by, so what comes back fills the pane.
-            _model.RequestOlder(name, Math.Max(1, (int)(viewer.Viewport.Height / PaneRowHeight)));
+            _model.RequestOlder(name);
         }
     }
 
@@ -333,6 +379,37 @@ public partial class MainWindow : Window
         _follow.Add(name);
         NotifyRooms();
         FollowNewest();
+    }
+
+    /// How tall each pane's rows were before a frame was applied.
+    private Dictionary<string, double> Extents()
+    {
+        var extents = new Dictionary<string, double>();
+        foreach (var (name, viewer) in _viewers)
+        {
+            extents[name] = viewer.Extent.Height;
+        }
+        return extents;
+    }
+
+    /// Adds what a page grew to its pane's offset, so the rows under the pointer stay
+    /// under the pointer. A pane at its newest row is moved to the new bottom by
+    /// `FollowNewest` instead.
+    private void KeepPlace(Dictionary<string, double> extents)
+    {
+        foreach (var (name, viewer) in _viewers)
+        {
+            if (!extents.TryGetValue(name, out var before) || _follow.Contains(name))
+            {
+                continue;
+            }
+            var grew = viewer.Extent.Height - before;
+            if (grew > 0)
+            {
+                viewer.Offset = new Vector(viewer.Offset.X, viewer.Offset.Y + grew);
+                _seenBottom[name] = Math.Max(0, viewer.Extent.Height - viewer.Viewport.Height);
+            }
+        }
     }
 
     /// Keeps a pane at its newest row while it is following.
@@ -387,15 +464,78 @@ public partial class MainWindow : Window
         }
         // A scrollbar appearing narrows the viewport by a row or two, and rows
         // arriving toggle it: only a real change is worth a line on the pipe.
-        if (SameRooms(rooms, _rooms))
+        if (!SameRooms(rooms, _rooms))
+        {
+            _rooms = rooms;
+            if (rooms.Count != 0)
+            {
+                _client.Send(Intents.Room(rooms));
+            }
+        }
+        NotifyColumns();
+    }
+
+    /// Tells the client how wide each open pane draws a body: the width its document
+    /// rows are wrapped at. A body is wrapped once, in the client, so this is the one
+    /// measurement only the drawing can make. See `docs/notes/client-document.md`.
+    private void NotifyColumns()
+    {
+        var columns = new List<(string, int)>();
+        foreach (var pane in _model.Panes)
+        {
+            if (_viewers.TryGetValue(pane.Name, out var viewer) && viewer.Viewport.Width > 0)
+            {
+                // The width a row is actually given: a row stretches to the block's
+                // content box, so its own laid-out width is that width -- measured,
+                // not derived from paddings this file would have to know. Before the
+                // first row exists, the pane's own box is the answer.
+                var row = viewer.GetVisualDescendants()
+                    .OfType<Views.SpanLine>()
+                    .FirstOrDefault(line => line.Bounds.Width > 0);
+                var usable = (row?.Bounds.Width
+                    ?? viewer.Viewport.Width - viewer.Padding.Left - viewer.Padding.Right - BlockPadding)
+                    - 2 * _model.Edge;
+                // One column of slack: a row that wraps a character early is a row, one
+                // that wraps late is a lost letter.
+columns.Add((pane.Name, Math.Max(20, (int)(usable / Advance))));
+            }
+        }
+        if (SameColumns(columns, _columns))
         {
             return;
         }
-        _rooms = rooms;
-        if (rooms.Count != 0)
+        _columns = columns;
+        if (columns.Count != 0)
         {
-            _client.Send(Intents.Room(rooms));
+            _client.Send(Intents.Columns(columns));
         }
+    }
+
+    /// How wide one character of a body is, in pixels.
+    private double Advance
+    {
+        get
+        {
+            _ruler.Measure(global::Avalonia.Size.Infinity);
+            var width = _ruler.DesiredSize.Width / 10;
+            return width > 1 ? width : 8;
+        }
+    }
+
+    private static bool SameColumns(List<(string, int)> left, List<(string, int)> right)
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+        for (var index = 0; index < left.Count; index++)
+        {
+            if (left[index].Item1 != right[index].Item1 || left[index].Item2 != right[index].Item2)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private ScrollViewer? StickyViewer() => this.GetVisualDescendants()

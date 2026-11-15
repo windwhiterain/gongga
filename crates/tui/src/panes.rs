@@ -455,6 +455,19 @@ impl Panes {
         self.log.push(name, kind, text);
     }
 
+    /// A body as finished rows, from the client's one renderer.
+    pub fn document(
+        &mut self,
+        name: &str,
+        key: &str,
+        kind: LineKind,
+        tag: &str,
+        rows: &[Vec<client::render_wire::DocumentSpan>],
+        done: bool,
+    ) {
+        self.log.document(name, key, kind, tag, rows, done);
+    }
+
     pub fn stream(
         &mut self,
         name: &str,

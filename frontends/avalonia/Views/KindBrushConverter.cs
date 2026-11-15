@@ -1,4 +1,5 @@
 using System.Globalization;
+using Avalonia;
 using Avalonia.Data;
 using Avalonia.Data.Converters;
 using Avalonia.Media;
@@ -7,36 +8,41 @@ using Gongga.Avalonia.Wire;
 namespace Gongga.Avalonia.Views;
 
 /// Maps the wire's semantic kind to one look. Contract: crates/tui/src/render.rs
-/// style_for decides colour, never the client.
+/// style_for decides which kinds differ, never the client.
+///
+/// # Invariant
+///
+/// The brush comes from the application's dictionary (`App.axaml`), so a kind has one
+/// ink and a screen cannot pick a second one for it.
 public sealed class KindBrushConverter : IValueConverter
 {
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
     {
         var kind = value is LineKind lineKind ? lineKind : LineKind.System;
-        if (parameter as string == "header")
+        var name = kind switch
         {
-            return new SolidColorBrush(kind switch
-            {
-                LineKind.Error => Color.Parse("#8B2020"),
-                LineKind.Command or LineKind.Result => Color.Parse("#205B34"),
-                _ => Color.Parse("#175C6B"),
-            });
-        }
-        return new SolidColorBrush(kind switch
-        {
-            LineKind.System or LineKind.Reasoning => Color.Parse("#8A8A8A"),
-            LineKind.Command => Color.Parse("#C060C0"),
-            LineKind.User => Color.Parse("#E89AE8"),
-            LineKind.Inject => Color.Parse("#78C8C8"),
-            LineKind.Assistant => Color.Parse("#ECECEC"),
-            LineKind.ToolCall => Color.Parse("#D8B84C"),
-            LineKind.ToolOutput => Color.Parse("#78A8DC"),
-            LineKind.ToolError => Color.Parse("#E08080"),
-            LineKind.Result => Color.Parse("#78C878"),
-            LineKind.Error => Color.Parse("#F06060"),
-            _ => Color.Parse("#8A8A8A"),
-        });
+            LineKind.Command => "KindCommandBrush",
+            LineKind.User => "KindUserBrush",
+            LineKind.Inject => "KindInjectBrush",
+            LineKind.Assistant => "KindAssistantBrush",
+            LineKind.Reasoning => "KindReasoningBrush",
+            LineKind.ToolCall => "KindToolCallBrush",
+            LineKind.ToolOutput => "KindToolOutputBrush",
+            LineKind.ToolError => "KindToolErrorBrush",
+            LineKind.Result => "KindResultBrush",
+            LineKind.Error => "KindErrorBrush",
+            _ => "KindSystemBrush",
+        };
+        return Lookup(name);
     }
+
+    /// A named brush of the application's dictionary, or the muted ink when a
+    /// designer reads the file without the application around it.
+    internal static IBrush Lookup(string name) =>
+        Application.Current?.Resources.TryGetResource(name, null, out var found) == true
+            && found is IBrush brush
+            ? brush
+            : Brushes.Gray;
 
     public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         BindingOperations.DoNothing;

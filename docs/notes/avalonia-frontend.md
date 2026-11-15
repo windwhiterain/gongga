@@ -233,24 +233,36 @@ empty", these came from the same off-screen run once it asked for a page:
   and had to scroll to the end of it. A pane follows its newest row until it is
   scrolled away, and only while its content grows — dragging it back after
   PageUp would make the key useless.
-- **An older page was appended at the end**, so history read `...q26, q15, q16`
-  and a screenshot showed it plainly. `Older` asks for a page and the answer comes
-  back as ordinary `Line`/`Stream` frames in the window, oldest first, with no
-  frame saying they belong above the rows already drawn. The window remembers how
-  many rows it asked for and puts the next burst above what it holds, in order.
-  That window is three seconds wide so a live row arriving later is not mistaken
-  for history. A `RenderMessage` that marks a page would be better than a count
-  and a clock; the wire has none today.
+- **An older page was appended at the end**, so history read `...q26, q15, q16`.
+  The wire then gained `RenderMessage::Older`, one frame holding a finished page
+  that says it goes *above* what the window holds, so the window no longer counts
+  rows or watches a clock: the frame is the answer, and `WireReader` reads it.
+  A pane asks for the page it is short of by window name (`UiIntent::Older`), and a
+  reader who was not at the newest row keeps the rows under the pointer while the
+  page lands above them.
 
 ## Deliberate limits
 
 - `LineKind::Assistant` is shown as wrapped plain text, not rendered markdown.
   The wire carries text, not a document, and a GUI markdown engine would be a
   second renderer with its own layout rules.
-- `block_size` and `box_edge` are not on the wire (`client-render-wire.md`
-  "Not done yet"). The GUI keeps every block in memory and folds by kind only.
+- `Rewind` and `Render` are read: a replayed fill drops the blocks of a window
+  that never ended, and SPEC's `block_size` caps a folding block (which then
+  scrolls inside itself) while `box_edge` is the margin it keeps from the events.
 - The completion popup uses keyboard selection and a click to accept; it does
   not mirror the terminal's popup geometry.
+
+## The look
+
+`App.axaml` holds the whole palette and the spacing scale: surfaces, hairlines,
+one accent, the same five semantic hues `crates/tui/src/render.rs style_for`
+assigns, and the radii. A screen names a token; it does not write a hex, so a
+kind has one ink and a panel has one border.
+
+`Views/KindBrushConverter` reads that dictionary rather than holding colours of
+its own, and `ContentBrushConverter` is SPEC's split between a mark and its words:
+the operator's message and the answer keep the brightest ink, everything else is
+quiet.
 
 ## Toolchain
 

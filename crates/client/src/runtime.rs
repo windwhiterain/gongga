@@ -375,6 +375,14 @@ pub async fn run(
                     WindowFacts::note_room(&mut *ui, &name, rows);
                 }
             }
+            // How wide each pane is drawn: the width a document is fitted to. The body
+            // is wrapped once, here, so every front-end of one answer sees one set of
+            // rows. See `docs/notes/client-document.md`.
+            Step::Input(FrontendEvent::Intent(UiIntent::Columns { windows })) => {
+                for (name, columns) in windows {
+                    WindowFacts::note_columns(&mut *ui, &name, columns);
+                }
+            }
             Step::Input(FrontendEvent::Intent(UiIntent::Quit)) => break Ok(()),
             // The console is going away: it asked, and the way out is the same
             // one Alt-Q takes. See `docs/notes/tui-closing.md`.

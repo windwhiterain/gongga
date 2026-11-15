@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using Avalonia;
 using Avalonia.Media;
 using Gongga.Avalonia.Wire;
 
@@ -25,15 +26,41 @@ public abstract class ViewModelBase : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
+/// One finished row of a document, as a list of classified runs.
+///
+/// # Invariant
+///
+/// The rows are the client's and are replaced whole: a document is derived from its
+/// source, so one more delta can change a row above the last one.
+public sealed class SpanRow
+{
+    public SpanRow(IReadOnlyList<SpanItem> spans, LineKind kind)
+    {
+        Spans = spans;
+        Kind = kind;
+    }
+
+    public IReadOnlyList<SpanItem> Spans { get; }
+
+    /// The kind of the block this row belongs to: what its ink is, never its shape.
+    public LineKind Kind { get; }
+}
+
 /// One block in a window's log. Contract: crates/tui/src/log.rs Entry.
 public sealed class BlockRow : ViewModelBase
 {
+    /// How wide one of SPEC's `box_edge` columns is drawn, in pixels.
+    public const double EdgeColumn = 6;
+
     private LineKind _kind;
     private string _tag = string.Empty;
     private string _text = string.Empty;
     private bool _sealed;
     private bool _expanded;
     private HeadRow? _head;
+    private IReadOnlyList<SpanRow> _rows = [];
+    private double _cap = double.PositiveInfinity;
+    private double _edge = 2 * EdgeColumn;
 
     public BlockRow(string window, string key, LineKind kind, string tag, string text)
     {
@@ -117,7 +144,65 @@ public sealed class BlockRow : ViewModelBase
 
     public bool Structured => Head is not null;
 
-    // Contract: crates/client/src/lib.rs LineKind::folds.
+    /// The document this block draws, when the client sent one.
+    public IReadOnlyList<SpanRow> Rows
+    {
+        get => _rows;
+        set
+        {
+            if (Set(ref _rows, value, nameof(Rows)))
+            {
+                Raise(nameof(HasRows));
+            }
+        }
+    }
+
+    /// Whether the body is rows rather than one string.
+    public bool HasRows => _rows.Count != 0;
+
+    /// The cap SPEC's `block_size` states, in pixels; unbounded when it states none.
+    public double Cap
+    {
+        get => _cap;
+        set
+        {
+            if (Set(ref _cap, value, nameof(Cap)))
+            {
+                Raise(nameof(Capped));
+                Raise(nameof(BodyHeight));
+                Raise(nameof(FoldMark));
+            }
+        }
+    }
+
+    /// The margin SPEC's `box_edge` gives the events at each side of an opened block.
+    public double Edge
+    {
+        get => _edge;
+        set
+        {
+            if (Set(ref _edge, value, nameof(Edge)))
+            {
+                Raise(nameof(EdgeMargin));
+            }
+        }
+    }
+
+    /// The margin an opened block keeps from the events at each side.
+    public Thickness EdgeMargin => new(_edge, 0, _edge, 0);
+
+    /// Whether this block is drawn inside a capped box: SPEC caps the blocks that
+    /// fold, and an answer is not one of them.
+    public bool Capped => Foldable && Expanded && !double.IsPositiveInfinity(Cap);
+
+    /// The height the box may take: its cap when it has one, else whatever it needs.
+    public double BodyHeight => Capped ? Cap : double.PositiveInfinity;
+
+    /// A fold's own mark: right when there is something inside to open.
+    public string FoldMark => !Foldable || !Sealed
+        ? string.Empty
+        : Expanded ? "\u25be" : "\u25b8";
+
     public bool Foldable => Kind is LineKind.Reasoning
         or LineKind.ToolCall
         or LineKind.ToolOutput
@@ -196,8 +281,17 @@ public sealed class PaneRow : ViewModelBase
     public string Title
     {
         get => _title;
-        set => Set(ref _title, value, nameof(Title));
+        set
+        {
+            if (Set(ref _title, value, nameof(Title)))
+            {
+                Raise(nameof(HasTitle));
+            }
+        }
     }
+
+    /// Whether the strip under a pane's name has anything to say.
+    public bool HasTitle => Title.Length != 0;
 
     public bool Sticky
     {
@@ -206,25 +300,67 @@ public sealed class PaneRow : ViewModelBase
     }
 }
 
+/// One row of the session list: a session, a group, or a name that is both.
+///
+/// Contract: crates/tui/src/tree.rs Row -- every prefix of a session's name is a
+/// row, a session's own row reports that session, a row that only groups reports
+/// the strongest mark below it, and a group's children can be folded away.
 public sealed class SessionRow : ViewModelBase
 {
     /// A window is open for this session, so typing goes here and the list says so.
-    private static readonly IBrush ShownRow = new SolidColorBrush(Color.Parse("#18212B"));
+    private static readonly IBrush ShownRow = new SolidColorBrush(Color.Parse("#1B2331"));
     private static readonly IBrush HiddenRow = Brushes.Transparent;
-    private static readonly IBrush ShownName = new SolidColorBrush(Color.Parse("#E2E8EF"));
-    private static readonly IBrush HiddenName = new SolidColorBrush(Color.Parse("#5E6874"));
+    private static readonly IBrush ShownName = new SolidColorBrush(Color.Parse("#E8EEF6"));
+    private static readonly IBrush HiddenName = new SolidColorBrush(Color.Parse("#9AA6B6"));
 
     private string _status = string.Empty;
     private string _title = string.Empty;
     private bool _unseen;
     private bool _shown;
+    private bool _collapsed;
 
     public SessionRow(string name)
     {
         Name = name;
+        Label = name[(name.LastIndexOf('/') + 1)..];
+        Depth = name.Count(character => character == '/');
     }
 
+    /// The full path this row stands for: a session's own name, or a prefix of one.
     public string Name { get; }
+
+    /// The last segment, which is what the row draws.
+    public string Label { get; set; }
+
+    /// How many segments precede [`Label`]; the row is indented two columns each.
+    public int Depth { get; set; }
+
+    /// Whether a session is named exactly this, and not only its children.
+    public bool Session { get; set; }
+
+    /// Whether any name goes on below this row, so it can be folded.
+    public bool Group { get; set; }
+
+    /// The indent the row is drawn at, in pixels.
+    public double Indent => 10 + Depth * 14;
+
+    /// A group's own marker: right when its children are folded away.
+    public string FoldMark => !Group || Session && !HasChildren ? string.Empty : Collapsed ? "\u203a" : "\u2304";
+
+    /// Whether a fold may be asked for on this row at all.
+    public bool HasChildren { get; set; }
+
+    public bool Collapsed
+    {
+        get => _collapsed;
+        set
+        {
+            if (Set(ref _collapsed, value, nameof(Collapsed)))
+            {
+                Raise(nameof(FoldMark));
+            }
+        }
+    }
 
     public string Status
     {
@@ -240,8 +376,17 @@ public sealed class SessionRow : ViewModelBase
     public string Title
     {
         get => _title;
-        set => Set(ref _title, value, nameof(Title));
+        set
+        {
+            if (Set(ref _title, value, nameof(Title)))
+            {
+                Raise(nameof(HasTitle));
+            }
+        }
     }
+
+    /// Whether the card under the name has anything to say.
+    public bool HasTitle => Title.Length != 0;
 
     /// Whether this session has a window beside the list.
     ///
@@ -261,10 +406,20 @@ public sealed class SessionRow : ViewModelBase
             }
             Raise(nameof(RowBrush));
             Raise(nameof(NameBrush));
+            Raise(nameof(BarBrush));
         }
     }
 
     public IBrush RowBrush => _shown ? ShownRow : HiddenRow;
+
+    /// The bar a shown row carries: the accent, and nothing on a hidden one.
+    public IBrush BarBrush => _shown ? Accent : Brushes.Transparent;
+
+    private static readonly IBrush Accent =
+        global::Avalonia.Application.Current?.Resources.TryGetResource("AccentBrush", null, out var found) == true
+            && found is IBrush accent
+            ? accent
+            : Brushes.DodgerBlue;
 
     public IBrush NameBrush => _shown ? ShownName : HiddenName;
 
@@ -279,21 +434,24 @@ public sealed class SessionRow : ViewModelBase
         }
     }
 
-    public string Mark => _unseen ? "\u25cb" : Status switch
-    {
-        "running" => "\u25cf",
-        "error" => "\u2715",
-        _ => "\u25cb",
-    };
+    /// The one column of the list that says what a session is doing.
+    ///
+    /// Contract: crates/tui/src/tree.rs Mark -- a session's own state, or the
+    /// strongest state of anything under a group.
+    private string _mark = "\u25cb";
+    private LineKind _markKind = LineKind.System;
 
-    public LineKind MarkKind => _unseen
-        ? LineKind.ToolCall
-        : Status switch
-        {
-            "running" => LineKind.Result,
-            "error" => LineKind.Error,
-            _ => LineKind.System,
-        };
+    public string Mark
+    {
+        get => _mark;
+        set => Set(ref _mark, value, nameof(Mark));
+    }
+
+    public LineKind MarkKind
+    {
+        get => _markKind;
+        set => Set(ref _markKind, value, nameof(MarkKind));
+    }
 }
 
 public sealed class CandidateView : ViewModelBase

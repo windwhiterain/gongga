@@ -22,6 +22,14 @@ pub trait WindowFacts {
     /// Only the drawing knows its own height, so this is the one fact a UI has to
     /// tell the client rather than the other way round. See `UiIntent::Room`.
     fn note_room(&mut self, window: &str, rows: usize);
+    /// Records the columns a pane could draw: the width a document is fitted to.
+    ///
+    /// # Invariant
+    ///
+    /// The companion of [`WindowFacts::note_room`] and the reason a body is wrapped
+    /// once: the client cannot measure a pane, so the width has to come from the one
+    /// process that draws it. See `UiIntent::Columns`.
+    fn note_columns(&mut self, _window: &str, _columns: usize) {}
     /// The windows a frame drew last.
     fn drawn(&self) -> &[String];
     /// The vocabulary changed; `version` names the new one so a UI can dedupe.

@@ -843,6 +843,7 @@ dependencies = [
  "shell-words",
  "tokio",
  "toml",
+ "unicode-width",
 ]
 
 [[package]]
