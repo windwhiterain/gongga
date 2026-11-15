@@ -461,6 +461,31 @@ impl Panes {
     }
 
     /// Columns a box leaves to its pane on each side: the wheel there is the pane's.
+    /// Keeps a window inside its budget: what its pane draws, plus `keep_rows`.
+    ///
+    /// # Invariant
+    ///
+    /// Only the frame knows how tall the pane is and how far it is scrolled, so the
+    /// trim happens here rather than in the log. See `docs/notes/tui-panes.md`.
+    pub fn trim(&mut self, window: &str, height: usize) {
+        let keep = self.log.keep_rows();
+        let scroll = self
+            .panes
+            .iter()
+            .find(|pane| pane.name == window)
+            .map(|pane| pane.scroll)
+            .unwrap_or(0);
+        if keep == 0 {
+            return;
+        }
+        self.log.trim(window, keep + height + scroll);
+    }
+
+    /// How many rows of history a window keeps as blocks: the front-end budget.
+    pub fn set_keep_rows(&mut self, rows: usize) {
+        self.log.set_keep_rows(rows);
+    }
+
     pub fn set_box_edge(&mut self, columns: usize) {
         self.log.set_box_edge(columns);
     }

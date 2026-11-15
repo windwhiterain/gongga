@@ -105,6 +105,8 @@ pub enum RenderMessage {
     Render {
         block_size: usize,
         box_edge: usize,
+        /// The rows of history one window keeps as blocks.
+        keep_rows: usize,
     },
     /// A body as finished rows: SPEC's `output`, already parsed and already fitted to
     /// the width the front-end stated.

@@ -37,6 +37,51 @@ impl Default for BlockSize {
     }
 }
 
+/// How many rows of history one window keeps as blocks: the UI's own budget.
+///
+/// # Invariant
+///
+/// The window is a view of the server's data, not a copy of it: what a pane draws
+/// plus this margin is all a front-end holds, and a row outside it is asked for
+/// again rather than paged back from memory. `client.toml`'s `keep_rows` states it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeepRows(pub usize);
+
+/// What a window keeps before anyone says otherwise.
+///
+/// # Invariant
+///
+/// This is the only default: `client.toml` absent, unreadable, or holding rubbish
+/// all answer this. See [`KeepRows`].
+pub const DEFAULT_KEEP_ROWS: usize = 800;
+
+impl Default for KeepRows {
+    fn default() -> Self {
+        Self(DEFAULT_KEEP_ROWS)
+    }
+}
+
+impl KeepRows {
+    /// A number of rows, or the way to name one.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().parse::<usize>() {
+            Ok(rows) if rows > 0 => Ok(Self(rows)),
+            _ => Err(format!(
+                "no row count {raw:?}: a window keeps at least one row of history"
+            )),
+        }
+    }
+
+    /// Loads `client_home/client.toml`; a missing or unreadable file keeps the default.
+    pub fn load(client_home: &Path) -> Self {
+        read_file(&client_home.join("client.toml"))
+            .keep_rows
+            .as_deref()
+            .and_then(|raw| KeepRows::parse(raw).ok())
+            .unwrap_or_default()
+    }
+}
+
 impl BlockSize {
     /// A size, or the way to name one; there is no silent default.
     pub fn parse(raw: &str) -> Result<Self, String> {
@@ -229,6 +274,9 @@ struct File {
     /// `set_render --box_edge`: the columns a box leaves to its pane on each side.
     #[serde(default)]
     box_edge: Option<String>,
+    /// How many rows of history one window keeps as blocks.
+    #[serde(default)]
+    keep_rows: Option<String>,
     /// `set_render_session`: the mode each named session is drawn in.
     #[serde(default)]
     render_session: Vec<Entry>,
@@ -560,6 +608,7 @@ pub struct State {
     shown: Shown,
     block_size: BlockSize,
     box_edge: BoxEdge,
+    keep_rows: KeepRows,
 }
 
 impl State {
@@ -577,6 +626,7 @@ impl State {
             shown: Shown::load(client_home),
             block_size: BlockSize::load(client_home),
             box_edge: BoxEdge::load(client_home),
+            keep_rows: KeepRows::load(client_home),
         }
     }
 
@@ -595,6 +645,11 @@ impl State {
 
     pub fn block_size(&self) -> BlockSize {
         self.block_size
+    }
+
+    /// The rows of history one window keeps as blocks: the budget of a front-end.
+    pub fn keep_rows(&self) -> KeepRows {
+        self.keep_rows
     }
 
     pub fn box_edge(&self) -> BoxEdge {

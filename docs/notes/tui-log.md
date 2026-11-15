@@ -726,3 +726,17 @@ a trailing blank row would both be what the session "was on". The block's tag wa
 out, because the row that drew it already started with the session's name.
 
 Gone with the `line` mode and with the flattening it needed (`one_line`).
+
+## Log::trim — the window is a view, not a copy (2026-11-15)
+
+A front-end holds what a pane draws plus a margin, never the transcript: `client.toml`'s
+`keep_rows` (default 800) states the margin, the client sends it on the `Render` frame
+with `block_size` and `box_edge`, and `Panes::trim` calls `Log::trim` once per frame with
+`keep_rows + pane height + pane scroll`. Whole blocks are dropped from the oldest end;
+the newest block is never dropped, because a window always shows where the session is.
+A row that was dropped is asked for again through the paging that already exists -- the
+journal first, the server when the journal does not reach back.
+
+What this bounds: a session streaming for hours stops growing once the margin is spent.
+What it does not bound yet: paging further up grows the window again (the budget follows
+the scroll), so a strictly constant window needs the *downward* page before it is real.

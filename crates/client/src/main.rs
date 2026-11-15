@@ -70,7 +70,7 @@ struct PipeFrontend {
     /// has to be asked for again. See `docs/notes/client-pipe.md`.
     shown: Vec<String>,
     /// The cap and margin last put on the wire, so a repeat costs no frame.
-    render: Option<(usize, usize)>,
+    render: Option<(usize, usize, usize)>,
     draft: bool,
     layout: Option<Layout>,
     status: Option<String>,
@@ -315,12 +315,17 @@ impl WindowView for PipeFrontend {
             self.sticky = name.clone();
             self.send(RenderMessage::StickySession { name });
         }
-        let render = (state.block_size().0, state.box_edge().0);
+        let render = (
+            state.block_size().0,
+            state.box_edge().0,
+            state.keep_rows().0,
+        );
         if self.render != Some(render) {
             self.render = Some(render);
             self.send(RenderMessage::Render {
                 block_size: render.0,
                 box_edge: render.1,
+                keep_rows: render.2,
             });
         }
     }

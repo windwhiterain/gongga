@@ -976,6 +976,9 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     }
     // One column short: a full-width row would otherwise be wrapped again.
     let width = area.width.saturating_sub(1).max(1) as usize;
+    // The budget is what this pane draws plus the margin the settings state; it is
+    // applied before the rows are counted, because dropping history changes them.
+    s.panes.trim(name, area.height as usize);
     // The pane's row count: an offset cannot say a line arrived under it.
     let rows = s.panes.rows(name, width);
     let Some(pane) = s.panes.get_mut(name) else {

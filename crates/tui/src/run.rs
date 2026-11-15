@@ -153,7 +153,8 @@ fn draw(sink: &mut TuiSink<'_>, frame: RenderMessage) {
         RenderMessage::Render {
             block_size,
             box_edge,
-        } => sink.0.set_render(block_size, box_edge),
+            keep_rows,
+        } => sink.0.set_render(block_size, box_edge, keep_rows),
         RenderMessage::Rewrite { window, key, text } => sink.rewrite(&window, &key, &text),
         RenderMessage::ToolCall {
             window,

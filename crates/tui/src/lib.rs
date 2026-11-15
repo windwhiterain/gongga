@@ -905,9 +905,10 @@ impl Tui {
 
     /// The cap and margin the command layer last set: `block_size` rows (0 caps
     /// nothing), and `box_edge` columns back.
-    pub fn set_render(&mut self, block_size: usize, box_edge: usize) {
+    pub fn set_render(&mut self, block_size: usize, box_edge: usize, keep_rows: usize) {
         self.screen.panes.set_block_size(block_size);
         self.screen.panes.set_box_edge(box_edge);
+        self.screen.panes.set_keep_rows(keep_rows);
         self.dirty = true;
     }
 

@@ -672,6 +672,8 @@ pub struct Log {
     open: HashMap<String, usize>,
     /// How many rows one block may fill. See [`Log::set_block_size`].
     block_size: usize,
+    /// Rows of history a window keeps as blocks above what its pane draws.
+    keep_rows: usize,
     /// Columns of a window a box leaves to the pane on each side. See
     /// [`Log::set_box_edge`].
     edge: usize,
@@ -680,6 +682,7 @@ pub struct Log {
 impl Default for Log {
     fn default() -> Self {
         Self {
+            keep_rows: 0,
             entries: Vec::new(),
             views: HashMap::new(),
             open: HashMap::new(),
@@ -722,6 +725,25 @@ impl Log {
 
     /// Caps how tall a block may get: `0` caps nothing, and a block past its cap
     /// keeps its newest rows.
+    /// How many rows of history a window keeps as blocks, above what a pane draws.
+    ///
+    /// # Invariant
+    ///
+    /// A window is a view of the transcript, not a copy of it: this is the budget
+    /// `client.toml` states, and `trim` keeps a window inside it. See
+    /// `docs/notes/tui-log.md`.
+    pub fn set_keep_rows(&mut self, rows: usize) {
+        if self.keep_rows == rows {
+            return;
+        }
+        self.keep_rows = rows;
+    }
+
+    /// The rows of history a window may hold above what its pane draws.
+    pub fn keep_rows(&self) -> usize {
+        self.keep_rows
+    }
+
     pub fn set_block_size(&mut self, lines: usize) {
         if self.block_size == lines {
             return;
@@ -761,6 +783,54 @@ impl Log {
     /// starts at row zero. See `docs/notes/tui-log.md`.
     pub fn forget(&mut self, window: &str) {
         self.drop_window(window);
+    }
+
+    /// Drops the oldest blocks of one window that `budget` rows no longer cover.
+    ///
+    /// # Invariant
+    ///
+    /// The newest block is never dropped: a window always shows where the session is.
+    /// What goes is history a pane is not drawing, and the client's journal is where
+    /// it is asked for again. See `docs/notes/tui-log.md`.
+    pub fn trim(&mut self, window: &str, budget: usize) {
+        let Some(ledger) = self.views.get(window) else {
+            return;
+        };
+        if budget == 0 || ledger.index.total() <= budget || ledger.blocks.len() < 2 {
+            return;
+        }
+        let cap = ledger.cap;
+        let block_size = self.block_size;
+        let mut total = ledger.index.total();
+        let mut dropping: Vec<usize> = Vec::new();
+        for &at in ledger.blocks.iter().take(ledger.blocks.len() - 1) {
+            if total <= budget {
+                break;
+            }
+            let entry = &self.entries[at];
+            total = total.saturating_sub(entry.visible(room(entry.kind, cap, block_size)));
+            dropping.push(at);
+        }
+        if dropping.is_empty() {
+            return;
+        }
+        let dropped: std::collections::HashSet<usize> = dropping.into_iter().collect();
+        let mut kept: Vec<Entry> = Vec::with_capacity(self.entries.len());
+        let mut remap: Vec<Option<usize>> = Vec::with_capacity(self.entries.len());
+        for (at, entry) in std::mem::take(&mut self.entries).into_iter().enumerate() {
+            let keep = !dropped.contains(&at);
+            if keep {
+                kept.push(entry);
+            }
+            remap.push(keep.then(|| kept.len() - 1));
+        }
+        self.entries = kept;
+        self.open = self
+            .open
+            .drain()
+            .filter_map(|(key, at)| remap.get(at).copied().flatten().map(|at| (key, at)))
+            .collect();
+        self.reindex();
     }
 
     /// Takes a window's blocks and its ledger out of memory.
