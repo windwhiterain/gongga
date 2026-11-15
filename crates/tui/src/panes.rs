@@ -25,6 +25,8 @@ pub struct Pane {
     /// the rows that frame was reading.
     last_height: usize,
     last_rows: usize,
+    /// The width the last frame laid this pane's rows out at; zero until one did.
+    last_width: usize,
 }
 
 /// Which part of the window a pane is.
@@ -60,6 +62,7 @@ impl Pane {
             max_scroll: 0,
             last_height: 0,
             last_rows: 0,
+            last_width: 0,
         }
     }
 
@@ -71,7 +74,7 @@ impl Pane {
     /// A view scrolled away from the bottom keeps its *top* row, so a taller window
     /// or a line that arrived adds rows underneath what the operator was reading
     /// instead of sliding the paragraph away. See `docs/notes/tui-panes.md`.
-    pub fn anchor(&mut self, height: usize, rows: usize) {
+    pub fn anchor(&mut self, height: usize, width: usize, rows: usize) {
         if self.scroll > 0 && self.last_height != 0 {
             // start = rows - scroll - height, held across the frame.
             let start = self
@@ -82,6 +85,7 @@ impl Pane {
         }
         self.last_height = height;
         self.last_rows = rows;
+        self.last_width = width;
     }
 
     /// Moves this view `rows` rows, positive into its past, within its bound.
@@ -578,6 +582,23 @@ impl Panes {
             .iter()
             .filter(|pane| pane.kind == Kind::Shown && pane.last_height > 0)
             .map(|pane| (pane.name.clone(), pane.last_height))
+            .collect()
+    }
+
+    /// The width each drawn window lays a body out at.
+    ///
+    /// # Invariant
+    ///
+    /// The companion of [`Panes::rooms`], the same frame's other fact: the client
+    /// wraps a body once, so the width can only come from the process that draws it.
+    /// A window missing here is wrapped at the client's default, and a default that
+    /// does not match the pane is a row the drawing wraps a second time. See
+    /// `docs/notes/client-document.md`.
+    pub fn columns(&self) -> Vec<(String, usize)> {
+        self.panes
+            .iter()
+            .filter(|pane| pane.kind == Kind::Shown && pane.last_width > 0)
+            .map(|pane| (pane.name.clone(), pane.last_width))
             .collect()
     }
 

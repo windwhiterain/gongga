@@ -982,7 +982,7 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
         return;
     };
     // Before the window is read: a taller pane keeps the rows it was showing.
-    pane.anchor(area.height as usize, rows);
+    pane.anchor(area.height as usize, width, rows);
     let scroll = pane.scroll;
     let name = pane.name.clone();
     let window = s.panes.window(&name, width, area.height as usize, scroll);

@@ -524,6 +524,7 @@ pub struct Tui {
     /// A report is a change, not a frame: the client sizes one page of the past by
     /// these rows, and a height that has not moved is a page already sized.
     rooms: Vec<(String, usize)>,
+    columns: Vec<(String, usize)>,
 }
 
 /// A vocabulary with no words: a pipe window asks its client for candidates.
@@ -788,6 +789,7 @@ impl Tui {
             asked: (String::new(), 0),
             tab_asked: false,
             rooms: Vec::new(),
+            columns: Vec::new(),
             input: vt_input::Input::open(),
             restored: false,
             // The first frame has to happen even though nothing has changed.
@@ -1164,6 +1166,14 @@ impl Tui {
                 if rooms != self.rooms {
                     self.rooms = rooms.clone();
                     return Some(UiEvent::Intent(UiIntent::Room { windows: rooms }));
+                }
+                // The width those panes draw a body at: the client wraps once, so a
+                // pane that never reports one is wrapped at the client's default and
+                // its drawing wraps the row again, a character at a time.
+                let columns = self.screen.panes.columns();
+                if columns != self.columns {
+                    self.columns = columns.clone();
+                    return Some(UiEvent::Intent(UiIntent::Columns { windows: columns }));
                 }
             }
             // A frame that could not fill its pane is the one asking, for the row above
