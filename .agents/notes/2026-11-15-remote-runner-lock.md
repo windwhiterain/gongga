@@ -116,6 +116,28 @@ Two findings from those runs stand on their own:
   70ms while the table named a program that never greets. So the probe never had a slow
   dial to observe, and the lock assertion is still unproven.
 
+### That second finding was wrong, and the correction matters
+
+`.worktrees/fix2/.dev/remotes-probe.sh` and `.dev/switch-probe.sh` re-measured it:
+
+- **both spellings of `GONGGA_REMOTES_CATALOG` work** -- a Windows path and an MSYS
+  `/c/...` path both give `set_session remote=p1` an `ok:true`, so "the table was not
+  found" is not the explanation;
+- **the restart in the two-phase run was real**: phase 1 server pid 57204, phase 2 pid
+  71700, same home, same port -- so "the rewrite never reached the server" is not the
+  explanation either;
+- and yet, with the table naming `C:/Windows/System32/cmd.exe` -- a program that cannot
+  speak the runner protocol at all -- `new_channel` still answered `ok:true` and started
+  a bash in **73ms**.
+
+So a call that should have dialled did not need to, and which of the two ways it took is
+not established: a relay started without a greeting, or the channel started on this
+machine rather than on the peer. Either way **none of the eleven runs exercised a dial**,
+which is why every one of them measured tens of milliseconds. The vehicle is wrong, not
+the lock: `Endpoint::Direct` returns early from `pick::runner` and never runs the
+`relays()`/`place()` steps, so it cannot produce the slow dial the old build was measured
+stalling in (25.9s). A `Remote` peer with a runner that never greets is the vehicle to use.
+
 What a peer needs, learned the hard way:
 
 - a `Direct` remote is `[remotes.<name>] runner = "C:/.../gongga-runner.exe"` with
