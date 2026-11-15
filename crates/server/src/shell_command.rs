@@ -125,17 +125,47 @@ pub(crate) fn relay_source() -> Option<PathBuf> {
 /// that holds its channels. It may be a copy `place` could not replace -- a relay still
 /// holding a channel pins the file -- and such a copy is what [`refresh_relay`] answers.
 pub(crate) fn relay_for_channel(home: &Path) -> PathBuf {
+    static RESOLVED: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    RESOLVED.get_or_init(|| resolve_relay(home)).clone()
+}
+
+/// This process's relay: this build's bytes, under a name no older build asks for when a
+/// running copy holds the plain one.
+///
+/// # Invariant
+///
+/// A copy that is not this build is never run. SPEC's "validate" is what makes a pair a
+/// pair: a stale relay reads this server's `cmd` with last week's shape and fails in a way
+/// nobody can diagnose. Resolved once, so a rebuild under a running server cannot change
+/// the program that holds its channels. See `docs/notes/bindir.md`.
+fn resolve_relay(home: &Path) -> PathBuf {
     if let Some(named) = std::env::var_os("GONGGA_RELAY_BIN") {
         let named = PathBuf::from(named);
         if named.is_file() {
             return named;
         }
     }
-    let installed = home.join("bin").join(file_name(RELAY));
-    if installed.is_file() {
-        return installed;
+    let bin = home.join("bin");
+    let Some(source) = relay_source() else {
+        return bin.join(file_name(RELAY));
+    };
+    match bindir::install(&bin, RELAY, bindir::Source::File(&source)) {
+        // A running copy holds the name: this build's bytes go beside it, so the pair
+        // stays a pair and the copy an older server started is left to finish.
+        Ok(bindir::Outcome::Pinned { installed, why }) => {
+            tracing::warn!(
+                installed = %installed.display(),
+                why,
+                "the relay's name is held by a running copy; this build's copy goes beside it"
+            );
+            bindir::install_aside(&bin, RELAY, bindir::Source::File(&source)).unwrap_or(source)
+        }
+        Ok(outcome) => outcome.path().to_path_buf(),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not install this build's relay; running the one beside this program");
+            source
+        }
     }
-    relay_source().unwrap_or(installed)
 }
 
 /// This build's relay in `bin`, updated when it is behind; `None` if there is no source.
@@ -156,7 +186,7 @@ pub(crate) fn refresh_relay(home: &Path) -> Option<PathBuf> {
     }
     std::fs::create_dir_all(&bin).ok()?;
     place(&bin, RELAY, &source)?;
-    same_build(&installed, &source).then_some(installed)
+    bindir::holds(&bin, RELAY, bindir::Source::File(&source)).then_some(installed)
 }
 
 /// Whether two paths name one file.
@@ -198,33 +228,22 @@ fn write(bin: &Path, name: &str, body: &str) -> std::io::Result<()> {
 /// copy that is running now is left alone: the old one still works, and the next
 /// start replaces it.
 fn place(bin: &Path, name: &str, source: &Path) -> Option<PathBuf> {
-    let installed = bin.join(file_name(name));
-    if same_build(&installed, source) {
-        return Some(installed);
+    match bindir::install(bin, name, bindir::Source::File(source)) {
+        Ok(bindir::Outcome::Pinned { installed, why }) => {
+            tracing::warn!(
+                name,
+                installed = %installed.display(),
+                why,
+                "a running copy holds this program's name; the directory keeps it"
+            );
+            Some(installed)
+        }
+        Ok(outcome) => Some(outcome.path().to_path_buf()),
+        Err(e) => {
+            tracing::warn!(name, error = %e, "could not install this program in the home's bin");
+            None
+        }
     }
-    let temp = bin.join(format!(".{}.{}", file_name(name), std::process::id()));
-    let _ = std::fs::remove_file(&temp);
-    let placed = copy(source, &temp).and_then(|()| std::fs::rename(&temp, &installed));
-    if placed.is_ok() {
-        return Some(installed);
-    }
-    let _ = std::fs::remove_file(&temp);
-    // In use, so this start cannot replace it; a usable old one beats none.
-    installed.is_file().then_some(installed)
-}
-
-/// Whether `installed` is already `source`: length and mtime, as `cli::server`
-/// compares them for the same pair.
-fn same_build(installed: &Path, source: &Path) -> bool {
-    let (Ok(here), Ok(there)) = (std::fs::metadata(installed), std::fs::metadata(source)) else {
-        return false;
-    };
-    here.len() == there.len()
-        && here
-            .modified()
-            .ok()
-            .zip(there.modified().ok())
-            .is_some_and(|(a, b)| a == b)
 }
 
 /// The file name a program is started by on this platform.
@@ -234,14 +253,6 @@ fn file_name(name: &str) -> String {
     } else {
         name.to_string()
     }
-}
-
-/// A link where one can be made, a copy where it cannot cross a volume.
-fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
-    if std::fs::hard_link(from, to).is_ok() {
-        return Ok(());
-    }
-    std::fs::copy(from, to).map(|_| ())
 }
 
 /// The `PATH` value that finds a home's `bin` first, then the shell's own tools.

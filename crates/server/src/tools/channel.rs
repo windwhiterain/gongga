@@ -261,6 +261,7 @@ impl Channels {
         }
         let words = crate::relay::Words {
             program: bin.to_string(),
+            build: protocol::version_line().to_string(),
             args: if args.is_empty() {
                 grammar.spawn.clone()
             } else {

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/bindir",
     "crates/protocol",
     "crates/skill",
     "crates/client",
@@ -26,6 +27,7 @@ authors = ["gongga contributors"]
 
 # In-workspace names are the un-prefixed crate names; the publish name is prefixed.
 [workspace.dependencies]
+bindir = { path = "crates/bindir", package = "gongga-bindir" }
 protocol = { path = "crates/protocol", package = "gongga-protocol" }
 skill = { path = "crates/skill", package = "gongga-skill" }
 client = { path = "crates/client", package = "gongga-client" }

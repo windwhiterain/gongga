@@ -34,6 +34,10 @@ pub struct Words {
     pub cwd: PathBuf,
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    /// The build that wrote this file, so a relay started by another build can say so
+    /// instead of reading the words with a shape it does not know.
+    #[serde(default)]
+    pub build: String,
 }
 
 /// What `status` says: enough to know a channel without this process.
@@ -74,6 +78,16 @@ fn program_of(name: &str) -> std::path::PathBuf {
 /// Runs one channel until its program ends.
 pub fn run(dir: &Path) -> anyhow::Result<()> {
     let words: Words = serde_json::from_slice(&std::fs::read(dir.join("cmd"))?)?;
+    // SPEC's "validate": a pair is one build. A file written by another build is not a
+    // field a default can paper over -- a misread `program` starts the wrong thing, and
+    // the failure names a channel instead of a mismatch (docs/notes/bindir.md).
+    if !words.build.is_empty() && words.build != protocol::version_line() {
+        anyhow::bail!(
+            "this relay is build {} and the file was written by {}: the pair is not one build",
+            protocol::version_line(),
+            words.build
+        );
+    }
     let mut command = Command::new(program_of(&words.program));
     command
         .args(&words.args)
