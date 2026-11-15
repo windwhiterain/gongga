@@ -10,7 +10,7 @@
 //! Nothing here drops text: a marker the document does not close is printed as it
 //! came, and a code row that is longer than the width is broken rather than cut.
 
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::render_wire::{DocumentSpan, SpanClass};
 
@@ -29,17 +29,27 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
         let line = lines[at].trim_end();
         let head = line.trim_start();
         at += 1;
+        // The fence is part of what was written, language included: a code block
+        // whose boundary is not drawn is a paragraph that happens to be blue.
         if head.starts_with("```") {
             code = !code;
+            out.push(vec![DocumentSpan::of(
+                format!("{}{}", CODE_MARGIN, head),
+                SpanClass::Marker,
+            )]);
             continue;
         }
         if code {
-            let body = if line.is_empty() {
-                " ".to_string()
-            } else {
-                line.to_string()
-            };
-            out.extend(wrap(&[DocumentSpan::of(body, SpanClass::Code)], width));
+            // Code keeps its own rows: a leading rule on every one of them, so the
+            // block has an edge whatever the pane, and a break that never looks for a
+            // space -- a line of code has no words to break between.
+            for piece in hard_wrap(line, width.saturating_sub(CODE_MARGIN.width())) {
+                let mut row = vec![DocumentSpan::of(CODE_MARGIN, SpanClass::Marker)];
+                if !piece.is_empty() {
+                    row.push(DocumentSpan::of(piece, SpanClass::Code));
+                }
+                out.push(row);
+            }
             continue;
         }
         if head.is_empty() {
@@ -226,6 +236,28 @@ fn clip(text: &str, width: usize) -> String {
 /// How many columns `text` takes when drawn.
 fn text_width(text: &str) -> usize {
     text.chars().map(|c| c.width().unwrap_or(1)).sum()
+}
+
+/// What every row of a code block opens with: the rule that makes it one block.
+const CODE_MARGIN: &str = "  │ ";
+
+/// `text` cut into pieces of at most `width` columns, breaking where it must.
+fn hard_wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut pieces = vec![String::new()];
+    let mut used = 0;
+    for character in text.chars() {
+        let wide = character.width().unwrap_or(1);
+        if used + wide > width {
+            pieces.push(String::new());
+            used = 0;
+        }
+        used += wide;
+        if let Some(last) = pieces.last_mut() {
+            last.push(character);
+        }
+    }
+    pieces
 }
 
 /// One row of prose: its block structure as a marker run, then its words.
