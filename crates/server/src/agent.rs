@@ -1537,15 +1537,6 @@ impl Agent {
         };
         let run_started = std::time::Instant::now();
         tracing::info!(session = %name, tool = %tool, "tool start");
-        // Read before the run moves the arguments: the adapter's general
-        // parameters title the call and cap its result.
-        let call_description = description_of(&arguments).to_string();
-        let max_output = arguments
-            .get("max_output")
-            .and_then(serde_json::Value::as_u64)
-            .map(|max| max as usize);
-        // Whose pictures these are: the machine the call's arguments name, if any.
-        // See `docs/notes/server-remote.md`.
         let printed_on = self.tools().machine_of(&tool, &arguments, &ctx);
         let stated_tier = session.tuning().cache_tier;
         let outcome = self
@@ -1567,18 +1558,9 @@ impl Agent {
         let attach_ms = attach_started.elapsed().as_millis() as u64;
         // SPEC's `max_output`: over the cap the output spills, and the model
         // reads the file's metadata.
-        let capped = max_output
-            .and_then(|max| {
-                crate::tools::cap_max_output(
-                    &ctx,
-                    &tool,
-                    (!call_description.is_empty()).then_some(call_description.as_str()),
-                    &call_id,
-                    &outcome.output,
-                    max,
-                )
-            })
-            .unwrap_or_else(|| outcome.output.clone());
+        // The cap was applied where the shared arguments were read, so this is the whole
+        // answer the call gave: the same bytes the model reads.
+        let capped = outcome.output.clone();
         // A tool that streamed nothing owes its output to the final chunk.
         let compacting = tool == crate::tools::live_compact::LIVE_COMPACT_TOOL;
         let mut tail = match sent.load(Ordering::Relaxed) {
@@ -2204,6 +2186,23 @@ mod tests {
         assert!(notice.contains("handoff threshold 20"), "{notice}");
         assert!(!notice.contains("{{"), "{notice}");
     }
+    /// The row a call is drawn with keeps its shared arguments: a title is read, not taken.
+    ///
+    /// # Invariant
+    ///
+    /// Reading the title must not eat the other shared names -- a row that silently lost `max_output`
+    /// would show a call that never stated it.
+    #[test]
+    fn the_row_keeps_the_shared_arguments_it_drew_a_title_from() {
+        let value = serde_json::json!(
+            {"description": "check the state", "max_output": 8000, "path": "a-file"}
+        );
+        let head = call_head("read", &value.to_string());
+        assert_eq!(head.description, "check the state");
+        let keys: Vec<&str> = head.fields.iter().map(|f| f.label.as_str()).collect();
+        assert!(keys.contains(&"max_output"), "{keys:?}");
+        assert!(keys.contains(&"path"), "{keys:?}");
+    }
 }
 /// What a call is, and the words it is read with: the tool and its arguments.
 ///
@@ -2214,22 +2213,15 @@ mod tests {
 /// crate and nothing on the wire moves. See `docs/notes/protocol-message.md`.
 pub(crate) fn call_head(tool: &str, arguments: &str) -> protocol::Head {
     let value: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
-    protocol::Head::call(tool, description_of(&value), call_fields(tool, &value))
-}
-
-/// What the call is for, in the model's own words: the one argument read as a title.
-///
-/// # Invariant
-///
-/// It is never a [`protocol::Field`]: an argument with no label of its own would be
-/// spelled a second time under a name the row already said. Only ever a title -- a
-/// missing or nonsensical one costs an untitled row, not a failed call.
-fn description_of(value: &serde_json::Value) -> &str {
-    value
-        .get("description")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .unwrap_or_default()
+    // The title is read by the same list the call layer reads, never by a second literal
+    // here: two readers of one name are two answers to what a call said. Read, not taken:
+    // the row still carries `max_output`, a field like any other.
+    let title = crate::tools::laws::Given::take(&mut value.clone()).description;
+    protocol::Head::call(
+        tool,
+        title.as_deref().unwrap_or_default(),
+        call_fields(tool, &value),
+    )
 }
 
 /// A call's arguments, each marked with whether SPEC's `abstract` shows it.

@@ -2764,11 +2764,19 @@ async fn declared_command(
     args: &Args,
     caller: Option<&str>,
 ) -> Outcome {
+    // The shared arguments are the call layer's, so they are read off here: a function
+    // has no parameter of that name, and one that arrived as a keyword argument is a name
+    // the caller may not spell. The same list the tool layer takes, read in the other door
+    // a declared command comes in by.
+    let mut own = args.clone();
+    for (name, _, _) in crate::tools::laws::ALL {
+        own.remove(*name);
+    }
     let mut call = Args::new();
     call.insert("id", route.skill.clone());
     call.insert(
         "cmd",
-        serde_json::json!({"name": route.function, "args": args.as_json()}),
+        serde_json::json!({"name": route.function, "args": own.as_json()}),
     );
     run_skill(d, &call, caller).await
 }
