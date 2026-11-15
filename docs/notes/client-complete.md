@@ -191,11 +191,12 @@ bracket or a quote unmatched.
 member, so a candidate for a member that is not its object's last appends `,` after
 what the value owes and past the caret, leaving the object open for the next one
 and leaving anything already typed after the caret alone. Whether a member is last
-is asked of the schema and the line together (`remaining`): the schema says what
-could follow, the line says which of those are already written. That is why
-`/set_session{` + Tab is `{"id":"",` (a second field, `mode`, can follow) while
-`/del_session{` + Tab is `{"path":""}` -- one argument, nothing to follow, and a
-comma before that close would be a trailing one.
+is asked of the line, not of the schema (`sibling`): the schema's unpublished
+fields are the ones a sticky entry fills at submission, so a comma written for one
+of those would be a trailing comma the server refuses. That is why
+`/set_session{` + Tab is `{"id":""}` while `/set_session{` `id` `a` `,` Tab is
+`{"id":"a","mode":` -- and why `/del_session{` + Tab is `{"path":""}`: one
+argument, nothing written to follow it.
 
 What a candidate does not do: enter a list, or say anything after the object has
 closed. An object field's value place is entered by its name, so that is where its

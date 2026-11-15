@@ -999,20 +999,16 @@ fn open_quote(line: &str) -> Option<char> {
     open
 }
 
-/// Whether the object has a member left for a sibling after the one being
-/// filled: a field the line has not stated yet.
+/// Whether a sibling follows the member being filled: another member of this
+/// object is already written on the line.
 ///
 /// # Invariant
 ///
-/// Asked of the schema and the line together, because neither answers alone: the
-/// schema says what could follow, and the line says which of those are already
-/// written. A member after which nothing is left closes its object, and a comma
-/// before that close is a trailing one the server refuses.
-fn remaining(object: &StructSchema, written: &[(String, Read)], filling: Option<&str>) -> bool {
-    object.fields.iter().any(|field| {
-        field.name != filling.unwrap_or_default()
-            && !written.iter().any(|(name, _)| name == &field.name)
-    })
+/// Asked of the line, not of the schema: a field the object publishes but nobody
+/// wrote is one a sticky entry fills at submission, and a comma before the close
+/// would still be a trailing one the server refuses.
+fn sibling(written: &[(String, Read)], filling: &str) -> bool {
+    written.iter().any(|(name, _)| name != filling)
 }
 
 /// The object schema at a path of field names, or `None` when the path leaves
@@ -1349,8 +1345,8 @@ fn object_completion(
             let Some(object) = schema_at(schema, &spot.path) else {
                 return Offered::default();
             };
-            // A name the object still has makes this member not the last.
-            let more = remaining(object, &spot.fields, None);
+            // A sibling already written means this member is not the last.
+            let more = sibling(&spot.fields, "");
             Offered {
                 subject: Some(subject_name(cmd, &spot.path)),
                 candidates: keys(object, &spot.fragment, "", &spot.fields, owed, more),
@@ -1372,9 +1368,8 @@ fn object_completion(
             if field.object.is_some() {
                 return Offered::default();
             }
-            // The same question as for a name: whether another member may
-            // follow this one, given what the line already states.
-            let more = remaining(object, &spot.fields, Some(name));
+            // A sibling already written means this member is not the last.
+            let more = sibling(&spot.fields, name);
             Offered {
                 subject: Some(subject_name(cmd, &spot.path)),
                 candidates: values(field, &spot, ctx, words, owed, more),

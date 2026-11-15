@@ -22,17 +22,18 @@ the token was, it just did not stop there.
 
 ## The comma
 
-A candidate that completes a member whose object can hold another writes `,` —
-after the value's closers and *after the caret*, so the comma lands past the
-insertion point and a following sibling the operator typed is untouched. Whether
-the object can hold another is the schema's answer, not the text's: the text says
-nothing until the operator types the closer, and at the moment a member is
-completed that closer is not there. `remaining(object, written, filling)` is true
-when a field other than the one being filled is not yet stated.
+A candidate that completes a member another member is already on the line for writes
+`,` — after the value's closers and *after the caret*, so the comma lands past the
+insertion point and a following sibling the operator typed is untouched. Whether a
+member follows is the line's answer, not the schema's: the schema publishes every
+argument a command takes, and most of them are never typed — sticky fills them at
+submission. `sibling(written, filling)` is true when a field other than the one
+being filled is already stated.
 
-So `/set_session{` + Tab is `{"id":"",` (two fields: `id` and `mode`), while
-`/del_session{` + Tab is `{"path":""}` — `del_session` publishes one argument, and
-a member nothing can follow is not given a separator.
+So `/send_message{` + Tab is `{"message":""}` with no comma (a `session`
+argument exists, but nothing on the line states it), and a comma appears once the
+operator has written a second member: `{"id":"a",` + Tab completes the next
+name into a line that already has a sibling.
 
 An empty token (`start == end`) is a *place*, not a refusal: a caret right after
 `{` is a name place with nothing typed, and a caret right after `:` is a value

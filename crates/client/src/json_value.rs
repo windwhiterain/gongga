@@ -343,10 +343,11 @@ fn place_token(
     let fields = open.fields.clone();
     if in_string {
         let closed = quoted_end(text, quote_at);
-        // A quoted value ends at the caret; a quoted name runs through its quote.
-        let end = match (value_string, closed) {
-            (true, _) | (false, None) => cursor,
-            (false, Some(end)) => end,
+        // A token the text already closed is replaced whole: leaving the quote
+        // behind would close the insertion in the middle.
+        let end = match closed {
+            Some(end) => end,
+            None => cursor,
         };
         return Some(Spot {
             start: quote_at,
