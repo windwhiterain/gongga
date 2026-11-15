@@ -1,6 +1,11 @@
 # Frontier harness research survey (for harness-exp)
 
 Date: 2026-11-15. Purpose: inspiration for frontier experiments on Gongga.
+
+Superior's verdict (2026-11-15): implemented features are already experimentally
+validated -- no comparative re-experiments on them. Experiments target features the
+harness does NOT have; validated ones become new harness features.
+
 Method: web-search skill (DeepSeek REST). Original pages of lilianweng.github.io and
 anthropic.com were not fetchable through the tool (HTTP 404); read via full Chinese
 translation (hub.baai.ac.cn/view/56234) and a detailed secondary article
@@ -82,9 +87,9 @@ the edit->prediction->verify discipline wired into the loop.
 - Codex (GPT-6 Astra) reportedly keeps notes across context windows instead of one
   summary; older windows stay searchable (via arXiv:2610.38980's related work).
 
-Gongga fit: live_compact settled/next is the compaction mechanism to measure;
-keep_alive + subscribe + subagent give the idle-time slot for dreaming; sqlite
-transcripts are the searchable past windows.
+Gongga fit: live_compact settled/next is the compaction mechanism; keep_alive +
+subscribe + subagent give the idle-time slot for dreaming; sqlite transcripts are
+the searchable past windows.
 
 ## Thread 3: prefix cache / serving co-design
 
@@ -105,9 +110,8 @@ transcripts are the searchable past windows.
   budgeting (+5.5 task score over R-KV). Semantic-aware eviction (arXiv:2605.18825).
 
 Gongga fit: Meta Prefix Cache Planning already simulates a cache tree and orders
-meta content by price; Manifest Order gives a measurable ordering rule to test
-against it; live_compact's settled-before-checkpoint accumulation is a stable-prefix
-design that can be measured, not assumed.
+meta content by price. Engine-side co-design (Helios, CacheSage) is out of reach
+with commercial providers; the harness-side ordering lever is already implemented.
 
 ## Thread 4: durable execution / process lifecycle
 
@@ -120,8 +124,7 @@ design that can be measured, not assumed.
   diagnosis, resume-point governance; notes most frameworks lack the full cycle.
 
 Gongga fit: channels detach/adopt across restart, cancel's canceled/waiting flags,
-sqlite-everything, event position counters. The exactly-once side-effect resolution
-on adopt is the piece to test with crash injection.
+sqlite-everything, event position counters -- implemented and validated.
 
 ## Thread 5: multi-agent orchestration
 
@@ -131,8 +134,8 @@ on adopt is the piece to test with crash injection.
 - Weng's pattern: parallelism must be explicit and inspectable; child outputs live
   in files/logs/state, so the parent can resume and reason about execution history.
 
-Gongga fit: subagent skill + session tree + polity roles; experiment is fixed roles
-vs dynamically created subagents, with MAST-style failure taxonomy as the measure.
+Gongga fit: subagent skill + session tree + polity roles exist; dynamic creation
+of specialists does not.
 
 ## Thread 6: evaluation methodology
 
@@ -144,23 +147,47 @@ vs dynamically created subagents, with MAST-style failure taxonomy as the measur
   overall but drops to sixth on Terminal-Bench because its cleanup-after-itself
   habit fails tasks -- a single harness behavior, not model quality.
 
-## Candidate experiments (not started; need superior's pick)
+## New-feature candidates (verified absent; need superior's pick)
 
-1. Compaction survival probes: freeze fact probes (paths/ids/decisions) before a
-   live_compact, score recovery after; compare settled/next vs equal-size brief.
-   Cheapest; measures a core Gongga feature; ClaimKeep method off the shelf.
-2. Governance pinning: test whether AGENTS/SPEC invariants survive compaction and
-   adversarial context pressure; Constraint Pinning if they do not.
-3. Prefix ordering measurement: Manifest-Order-style arms (frequency core /
-   volatility tail) against the existing cache-tree planner; measure real cached%
-   and cost from provider responses. Uses existing instrumentation.
-4. Dreaming on idle: subscribe to turn-end/idle, run a sleep-time subagent that
-   consolidates notes + verify store, corrects stale entries; measure note count
-   vs usefulness (the 413-vs-9 lesson: salience, not volume).
-5. Crash-injection resume: kill server mid-turn, verify adopt + exactly-once tool
-   effects; L3 script shape already established in scripts/*_selftest.sh.
-6. AHE-style self-evolution loop: the big one. Needs a fixed task suite first
-   (selftests + a small Terminal-Bench-like set), edit->falsifiable-prediction
-   discipline, justice role as out-of-loop gate against reward hacking, archive
-   of harness variants per worktree. Known limits to design around: non-additive
-   component interaction, regression blindness.
+Absence checked 2026-11-15 against SPEC, the skill list, and grep over crates/*/src
+and ship/skills: no memory store, no dreaming/consolidation, no search/index over
+cut transcript segments (get_trajectory is range-based only), no self-evolution
+loop, no dynamic subagent creation (subagent skill spawns sessions; polity roles
+are fixed). Grep hits for "memory"/"search" were incidental (in-memory state,
+provider web_search tools).
+
+1. Memory + dreaming (Anthropic components-of-agent-memory 2026-11-05; Letta
+   sleep-time compute). A cross-session memory store with a note lifecycle:
+   hypothesis -> verified rule with evidence -> correction/retirement; salience
+   discipline (record only what the environment does not already tell you); top
+   rules preloaded at session start. An idle-time dream session (subscribe on
+   turn-end + the keep_alive slot + subagent) consolidates transcripts/notes,
+   corrects stale entries, builds interlinked representations.
+   Experiment: dream cycles over this repo's real history; measure stale entries
+   corrected and later-session retrieval; guard the 413-vs-9 over-recording trap.
+2. Self-evolution loop (AHE arXiv:2604.25850; Meta-Harness; MILO; DGM). Harness
+   variants as worktree branches; every edit carries a falsifiable prediction
+   verified next round; a fixed task suite scores variants; the archive keeps
+   winners AND negative results; justice stays out of the loop as the gate.
+   evolve deploys today, but nothing proposes/scores/archives variants. Start
+   with content-repo components (skills/prompts, no rebuild) before server code.
+   Design around the known limits: non-additive interaction, regression blindness
+   (held-out suite), reward hacking (evaluator outside the loop).
+3. Recall over cut history (Codex Astra-style notes across windows). Index cut
+   transcript segments; an agent-facing recall tool returns snippets with
+   positions; live_compact summaries carry recall handles instead of everything.
+   Experiment: a long task with forced compaction, probes whose answers live only
+   in cut history; does recall recover them.
+4. Dynamic subagent creation (AOrchestra arXiv:2602.03786). The parent generates a
+   specialist (role prompt + model config + tools) per subtask instead of fixed
+   polity roles; child outputs as files. Experiment: fixed roles vs generated
+   specialists on a multi-part task.
+5. Constraint pinning (Governance Decay arXiv:2606.22528). Pinned context rows
+   (SPEC invariants, user verdicts) that compaction cannot cut. Small; can fold
+   into the memory store as pinned entries.
+
+Excluded by the verdict: re-measuring live_compact survival, prefix ordering vs
+the existing planner, crash-resume of adopt -- all implemented and validated.
+
+Recommendation: 1 first (self-contained, builds on existing primitives), 2 as the
+flagship (needs a fixed task suite first), 3 as the companion to live_compact.
