@@ -424,14 +424,21 @@ pub(crate) async fn run_command(
         _ = cancel.cancelled() => None,
     };
     let ended = match &outcome {
-        Some(done) => json!({
-            "id": Value::Null,
-            "output": done.message,
-            "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
-            "matched": false,
-            "exit": if done.ok { 0 } else { 1 },
-            "data": done.data,
-        }),
+        Some(done) => {
+            let rows = answer_rows(&done.events);
+            let mut answer = json!({
+                "id": Value::Null,
+                "output": done.message,
+                "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
+                "matched": false,
+                "exit": if done.ok { 0 } else { 1 },
+                "data": done.data,
+            });
+            if !rows.is_empty() {
+                answer["events"] = Value::Array(rows);
+            }
+            answer
+        }
         None => json!({
             "id": Value::Null,
             "output": "",
@@ -446,6 +453,19 @@ pub(crate) async fn run_command(
         Some(done) if !done.ok => ToolOutcome::err(ended.to_string()),
         _ => ToolOutcome::ok(ended.to_string()),
     }
+}
+
+/// The rows an answer carries, in the spelling its connection would have sent them.
+///
+/// # Invariant
+///
+/// The event and its number, never a rendering of it: a caller that parses them and a
+/// window that draws them are reading one shape. See `docs/notes/server-tools-mod.md`.
+fn answer_rows(events: &[(Option<u64>, protocol::Event)]) -> Vec<Value> {
+    events
+        .iter()
+        .map(|(seq, event)| json!({"seq": seq, "event": event}))
+        .collect()
 }
 
 /// A call's arguments as the arguments a command reads.
