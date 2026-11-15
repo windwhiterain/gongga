@@ -109,7 +109,11 @@ ModelConfig := { # sticky
   ctx_limit = 70%, # re-default if model change
   cache_tier = provider_default() # re-default if model change
 }
-Workspace := {remote: optional[Remote] = none, cwd: path = ".", worktree: optional[str] = none}
+Workspace := {
+  remote: optional[Remote] = none,
+  cwd: path = ".",
+  worktree: optional[str] = none, # if any, auto create workspace bound to session's lifetime
+}
 SessionConfig := { # sticky
   model_config: ModelConfig,
   workspace: Workspace,
