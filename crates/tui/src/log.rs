@@ -1679,13 +1679,22 @@ fn document_span(span: &client::render_wire::DocumentSpan) -> Span<'static> {
     // say what a run is.
     let style = match span.class {
         SpanClass::Text => base,
-        SpanClass::Heading => base.add_modifier(Modifier::BOLD),
+        // Yellow for a heading: the brightest slot a heading can take that is still
+        // a hue, and one no theme draws dark.
+        SpanClass::Heading => Style::default()
+            .fg(Color::LightYellow)
+            .add_modifier(Modifier::BOLD),
         SpanClass::Strong => base.add_modifier(Modifier::BOLD),
         SpanClass::Emphasis => base.add_modifier(Modifier::ITALIC),
         SpanClass::Strike => base.add_modifier(Modifier::CROSSED_OUT),
         SpanClass::Code => base,
         SpanClass::Marker => Style::default().fg(Color::DarkGray),
-        SpanClass::Link => base.add_modifier(Modifier::UNDERLINED),
+        // Named, not `LightBlue`: the bright-blue *slot* is #3B78FF in the default
+        // Windows palette, which reads as a dark blue on a dark background. Index 117
+        // is #87D7FF and is the same light blue on every 256-colour terminal.
+        SpanClass::Link => Style::default()
+            .fg(Color::Indexed(117))
+            .add_modifier(Modifier::UNDERLINED),
     };
     Span::styled(span.text.clone(), style)
 }
