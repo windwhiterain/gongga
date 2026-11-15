@@ -586,12 +586,13 @@ pub trait Sink {
     fn older_page(&mut self, window: &str, rows: &[PastRow]) {
         for row in rows {
             match row {
-                PastRow::Line { kind, text } => self.line(window, *kind, text),
+                PastRow::Line { kind, text, .. } => self.line(window, *kind, text),
                 PastRow::Block {
                     key,
                     kind,
                     tag,
                     text,
+                    ..
                 } => self.stream(window, key, *kind, tag, text, true),
             }
         }
@@ -628,6 +629,8 @@ pub(crate) struct Page {
     pub(crate) rows: Vec<PastRow>,
     /// Where the block under a key is, while the page is still being collected.
     at: HashMap<String, usize>,
+    /// The transcript row the sink is on: what each row it makes is stamped with.
+    seq: i64,
 }
 
 impl Page {
@@ -638,8 +641,14 @@ impl Page {
 }
 
 impl Sink for Page {
+    /// A page is read back by number: every row keeps the one it came from.
+    fn row(&mut self, _window: &str, seq: u64, _event: &Event) {
+        self.seq = seq as i64;
+    }
+
     fn line(&mut self, _window: &str, kind: LineKind, text: &str) {
         self.rows.push(PastRow::Line {
+            seq: self.seq,
             kind,
             text: text.to_string(),
         });
@@ -654,12 +663,16 @@ impl Sink for Page {
         text: &str,
         done: bool,
     ) {
+        // The newest row drawn into the block is where the block ends.
+        let row_seq = self.seq;
         if let Some(PastRow::Block {
             tag: label,
             text: body,
+            seq: at_seq,
             ..
         }) = self.block(key)
         {
+            *at_seq = row_seq;
             if !tag.is_empty() {
                 label.clear();
                 label.push_str(tag);
@@ -670,6 +683,7 @@ impl Sink for Page {
             body.push_str(text);
         } else {
             self.rows.push(PastRow::Block {
+                seq: self.seq,
                 key: key.to_string(),
                 kind,
                 tag: tag.to_string(),

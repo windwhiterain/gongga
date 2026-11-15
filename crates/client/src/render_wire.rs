@@ -151,6 +151,19 @@ pub enum RenderMessage {
     Rewind {
         window: String,
     },
+    /// The stored row `seq` is the one the frames after it draw.
+    ///
+    /// # Invariant
+    ///
+    /// A row and its number together, in the order the window's own sink got them:
+    /// a front-end stamps every block it makes after this frame with this number,
+    /// so a window can say which transcript rows it holds. Only the side that
+    /// receives a `(seq, event)` pair can send it. See
+    /// `docs/notes/client-render-wire.md`.
+    Row {
+        window: String,
+        seq: i64,
+    },
     StickySession {
         name: Option<String>,
     },
@@ -210,11 +223,15 @@ pub enum RenderMessage {
 #[serde(tag = "row", rename_all = "snake_case")]
 pub enum PastRow {
     Line {
+        /// The transcript row this line came from: the window's own coordinate.
+        seq: i64,
         kind: LineKind,
         text: String,
     },
     /// A block that streams under `tag`, kept by `key` while it lived.
     Block {
+        /// The newest transcript row drawn into this block.
+        seq: i64,
         key: String,
         kind: LineKind,
         tag: String,
@@ -462,6 +479,13 @@ impl Sink for WireSink {
     fn older(&mut self, window: &str) {
         self.cursor.push(CursorMessage::Older {
             window: window.to_string(),
+        });
+    }
+
+    fn row(&mut self, window: &str, seq: u64, _event: &protocol::Event) {
+        self.render.push(RenderMessage::Row {
+            window: window.to_string(),
+            seq: seq as i64,
         });
     }
 

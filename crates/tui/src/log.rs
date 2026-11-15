@@ -82,6 +82,15 @@ struct Entry {
     fold: Vec<String>,
     /// Where this block sits among the blocks of its own window.
     at: usize,
+    /// The transcript row this block's rows came from: its window's own coordinate.
+    ///
+    /// # Invariant
+    ///
+    /// `0` is "no number": a row this build could not place, or one drawn before
+    /// any `RenderMessage::Row` said which row it was. A growing block carries the
+    /// newest number drawn into it, so a window's held range ends where its sink
+    /// last was. See `docs/notes/tui-log.md`.
+    seq: i64,
 }
 
 impl Entry {
@@ -110,6 +119,7 @@ impl Entry {
             styled: Vec::new(),
             fold: Vec::new(),
             at: 0,
+            seq: 0,
         };
         // Width 0 means "not measured yet": the first draw reflows at its own width.
         if width > 0 {
@@ -677,6 +687,9 @@ pub struct Log {
     /// Columns of a window a box leaves to the pane on each side. See
     /// [`Log::set_box_edge`].
     edge: usize,
+    /// The transcript row each window's sink is on: what a block made now is
+    /// stamped with. See [`Log::mark`].
+    stamps: HashMap<String, i64>,
 }
 
 impl Default for Log {
@@ -688,6 +701,7 @@ impl Default for Log {
             open: HashMap::new(),
             block_size: 0,
             edge: protocol::DEFAULT_BOX_EDGE,
+            stamps: HashMap::new(),
         }
     }
 }
@@ -783,6 +797,46 @@ impl Log {
     /// starts at row zero. See `docs/notes/tui-log.md`.
     pub fn forget(&mut self, window: &str) {
         self.drop_window(window);
+    }
+
+    /// The stored row this window's sink is on: what a block made now belongs to.
+    ///
+    /// # Invariant
+    ///
+    /// A frame's position, never a frame's content: the client says which transcript
+    /// row the calls after it draw, and every block made from here on is stamped
+    /// with it. That is what lets a window state the range it holds without reading
+    /// its own rows back. See `docs/notes/tui-log.md`.
+    pub fn mark(&mut self, window: &str, seq: i64) {
+        self.stamps.insert(window.to_string(), seq);
+    }
+
+    /// The transcript rows a window holds, oldest and newest.
+    ///
+    /// # Invariant
+    ///
+    /// The oldest is its first block's number and the newest is the row its sink is
+    /// on: a window holds one run, so two numbers say all of it. A window whose
+    /// rows carry no number says `None` rather than a range it would be guessing.
+    /// See `docs/notes/tui-log.md`.
+    pub fn held(&self, window: &str) -> Option<(i64, i64)> {
+        let newest = *self.stamps.get(window)?;
+        let oldest = self
+            .views
+            .get(window)?
+            .blocks
+            .first()
+            .map(|at| self.entries[*at].seq)?;
+        (oldest > 0 && newest >= oldest).then_some((oldest, newest))
+    }
+
+    /// Stamps block `at` with the row its window's sink is on.
+    fn stamp_block(&mut self, at: usize) {
+        let window = self.entries[at].window.clone();
+        let seq = self.stamps.get(window.as_ref()).copied().unwrap_or(0);
+        if seq > 0 {
+            self.entries[at].seq = seq;
+        }
     }
 
     /// Drops the oldest blocks of one window that `budget` rows no longer cover.
@@ -924,17 +978,25 @@ impl Log {
             .iter()
             .map(|row| {
                 let mut entry = match row {
-                    PastRow::Line { kind, text } => Entry::new(name, *kind, text.clone(), width),
+                    PastRow::Line { kind, text, .. } => {
+                        Entry::new(name, *kind, text.clone(), width)
+                    }
                     PastRow::Block {
                         key,
                         kind,
                         tag,
                         text,
+                        ..
                     } => {
                         let mut entry = Entry::with_tag(name, *kind, tag, text.clone(), width);
                         entry.key = key.clone();
                         entry
                     }
+                };
+                // A page says where each of its rows came from: the number travels
+                // with the row, or a window could not say what it holds.
+                entry.seq = match row {
+                    PastRow::Line { seq, .. } | PastRow::Block { seq, .. } => *seq,
                 };
                 // A page is what already happened: nothing of it streams in later.
                 entry.sealed = true;
@@ -981,6 +1043,8 @@ impl Log {
             self.entries[at].window = shared;
         }
         let window = self.entries[at].window.clone();
+        // A block made now is the row this window's sink is on.
+        self.stamp_block(at);
         let ledger = self.views.entry(window).or_default();
         let pos = ledger.blocks.len();
         ledger.blocks.push(at);
@@ -1380,6 +1444,7 @@ impl Log {
             Some(at) => {
                 let before = self.contributions(at);
                 let width = self.width_of(&self.entries[at].window);
+                self.stamp_block(at);
                 self.entries[at].append(text, width);
                 let after = self.contributions(at);
                 self.shift(at, before, after);
@@ -1440,6 +1505,7 @@ impl Log {
                 at
             }
         };
+        self.stamp_block(at);
         let before = self.contributions(at);
         self.entries[at].kind = kind;
         self.entries[at].tag = tag.to_string();

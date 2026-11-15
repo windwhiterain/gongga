@@ -90,6 +90,11 @@ pub(crate) fn apply_frame(tui: &mut Tui, frame: RenderMessage) -> Option<UiInten
             tui.drop_windows();
             None
         }
+        // Where the rows after this one came from: a position, not a drawing.
+        RenderMessage::Row { window, seq } => {
+            tui.mark(&window, seq);
+            None
+        }
         // The words changed: ask again for the line the operator is on.
         RenderMessage::Vocabulary { .. } => Some(complete_intent(tui)),
         RenderMessage::Completion {
@@ -184,6 +189,7 @@ fn draw(sink: &mut TuiSink<'_>, frame: RenderMessage) {
         } => sink.0.document(&window, &key, kind, &tag, &rows, done),
         // The control frames were answered by `apply_frame`.
         RenderMessage::Draft { .. }
+        | RenderMessage::Row { .. }
         | RenderMessage::Server { .. }
         | RenderMessage::Repoint { .. }
         | RenderMessage::Vocabulary { .. }

@@ -442,6 +442,16 @@ impl Panes {
         self.log.prepend(window, rows)
     }
 
+    /// The stored row a window's sink moved to: what the rows after it belong to.
+    pub fn mark(&mut self, window: &str, seq: i64) {
+        self.log.mark(window, seq);
+    }
+
+    /// The transcript rows a window holds, oldest and newest.
+    pub fn held(&self, window: &str) -> Option<(i64, i64)> {
+        self.log.held(window)
+    }
+
     /// Holds a pane's rows while a page goes in above them.
     ///
     /// # Invariant

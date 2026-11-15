@@ -193,7 +193,12 @@ fn table(
 /// by [`wrap`], so `**bold**` and a backticked name inside a table look the way they
 /// look outside one. A heading row promotes what it holds, so a header cell is a
 /// heading rather than a bold word in the body's own ink.
-fn compose(row: &[String], widths: &[usize], aligns: &[Align], class: SpanClass) -> Vec<Vec<DocumentSpan>> {
+fn compose(
+    row: &[String],
+    widths: &[usize],
+    aligns: &[Align],
+    class: SpanClass,
+) -> Vec<Vec<DocumentSpan>> {
     let cells: Vec<Vec<Vec<DocumentSpan>>> = widths
         .iter()
         .enumerate()

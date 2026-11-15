@@ -964,6 +964,16 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// Says which stored row the frames after it draw: a window's own coordinate.
+    ///
+    /// # Invariant
+    ///
+    /// A position, never a drawing: nothing is added to the window, and a block
+    /// made later is stamped with it. See `docs/notes/tui-lib.md`.
+    pub fn mark(&mut self, name: &str, seq: i64) {
+        self.screen.panes.mark(name, seq);
+    }
+
     /// Adds a finished line to the window `name` names.
     pub fn push(&mut self, name: &str, kind: LineKind, text: impl Into<String>) {
         self.screen.panes.line(name, kind, text);
