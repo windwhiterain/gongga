@@ -72,8 +72,11 @@ fn block(head: &str) -> Vec<DocumentSpan> {
         return spans;
     }
     if let Some(rest) = text.strip_prefix("> ") {
+        // A light vertical rule, not a left-eighth block: the block is missing from
+        // the faces a body is drawn in, and a fallback glyph is an advance wider than
+        // the column it claims -- one column of prose lost per quoted row.
         spans.push(DocumentSpan::of(
-            format!("{}▏ ", " ".repeat(STEP)),
+            format!("{}│ ", " ".repeat(STEP)),
             SpanClass::Marker,
         ));
         spans.extend(inline(rest));

@@ -69,7 +69,9 @@ has 11 drawing + 6 control (`StickySession` is a control frame). The C# parser
 follows the code. `Option<T>` fields arrive as `null`, never omitted.
 
 `RenderMessage` is semantic: `LineKind` says what a row is, and the front-end
-owns colour, wrapping and columns. `Wire/WireTypes.cs` reads frames with
+owns colour. Wrapping is the client's (`crates/client/src/document.rs`), so the
+one thing a front-end has to answer is how wide its pane draws -- see "The width
+a body is wrapped at" below. `Wire/WireTypes.cs` reads frames with
 `JsonDocument` and skips an unreadable or unknown frame instead of throwing; a
 bad line must never close the window.
 
@@ -251,6 +253,41 @@ empty", these came from the same off-screen run once it asked for a page:
   scrolls inside itself) while `box_edge` is the margin it keeps from the events.
 - The completion popup uses keyboard selection and a click to accept; it does
   not mirror the terminal's popup geometry.
+
+## The width a body is wrapped at
+
+A pane answers `UiIntent::Columns` with the width its rows are wrapped at, and
+the answer is **the width a realized row is given** -- `SpanLine.Bounds.Width`,
+not the pane's viewport less paddings. Between the pane and the row sit the
+block's padding, the fold's column, the kind's mark and SPEC's `box_edge`
+margin; each was subtracted as a constant for a while, and the constants were
+wrong in one direction only -- a body six columns narrower than the pane, in
+every pane, on every window (measured: 55 columns stated where the box held 61,
+`max_output` in `.dev/verify/<sha>-gui-width.json`). Before the first row exists
+there is nothing to measure, so the viewport less those paddings is the estimate,
+and it is replaced on the next layout pass.
+
+One column is still not enough slack for a glyph the body's face does not have.
+`UnicodeWidthChar` counts a fallback glyph as one column whatever the fallback
+draws it at, so a row that fits by column count can be a pixel too wide and take
+a second visual line. The rows are the measurement that catches it: a document
+row is one line, so `TextLayout.TextLines.Count > 1` says a pane is over, and one
+column comes off it. Two things keep that check honest:
+
+- it runs only when the statement did not change in this pass, and it ignores a
+  row holding more characters than the statement -- such a row was wrapped at an
+  older width and says nothing about this one. Without that filter the check
+  narrows a pane once per layout pass, forever, reading the row before the last;
+- the width it settles on is remembered per pane and per box width, because the
+  estimate is the same number every pass and would otherwise widen the pane back
+  and trade places with the row forever.
+
+What made the check fire at all was one character: the quote marker was `▏`
+(U+258F), which Consolas does not have, so it was drawn from a fallback at 7.9px
+where its column is 7.2px. It is `│` (U+2502) now, which the face draws at its
+advance exactly -- measured, in `crates/client/src/document.rs`. A marker is the
+client's choice of glyph, so the front-ends' column arithmetic can only be exact
+for a glyph the drawing can measure.
 
 ## The look
 

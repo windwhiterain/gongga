@@ -64,3 +64,20 @@ PASS two panes / two rows lit / header click moves focus: alpha
 - `block_size` / `box_edge` 生效没有单独断言：帧解析与 `Dress` 已通，但没有一次 `set_render`
   的真帧观测。
 - markdown 没做（SPEC 的 `output: colored markdown` 仍未对齐）。
+
+## 2026-11-15 收口：pane 宽度差的那一列
+
+交接时留的两条，一条结案、一条量清楚了：
+
+- **宽度不再猜**：`NotifyColumns` 用 `SpanLine.Bounds.Width`（行自己拿到的框），
+  不再减 `BlockPadding`/`2*box_edge`/bar——那三样都在行的框外面，减一次就少六列。
+  实测同一 pane：55 → 61 列；同一 994 框里最宽行的墨迹 936 → 986px。
+- **差的那一个字符是 `▏`**：Consolas 没有 U+258F，走 fallback 画成 7.9px 而它只占 7.2px 的列，
+  于是恰好满行的引用行溢出 1 列、被 Avalonia 折成第二行（`w/rap` 那种孤字）。换成 `│`（U+2502，
+  实测 7.2px）。marker 是 client 的选择，所以列宽算得准的前提是「画得出、且恰好一列」。
+- **兜底**：`TextLayout.TextLines.Count > 1` 说明某行溢出，减一列；只在「这一轮没改宽度」时判，
+  且只判字符数 ≤ 当前列数的行（否则读到的是上一轮的旧排版，会一路减到 20）；定下来的列数按
+  pane+框宽记住，否则下一轮估计值又把它加回去，来回跳。
+- **paging 那两条仍是 FAIL**，现在有数了：3 轮（13 blocks）能到顶并发出 `Older`，但 pane 本来就
+  握着全部 13 块，没有更早的可landing；5 轮（19 blocks）六次 PageUp 只到 offset 833，没到顶。
+  形状像是「client 第一页就拿了整份 transcript」，要改的是那个页大小或 harness 的步数。

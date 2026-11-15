@@ -29,6 +29,10 @@ public partial class MainWindow : Window
     private List<(string Window, int Rows)> _rooms = new();
     private List<(string Window, int Columns)> _columns = new();
 
+    /// The widest statement a pane's rows have been proven to fit in, and the box it
+    /// was proven in: a column count is a fact about one box width, not about a pane.
+    private readonly Dictionary<string, (double Box, int Columns)> _proven = new();
+
     /// A block's own horizontal padding, in pixels.
     private const double BlockPadding = 12;
 
@@ -481,51 +485,86 @@ public partial class MainWindow : Window
     /// Tells the client how wide each open pane draws a body: the width its document
     /// rows are wrapped at. A body is wrapped once, in the client, so this is the one
     /// measurement only the drawing can make. See `docs/notes/client-document.md`.
+    ///
+    /// # Invariant
+    ///
+    /// A row is judged only once the rows in hand were wrapped at the width just
+    /// stated: a row still holding an older, wider wrap says nothing about this one.
     private void NotifyColumns()
     {
-        var columns = new List<(string, int)>();
+        var panes = new List<(string Name, double Box, int Columns, List<Views.SpanLine> Rows)>();
         foreach (var pane in _model.Panes)
         {
-            if (_viewers.TryGetValue(pane.Name, out var viewer) && viewer.Viewport.Width > 0)
+            if (!_viewers.TryGetValue(pane.Name, out var viewer) || viewer.Viewport.Width <= 0)
             {
-                // The width a row is actually given: a row stretches to the block's
-                // content box, so its own laid-out width is that width -- measured,
-                // not derived from paddings this file would have to know. Before the
-                // first row exists, the pane's own box is the answer.
-                var row = viewer.GetVisualDescendants()
-                    .OfType<Views.SpanLine>()
-                    .FirstOrDefault(line => line.Bounds.Width > 0);
-                var usable = (row?.Bounds.Width
-                    ?? viewer.Viewport.Width - viewer.Padding.Left - viewer.Padding.Right)
-                    // A row stretches to its block's box, and the box's own padding is
-                    // drawn inside that width, so it is a column the words cannot use.
-                    - BlockPadding
-                    - 2 * _model.Edge
-                    // The bar appears exactly when the body overflows, which is the case
-                    // that matters: a column it takes is a word broken at the edge.
-                    - Bar(viewer);
-                // One column of slack: a row that wraps a character early is a row, one
-                // that wraps late is a lost letter.
-columns.Add((pane.Name, Math.Max(20, (int)(usable / Advance))));
+                continue;
             }
+            // The width a row is actually given: a row is the box its own words are
+            // drawn in, so its laid-out width is that width -- measured, not derived
+            // from paddings this file would have to know. The pane's viewport is not
+            // it: the block's padding, the fold's column, the kind's mark and SPEC's
+            // `box_edge` margin all sit between the two, and every guess at them cost
+            // prose one column per guess.
+            var rows = viewer.GetVisualDescendants()
+                .OfType<Views.SpanLine>()
+                .Where(line => line.Bounds.Width > 0)
+                .ToList();
+            var usable = rows.Count != 0
+                ? rows[0].Bounds.Width
+                : viewer.Viewport.Width - viewer.Padding.Left - viewer.Padding.Right
+                    - BlockPadding - 2 * _model.Edge;
+            // One column of slack: a row that wraps a character early is a row, one
+            // that wraps late is a lost letter.
+            var stated = Math.Max(20, (int)(usable / Advance));
+            // A width this pane's rows were already too wide for stays narrowed: the
+            // estimate is the same number every pass, so without the memory the pass
+            // that fits would widen it back and the two would trade places forever.
+            if (rows.Count != 0
+                && _proven.TryGetValue(pane.Name, out var proven)
+                && Math.Abs(proven.Box - usable) < 0.5)
+            {
+                stated = Math.Min(stated, proven.Columns);
+            }
+            panes.Add((pane.Name, usable, stated, rows));
         }
-        if (SameColumns(columns, _columns))
+        var columns = panes.Select(pane => (pane.Name, pane.Columns)).ToList();
+        if (!SameColumns(columns, _columns))
+        {
+            _columns = columns;
+            if (columns.Count != 0)
+            {
+                _client.Send(Intents.Columns(columns));
+            }
+            return;
+        }
+        // A glyph the body's face does not have is drawn from a fallback at another
+        // advance, so a row that fits by column count can still be a pixel too wide
+        // and take a second line. A document row is one line, so the rows themselves
+        // say which pane is over, and one column comes off it.
+        //
+        // A row holding more characters than the width states was wrapped at an older
+        // width and says nothing about this one: the client answers a stated width one
+        // pass later, and judging before it does narrows a pane column by column for
+        // as long as the check keeps looking at the row before the last.
+        var narrowed = panes
+            .Where(pane => pane.Rows.Exists(row => row.TextLayout.TextLines.Count > 1
+                && Characters(row) <= pane.Columns))
+            .Where(pane => pane.Columns > 20)
+            .ToList();
+        if (narrowed.Count == 0)
         {
             return;
         }
-        _columns = columns;
-        if (columns.Count != 0)
+        foreach (var pane in narrowed)
         {
-            _client.Send(Intents.Columns(columns));
+            _proven[pane.Name] = (pane.Box, pane.Columns - 1);
         }
+        var next = panes
+            .Select(pane => (pane.Name, pane.Columns - (narrowed.Exists(one => one.Name == pane.Name) ? 1 : 0)))
+            .ToList();
+        _columns = next;
+        _client.Send(Intents.Columns(next));
     }
-
-    /// How wide the pane's own vertical bar is, or nothing when it is not drawn.
-    private static double Bar(ScrollViewer viewer) => viewer.GetVisualDescendants()
-        .OfType<global::Avalonia.Controls.Primitives.ScrollBar>()
-        .Where(bar => bar.Orientation == global::Avalonia.Layout.Orientation.Vertical && bar.IsVisible)
-        .Select(bar => bar.Bounds.Width)
-        .FirstOrDefault();
 
     /// How wide one character of a body is, in pixels.
     private double Advance
@@ -537,6 +576,15 @@ columns.Add((pane.Name, Math.Max(20, (int)(usable / Advance))));
             return width > 1 ? width : 8;
         }
     }
+
+    /// How many characters a row carries.
+    ///
+    /// # Invariant
+    ///
+    /// A row never holds more characters than the width it was wrapped at, so this is
+    /// how a row still holding an older, wider wrap is told from one drawn too wide.
+    private static int Characters(Views.SpanLine row) =>
+        row.Spans?.Sum(span => span.Text.Length) ?? 0;
 
     private static bool SameColumns(List<(string, int)> left, List<(string, int)> right)
     {

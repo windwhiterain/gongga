@@ -32,7 +32,6 @@ public sealed class ClientModel : ViewModelBase
     private string _serverText = string.Empty;
     private bool _serverOurs;
     private string _quotaText = string.Empty;
-    private LineKind _quotaKind = LineKind.System;
     private string _inputText = string.Empty;
     private int _inputCaret;
     private string _toast = string.Empty;
