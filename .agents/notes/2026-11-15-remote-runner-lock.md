@@ -133,10 +133,27 @@ Two findings from those runs stand on their own:
 So a call that should have dialled did not need to, and which of the two ways it took is
 not established: a relay started without a greeting, or the channel started on this
 machine rather than on the peer. Either way **none of the eleven runs exercised a dial**,
-which is why every one of them measured tens of milliseconds. The vehicle is wrong, not
-the lock: `Endpoint::Direct` returns early from `pick::runner` and never runs the
-`relays()`/`place()` steps, so it cannot produce the slow dial the old build was measured
-stalling in (25.9s). A `Remote` peer with a runner that never greets is the vehicle to use.
+which is why every one of them measured tens of milliseconds. `Endpoint::Direct` returns
+early from `pick::runner` and never runs the `relays()`/`place()` steps, so it cannot
+produce the slow dial the old build was measured stalling in (25.9s).
+
+### The `Remote` vehicle: right, and still not measured
+
+`.dev/remote-proof.sh` moved to two `Remote` peers over ssh. What that settled:
+
+- a dial really happens there -- the server logs `pick` and the call takes 1.7-2.8s, where
+  `Direct` answered in 70ms;
+- a `Remote` needs a **non-empty** `runner`: the reader calls `runner_command()` first and
+  refuses an empty one ("this target names an empty runner command");
+- a configured runner is only *used* if `relays()` believes a server sits beside it. With
+  a bare first word (no path) `relays()` answers yes without looking, and `greet()` then
+  runs that word over ssh -- which is how to get a greeting that never comes. My runs
+  still logged "the configured runner has no server beside it", so the server that
+  answered them was not the one reading the table I had just written: the phase-2
+  `server.lock` was missing entirely and the probe went on anyway.
+- the harness now refuses to proceed when a server answers but wrote no lock. That, and
+  not the lock itself, is what is left to run.
+
 
 What a peer needs, learned the hard way:
 
