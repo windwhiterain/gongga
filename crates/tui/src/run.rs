@@ -126,6 +126,12 @@ pub(crate) fn apply_frame(tui: &mut Tui, frame: RenderMessage) -> Option<UiInten
             tui.prepend_rows(&window, &rows);
             None
         }
+        // A page of what comes after: newer than every row the window has, so it
+        // goes below them instead of at their front.
+        RenderMessage::Newer { window, rows } => {
+            tui.append_rows(&window, &rows);
+            None
+        }
         drawing => {
             let mut sink = TuiSink(tui);
             draw(&mut sink, drawing);
@@ -195,6 +201,7 @@ fn draw(sink: &mut TuiSink<'_>, frame: RenderMessage) {
         | RenderMessage::Vocabulary { .. }
         | RenderMessage::Completion { .. }
         | RenderMessage::Older { .. }
+        | RenderMessage::Newer { .. }
         | RenderMessage::StickySession { .. } => {}
     }
 }

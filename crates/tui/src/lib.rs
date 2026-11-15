@@ -995,6 +995,19 @@ impl Tui {
         self.dirty = true;
     }
 
+    /// Draws a page of what comes after below what its window holds.
+    ///
+    /// # Invariant
+    ///
+    /// The mirror of `prepend_rows`: the page is newer than every row the window
+    /// had, so a pane sitting at its newest row is still there -- the rows it asked
+    /// for are the newest ones it has now. See `docs/notes/tui-log.md`.
+    pub fn append_rows(&mut self, name: &str, rows: &[client::render_wire::PastRow]) {
+        if self.screen.panes.append(name, rows) > 0 {
+            self.dirty = true;
+        }
+    }
+
     /// Empties the window a deleted session's lines were read in.
     ///
     /// # Invariant
@@ -1191,6 +1204,11 @@ impl Tui {
                 let held = self.screen.panes.take_held();
                 if !held.is_empty() {
                     return Some(UiEvent::Intent(UiIntent::Held { windows: held }));
+                }
+                // A push against a window's newest row: the page below it.
+                let newer = self.screen.panes.take_newer();
+                if !newer.is_empty() {
+                    return Some(UiEvent::Intent(UiIntent::Newer { windows: newer }));
                 }
             }
             // A frame that could not fill its pane is the one asking, for the row above

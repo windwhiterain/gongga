@@ -304,6 +304,7 @@ pub async fn run(
     let mut pending: Vec<(u64, crate::window_state::Follow)> = Vec::new();
     // The pages of the past windows asked to read and the loop has not sent yet.
     let mut owed: Vec<String> = Vec::new();
+    let mut owed_newer: Vec<String> = Vec::new();
     let result = loop {
         // Every arm keeps the keyboard branch, so no state stops it answering keys.
         let step = if let Some(open) = link.as_mut() {
@@ -369,6 +370,10 @@ pub async fn run(
             }
             // A scroll past the oldest row a window holds: a page above it.
             Step::Input(FrontendEvent::Intent(UiIntent::Older { windows })) => owed.extend(windows),
+            // And past the newest one: the page below it.
+            Step::Input(FrontendEvent::Intent(UiIntent::Newer { windows })) => {
+                owed_newer.extend(windows);
+            }
             // What each window holds now: the rows it dropped to stay inside its
             // budget, at whichever end. The client believed otherwise.
             Step::Input(FrontendEvent::Intent(UiIntent::Held { windows })) => {
@@ -599,6 +604,9 @@ pub async fn run(
         crate::window_refill::answer_transcripts(&mut client, link.as_ref(), &mut *ui).await;
         // And what the operator asked to read above: a page of the past.
         crate::window_refill::answer_older(&mut client, link.as_ref(), &mut *ui, &mut owed).await;
+        // And what the operator asked to read below: the rows a trim took away.
+        crate::window_refill::answer_newer(&mut client, link.as_ref(), &mut *ui, &mut owed_newer)
+            .await;
     };
 
     // SPEC's stop, for the server the bar drew as own, and nothing for one that is

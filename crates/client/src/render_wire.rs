@@ -216,6 +216,18 @@ pub enum RenderMessage {
         window: String,
         rows: Vec<PastRow>,
     },
+    /// A page of what comes after, to be drawn *below* what the window holds.
+    ///
+    /// # Invariant
+    ///
+    /// One frame, finished rows, and newer than every row the window has: the same
+    /// order as `Older` at the other end. It carries the page as an order rather
+    /// than a stream of calls, because a page has already happened. See
+    /// `docs/notes/client-render-wire.md`.
+    Newer {
+        window: String,
+        rows: Vec<PastRow>,
+    },
 }
 
 /// One finished row of a page of the past: a line, or a block that already ended.
@@ -290,6 +302,15 @@ pub enum UiIntent {
     Operate { operation: protocol::Operation },
     /// The operator asked to read above what these windows hold.
     Older { windows: Vec<String> },
+    /// The operator asked to read below what these windows hold.
+    ///
+    /// # Invariant
+    ///
+    /// The mirror of `Older`: a window that dropped its newest rows to stay inside
+    /// its budget is owed them back only when someone asks to read them, and the
+    /// page is anchored at the row after the window's newest one. See
+    /// `docs/notes/client-refill.md`.
+    Newer { windows: Vec<String> },
     /// The rows each window holds now, oldest and newest.
     ///
     /// # Invariant
@@ -356,6 +377,20 @@ impl WireSink {
     /// There is one queue per sink call: a frame sent around it can arrive before
     /// the `Clear` that was meant to precede it, which is a row drawn into a
     /// window that then empties. See `docs/notes/client-pipe.md`.
+    /// A page of what comes after, drawn below what the window holds.
+    ///
+    /// # Invariant
+    ///
+    /// The mirror of [`WireSink::prepend`]: where the page goes is the front-end's
+    /// to decide, and the daemon's own record of it is `landed`. See
+    /// `docs/notes/client-render-wire.md`.
+    pub fn append_page(&mut self, window: &str, rows: &[PastRow]) {
+        self.render.push(RenderMessage::Newer {
+            window: window.to_string(),
+            rows: rows.to_vec(),
+        });
+    }
+
     pub fn push(&mut self, message: RenderMessage) {
         self.render.push(message);
     }

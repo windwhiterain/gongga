@@ -158,6 +158,42 @@ pub async fn answer_transcripts(
     }
 }
 
+/// Asks the server for the page below what the windows the operator scrolled past
+/// their newest row hold.
+///
+/// # Invariant
+///
+/// The mirror of [`answer_older`]: the keystroke is the request, one page is asked
+/// once, and `owed` is what has not been sent yet. A window that reaches the
+/// server's own end is owed nothing. See `docs/notes/client-refill.md`.
+pub async fn answer_newer(
+    client: &mut crate::Client,
+    link: Option<&crate::Link>,
+    ui: &mut dyn crate::runtime::Frontend,
+    owed: &mut Vec<String>,
+) {
+    let Some(open) = link else {
+        return;
+    };
+    let names: std::collections::BTreeSet<String> = std::mem::take(owed).into_iter().collect();
+    for name in names {
+        if client.waiting(&name) {
+            owed.push(name);
+            continue;
+        }
+        match client.ask_newer(&name, ui.room_of(&name)) {
+            Some(message) => {
+                if open.send(message.clone()).await.is_err() {
+                    client.never_sent(&message);
+                    break;
+                }
+            }
+            None if client.waiting(&name) => owed.push(name),
+            None => {}
+        }
+    }
+}
+
 /// Asks the server for the page above what the windows the operator scrolled past
 /// their first row hold.
 ///

@@ -597,6 +597,29 @@ pub trait Sink {
             }
         }
     }
+    /// A page of newer rows landed, whole: the rows go below what `window` holds.
+    ///
+    /// # Invariant
+    ///
+    /// One call for one page, for the same reason [`Sink::older_page`] is: the rows
+    /// are finished and their order is the transcript's, so a front-end that took
+    /// them one at a time would draw the present before the past. The default
+    /// replays them for a front-end that has no place for a page of its own.
+    fn newer_page(&mut self, window: &str, rows: &[PastRow]) {
+        for row in rows {
+            match row {
+                PastRow::Line { kind, text, .. } => self.line(window, *kind, text),
+                PastRow::Block {
+                    key,
+                    kind,
+                    tag,
+                    text,
+                    ..
+                } => self.stream(window, key, *kind, tag, text, true),
+            }
+        }
+    }
+
     /// A page of older rows landed, so `window` holds every row from `floor` up.
     ///
     /// # Invariant
@@ -932,6 +955,32 @@ struct Sync {
     short: bool,
 }
 
+/// What a fill is for: the window itself, or one page beside it.
+///
+/// # Invariant
+///
+/// `Whole` and `Tail` both fill the window -- the first after emptying it -- and a
+/// page never rewinds and never restamps the end it is not anchored on. See
+/// [`Client::ask_transcript`], [`Client::ask_older`], [`Client::ask_newer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FillKind {
+    /// The window is emptied and the answer is all of it.
+    Whole,
+    /// The rows after the window's stamp: the window keeps what it had.
+    Tail,
+    /// The rows above what the window holds.
+    Older,
+    /// The rows below what the window holds.
+    Newer,
+}
+
+impl Fill {
+    /// Whether this fill reads a page beside the window rather than filling it.
+    fn page(&self) -> bool {
+        matches!(self.kind, FillKind::Older | FillKind::Newer)
+    }
+}
+
 /// The rows a copy holds, as runs that touch.
 ///
 /// # Invariant
@@ -1029,15 +1078,8 @@ struct Fill {
     buffered: Vec<(u64, Event)>,
     rows: std::collections::BTreeMap<u64, Event>,
     open: Vec<Event>,
-    /// Whether the whole window is re-read, rather than the tail after its stamp.
-    whole: bool,
-    /// Whether the page is the rows *above* what the window holds, not below.
-    ///
-    /// # Invariant
-    ///
-    /// A page of the past never rewinds and never restamps: the tail stays as it is
-    /// and the page lands above it. See [`Client::ask_older`].
-    older: bool,
+    /// What the answer is for: the window itself, or a page beside it.
+    kind: FillKind,
 }
 
 /// What the operator typed, for the purpose of echoing it back into the log.
@@ -1517,7 +1559,7 @@ impl Client {
         if let Some(session) = event.session()
             && let Some(sync) = self.sync.get_mut(session)
             && let Some(fill) = sync.fill.as_mut()
-            && !fill.older
+            && !fill.page()
             && row_of(&event)
         {
             fill.buffered.push((seq, event));
@@ -2049,11 +2091,16 @@ impl Client {
             return true;
         };
         let created = sync.created;
-        if fill.whole {
-            sync.held.clear();
-            sink.clear(&name);
-        } else if !fill.older {
-            sink.rewind(&name);
+        // Read before the answer is taken apart: a page is one frame, and the rows
+        // it holds are moved out of the fill below.
+        let is_page = fill.page();
+        match fill.kind {
+            FillKind::Whole => {
+                sync.held.clear();
+                sink.clear(&name);
+            }
+            FillKind::Tail => sink.rewind(&name),
+            FillKind::Older | FillKind::Newer => {}
         }
         let mut page = Page::default();
         for (seq, event) in fill.rows {
@@ -2064,19 +2111,30 @@ impl Client {
                 continue;
             }
             self.hand_over(sink, &name, seq, &event);
-            if fill.older {
+            if is_page {
                 self.handle_event(event, &mut page);
             } else {
                 self.handle_event(event, sink);
             }
         }
-        if fill.older {
-            sink.older_page(&name, &page.rows);
+        match fill.kind {
+            FillKind::Older => sink.older_page(&name, &page.rows),
+            FillKind::Newer => sink.newer_page(&name, &page.rows),
+            FillKind::Whole | FillKind::Tail => {}
         }
         if let Some(sync) = self.sync.get_mut(&name) {
             sync.server = sync.server.max(last);
             sync.held.insert_run(first, through);
-            if !fill.older {
+            // A page below moves where the window ends, and says whether the rows
+            // under it are still there to ask for.
+            if fill.kind == FillKind::Newer {
+                sync.drawn = Drawn::At {
+                    created,
+                    seq: through,
+                };
+                sync.short = through < sync.server;
+            }
+            if !is_page {
                 sync.loaded = true;
                 sync.drawn = Drawn::At {
                     created,
@@ -2088,12 +2146,12 @@ impl Client {
             }
             sink.landed(&name, created, through, first);
         }
-        if !fill.older && through == last {
+        if !is_page && through == last {
             for event in fill.open {
                 self.handle_event(event, sink);
             }
         }
-        if through < last && !fill.older {
+        if through < last && !is_page {
             if let Some(sync) = self.sync.get_mut(&name) {
                 sync.deferred.extend(fill.buffered);
             }
@@ -2103,7 +2161,7 @@ impl Client {
                     self.handle_event(event, sink);
                 }
             }
-            if !fill.older
+            if !is_page
                 && !self.holed
                 && let Some(sync) = self.sync.get_mut(&name)
             {
@@ -2405,7 +2463,11 @@ impl Client {
         } else {
             format!("-{room}:")
         };
-        self.begin_fill(name, range, !sync.loaded, false)
+        let kind = match sync.loaded {
+            true => FillKind::Tail,
+            false => FillKind::Whole,
+        };
+        self.begin_fill(name, range, kind)
     }
 
     /// Whether a refill of this window is already on its way.
@@ -2446,17 +2508,37 @@ impl Client {
             return None;
         }
         let reach = above.saturating_sub(history.max(1) as i64 - 1).max(1);
-        self.begin_fill(name, format!("{reach}:{above}"), false, true)
+        self.begin_fill(name, format!("{reach}:{above}"), FillKind::Older)
+    }
+
+    /// Asks the server for the page of rows just below the newest one a window
+    /// holds, sized by what a pane can draw.
+    ///
+    /// # Invariant
+    ///
+    /// One page, and only for a window that has one already: a window nobody has
+    /// filled holds nothing, and the *tail* -- not the transcript's first rows -- is
+    /// what it is owed. Nothing is asked once the window reaches the server's own
+    /// end. The page is anchored at the row after the window's newest one, which is
+    /// the window's own fact. See `docs/notes/client-lib.md`.
+    pub fn ask_newer(&mut self, name: &str, room: usize) -> Option<ClientMessage> {
+        let sync = self.sync.get(name)?;
+        if sync.fill.is_some() || sync.blocked || !sync.loaded {
+            return None;
+        }
+        let Drawn::At { seq, .. } = sync.drawn else {
+            return None;
+        };
+        if seq >= sync.server {
+            return None;
+        }
+        let from = seq + 1;
+        let through = (seq + room.max(1) as i64).min(sync.server);
+        self.begin_fill(name, format!("{from}:{through}"), FillKind::Newer)
     }
 
     /// Sends one `get_messages` refill and remembers what the window is owed.
-    fn begin_fill(
-        &mut self,
-        name: &str,
-        range: String,
-        whole: bool,
-        older: bool,
-    ) -> Option<ClientMessage> {
+    fn begin_fill(&mut self, name: &str, range: String, kind: FillKind) -> Option<ClientMessage> {
         if !self.connected || self.catalog.command("get_messages").is_none() {
             return None;
         }
@@ -2472,8 +2554,7 @@ impl Client {
             buffered: std::mem::take(&mut sync.deferred),
             rows: std::collections::BTreeMap::new(),
             open: Vec::new(),
-            whole,
-            older,
+            kind,
         });
         Some(ClientMessage::Command {
             id,

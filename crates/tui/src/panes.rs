@@ -141,6 +141,8 @@ pub struct Panes {
     quota: Vec<crate::QuotaRow>,
     /// Windows the operator asked to read above what they hold.
     wants: BTreeSet<String>,
+    /// Windows the operator asked to read below what they hold.
+    wants_newer: BTreeSet<String>,
     /// Windows a trim took rows out of this frame: what the client is told.
     trimmed: BTreeSet<String>,
 }
@@ -156,6 +158,7 @@ impl Panes {
             unseen: std::collections::BTreeSet::new(),
             quota: Vec::new(),
             wants: BTreeSet::new(),
+            wants_newer: BTreeSet::new(),
             trimmed: BTreeSet::new(),
         }
     }
@@ -163,6 +166,17 @@ impl Panes {
     /// The windows whose operator asked for a page above what they had.
     pub fn take_wants(&mut self) -> Vec<String> {
         std::mem::take(&mut self.wants).into_iter().collect()
+    }
+
+    /// The windows whose operator asked for a page below what they had.
+    ///
+    /// # Invariant
+    ///
+    /// A keystroke, never a frame: a page below is owed because someone pushed
+    /// against the newest row this window holds, so a window sitting at it is not
+    /// asked about again. See `docs/notes/tui-panes.md`.
+    pub fn take_newer(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.wants_newer).into_iter().collect()
     }
 
     /// Every window this view holds blocks for.
@@ -336,6 +350,7 @@ impl Panes {
         self.log.forget(name);
         self.panes.retain(|pane| pane.name != name);
         self.wants.remove(name);
+        self.wants_newer.remove(name);
         self.trimmed.remove(name);
     }
 
@@ -444,6 +459,11 @@ impl Panes {
     /// Puts a page of the past above what `window` holds, and answers its rows.
     pub fn prepend(&mut self, window: &str, rows: &[client::render_wire::PastRow]) -> usize {
         self.log.prepend(window, rows)
+    }
+
+    /// Puts a page of what comes after below what its window holds.
+    pub fn append(&mut self, window: &str, rows: &[client::render_wire::PastRow]) -> usize {
+        self.log.append_page(window, rows)
     }
 
     /// The stored row a window's sink moved to: what the rows after it belong to.
@@ -599,13 +619,22 @@ impl Panes {
     /// the past is asking for the page above it: that request is recorded here and
     /// sent by the loop, because only a frame knows how much a page is.
     pub fn scroll_by(&mut self, name: &str, rows: i64) {
-        let mut owed = false;
+        let mut older = false;
+        let mut newer = false;
         if let Some(pane) = self.get_mut(name) {
             pane.scroll_by(rows);
-            owed = rows > 0 && pane.kind == Kind::Shown && pane.scroll >= pane.max_scroll;
+            older = rows > 0 && pane.kind == Kind::Shown && pane.scroll >= pane.max_scroll;
+            // A push against the newest row a window holds is the operator asking
+            // for the rows below: a window that stopped following a session dropped
+            // them to stay inside its budget, and this gesture is what brings them
+            // back. See `docs/notes/tui-panes.md`.
+            newer = rows < 0 && pane.kind == Kind::Shown && pane.scroll == 0;
         }
-        if owed {
+        if older {
             self.wants.insert(name.to_string());
+        }
+        if newer {
+            self.wants_newer.insert(name.to_string());
         }
     }
 

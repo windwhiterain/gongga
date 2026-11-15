@@ -1036,43 +1036,56 @@ impl Log {
     /// rebuilt once: a page arrives whole, so no frame ever draws half of it. See
     /// `docs/notes/tui-log.md`.
     pub fn prepend(&mut self, name: &str, rows: &[PastRow]) -> usize {
-        if rows.is_empty() {
-            return 0;
-        }
-        let width = self.width_of(name);
         let at = self
             .views
             .get(name)
             .and_then(|ledger| ledger.blocks.first().copied())
             .unwrap_or(self.entries.len());
+        self.insert_page(name, at, rows)
+    }
+
+    /// Puts a page of what comes after below what `window` holds, and answers the
+    /// rows that went in.
+    ///
+    /// # Invariant
+    ///
+    /// The other end of [`Log::prepend`]: the page is newer than every row the
+    /// window holds, so its blocks go behind the window's last one -- never in
+    /// front, which is where the past is -- and the window's stamp moves to the
+    /// newest row the page brought. See `docs/notes/tui-log.md`.
+    pub fn append_page(&mut self, name: &str, rows: &[PastRow]) -> usize {
+        let at = match self.views.get(name).and_then(|ledger| ledger.blocks.last()) {
+            Some(last) => last + 1,
+            None => self.entries.len(),
+        };
+        let added = self.insert_page(name, at, rows);
+        let stamp = self
+            .views
+            .get(name)
+            .and_then(|ledger| ledger.blocks.last())
+            .map(|at| self.entries[*at].seq);
+        if let Some(seq) = stamp.filter(|seq| *seq > 0) {
+            self.stamps.insert(name.to_string(), seq);
+        }
+        added
+    }
+
+    /// Inserts `rows` at `at` as finished blocks of `name`: one order, one ledger
+    /// rebuild.
+    ///
+    /// # Invariant
+    ///
+    /// Both ends of a window take a page this way: the rows are what already
+    /// happened, so nothing of them streams in later, and each keeps the transcript
+    /// row it came with. What answers is the rows the page added to the window.
+    fn insert_page(&mut self, name: &str, at: usize, rows: &[PastRow]) -> usize {
+        if rows.is_empty() {
+            return 0;
+        }
+        let width = self.width_of(name);
         let entries: Vec<Entry> = rows
             .iter()
-            .map(|row| {
-                let mut entry = match row {
-                    PastRow::Line { kind, text, .. } => {
-                        Entry::new(name, *kind, text.clone(), width)
-                    }
-                    PastRow::Block {
-                        key,
-                        kind,
-                        tag,
-                        text,
-                        ..
-                    } => {
-                        let mut entry = Entry::with_tag(name, *kind, tag, text.clone(), width);
-                        entry.key = key.clone();
-                        entry
-                    }
-                };
-                // A page says where each of its rows came from: the number travels
-                // with the row, or a window could not say what it holds.
-                entry.seq = match row {
-                    PastRow::Line { seq, .. } | PastRow::Block { seq, .. } => *seq,
-                };
-                // A page is what already happened: nothing of it streams in later.
-                entry.sealed = true;
-                entry
-            })
+            .map(|row| Self::page_entry(name, row, width))
             .collect();
         self.entries.splice(at..at, entries);
         // The live blocks are held by position, and a page puts every one of them
@@ -1084,6 +1097,32 @@ impl Log {
         }
         self.reindex();
         (at..at + rows.len()).map(|at| self.contributions(at)).sum()
+    }
+
+    /// One block of a page: finished, and stamped with the row it came from.
+    fn page_entry(name: &str, row: &PastRow, width: usize) -> Entry {
+        let mut entry = match row {
+            PastRow::Line { kind, text, .. } => Entry::new(name, *kind, text.clone(), width),
+            PastRow::Block {
+                key,
+                kind,
+                tag,
+                text,
+                ..
+            } => {
+                let mut entry = Entry::with_tag(name, *kind, tag, text.clone(), width);
+                entry.key = key.clone();
+                entry
+            }
+        };
+        // A page says where each of its rows came from: the number travels with
+        // the row, or a window could not say what it holds.
+        entry.seq = match row {
+            PastRow::Line { seq, .. } | PastRow::Block { seq, .. } => *seq,
+        };
+        // A page is what already happened: nothing of it streams in later.
+        entry.sealed = true;
+        entry
     }
 
     /// Adds a finished line to the window `name` names. Costs what the line is worth.
