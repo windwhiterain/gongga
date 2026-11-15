@@ -103,6 +103,18 @@ if the dials overlap and ~two if they are serialized. Four runs, no assertion ye
 | 2 | 279ms | sessions refused: the runner path in `remotes.toml` was MSYS `C:/...`-less, so `Command::new` could not find it |
 | 3 | 3.5s | sessions and channels fine, but no dial: the kept connections were still alive |
 | 4 | 4.1s | the kill matched nothing (`lock-proof` is not in the runner's path), then the live re-read of `remotes.toml` did not produce a slow endpoint within the window |
+| 5-11 | 43-99ms | every call finished without a slow dial, including after the peers' runners were killed, after 15s of waiting, and after stopping and restarting the server so the rewritten table could not be missed |
+
+Two findings from those runs stand on their own:
+
+- **`ls_channel` hides a dead peer.** With every runner of the peer killed it still answered
+  in 43ms: `list()` turns a failed read into `unread: null`, so a channel nobody can read
+  looks like a channel with nothing unread. It is also why it cannot be the probe here --
+  it never reaches the dial.
+- **A rewritten `remotes.toml` did not change the endpoints of a running server**, not in
+  2s and not in 15s, and not after a restart either: a `Direct` peer went on answering in
+  70ms while the table named a program that never greets. So the probe never had a slow
+  dial to observe, and the lock assertion is still unproven.
 
 What a peer needs, learned the hard way:
 
