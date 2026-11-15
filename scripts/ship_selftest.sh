@@ -29,6 +29,19 @@ bin=$(selftest_bin "$root") || exit 1
 # -- the symptom is a bare remote that is suddenly not a repository, not a queue.
 mkdir -p "$root/.dev"
 work=$(mktemp -d "$root/.dev/ship-XXXXXX") || exit 1
+pids=""
+cleanup() {
+  local pid
+  for pid in $pids; do alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
+  sleep 1
+  if [[ "$keep" == 1 ]]; then
+    echo "note: kept $work (--keep)" >&2
+    return 0
+  fi
+  rm -rf "$work" || echo "note: $work is still held by a process" >&2
+}
+trap cleanup EXIT
+
 fails=0
 started=$(date +%s)
 
@@ -84,19 +97,6 @@ serving_home() {
 }
 
 # Every pid this script started, by the home it serves -- never by image name.
-pids=""
-cleanup() {
-  local pid
-  for pid in $pids; do alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1; done
-  sleep 1
-  if [[ "$keep" == 1 ]]; then
-    echo "note: kept $work (--keep)" >&2
-    return 0
-  fi
-  rm -rf "$work" || echo "note: $work is still held by a process" >&2
-}
-trap cleanup EXIT
-
 # The directory is this run's own and empty, so nothing of an earlier run is in reach.
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.invalid

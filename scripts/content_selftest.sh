@@ -23,6 +23,24 @@ bin=$(selftest_bin "$root") || exit 1
 # of that is a repository that vanishes mid-clone, not a queue.
 mkdir -p "$root/.dev"
 work=$(mktemp -d "$root/.dev/content-XXXXXX") || exit 1
+# The run's own directory goes with the run, from the first moment it exists: an early
+# refusal (no build, no content checkout, a protocol nobody stated) must not leave it
+# behind either. The kill half joins once the helper that names a home exists.
+cleanup() {
+  local pid
+  if type -t serving_home >/dev/null; then
+    for pid in $(serving_home); do
+      alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
+    done
+  fi
+  sleep 1
+  if ! rm -rf "$work" 2>/dev/null; then
+    sleep 3
+    rm -rf "$work" 2>/dev/null || echo "note: $work is still held by a process" >&2
+  fi
+}
+trap cleanup EXIT
+
 home="$work/home"
 log="$work/content.log"
 verbose=${1:-}
@@ -75,10 +93,9 @@ s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(("127.0.0.1",0))
 print(s.getsockname()[1]);s.close()'
 }
 alive() { [[ -n "${1:-}" ]] && tasklist //FI "PID eq $1" //NH 2>/dev/null | grep -q "$1"; }
-child_pid() { tr -d '\r\n' < "$home/server.lock" 2>/dev/null; }
-parent_of() {
-  powershell -NoProfile -Command \
-    "(Get-CimInstance Win32_Process -Filter 'ProcessId=$1').ParentProcessId" 2>/dev/null | tr -d '\r\n'
+child_pid() {
+  [[ -f "$home/server.lock" ]] || return 0
+  tr -d '\r\n' < "$home/server.lock" 2>/dev/null
 }
 # Every process serving THIS home: identity is the home in the command line, never the
 # image name -- another agent's server has the same name as this one.
@@ -92,48 +109,50 @@ serving_home() {
 }
 
 server_pid=""
-sup=""
-cleanup() {
-  local pid
-  for pid in $(serving_home) "${server_pid:-}" "${sup:-}"; do
-    alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
-  done
-  sleep 1
-  if ! rm -rf "$work" 2>/dev/null; then
-    sleep 3
-    rm -rf "$work" 2>/dev/null || echo "note: $work is still held by a process" >&2
-  fi
-}
-trap cleanup EXIT
 
 # One server per scenario: the checkout is prepared at startup, and the state a
 # scenario reads is the state seeded just before it. `stop` leaves nothing.
+#
+# A start is ready when the lock names a server *and* that server says it is listening:
+# the log line comes first and the lock follows, so the window between them is not a
+# running server. Waiting for both, and refusing by name when they never come, is what
+# keeps a slow start a diagnosis instead of an empty pid every later step inherits.
 start() {
   : > "$log"
   port=$(free_port)
   GONGGA_SHIP_URL="$content" env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$server_bin" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
-  for _ in $(seq 1 150); do grep -q "reads the checkout in place" "$log" && break; sleep 0.2; done
-  if [[ ! -s "$home/server.lock" ]]; then
-    cp "$log" "$log.failed"
-    echo "serving this home: $(serving_home)" >&2
+  for _ in $(seq 1 300); do
+    server_pid=$(child_pid)
+    [[ -n "$server_pid" ]] && grep -q "listening (UDP) local=127.0.0.1:$port" "$log" && break
+    sleep 0.1
+  done
+  if [[ -z "${server_pid:-}" ]] || ! grep -q "listening (UDP) local=127.0.0.1:$port" "$log"; then
+    echo "the server never listened on 127.0.0.1:$port for $home; its log says:" >&2
+    tail -20 "$log" >&2
+    exit 1
   fi
-  server_pid=$(child_pid); sup=$(parent_of "$server_pid")
   report=$(grep -o 'content: this home reads the checkout in place.*' "$log" | head -1)
   say "$report"
   # A session to ask with: `ls_skill` is always asked by one.
   ask '{"name":"new_session","args":{"id":"main"}}' >/dev/null 2>&1
 }
+# Identity is the live command line, never a pid this script remembers: a remembered
+# pid outlives its process, and the number is handed to the next process that asks for
+# one -- which is how a cleanup kills a tree it never started.
 stop() {
-  "$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" '{"name":"cancel","args":{}}' >/dev/null 2>&1
-  for _ in $(seq 1 100); do alive "$server_pid" || break; sleep 0.2; done
-  for pid in $server_pid $sup $(serving_home); do
-    alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
-  done
-  for _ in $(seq 1 50); do
+  ask '{"name":"cancel","args":{}}' >/dev/null 2>&1
+  local pid attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    for pid in $(serving_home); do
+      taskkill //PID "$pid" //T //F >/dev/null 2>&1
+    done
+    sleep 0.5
     [[ -z "$(serving_home)" ]] && break
-    sleep 0.2
   done
-  server_pid=""; sup=""
+  if [[ -n "$(serving_home)" ]]; then
+    echo "note: $(serving_home) still serve $home after cancel" >&2
+  fi
+  server_pid=""
 }
 ask() { "$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" "$1" 2>&1; }
 
