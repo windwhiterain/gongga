@@ -56,6 +56,9 @@ pub struct Place {
     pub quoted: bool,
     /// The fields of the enclosing object that are already written.
     pub fields: Vec<(String, Read)>,
+    /// Every object the cursor stands in, outermost first: a property's schema
+    /// may be chosen by a sibling of an outer object.
+    pub levels: Vec<Vec<(String, Read)>>,
     /// How many objects enclose the token, its own included.
     pub open: usize,
     /// How many closers already stand after it, so what a candidate owes is
@@ -492,6 +495,7 @@ fn between(text: &str, at: usize, stack: &[Container]) -> Option<Place> {
         fragment,
         quoted,
         fields: frame.members.clone(),
+        levels: levels(stack),
         open: 0,
         after: 0,
     })
@@ -528,9 +532,21 @@ fn inside(
         fragment,
         quoted: end <= line,
         fields: frame.members.clone(),
+        levels: levels(stack),
         open: 0,
         after: 0,
     })
+}
+
+/// Every object's stated members, outermost first.
+fn levels(stack: &[Container]) -> Vec<Vec<(String, Read)>> {
+    stack
+        .iter()
+        .filter_map(|one| match one {
+            Container::Object(frame) => Some(frame.members.clone()),
+            Container::List => None,
+        })
+        .collect()
 }
 
 /// The path the place names: the objects it stands in, and the field it fills.

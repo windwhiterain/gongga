@@ -34,6 +34,10 @@ pub struct Row<'a> {
     pub model_ref: bool,
     /// SPEC's `T{..}`: an update says what changes, not what the value is.
     pub update: bool,
+    /// The sibling whose value chooses the schema, and the documents its values
+    /// choose from, by value.
+    pub schema_of: Option<&'a str>,
+    pub schemas: Option<&'a std::collections::BTreeMap<String, Value>>,
 }
 
 /// The arguments of one command, as the schema of the object they are written as.
@@ -54,6 +58,8 @@ pub fn of(args: &[ArgSpec]) -> Value {
                 default: None,
                 model_ref: false,
                 update: arg.update,
+                schema_of: None,
+                schemas: None,
             }),
         );
         if arg.required {
@@ -113,6 +119,14 @@ pub fn property(row: &Row<'_>) -> Value {
         _ => {}
     }
     let mut extension = Map::new();
+    // A document may choose its own fields on a sibling's value.
+    if let Some(chosen) = row.object.as_ref().and_then(|inner| inner.get(EXTENSION)) {
+        for key in ["schema_of", "schemas"] {
+            if let Some(value) = chosen.get(key) {
+                extension.insert(key.into(), value.clone());
+            }
+        }
+    }
     if let Some(accepts @ Accepts::PerModel(_)) = row.accepts {
         extension.insert("accepts".into(), json!(accepts));
     }
@@ -134,6 +148,14 @@ pub fn property(row: &Row<'_>) -> Value {
     }
     if row.update {
         extension.insert("update".into(), json!(true));
+    }
+    // A schema chosen by a sibling's value: what `oneOf` cannot say without
+    // spelling every choice twice.
+    if let Some(sibling) = row.schema_of {
+        extension.insert("schema_of".into(), json!(sibling));
+    }
+    if let Some(schemas) = row.schemas {
+        extension.insert("schemas".into(), json!(schemas));
     }
     if !extension.is_empty() {
         out.insert(EXTENSION.into(), Value::Object(extension));
@@ -214,6 +236,21 @@ pub fn hint(property: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("value")
         .to_string()
+}
+
+/// Whether the operator enters this property's value as an object.
+pub fn enters(property: &Value) -> bool {
+    is_struct(property) || schema_of(property).is_some()
+}
+
+/// The sibling whose value chooses this property's schema.
+pub fn schema_of(property: &Value) -> Option<&str> {
+    extension(property, "schema_of").and_then(Value::as_str)
+}
+
+/// The schemas a sibling's values choose from, by value.
+pub fn schemas(property: &Value) -> Option<&Map<String, Value>> {
+    extension(property, "schemas")?.as_object()
 }
 
 /// Whether this property's value is the object SPEC spells `Model`.

@@ -1004,11 +1004,39 @@ fn separator(text: &str, from: usize) -> bool {
 
 /// The object schema at a path of field names, or `None` when the path leaves
 /// the shape the catalog published.
-fn schema_at<'a>(schema: &'a Value, path: &[String]) -> Option<&'a Value> {
-    path.iter().try_fold(schema, |at, name| {
-        at.get("properties")
-            .and_then(|properties| properties.get(name))
-    })
+///
+/// # Invariant
+///
+/// A property chosen by a sibling's value (`x-completion.schema_of`) is read from
+/// what the line states for that sibling, and the search gives up when the line
+/// states none yet.
+fn schema_at<'a>(
+    schema: &'a Value,
+    path: &[String],
+    levels: &[Vec<(String, Read)>],
+) -> Option<&'a Value> {
+    let mut at = schema;
+    for (depth, name) in path.iter().enumerate() {
+        let property = protocol::argschema::properties(at)?.get(name)?;
+        at = match protocol::argschema::schema_of(property) {
+            Some(sibling) => chosen(property, levels.get(depth), sibling)?,
+            None => property,
+        };
+    }
+    Some(at)
+}
+
+/// The schema a sibling's written value names.
+fn chosen<'a>(
+    property: &'a Value,
+    written: Option<&Vec<(String, Read)>>,
+    sibling: &str,
+) -> Option<&'a Value> {
+    let (_, read) = written?.iter().find(|(name, _)| name == sibling)?;
+    let Read::Text(value) = read else {
+        return None;
+    };
+    protocol::argschema::schemas(property)?.get(value)
 }
 
 /// One object's field names, as the popup offers them.
@@ -1048,7 +1076,7 @@ fn keys(
         .into_iter()
         .map(|(name, property)| {
             let label = format!("\"{name}\":");
-            let mut new_text = match protocol::argschema::is_struct(property) {
+            let mut new_text = match protocol::argschema::enters(property) {
                 true => format!("{label}{{$0}}"),
                 false => match property.get("type").and_then(Value::as_str) {
                     Some("string") => format!("{label}\"$0\""),
@@ -1352,7 +1380,7 @@ fn object_completion(
     let comma = separator(text, place.end);
     match place.typing {
         json_place::Typing::Key => {
-            let Some(object) = schema_at(schema, &place.path) else {
+            let Some(object) = schema_at(schema, &place.path, &place.levels) else {
                 return Offered::default();
             };
             Offered {
@@ -1366,14 +1394,14 @@ fn object_completion(
             let Some((name, parent)) = place.path.split_last() else {
                 return Offered::default();
             };
-            let Some(object) = schema_at(schema, parent) else {
+            let Some(object) = schema_at(schema, parent, &place.levels) else {
                 return Offered::default();
             };
             let Some(property) = object.get("properties").and_then(|held| held.get(name)) else {
                 return Offered::default();
             };
             // An object field is entered by its name, which wrote the brace.
-            if protocol::argschema::is_struct(property) {
+            if protocol::argschema::enters(property) {
                 return Offered::default();
             }
             Offered {

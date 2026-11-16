@@ -185,6 +185,8 @@ impl Field<'_> {
             default: self.default,
             model_ref: self.model_ref,
             update: false,
+            schema_of: None,
+            schemas: None,
         })
     }
 }
@@ -211,6 +213,8 @@ fn object(
         default: None,
         model_ref: false,
         update: false,
+        schema_of: None,
+        schemas: None,
     })
 }
 
