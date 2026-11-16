@@ -108,6 +108,13 @@ is no second name table to keep in step.
 JSON Schema types for the model's tool schema, and this document is built from the
 same table, so a type is read once.
 
+**A schema chosen by a sibling.** `x-completion.schema_of` names another property
+and `x-completion.schemas` holds the document each of its values chooses, so
+`run_skill{"id":"alpha","cmd":{` completes alpha's own arguments. The sibling is
+read from the level the property lives in (`Place::levels`), and a line that has
+not stated it yet completes nothing rather than guessing. It is what `oneOf`
+cannot say without spelling every choice twice.
+
 **One document, two readers.** The completion inside an object and the fill that
 stands a sticky entry in for the leaves a line left open read the same document —
 `argschema::properties`, `kind`, `default`, `source`, `accepts`, `model_ref`. The
