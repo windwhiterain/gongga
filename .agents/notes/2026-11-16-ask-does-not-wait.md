@@ -36,7 +36,7 @@ that cancels the waiting call, so a blocking `ask` can never be the one that rec
 
 `ask` is `send_message` plus an automatically armed subscription. It does not wait.
 
-## What changed (content `9932985`)
+## What changed (content `9932985`, `e335b07`, `88437c2`)
 
 - `skills/self-control/ask_session.py`: `ask` = read the cursor → arm
   `^turn_end:<session>$` with a `send_message` ping that names row `since + 1` → send the
@@ -46,6 +46,8 @@ that cancels the waiting call, so a blocking `ask` can never be the one that rec
 - `skills/self-control/_client.py`: the fallback import directory is `<home>/ship/python`
   (protocol 12 moved the Python surface out of a home's `lib`).
 - `skills/self-control/SKILL.md`: the `ask` section, the frontmatter and the client path.
+- `skills/handoff/{SKILL.md,__init__.py}`: the two places that still promised `ask` waits and
+  prints the answer — the continuation's hint and the prose beside it.
 
 ## Verified (real server, real process)
 
