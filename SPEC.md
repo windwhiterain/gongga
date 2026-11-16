@@ -145,8 +145,10 @@ fn interrupt_session(id: Session):
   # stop llm streaming and loop, everything received must be saved to context.
 fn trigger_event(event: Event)
 Subscription := path
-fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmd: Cmd, session: Session = caller()):
-  # when pattern matched triggered event, run the cmd.
+fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmds: list[Cmd], session: Session = caller()):
+  # when pattern matched triggered event, run each cmd in order, stopping at the first refusal.
+  # a string argument may name a field of the matched event, `{event.answer}`: a record's
+  # payload sits at that level, and every event has `name` and `session`.
 fn del_subscription(path: path, session: Session = caller())
 fn ls_subsscription(path: path, session: Session = caller())
 cancel(keep_alive: bool = false):

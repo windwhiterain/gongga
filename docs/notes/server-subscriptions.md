@@ -7,12 +7,12 @@ SPEC's `subscribe`, as one registry and one matcher.
 ## What a subscription is
 
 Four facts: a *name*, a *pattern*, the *session that runs the match*, and the
-*command* a match runs there. It is armed as `subscribe <pattern> <cmd>`, re-arming a
+*commands* a match runs there. It is armed as `subscribe <pattern> <cmds>`, re-arming a
 name replaces what the name held, `ls_subscription <path>` lists what a session holds
 and `del_subscription <name>` drops it -- a name is one subscription, so the verbs are
 always one well-defined row. A call that names no subscription is given the first free
 `sub<n>`, because SPEC makes the name optional and a row nobody can name is a row
-nobody can drop. The command is what a match *does*, and a call that names none is
+nobody can drop. The commands are what a match *does*, and a call that names none is
 refused: a subscription that fires and does nothing is a promise with no keeper. The pattern is a regex, matched against an
 event's name -- which for a log row is its `kind`, and for any other event is its
 own (`status`, `usage`, `sessions`, `log`, ...). When the event is about a session,
@@ -74,31 +74,31 @@ An action that fails leaves one `subscription` row with `ok: false` and the reas
 That is the whole of what a lost notice looks like now, so the row names the
 subscription, the session, the event and what the command said.
 
-## What the action is told
+## What a command may name
 
-A bash action runs as one line of the session's own shell: a subshell, whose first
-three statements are the event, and whose last is the action's command.
+A match is not the only thing that knows what happened: the event does, and a command
+written before the event exists cannot type it. So a **string** argument may name a
+field of the event that matched, and the server puts the value there before the command
+runs:
 
-    ( GONGGA_EVENT_KIND='turn_end'; GONGGA_EVENT_SESSION='main/impl'; GONGGA_EVENT_PAYLOAD='{…}'; <cmd> )
+    send_message {session: main, message: "/impl ended its turn ({event.outcome}):\n\n{event.answer}"}
 
-Two shapes were wrong before this one, and both were silent.
+Three rules, and each of them is the version that cannot surprise a reader.
 
-`VAR=x cmd "$VAR"` does not work: a simple command's words are expanded *before* its
-own assignments take effect, so the action reads nothing and looks like an event with
-no data. Hence three statements and `;`, not one prefix.
+- **A record's payload is lifted to the top level.** A log row is a `kind` plus free-form
+  fields, so `turn_end`'s answer is `{event.answer}`, never `{event.payload.answer}`: the
+  fields are what a subscriber came for, and the envelope (`id`, `seq`, `kind`, `at`) is
+  still there for anyone who needs it. `{event.name}` and `{event.session}` are added to
+  every event, so an action need not know which kind it watches to say whose it was.
+- **Only that spelling is a reference.** `{event.` starts one, `}` ends it, and every
+  other brace and word reaches the command as written -- a message that is JSON, or that
+  mentions `{a: b}`, is not rewritten. An unterminated `{event.` is text, not a refusal.
+- **A path the event does not have is a refusal.** The alternative is a message that
+  quietly reads `{event.answer}` where the answer should be, and a notice nobody can
+  tell apart from a notice that said nothing. The refusal lists the fields that exist.
 
-Assignments without the subshell would work and then stay: a callback would leave
-three stale names in the shell the session works in, and the next honest `bash` call
-there would read last hour's event. The subshell also leaves the action's exit status
-as the line's own, which is what the `subscription` row records.
-
-The values are expanded, never re-parsed, so a payload full of quotes is carried as
-data. A subscriber writes its command once, before it knows what will fire, which is
-why the three names are fixed rather than templated.
-
-A python action is told nothing: `--code` is one string in a REPL, and an assignment
-prefix would stay in that interpreter afterwards, so the event is left to be read
-from the row instead.
+This is why the answer rides `turn_end` whole (see `server-agent.md`): a subscriber that
+must fetch the rest of a truncated answer would be a notice one round trip short.
 
 ## The caller
 
@@ -109,18 +109,25 @@ one command where the two are different questions. A client that names no sessio
 a window, a bridge -- is refused rather than armed with no addressee: a subscription
 that fires and tells nobody cannot be noticed by the registry.
 
-## A match runs one command
+## A match runs its commands in order
+The action is a list of commands -- SPEC's `Cmd`, a name and its named arguments -- and
+each runs through the same layer a tool's `fn <tool>(**args)` uses: the catalog decides
+what exists, refuses what is unknown, and fills the caller's session into the first
+argument that is one. So a subscription cannot reach past what the session that armed it
+can call, and a new command is available to subscriptions the day it is added.
 
-The action is a command -- SPEC's `Cmd`, a name and its named arguments -- and it runs
-through the same layer a tool's `fn <tool>(**args)` uses: the catalog decides what
-exists, refuses what is unknown, and fills the caller's session into the first argument
-that is one. So a subscription cannot reach past what the session that armed it can
-call, and a new command is available to subscriptions the day it is added.
+It is a **sequence, not a batch**: the first refusal stops the rest, so a later command
+may count on the ones before it having run. The `subscription` row says how far it got
+(`ran`) and what stopped it, so a match that died halfway does not read like one that
+finished.
 
-It is stored as one column, `action`, holding `{"name":…,"args":{…}}`; the row is the
-record, so a restart resumes both the watching and the running. The outcome is written
-as an event-log row of kind `subscription` -- whether the command answered, what it
-said, and which command it was -- so `events` reads what the watcher saw.
+It is stored as one column, `action`, holding `{"cmds":[{"name":…,"args":{…}}, …]}`; the
+row is the record, so a restart resumes both the watching and the running. A row armed by
+an earlier build holds one command object instead of the list, and reads as a list of one
+-- a home that was running before this existed keeps its subscriptions. The outcome is
+written as an event-log row of kind `subscription` -- whether every command answered,
+what the last one said, and which commands there were -- so `events` reads what the
+watcher saw.
 
 A match does not wait for anything of its own: the command it runs is what waits, if it
 waits at all, so the shape of a wake is whatever that command does.

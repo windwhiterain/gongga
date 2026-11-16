@@ -639,8 +639,8 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
             name: "subscribe".into(),
             description: "Name a subscription over the event stream and ask for it to be \
                       armed. It answers at once -- it does not wait for a match. A match 
-                      runs `cmd` in `session`: one command, the same door the 
-                      `gongga_cli` tool uses."
+                      runs `cmds` in `session`: one command or several, in order, the same 
+                      door the `gongga_cli` tool uses."
                 .into(),
             args: vec![
                 pos(
@@ -656,11 +656,15 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     CompletionSource::None,
                 ),
                 pos(
-                    "cmd",
-                    "What a match runs: a command's name, or the whole call as an object, \
-                     `{\"name\": \"send_message\", \"args\": {\"message\": \"hi\"}}`.",
+                    "cmds",
+                    "What a match runs, in order: one command, or a list of them. Each is a \
+                     command's name, or the whole call as an object, \
+                     `{\"name\": \"send_message\", \"args\": {\"message\": \"hi\"}}`. A string \
+                     argument may name a field of the event that matched -- `{event.answer}`, \
+                     `{event.session}` -- which is put there before the command runs; the first \
+                     refusal stops the rest.",
                     true,
-                    Some("cmd"),
+                    Some("cmds"),
                     CompletionSource::None,
                 ),
                 pos(
@@ -3044,14 +3048,14 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(None) => return Outcome::err(format!("no session named {session:?} to notice")),
         Err(e) => return Outcome::err(e.to_string()),
     }
-    let action = match args.value("cmd") {
-        Some(raw) => match parse_cmd(raw) {
+    let action = match args.value("cmds").or_else(|| args.value("cmd")) {
+        Some(raw) => match parse_cmds(raw) {
             Ok(action) => action,
             Err(why) => return Outcome::err(why),
         },
         None => {
             return Outcome::err(format!(
-                "subscribe runs a command on a match: `subscribe <pattern> <cmd>` \
+                "subscribe runs commands on a match: `subscribe <pattern> <cmds>` \
              {session}"
             ));
         }
@@ -3077,6 +3081,12 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
             Err(e) => return Outcome::err(e),
         },
     };
+    let names: Vec<&str> = action.cmds.iter().map(|cmd| cmd.name.as_str()).collect();
+    let what = names
+        .iter()
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(" then ");
     match d
         .subscriptions
         .arm(&session, &name, pattern, persistent, Some(action.clone()))
@@ -3085,13 +3095,12 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(row) => {
             tracing::info!(
                 session = %session, subscription = row.id, name = %name, pattern = %pattern,
-                cmd = %action.name, persistent, "subscribed"
+                cmds = ?names, persistent, "subscribed"
             );
             Outcome::ok_with(
                 format!(
-                    "subscription `{name}` armed: a match of `{pattern}` runs `{}` in \
+                    "subscription `{name}` armed: a match of `{pattern}` runs {what} in \
                  {session}{}",
-                    action.name,
                     if persistent { ", every time" } else { " once" }
                 ),
                 json!({
@@ -3099,7 +3108,7 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
                     "session": session,
                     "subscription": name,
                     "event": pattern,
-                    "cmd": action.name,
+                    "cmds": names,
                     "persistant": persistent,
                 }),
             )
@@ -3114,13 +3123,37 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
 ///
 /// An object is the whole call (`{"name":…,"args":{…}}`), and a bare word is a name
 /// with no arguments: the same two shapes `exec` takes for a cmd's `args`.
-fn parse_cmd(value: &serde_json::Value) -> Result<crate::subscriptions::Action, String> {
+/// What `cmds` names: one command, or a list of them, each a name or a whole call.
+///
+/// # Invariant
+///
+/// A string is a command by name, an object is a call, and an array is the list -- never
+/// read as anything else, so a caller that meant a list of one does not get one command
+/// with a strange name.
+fn parse_cmds(value: &serde_json::Value) -> Result<crate::subscriptions::Action, String> {
+    let cmds = match value {
+        serde_json::Value::Array(items) => {
+            if items.is_empty() {
+                return Err("`cmds` needs at least one command to run on a match".to_string());
+            }
+            items
+                .iter()
+                .map(parse_one_cmd)
+                .collect::<Result<Vec<_>, String>>()?
+        }
+        one => vec![parse_one_cmd(one)?],
+    };
+    Ok(crate::subscriptions::Action { cmds })
+}
+
+/// One entry of `cmds`: a command's name, or the whole call as an object.
+fn parse_one_cmd(value: &serde_json::Value) -> Result<crate::subscriptions::Command, String> {
     if let Some(text) = value.as_str() {
         let text = text.trim();
         if text.is_empty() {
             return Err("subscribe needs a command to run on a match".to_string());
         }
-        return Ok(crate::subscriptions::Action {
+        return Ok(crate::subscriptions::Command {
             name: text.to_string(),
             args: Args::new(),
         });
@@ -3131,13 +3164,15 @@ fn parse_cmd(value: &serde_json::Value) -> Result<crate::subscriptions::Action, 
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .ok_or_else(|| {
-            "`cmd` needs a `name`: {\"name\": \"send_message\", \"args\": {}}".to_string()
+            "a command needs a `name`: {\"name\": \"send_message\", \"args\": {}}".to_string()
         })?;
     let table = match value.get("args") {
         None => Args::new(),
-        Some(given) => Args::from_json(given.clone()).map_err(|why| format!("`cmd.args` {why}"))?,
+        Some(given) => {
+            Args::from_json(given.clone()).map_err(|why| format!("`cmds.args` {why}"))?
+        }
     };
-    Ok(crate::subscriptions::Action {
+    Ok(crate::subscriptions::Command {
         name: name.to_string(),
         args: table,
     })

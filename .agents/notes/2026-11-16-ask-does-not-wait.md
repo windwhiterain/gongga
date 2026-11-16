@@ -1,5 +1,12 @@
 # `ask` does not wait (2026-11-16)
 
+> **Superseded, same day.** The channel and the `answer.py` waiter this note describes are
+gone: `subscribe` now takes a list of commands and puts a matched event's fields into their
+string arguments, so `ask` arms one `send_message` carrying `{event.answer}` and nothing
+waits in a channel. The two findings below still stand -- a blocking call is ended by the
+message it waits for, and a Windows shell rewrites a word that starts with `/` -- because
+they are about the harness, not about this design. See `docs/notes/server-subscriptions.md`.
+
 ## The observation
 
 Session `Rusd` called `gongga_cli{run_skill{ask}}` and the tool call held the turn for 97 s.

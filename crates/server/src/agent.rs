@@ -22,15 +22,6 @@ use crate::session::SessionHandle;
 use crate::store::{Kind, Store};
 use crate::tools::{ToolContext, ToolRegistry};
 
-/// How much of a turn's answer a `turn_end` row carries.
-///
-/// # Invariant
-///
-/// The answer is a convenience, not the record: the transcript keeps all of it,
-/// so a row that carries the head of a long answer loses nothing that cannot be
-/// read again.
-const ANSWER_LIMIT: usize = 32_000;
-
 /// A turn that failed because the provider refused the request or stopped answering.
 ///
 /// # Invariant
@@ -160,19 +151,10 @@ impl Agent {
         let interrupted = session.interrupted();
         // No part outlives its turn: what is left is text whose row was never written.
         session.open_clear();
-        // The turn's own words ride the row: a subscriber reads them there.
-        let answer = self
-            .store
-            .last_answer(session.id())
-            .unwrap_or(None)
-            .map(|text| {
-                if text.chars().count() > ANSWER_LIMIT {
-                    let head: String = text.chars().take(ANSWER_LIMIT).collect();
-                    format!("{head}\n… (the answer continues in the transcript)")
-                } else {
-                    text
-                }
-            });
+        // The turn's own words ride the row, whole: a subscriber reads them there, and the
+        // `{event.answer}` of a subscription over this event is that same text. A head of
+        // an answer would be a notice that sends its reader back for the rest.
+        let answer = self.store.last_answer(session.id()).unwrap_or(None);
         // The turn's outcome as a row, not only a line: a reader with the database need
         // not match prose.
         let mut row = serde_json::json!({

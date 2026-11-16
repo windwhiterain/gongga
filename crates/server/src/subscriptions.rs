@@ -4,10 +4,10 @@
 //!
 //! # Invariant
 //!
-//! Subscribing registers and answers at once, and a match runs the command the row
-//! carries, in the session that armed it -- nothing else. The server tells nobody by
-//! itself: a subscription that must reach a session runs `send_message`, which is
-//! why the news survives a restart as the pending row that command writes.
+//! Subscribing registers and answers at once, and a match runs the commands the row
+//! carries, in order, in the session that armed it -- nothing else. The server tells
+//! nobody by itself: a subscription that must reach a session runs `send_message`,
+//! which is why the news survives a restart as the pending row that command writes.
 
 use std::sync::Arc;
 
@@ -16,18 +16,27 @@ use serde_json::json;
 use crate::bus::EventBus;
 use crate::store::{Store, SubscriptionRow};
 
-/// What a subscription runs on a match: one command, in the subscriber's session.
+/// What a subscription runs on a match: one command, or several in order.
 ///
 /// # Invariant
 ///
-/// A match runs the command layer -- the same door the `gongga_cli` tool uses --
-/// so a subscription can do exactly what a session's own call can, and nothing else.
-/// Its address is the record it writes, not a program of its own.
+/// The commands are a sequence, not a batch: the first refusal stops them, so a later
+/// one may count on the ones before it having run. Every command goes through the
+/// command layer -- the same door the `gongga_cli` tool uses -- so a subscription can
+/// do exactly what its session's own call can, and nothing else. Its address is the
+/// record it writes, not a program of its own.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Action {
+    /// The commands, in the order a match runs them.
+    pub cmds: Vec<Command>,
+}
+
+/// One command of an action: what it is called, and what it is told.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Command {
     /// The command's name, as the catalog spells it.
     pub name: String,
-    /// Its named arguments.
+    /// Its named arguments, before the matched event is put into them.
     #[serde(default)]
     pub args: protocol::Args,
 }
@@ -179,19 +188,47 @@ impl Subscriptions {
         action: Action,
         event: protocol::Event,
     ) {
-        let (ok, said) = match self.run_cmd(&row.session, &action).await {
-            Ok(outcome) => (outcome.ok, outcome.message),
-            Err(why) => (false, why),
-        };
+        let referent = referent(&event);
+        let names: Vec<&str> = action.cmds.iter().map(|cmd| cmd.name.as_str()).collect();
+        let (ok, said, ran) = self.run_cmds(&row.session, &action, &referent).await;
         let payload = json!({
             "subscription": row.name,
             "session": row.session,
             "event": event.name(),
-            "cmd": action.name,
+            "cmds": names,
+            "ran": ran,
             "ok": ok,
             "output": said,
         });
         self.log(&row, &payload);
+    }
+
+    /// Runs an action's commands in order, and answers how far it got.
+    ///
+    /// # Invariant
+    ///
+    /// `ran` counts the commands that finished, so `ran < cmds.len()` says the one at
+    /// index `ran` stopped the sequence -- by a refusal, or by naming a field the
+    /// matched event does not have. What that command said is the output.
+    async fn run_cmds(
+        &self,
+        session: &str,
+        action: &Action,
+        referent: &serde_json::Value,
+    ) -> (bool, String, usize) {
+        let mut said = String::new();
+        for (ran, cmd) in action.cmds.iter().enumerate() {
+            let args = match expand_args(&cmd.args, referent) {
+                Ok(args) => args,
+                Err(why) => return (false, why, ran),
+            };
+            match self.run_cmd(session, &cmd.name, args).await {
+                Ok(outcome) if outcome.ok => said = outcome.message,
+                Ok(outcome) => return (false, outcome.message, ran),
+                Err(why) => return (false, why, ran),
+            }
+        }
+        (true, said, action.cmds.len())
     }
 
     /// Runs one subscription's command in the session that armed it.
@@ -203,11 +240,12 @@ impl Subscriptions {
     async fn run_cmd(
         &self,
         session: &str,
-        action: &Action,
+        name: &str,
+        args: protocol::Args,
     ) -> Result<crate::commands::Outcome, String> {
         let layer = crate::commands::layer()
             .ok_or_else(|| "this process has no command layer to run a match in".to_string())?;
-        Ok(layer.run(session, &action.name, action.args.clone()).await)
+        Ok(layer.run(session, name, args).await)
     }
 
     /// Writes one outcome row and announces it, in that order.
@@ -252,11 +290,147 @@ impl Subscriptions {
 }
 
 impl Action {
-    /// What a row carries, when it carries anything: one command.
+    /// What a row carries, when it carries anything: one command, or several.
+    ///
+    /// # Invariant
+    ///
+    /// Three shapes read as this one, because a home armed before the list existed keeps
+    /// its rows: `{"name": .., "args": ..}` is that one command, `{"cmds": [..]}` is the
+    /// list, and a bare array is the list too. A command with no name is dropped -- it
+    /// would fire and do nothing, which is the one failure a registry cannot notice.
     fn of(row: &SubscriptionRow) -> Option<Action> {
         let stored = row.action.as_deref()?.trim();
-        let action: Action = serde_json::from_str(stored).ok()?;
-        (!action.name.trim().is_empty()).then_some(action)
+        if stored.is_empty() {
+            return None;
+        }
+        let cmds = serde_json::from_str::<Vec<Command>>(stored)
+            .or_else(|_| serde_json::from_str::<Action>(stored).map(|action| action.cmds))
+            .or_else(|_| serde_json::from_str::<Command>(stored).map(|one| vec![one]))
+            .ok()?;
+        let cmds: Vec<Command> = cmds
+            .into_iter()
+            .filter(|cmd| !cmd.name.trim().is_empty())
+            .collect();
+        (!cmds.is_empty()).then_some(Action { cmds })
+    }
+}
+
+/// What a command's string arguments may name: the event that matched.
+///
+/// # Invariant
+///
+/// A log row's free-form `payload` is lifted to the top level, so a `turn_end` answer is
+/// `{event.answer}` and not `{event.payload.answer}`: a record is a kind plus fields, and
+/// the fields are what a subscriber came for. `name` and `session` are always there, so an
+/// action need not know which kind it watches to say whose it was.
+fn referent(event: &protocol::Event) -> serde_json::Value {
+    let Ok(serde_json::Value::Object(mut table)) = serde_json::to_value(event) else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+    if let protocol::Event::Record { payload, .. } = event {
+        if let Some(fields) = payload.as_object() {
+            for (key, value) in fields {
+                table.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+    table.insert("name".to_string(), json!(event.name()));
+    if let Some(session) = event.session() {
+        table.insert("session".to_string(), json!(session));
+    }
+    serde_json::Value::Object(table)
+}
+
+/// One command's arguments, with the matched event put where they name it.
+fn expand_args(
+    args: &protocol::Args,
+    referent: &serde_json::Value,
+) -> Result<protocol::Args, String> {
+    protocol::Args::from_json(expand(&args.as_json(), referent)?)
+}
+
+/// `{event.<path>}` replaced by that field of the matched event, wherever it stands.
+///
+/// # Invariant
+///
+/// Only that spelling is a reference: every other brace and every other word reaches the
+/// command as written. A path the event does not have is a refusal rather than the literal
+/// text, because the alternative is a message that quietly says `{event.answer}` where the
+/// answer should be.
+fn expand(
+    value: &serde_json::Value,
+    referent: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match value {
+        serde_json::Value::String(text) => {
+            Ok(serde_json::Value::String(expand_text(text, referent)?))
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| expand(item, referent))
+            .collect::<Result<Vec<_>, String>>()
+            .map(serde_json::Value::Array),
+        serde_json::Value::Object(table) => table
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), expand(value, referent)?)))
+            .collect::<Result<serde_json::Map<String, serde_json::Value>, String>>()
+            .map(serde_json::Value::Object),
+        other => Ok(other.clone()),
+    }
+}
+
+/// What one string argument becomes: its references replaced, its own text kept.
+fn expand_text(text: &str, referent: &serde_json::Value) -> Result<String, String> {
+    const OPEN: &str = "{event.";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        let after = start + OPEN.len();
+        // A reference that is never closed is text, not a refusal: `{event.` alone names
+        // nothing, and half a message is worth more than a match that does not run it.
+        let Some(width) = rest[after..].find('}') else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        let path = &rest[after..after + width];
+        let Some(named) = field(referent, path) else {
+            return Err(format!(
+                "`{{event.{path}}}` names no field of the event that matched; it has: {}",
+                fields_of(referent)
+            ));
+        };
+        out.push_str(&word(named));
+        rest = &rest[after + width + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// The field one dot-separated path names, when the event has it.
+fn field<'a>(referent: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    path.split('.')
+        .try_fold(referent, |node, key| node.get(key))
+}
+
+/// What a field reads as inside a string: its text, or its JSON when it is not one.
+fn word(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// The names an event does have, so a refusal can say what was available instead.
+fn fields_of(referent: &serde_json::Value) -> String {
+    let mut names: Vec<&str> = referent
+        .as_object()
+        .map(|table| table.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    names.sort_unstable();
+    if names.is_empty() {
+        "no fields".to_string()
+    } else {
+        names.join(", ")
     }
 }
 
