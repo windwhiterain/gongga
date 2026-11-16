@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// One completion option: what the popup shows, and the text it writes.
 ///
-/// # Contract
+/// # Invariant
 ///
 /// The popup draws `label` and `detail`, and accepting the option replaces the
 /// answer's range with `new_text` — or with this item's own [`Item::range`], when
@@ -25,7 +25,7 @@ pub struct Item {
     pub snippet: bool,
     /// The bytes this item replaces, when the answer's own range is not it.
     ///
-    /// # Contract
+    /// # Invariant
     ///
     /// An answer states one range for all of its items; an item states its own
     /// only where its token is not that range. See `Offered`.
@@ -62,7 +62,7 @@ impl Item {
 
     /// An item that writes a whole token by itself, over its own range.
     ///
-    /// # Contract
+    /// # Invariant
     ///
     /// `new_text` is what the line holds after accepting it, minus snippet
     /// expansion: a token that opens something writes its closers too, and the
@@ -142,7 +142,7 @@ impl Completion {
 
     /// What accepting `item` writes, and where the caret lands in the line.
     ///
-    /// # Contract
+    /// # Invariant
     ///
     /// The edit is applied whole: the item's own range or the token's, never a
     /// part of either. A word never doubles the space it ends with.
@@ -172,7 +172,7 @@ impl Completion {
 
 /// The text a snippet writes, and where the caret lands in it.
 ///
-/// # Contract
+/// # Invariant
 ///
 /// A stop is `$0`..`$9` or `${0}`..`${9}`; `${n:word}` writes `word` and is the
 /// stop too. The caret lands on the lowest stop, at its first appearance, and a

@@ -9,7 +9,6 @@ pub mod document;
 pub mod json_command;
 pub mod json_place;
 pub mod json_text;
-pub mod json_value;
 pub mod leaf;
 pub mod render_wire;
 pub mod runtime;

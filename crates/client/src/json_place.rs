@@ -9,7 +9,7 @@
 //! grammar after that is `jsonc_parser`'s — strings, escapes, nesting and lists
 //! are its business.
 //!
-//! # Contract
+//! # Invariant
 //!
 //! [`place`] answers `None` for text it cannot read as a document, and the
 //! caller reads that as "offer nothing". A cursor past the end is clamped, never
@@ -100,8 +100,6 @@ struct Owed {
     frames: Vec<(char, Expect)>,
     /// A quote has to be written before the closers.
     quote: bool,
-    /// Every bare token, by range: a word JSON states as a value only where a
-    /// value was expected, so a line typing one is not a document yet.
     bare: Vec<(usize, usize)>,
 }
 
@@ -473,9 +471,7 @@ fn between(text: &str, at: usize, stack: &[Container]) -> Option<Place> {
         Expect::Value => Typing::Value,
         Expect::Done => return None,
     };
-    // A name already read keeps its range: accepting a candidate replaces the
-    // name and writes the colon that follows it -- including a colon the line
-    // already holds, which would otherwise stand after what was written.
+    // A name already read takes the colon that follows it with it.
     let (start, end, fragment, quoted) = match (typing, frame.expect) {
         (Typing::Key, Expect::Colon) => {
             let (start, end) = frame.key_token?;
@@ -586,7 +582,7 @@ fn finish(stack: &mut [Container], value: Read) {
 
 /// Whether the cursor stands at the end of a token the line typed bare.
 ///
-/// # Contract
+/// # Invariant
 ///
 /// A word a value is being typed as is still that value at its own end: `t` is
 /// where `true` is read from, not where a finished member is.

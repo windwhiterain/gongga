@@ -1122,8 +1122,7 @@ fn values(
         .collect()
 }
 
-/// One member's value as the item that writes it: the value, the caret, the comma
-/// it owes and the closers its object does.
+/// A member's value, as the item that writes it.
 fn member(value: String, detail: &str, range: (usize, usize), closers: usize, comma: bool) -> Item {
     let mut new_text = format!("{value}$0");
     if comma {
@@ -1164,11 +1163,10 @@ fn owed(
     let hint = field.value_hint.as_deref().unwrap_or("value");
     let texts: Vec<(String, bool)> = match leaf {
         Leaf::Switch => vec![("true".to_string(), false), ("false".to_string(), false)],
-        // The quotes are there and nothing is inside them: the token is finished,
-        // and offering to write it again is noise.
+        // Both quotes stand and nothing is inside them: the token is finished.
         Leaf::Text if place.quoted => return Vec::new(),
-        // An empty string leaves the caret between its quotes, ready for the
-        // first character; anything else ends where the operator stopped.
+        // An empty string leaves the caret between its quotes;
+        // a typed one ends where the operator stopped.
         Leaf::Text if place.fragment.is_empty() => vec![(String::new(), true)],
         Leaf::Text => vec![(leaf.token(&place.fragment), false)],
         Leaf::Other => return Vec::new(),
@@ -1245,7 +1243,7 @@ fn model_value(spelled: &str) -> Option<String> {
 ///
 /// Every insertion is balanced: a name carries the braces it opens, a value its
 /// quotes, and each owes only the closers the text has not already written
-/// (`json_value::Spot`). The popup therefore never leaves a bracket or a quote
+/// (`json_place::Place`). The popup therefore never leaves a bracket or a quote
 /// unmatched. See `docs/notes/client-complete.md`.
 fn json_complete(ctx: &Ctx, line: &str, cursor: usize, words: &[String]) -> Offered {
     let lead = line.len() - line.trim_start().len();
