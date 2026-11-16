@@ -161,7 +161,7 @@ impl ContentCommands {
                 .collect(),
             packages: declared
                 .iter()
-                .filter_map(|c| roots.at(&c.skill))
+                .filter_map(|c| roots.find(&c.skill))
                 .map(|skill| PackageFile::of(skill.dir()))
                 .collect(),
         }
@@ -205,7 +205,7 @@ impl ContentCommands {
         roots: &skill::Roots,
         declaration: &crate::ship::Command,
     ) -> Result<Manifest, String> {
-        let Some(skill) = roots.at(&declaration.skill) else {
+        let Some(skill) = roots.find(&declaration.skill) else {
             let known: Vec<String> = roots.all().iter().map(Skill::id).collect();
             return Err(format!(
                 "no skill is {:?} here; `ls_skill` lists {}",

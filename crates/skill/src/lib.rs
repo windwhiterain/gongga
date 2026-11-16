@@ -104,45 +104,18 @@ impl Roots {
             .collect()
     }
 
-    /// The skill `@skill(<name>)` reads, when a name opens more than one.
-    pub fn find(&self, name: &str) -> Option<Skill> {
-        self.named(name).into_iter().next()
-    }
-
-    /// The skill one `id` names.
+    /// The skill one name opens: the nearer layer's, the row every caller takes.
     ///
     /// # Invariant
     ///
-    /// A path: one word is a name, tried against [`Bucket::ALL`] in order (most specific
-    /// first, as [`Self::find`] reads it); two or more are directories under the bucket
-    /// the first word names (`harness/a/b`), answered by that root's `stat` alone.
-    pub fn at(&self, id: &str) -> Option<Skill> {
-        let words: Vec<&str> = id
-            .trim_matches('/')
-            .split('/')
-            .filter(|part| !part.is_empty())
-            .collect();
-        let (first, below) = words.split_first()?;
-        // One word is a name tried against every root; more names a bucket first.
-        let (buckets, under): (Vec<Bucket>, PathBuf) = match below.is_empty() {
-            true => (Bucket::ALL.to_vec(), PathBuf::from(*first)),
-            false => {
-                let bucket = Bucket::ALL
-                    .into_iter()
-                    .find(|bucket| bucket.as_str() == *first)?;
-                (vec![bucket], PathBuf::from(below.join("/")))
-            }
-        };
-        for bucket in buckets {
-            let Some(root) = self.dir(bucket) else {
-                continue;
-            };
-            let dir = root.join(&under);
-            if dir.join(SKILL).is_file() {
-                return Some(declared(bucket, &dir));
-            }
-        }
-        None
+    /// The name is the whole address, and [`Bucket::ALL`] is its precedence.
+    /// A layer is a field of the row, so a spelling that carries one names no skill.
+    /// Nothing here reads a path: a root is one directory of skills, and how deep a
+    /// layer keeps its own files is not part of what a caller says.
+    ///
+    /// See `docs/notes/skill-lib.md`.
+    pub fn find(&self, name: &str) -> Option<Skill> {
+        self.named(name).into_iter().next()
     }
 }
 

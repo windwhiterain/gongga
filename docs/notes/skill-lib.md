@@ -32,7 +32,7 @@ layer on this disk, and a machine whose home cannot be found has no general laye
 a placeholder path there would read the process's own directory as a root, which is a
 table full of skills nobody installed.
 
-## all, named, find, at
+## all, named, find
 
 `all` walks every layer and sorts each one's directories, so the same home draws the same
 table twice. `named` keeps every skill a name opens instead of the first one: `find` is
@@ -40,13 +40,14 @@ what `@skill(...)` reads, and the rest is what the editor's completion reports a
 specific layer wins and asks the implementation to say when it did -- but it is also not
 something to hide from the reader who typed the name.
 
-`at` reads an id as a path, which is what keeps a nested skill addressable without
-putting a root into every name. One word is a skill's name and it is tried against every
-layer in `Bucket::ALL` order -- most specific first, the same precedence `find` uses; two
-words or more are directories under the layer the first word names, so that layer's `stat`
-alone answers and no walk happens. The catalog asks a declared package what it publishes
-before any session exists to stand in a project root, which is why the layer-by-name form
-must not need a walk.
+`find` is the one resolver, and a name is the whole address. The layer a skill came from is
+a field of the row (`bucket`), never a word in front of the name: `run_skill file` is the
+spelling, and `harness/file` names nobody -- it is refused with the list of names, the
+same way a typo is. `Bucket::ALL` is the precedence `find` reads in, which is what makes a
+home skill answer before a machine one of the same name. Nothing here resolves a path: a
+root is one directory of skills, so how deep a layer keeps its own files is not part of
+what a caller says. Each answer is one walk of the three roots, which the catalog affords
+because it asks once per fingerprint rather than once per call.
 
 ## Skill
 

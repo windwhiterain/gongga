@@ -2811,7 +2811,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     };
     let roots = crate::tools::skill::session_roots(&handle.cwd(), handle.owner());
     // One resolver, and the walk behind it is `ls_skill`'s.
-    let Some(skill) = roots.at(&id) else {
+    let Some(skill) = roots.find(&id) else {
         let known: Vec<String> = roots.all().iter().map(|skill| skill.id()).collect();
         return Outcome::err(format!(
             "no skill is {id:?} here; `ls_skill` lists {}",
