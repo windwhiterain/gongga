@@ -244,7 +244,7 @@ ended=$("${cli[@]}" '{"name":"del_channel","args":{"session":"main","id":"'"$she
 ok "del_channel ends a channel" "$(has "$ended" 'ended channel' && echo 0 || echo 1)"
 
 # 8. A subscription runs one command per match: the log row is what a match leaves.
-armed=$("${cli[@]}" '{"name":"subscribe","args":{"pattern":"^channel_selftest$","cmd":{"name":"trigger_event","args":{"event":"sub_ran"}},"session":"main","id":"watcher","persistant":true}}' 2>&1)
+armed=$("${cli[@]}" '{"name":"subscribe","args":{"pattern":"^channel_selftest$","cmds":[{"name":"trigger_event","args":{"event":"sub_ran"}}],"session":"main","id":"watcher","persistant":true}}' 2>&1)
 say "$armed"
 ok "a subscription carries the command it runs" \
   "$(has "$armed" '"ok":true' && echo 0 || echo 1)"

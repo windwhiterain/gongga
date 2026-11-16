@@ -386,8 +386,7 @@ fn expand_text(text: &str, referent: &serde_json::Value) -> Result<String, Strin
     let mut rest = text;
     while let Some(start) = rest.find(OPEN) {
         let after = start + OPEN.len();
-        // A reference that is never closed is text, not a refusal: `{event.` alone names
-        // nothing, and half a message is worth more than a match that does not run it.
+        // Unterminated `{event.` is text, not a refusal: half a message beats a match that never runs.
         let Some(width) = rest[after..].find('}') else {
             break;
         };

@@ -147,7 +147,7 @@ ok "and it answers 42, in its own log" $py_rc
 
 # 9. A subscription armed with a command; trigger_event fires it; the command runs
 #     in the session that armed it, and its log row is the record.
-sub=$("${cli[@]}" '{"name":"subscribe","args":{"pattern":"^cmd_ping$","cmd":{"name":"trigger_event","args":{"event":"sub_ping"}},"session":"main","id":"watcher","persistant":true}}' 2>&1)
+sub=$("${cli[@]}" '{"name":"subscribe","args":{"pattern":"^cmd_ping$","cmds":[{"name":"trigger_event","args":{"event":"sub_ping"}}],"session":"main","id":"watcher","persistant":true}}' 2>&1)
 [[ "$sub" == *'"ok":true'* ]]
 ok "subscribe watcher '^cmd_ping$' <cmd>" $?
 say "$sub"

@@ -3048,7 +3048,7 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(None) => return Outcome::err(format!("no session named {session:?} to notice")),
         Err(e) => return Outcome::err(e.to_string()),
     }
-    let action = match args.value("cmds").or_else(|| args.value("cmd")) {
+    let action = match args.value("cmds") {
         Some(raw) => match parse_cmds(raw) {
             Ok(action) => action,
             Err(why) => return Outcome::err(why),

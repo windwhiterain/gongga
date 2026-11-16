@@ -238,7 +238,7 @@ ok "the second exec spoke to the channel the first opened" "$(has "$second" 'sec
 
 # 4. The round trip the whole row exists for: arm a subscription, then `wait` -- the
 #    news it sends cuts the wait, and arrives as the next turn's message.
-armed=$("${cli[@]}" '{"name":"subscribe","args":{"pattern":"^'"$marker"'$","cmd":{"name":"send_message","args":{"message":"news-from-sub","session":"main"}},"session":"main","id":"'"$marker"'","persistant":true}}' 2>&1)
+armed=$("${cli[@]}" '{"name":"subscribe","args":{"pattern":"^'"$marker"'$","cmds":[{"name":"send_message","args":{"message":"news-from-sub","session":"main"}}],"session":"main","id":"'"$marker"'","persistant":true}}' 2>&1)
 say "$armed"
 fake_up wait '{"time":30000}' || exit 1
 "${cli[@]}" '{"name":"send_message","args":{"message":"wait for the news","session":"main"}}' >/dev/null 2>&1
