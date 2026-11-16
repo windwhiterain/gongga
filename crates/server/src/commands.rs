@@ -788,6 +788,32 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
+            name: "new_channel_id".into(),
+            description: "A channel name nobody holds: the first `<prefix>/<n>` in this \
+                      session that is free. Ask here before `new_channel`, which refuses \
+                      a name already in use."
+                .into(),
+            args: vec![
+                pos(
+                    "prefix",
+                    "The namespace to mint in: the id is `<prefix>/<n>` for the smallest \
+                     free n. Omitted is `/channel`.",
+                    false,
+                    Some("path"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "Session whose channels decide what is taken. Omitted is the caller's.",
+                    false,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
             name: "input_channel".into(),
             description: "Write a line into a channel and answer with the part of what it \
                       said that nobody had read."
@@ -1388,6 +1414,7 @@ async fn run_now(d: &Dispatch, name: &str, args: &Args, origin: &Origin) -> Outc
         }
         "get_messages" => get_messages(d, args, origin.session()).await,
         "new_channel" => new_channel(d, args, origin.session()).await,
+        "new_channel_id" => new_channel_id(d, args, origin.session()).await,
         "input_channel" => input_channel(d, args, origin.session()).await,
         "rename_channel" => rename_channel(d, args, origin.session()).await,
         "ls_channel" => ls_channel(d, args, origin.session()).await,
@@ -2471,6 +2498,46 @@ async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
     }
 }
 
+/// The namespace a channel id is minted in when the call names none.
+const CHANNEL_NAMESPACE: &str = "/channel";
+
+/// Mints a channel name nobody holds: `<prefix>/<n>`, for the smallest free n.
+///
+/// # Invariant
+///
+/// The server is the only party that can say what is taken: `new_channel` refuses a name
+/// in use, so a caller that made up its own would be racing every other caller of the
+/// session. This is the same door `free_subscription_name` answers with, so both families
+/// of names are minted one way (see [`first_free`]).
+async fn new_channel_id(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let session = match caller_session("new_channel_id", args, caller) {
+        Ok(session) => session,
+        Err(refusal) => return refusal,
+    };
+    let namespace = args
+        .word("prefix")
+        .map(|prefix| prefix.trim().trim_end_matches('/').to_string())
+        .filter(|prefix| !prefix.is_empty())
+        .unwrap_or_else(|| CHANNEL_NAMESPACE.to_string());
+    let rows = match d.agent.channels.list(&session).await {
+        Ok(rows) => rows,
+        Err(e) => return Outcome::err(e),
+    };
+    let taken: std::collections::HashSet<String> = rows
+        .iter()
+        .filter_map(|row| row.get("id").and_then(|id| id.as_str()).map(str::to_string))
+        .collect();
+    let Some(id) = first_free(&format!("{namespace}/"), &taken) else {
+        return Outcome::err(format!(
+            "no free channel name under {namespace:?} in {session}"
+        ));
+    };
+    Outcome::ok_with(
+        format!("channel id {id} is free in {session}"),
+        json!({"id": id, "session": session}),
+    )
+}
+
 async fn input_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let session = match caller_session("input_channel", args, caller) {
         Ok(session) => session,
@@ -3042,6 +3109,18 @@ fn parse_cmd(value: &serde_json::Value) -> Result<crate::subscriptions::Action, 
     })
 }
 
+/// The first `<prefix><n>` nobody holds, for the smallest n that is free.
+///
+/// # Invariant
+///
+/// The names one session holds are a finite set, so one of `1..` is free; `None` is that
+/// arithmetic going wrong, and the caller refuses rather than unwrapping it.
+fn first_free(prefix: &str, taken: &std::collections::HashSet<String>) -> Option<String> {
+    (1u64..)
+        .map(|n| format!("{prefix}{n}"))
+        .find(|name| !taken.contains(name.as_str()))
+}
+
 /// The first `sub<n>` this session is not using, for a call that named no subscription.
 fn free_subscription_name(d: &Dispatch, session: &str) -> Result<String, String> {
     let rows = d
@@ -3053,10 +3132,7 @@ fn free_subscription_name(d: &Dispatch, session: &str) -> Result<String, String>
         .filter(|row| row.session == session)
         .map(|row| row.name)
         .collect();
-    (1..)
-        .map(|n| format!("sub{n}"))
-        .find(|name| !taken.contains(name.as_str()))
-        .ok_or_else(|| "no free subscription name".to_string())
+    first_free("sub", &taken).ok_or_else(|| "no free subscription name".to_string())
 }
 
 /// Drops a subscription, or every one under a path; the caller drops its own.

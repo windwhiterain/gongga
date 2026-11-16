@@ -98,6 +98,11 @@ Cmd := {
 }
 Session := path # sticky
 fn new_channel(id: optional[Channel] = none, name: str, session: Session = caller()):
+  # a name in use is refused: `exec` speaks to that one.
+fn new_channel_id(prefix: optional[path] = none, session: Session = caller()) -> Channel
+  # the first `<prefix>/<n>` no channel of this session holds; `none` is `/channel`.
+  # A caller that must start a channel under a fresh name asks here, because asking
+  # `new_channel` for one it made up is a race it cannot win alone.
 fn input_channel(id: Channel, input: str, session: Session = caller())
 fn rename_channel(id: Channel, new_id: path, session: Session = caller())
 fn ls_channel(path: path, session: Session = caller())
@@ -208,7 +213,7 @@ discards the clone when its turn truly ends.
 - the dream writes workspace documents and nothing else; the session is disposable, the
   files are the memory. deleting the source discards its dreams.
 
-## monitor
+## Monitor
 - providers: spawn/notice when a session failed on an llm request (refused, or the
   answer never finished). Reasons are the provider's, the roster's or the key's;
   the session is handed the `providers` skill.

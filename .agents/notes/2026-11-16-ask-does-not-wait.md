@@ -3,7 +3,7 @@
 ## The observation
 
 Session `Rusd` called `gongga_cli{run_skill{ask}}` and the tool call held the turn for 97 s.
-It ended with `` `run_skill` was cut short by the harness `` — and the thing that cut it was
+It ended with `` `run_skill` was cut short by the harness `` -- and the thing that cut it was
 the answer it was waiting for:
 
 | moment | what |
@@ -17,53 +17,94 @@ the answer it was waiting for:
 
 Two mechanisms, neither of them `exec`:
 
-1. **Every tool call is a wait.** `tools/mod.rs::invoke` → `waited()` (`:816`): it polls
+1. **Every tool call is a wait.** `tools/mod.rs::invoke` -> `waited()` (`:816`): it polls
    `ctx.inbox` every `INBOX_POLL` 250 ms, and on any message cancels the call's token
    (`:852`), gives it `EARLY_RETURN` 1 s, then aborts. So "a waiting tool" is the
-   dispatcher's property, not `exec`'s — SPEC gives waiting to `exec`'s channel and to
-   the `wait` tool.
+   dispatcher's property, not `exec`'s -- SPEC gives waiting to `exec`'s channel and to the
+   `wait` tool.
 2. **The length came from the skill, not the harness.** `ask_session.py` polled
    `get_messages` with `time.sleep(1)` for up to 900 s, and `run_skill` is exempt from the
    command clock (`commands.rs::OWN_CLOCK`), so the only bound was the skill runner's
-   `CALL_TIMEOUT_MS` (120 s) — which the declared 900 s could never fit inside.
+   `CALL_TIMEOUT_MS` (120 s) -- which the declared 900 s could never fit inside.
 
-The two facts contradict each other: the ping that says the answer exists *is* the message
-that cancels the waiting call, so a blocking `ask` can never be the one that receives it.
+The two facts contradict each other: the message that says the answer exists *is* the
+message that cancels the waiting call, so a blocking `ask` can never be the one that
+receives it.
 
 ## Verdict (user, 2026-11-16)
 
 > B. ask = send message 加自动subscribe
+>
+> 不是返回，是 ask 自动创建一个 channel，订阅，回调用 channel 跑一个脚本，get message，
+> send message
+>
+> 顺便加上一个 new_channel_id() 的 server cmd 来防止重名
 
-`ask` is `send_message` plus an automatically armed subscription. It does not wait.
+## What it is now
 
-## What changed (content `9932985`, `e335b07`, `88437c2`)
+`ask(session, question)` does four things and returns:
 
-- `skills/self-control/ask_session.py`: `ask` = read the cursor → arm
-  `^turn_end:<session>$` with a `send_message` ping that names row `since + 1` → send the
-  question → return one sentence (the subscription's name and the range to read).
-  `timeout` / `poll` are gone with `_wait` / `_read` / `_answer_in`; asking yourself is
-  refused; a question that never went out disarms its own ping.
-- `skills/self-control/_client.py`: the fallback import directory is `<home>/ship/python`
-  (protocol 12 moved the Python surface out of a home's `lib`).
-- `skills/self-control/SKILL.md`: the `ask` section, the frontmatter and the client path.
-- `skills/handoff/{SKILL.md,__init__.py}`: the two places that still promised `ask` waits and
-  prints the answer — the continuation's hint and the prose beside it.
+1. `get_messages -1:-1` for the cursor -- the answer is at or after `cursor + 1`;
+2. `new_channel_id(prefix="/ask")` -- the server mints `<prefix>/<n>`, the smallest free n;
+3. `new_channel` with that id, program `bash`;
+4. `subscribe(patterrn="^turn_end:<mentor>$", cmd=input_channel{id, input, wait:0})`, then
+   `send_message` the question.
+
+At the mentor's turn end the callback types one line into the channel:
+`GONGGA_ASK_MENTOR=… GONGGA_ASK_FIRST=… GONGGA_ASK_CALLER=… GONGGA_ASK_CHANNEL=… python answer.py`.
+`answer.py` runs **in the channel** while no turn runs: it reads the mentor's transcript from
+row `first`, picks the last `output` row with `done` true, `send_message`s it to the asker,
+and then ends its own channel.
+
+Nothing blocks: not `ask`, not the turn that asked it. The wait is a program's, which is
+what SPEC's `exec`-only waiting allows.
+
+### Two traps this cost
+
+- **A leading `/` is rewritten by the shell.** The first shape passed the channel id as an
+  argument: `/ask/9` reached `answer.py` as `C:/SoftWare/git/Git/ask/9` (MSYS path
+  conversion), so the waiter deleted nothing. An assignment value is converted too -- the
+  second shape carried it in the environment and failed the same way. It travels as
+  `ask/9` now, and `answer.py` re-attaches the slash.
+- **The waiter ends the channel it is running in**, so `del_channel`'s answer never
+  arrives; the call is best effort and reports a channel left behind on stderr, which the
+  channel's output keeps.
+
+## What changed
+
+- **server** `crates/server/src/commands.rs`: `new_channel_id` (catalog, dispatch, handler),
+  and `first_free` shared with `free_subscription_name` so both families of names are
+  minted one way. SPEC `## Server Cmd` gains the signature.
+- **content** (`97f1fd8`, `823434c`): `skills/self-control/ask_session.py` (the four steps),
+  `answer.py` (the waiter), `SKILL.md` (the `ask` section, a `new_channel_id` section, the
+  command list), `__init__.py`, `_client.py` (the fallback import directory moved to
+  `<home>/ship/python`, where protocol 12 put it).
+- `skills/handoff/{SKILL.md,__init__.py}`: the two places that still promised `ask` waits
+  and prints the answer.
 
 ## Verified (real server, real process)
 
-- refusal path: exit 1, `name the session to ask`, nothing armed.
-- end to end against a throwaway session: `ask` returned in **0.175 s** with
-  `` subscription `sub1` ... from row 1 ``; that session's turn ended (`seq 5`, idle); the
-  ping arrived as a user message naming row 1; the subscription was consumed
-  (`ls_subscription` empty — one match, not persistant); the answer sits in rows 1..5.
+- `new_channel_id prefix=/ask` -> `{"id": "/ask/1", "session": "fix"}`.
+- `ask` returns in **0.325 s**: `` channel /ask/1 waits ... (subscription `sub1`) ... ``.
+- The probe's turn ends; `events kind=subscription` shows
+  `input_channel … ok=true`; the message arrives: `fix/probe answered (asked through
+  self-control `ask`): 我现在的会话名是 fix/probe。`
+- The waiter deleted its own channel: `ls_channel` empty afterwards.
+- Gates: `PATH=/usr/bin:$PATH bash scripts/skill_contract.sh` -> `PASS 10 skill(s)`;
+  `cargo build -p gongga-server` clean; `cargo fmt --all`; `ship.sh` exit 0;
+  `ship.sh --check` exit 0 (protocol 13). One evolve (`20261116-224414`) carried the new
+  command into the running server.
 
 ## Left open
 
-- **A was not done**: `run_skill` is still in `OWN_CLOCK`, so a skill that blocks still
-  holds a turn up to `CALL_TIMEOUT_MS`. `ask` no longer does.
-- The running server reads the content it pulled: the home's `<home>/ship` holds the old
-  `ask` until that checkout's next pull (hourly, or a start).
-- `scripts/skill_contract.sh` prints `PASS 0 skill(s)` when `find` is Windows' `FIND` —
-  which is the case in every shell this server starts (no Git `usr/bin` on `PATH`): the
+- `del_channel --id /ask` refuses even when `/ask/1` exists: a parent path does not take the
+  channels under it, though SPEC says a path takes what is under it. Not chased here.
+- A workspace on another machine is refused by `ask`: the channel runs on that machine and
+  the waiter beside this `SKILL.md` is not there. `send_message` + `subscribe` by hand still
+  works there.
+- `run_skill` is still in `OWN_CLOCK`, so any other skill that blocks still holds a turn up
+  to `CALL_TIMEOUT_MS`.
+- `scripts/skill_contract.sh` prints `PASS 0 skill(s)` when `find` is Windows' `FIND`
+  (every shell this server starts, since Git's `usr/bin` is not on `PATH`): the
   `2>/dev/null` hides `FIND: Parameter format not correct`, so the gate cannot fail. With
-  `PATH=/usr/bin:$PATH` it checks 10 and passes.
+  `PATH=/usr/bin:$PATH` it checks 10.
