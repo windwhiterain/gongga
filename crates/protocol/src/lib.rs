@@ -21,6 +21,7 @@ pub fn version_line() -> &'static str {
     BUILD
 }
 
+pub mod argschema;
 pub mod argtype;
 pub mod channel;
 pub mod frame;

@@ -47,6 +47,23 @@ impl Leaf {
         }
     }
 
+    /// The leaf a schema's `type` describes.
+    ///
+    /// # Invariant
+    ///
+    /// The standard's keyword, not our spelling: a union admitting a string is a
+    /// string, because the operator may write one there.
+    pub fn from_schema(property: &serde_json::Value) -> Self {
+        match property.get("type") {
+            Some(serde_json::Value::String(kind)) if kind == "string" => Leaf::Text,
+            Some(serde_json::Value::String(kind)) if kind == "boolean" => Leaf::Switch,
+            Some(serde_json::Value::Array(kinds)) if kinds.iter().any(|kind| kind == "string") => {
+                Leaf::Text
+            }
+            _ => Leaf::Other,
+        }
+    }
+
     /// `text` as the JSON token this leaf takes, for a partly typed object.
     pub fn token(self, text: &str) -> String {
         if self.literal(text) {
