@@ -304,13 +304,30 @@ async fn content(source: Source<'_>, home: &Path, spelling: &str) -> Option<Stri
     }
 }
 
-/// A skill's `SKILL.md` as written, frontmatter included.
+/// A skill's `SKILL.md` as written, with what its publisher generated beside it.
+///
+/// # Invariant
+///
+/// One body, both halves, and neither re-rendered: the prose is the file's, and the
+/// arguments are the generated document's bytes, trusted rather than read out of the
+/// package again. `SKILL.md` states no second copy of them.
 fn skill_body(home: &Path, machine: crate::session::Machine, name: &str) -> Option<String> {
     // Only a row this server holds: a peer's checkout skill is not.
     let found = crate::tools::skill::installed_for(home, machine)
         .into_iter()
         .find(|skill| skill.name == name)?;
-    std::fs::read_to_string(found.path).ok()
+    let mut body = std::fs::read_to_string(&found.path).ok()?;
+    let prompts = crate::prompts::shared();
+    if let Some(template) = prompts.text(crate::prompts::SKILL_ARGUMENTS) {
+        if let Ok(arguments) = ::skill::schema_text(found.dir()) {
+            body.push_str("\n\n");
+            body.push_str(&crate::prompts::substitute(
+                &template,
+                &[("arguments", arguments.trim())],
+            ));
+        }
+    }
+    Some(body)
 }
 
 /// A message with its references resolved, and the pictures they named.

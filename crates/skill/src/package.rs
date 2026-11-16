@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 /// The file that makes a skill directory a package.
 const PACKAGE: &str = "__init__.py";
 
+/// What a package's publisher generated: its functions' arguments, as JSON Schema.
+const SCHEMA: &str = "schema.json";
+
 /// The contract a package's runner is: the content's `python` tree, installed under
 /// this home's `lib/`.
 const CONTRACT: &str = "gongga_skill.py";
@@ -19,6 +22,27 @@ const CONTRACT: &str = "gongga_skill.py";
 /// nothing else decides what a skill runs as.
 pub fn is_package(directory: &Path) -> bool {
     directory.join(PACKAGE).is_file()
+}
+
+/// What a package's functions take, as the file beside it says: the bytes as written.
+///
+/// # Invariant
+///
+/// Read, never re-derived. Every reader of a skill trusts this document rather than
+/// asking the package what it publishes a second time: the publisher generated it
+/// from the signatures, and two readings of one API would disagree in the completion
+/// alone. A skill that is not a package, or one whose publisher generated nothing,
+/// has no schema -- said as the reason, never as an empty document.
+pub fn schema_text(directory: &Path) -> Result<String, String> {
+    let path = directory.join(SCHEMA);
+    std::fs::read_to_string(&path).map_err(|e| format!("no schema at {}: {e}", path.display()))
+}
+
+/// The same document, parsed: a reader that completes or fills from it reads this.
+pub fn schema_of(directory: &Path) -> Result<serde_json::Value, String> {
+    let text = schema_text(directory)?;
+    serde_json::from_str(&text)
+        .map_err(|e| format!("the generated schema is not one JSON document: {e}"))
 }
 
 /// What starts a package skill: this home's interpreter, and the contract it reads.

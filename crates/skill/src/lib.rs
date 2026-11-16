@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub mod package;
 
-pub use package::{Package, is_package, package_of, request};
+pub use package::{Package, is_package, package_of, request, schema_of, schema_text};
 
 /// The file that makes a directory a skill, and the one a reader opens.
 const SKILL: &str = "SKILL.md";

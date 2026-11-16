@@ -1476,8 +1476,7 @@ impl Dispatch {
         all.extend(declared);
         all.extend(crate::tool_cmd::catalog(&tools));
         all.extend(scripts);
-        let home = &crate::ship::roots().home;
-        attach_skill_schemas(&mut all, tools.skills(), home).await;
+        attach_skill_schemas(&mut all);
         all
     }
 }
@@ -1488,14 +1487,9 @@ impl Dispatch {
 ///
 /// The table is keyed by skill name and read where the line states `id`, so the
 /// arguments a line offers are the ones that skill's functions take. A skill that
-/// is not a package publishes nothing, and one that does not answer is left out
-/// rather than failing the catalog.
-async fn attach_skill_schemas(
-    all: &mut [CommandSpec],
-    skills: Option<&crate::tools::skill::Skills>,
-    home: &std::path::Path,
-) {
-    let Some(skills) = skills else { return };
+/// is not a package publishes nothing, and one whose publisher generated no schema
+/// is left out with the reason rather than failing the catalog.
+fn attach_skill_schemas(all: &mut [CommandSpec]) {
     let Some(spec) = all.iter_mut().find(|spec| spec.name == "run_skill") else {
         return;
     };
@@ -1507,10 +1501,14 @@ async fn attach_skill_schemas(
         if !::skill::is_package(skill.dir()) {
             continue;
         }
-        if let Ok(document) =
-            crate::content_commands::package_schema(skills, home, skill.dir()).await
-        {
-            schemas.insert(skill.name.clone(), document);
+        match crate::content_commands::package_schema(skill.dir()) {
+            Ok(document) => {
+                schemas.insert(skill.name.clone(), document);
+            }
+            Err(why) => tracing::warn!(
+                skill = %skill.name,
+                "this skill publishes no arguments, so completion offers none: {why}"
+            ),
         }
     }
     if schemas.is_empty() {

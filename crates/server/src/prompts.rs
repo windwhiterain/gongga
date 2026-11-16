@@ -130,6 +130,15 @@ pub const THINKING_MARK: &str = "thinking_mark";
 /// may never need. See [`REVISION`].
 pub const RESUME_MARK: &str = "resume_mark";
 
+/// What introduces the arguments a skill's publisher generated, beside its prose.
+///
+/// # Invariant
+///
+/// Deliberately not in [`REQUIRED`]: a home that predates this template reads a skill
+/// as it always did -- its prose alone -- rather than refusing to start. The document
+/// it introduces is the generated file, appended as written, never re-rendered here.
+pub const SKILL_ARGUMENTS: &str = "skill_arguments";
+
 /// Every template the code asks for by name.
 ///
 /// # Invariant

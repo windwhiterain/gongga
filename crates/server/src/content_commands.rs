@@ -280,44 +280,21 @@ async fn ask(
 ///
 /// # Invariant
 ///
-/// The arguments are Python's signature, read by the contract itself: a property
-/// per function, a property per parameter, required exactly where Python's default
-/// is absent. A signature the contract publishes states no type, so each parameter
-/// is a string here rather than a guess at one.
-pub(crate) async fn package_schema(
-    skills: &Skills,
-    home: &std::path::Path,
-    directory: &std::path::Path,
-) -> Result<Value, String> {
-    let reply = ask(skills, home, directory).await?;
-    let functions = reply
+/// Read off the file the publisher generated, and trusted as written: every reader of
+/// one skill reads that document, so asking the package again here would be a second
+/// opinion about the same API, disagreeing with the model's copy the moment a
+/// signature moved. See `skill::schema_of`.
+pub(crate) fn package_schema(directory: &Path) -> Result<Value, String> {
+    let document = ::skill::schema_of(directory)?;
+    let functions = document
         .get("functions")
         .and_then(Value::as_object)
-        .ok_or("the manifest has no `functions` object")?;
+        .ok_or("the generated schema has no `functions` object")?;
     let mut names: Vec<Value> = Vec::new();
     let mut arguments = serde_json::Map::new();
-    for function in functions.keys() {
+    for (function, arguments_of) in functions {
         names.push(Value::String(function.clone()));
-        let mut inner = serde_json::Map::new();
-        let mut required: Vec<Value> = Vec::new();
-        for argument in signature_of(&reply, function)? {
-            let mut property = serde_json::Map::new();
-            // A signature naming no type accepts whatever the caller writes.
-            if let Some(type_of) = argument.type_of.as_deref() {
-                property.insert("type".into(), Value::String(type_of.to_string()));
-            }
-            inner.insert(argument.name.clone(), Value::Object(property));
-            if argument.required {
-                required.push(Value::String(argument.name));
-            }
-        }
-        let mut object = serde_json::Map::new();
-        object.insert("type".into(), Value::String("object".into()));
-        object.insert("properties".into(), Value::Object(inner));
-        if !required.is_empty() {
-            object.insert("required".into(), Value::Array(required));
-        }
-        arguments.insert(function.clone(), Value::Object(object));
+        arguments.insert(function.clone(), arguments_of.clone());
     }
     // SPEC's `Cmd := {name, args}`: the names this skill answers to, and the
     // arguments the chosen one takes.
