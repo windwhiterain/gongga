@@ -28,11 +28,11 @@ pub fn is_package(directory: &Path) -> bool {
 ///
 /// # Invariant
 ///
-/// Read, never re-derived. Every reader of a skill trusts this document rather than
-/// asking the package what it publishes a second time: the publisher generated it
-/// from the signatures, and two readings of one API would disagree in the completion
-/// alone. A skill that is not a package, or one whose publisher generated nothing,
-/// has no schema -- said as the reason, never as an empty document.
+/// Read, never re-derived: a reader trusts this document rather than asking the package
+/// again, because the publisher generated it from the signatures and two readings of one
+/// API disagree exactly where the operator is typing. A skill that is not a package, or
+/// one whose publisher generated nothing, has no schema -- said as the reason, never as an
+/// empty document.
 pub fn schema_text(directory: &Path) -> Result<String, String> {
     let path = directory.join(SCHEMA);
     std::fs::read_to_string(&path).map_err(|e| format!("no schema at {}: {e}", path.display()))
