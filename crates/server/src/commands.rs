@@ -776,6 +776,14 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     Some("name"),
                     CompletionSource::None,
                 ),
+                arg(
+                    "remote",
+                    "The machine its program runs on. Omitted is the session's; `none` is \
+                     this one.",
+                    false,
+                    Some("name"),
+                    CompletionSource::Static(remotes.to_vec()),
+                ),
                 kind_arg(
                     "session",
                     "Session that owns it. Omitted is the caller's own session.",
@@ -2433,16 +2441,30 @@ async fn del_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
             .collect(),
         Err(why) => return Outcome::err(why),
     };
-    if doomed.len() > 1 {
+    // The exact name is the single-channel case; anything else is a path taking what is
+    // under it, even when only one channel is under it. Counting the matches instead is
+    // what made `del_channel /ask` refuse while `/ask/1` existed. See
+    // `docs/notes/server-commands.md`.
+    if doomed.iter().any(|path| path != &id) {
         let mut ended = 0;
+        let mut failed: Vec<String> = Vec::new();
         for path in &doomed {
-            if let Ok(true) = d.agent.channels.stop(&session, path).await {
-                ended += 1;
+            match d.agent.channels.stop(&session, path).await {
+                Ok(_) => ended += 1,
+                Err(why) => failed.push(format!("{path}: {why}")),
             }
         }
-        return Outcome::ok(format!(
-            "ended {ended} channel(s) under {id:?}: {}",
-            doomed.join(", ")
+        if failed.is_empty() {
+            return Outcome::ok(format!(
+                "ended {ended} channel(s) under {id:?}: {}",
+                doomed.join(", ")
+            ));
+        }
+        // Said, never dropped: a channel that refused to die is not an ended one.
+        return Outcome::err(format!(
+            "ended {ended} channel(s) under {id:?}: {}; did not end {}",
+            doomed.join(", "),
+            failed.join(", ")
         ));
     }
     match d.agent.channels.stop(&session, &id).await {
@@ -2476,6 +2498,13 @@ async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
+    // SPEC's `optional[str]`: absent is the session's machine, and a stated `none` is this
+    // one -- the same reading `exec`'s `remote` gets, so a program can be placed where the
+    // work is even when the session's workspace is elsewhere.
+    let remote = match args.word("remote") {
+        None => handle.remote_name(),
+        Some(stated) => crate::session::remote_request(stated),
+    };
     match d
         .agent
         .channels
@@ -2483,7 +2512,7 @@ async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
             &session,
             &name,
             &[],
-            handle.remote_name().as_deref(),
+            remote.as_deref(),
             &handle.cwd(),
             &handle.env(),
             &id,

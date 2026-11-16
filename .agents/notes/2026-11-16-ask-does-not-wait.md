@@ -70,12 +70,29 @@ what SPEC's `exec`-only waiting allows.
   arrives; the call is best effort and reports a channel left behind on stderr, which the
   channel's output keeps.
 
+## Round two (same day, three follow-ups from the user)
+
+1. **The callback's channel deletes itself** -- `answer.py` ends the channel it runs in after
+   delivering. Verified: after each answer `ls_channel` is empty.
+2. **`del_channel /ask` would not take `/ask/1`.** A subagent (`fix/del-channel`) found it:
+   the branch was chosen by *how many* matched (`doomed.len() > 1`) instead of by *whether the
+   match is the path itself*, so one channel below a path fell through to `stop(&id)` with the
+   path. Fix: `doomed.iter().any(|path| path != &id)`, plus the loop now reports the channels
+   that refused to end instead of dropping them. Verified: `ended 1 channel(s) under "/ask":
+   /ask/1`.
+3. **`ask` refused a session whose workspace is on a peer machine.** `new_channel` had no
+   `remote`, so the channel always followed the session. It has one now -- SPEC's
+   `optional[str]`, absent is the session's machine and `none` is this one, the same reading
+   `exec`'s `remote` gets -- and `ask` states `none`, because the waiter beside the skill is
+   here. Verified from a caller whose workspace is `lichen-vm`: `ask` returned in 0.43 s, the
+   channel row read `"remote": null`, and the answer arrived.
+
 ## What changed
 
 - **server** `crates/server/src/commands.rs`: `new_channel_id` (catalog, dispatch, handler),
   and `first_free` shared with `free_subscription_name` so both families of names are
   minted one way. SPEC `## Server Cmd` gains the signature.
-- **content** (`97f1fd8`, `823434c`): `skills/self-control/ask_session.py` (the four steps),
+- **content** (`97f1fd8`, `823434c`, `2c74464`): `skills/self-control/ask_session.py` (the four steps),
   `answer.py` (the waiter), `SKILL.md` (the `ask` section, a `new_channel_id` section, the
   command list), `__init__.py`, `_client.py` (the fallback import directory moved to
   `<home>/ship/python`, where protocol 12 put it).
@@ -97,14 +114,10 @@ what SPEC's `exec`-only waiting allows.
 
 ## Left open
 
-- `del_channel --id /ask` refuses even when `/ask/1` exists: a parent path does not take the
-  channels under it, though SPEC says a path takes what is under it. Not chased here.
-- A workspace on another machine is refused by `ask`: the channel runs on that machine and
-  the waiter beside this `SKILL.md` is not there. `send_message` + `subscribe` by hand still
-  works there.
-- `run_skill` is still in `OWN_CLOCK`, so any other skill that blocks still holds a turn up
-  to `CALL_TIMEOUT_MS`.
 - `scripts/skill_contract.sh` prints `PASS 0 skill(s)` when `find` is Windows' `FIND`
   (every shell this server starts, since Git's `usr/bin` is not on `PATH`): the
   `2>/dev/null` hides `FIND: Parameter format not correct`, so the gate cannot fail. With
   `PATH=/usr/bin:$PATH` it checks 10.
+- `run_skill` is still in `OWN_CLOCK`, so any other skill that blocks still holds a turn up
+  to `CALL_TIMEOUT_MS`.
+- `del_channel`'s `Ok(false)` arm is dead: `stop` never answers false.

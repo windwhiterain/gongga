@@ -97,8 +97,10 @@ Cmd := {
   args: dict[str, any]
 }
 Session := path # sticky
-fn new_channel(id: optional[Channel] = none, name: str, session: Session = caller()):
+fn new_channel(id: optional[Channel] = none, name: str, remote: optional[str] = <session's remote>, session: Session = caller()):
   # a name in use is refused: `exec` speaks to that one.
+  # `remote` is the machine its program runs on: omitted is the session's, a stated `none`
+  # is this one.
 fn new_channel_id(prefix: optional[path] = none, session: Session = caller()) -> Channel
   # the first `<prefix>/<n>` no channel of this session holds; `none` is `/channel`.
   # A caller that must start a channel under a fresh name asks here, because asking
