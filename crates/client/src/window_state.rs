@@ -401,7 +401,7 @@ impl Sticky {
             .flatten()
         {
             let stated_field = stated_object.and_then(|object| object.get(name));
-            if property.get("type").and_then(Value::as_str) == Some("object") {
+            if protocol::argschema::is_struct(property) {
                 if let Some(filled) =
                     self.value_of(property, protocol::argschema::kind(property), stated_field)
                 {
@@ -498,7 +498,7 @@ impl Sticky {
             let Some(value) = object.get(name) else {
                 continue;
             };
-            if property.get("type").and_then(Value::as_str) != Some("object") {
+            if !protocol::argschema::is_struct(property) {
                 if let Some(kind) = protocol::argschema::kind(property) {
                     pairs.push((kind.to_string(), crate::json_command::word(value)));
                 }
@@ -558,7 +558,7 @@ fn prune(schema: &Value, object: Map<String, Value>) -> Map<String, Value> {
         let Some(value) = object.get(name) else {
             continue;
         };
-        if property.get("type").and_then(Value::as_str) == Some("object") {
+        if protocol::argschema::is_struct(property) {
             if let Value::Object(map) = value {
                 let pruned = prune(property, map.clone());
                 if !pruned.is_empty() {
