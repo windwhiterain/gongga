@@ -121,6 +121,13 @@ stands a sticky entry in for the leaves a line left open read the same document 
 sticky kind rides in the extension, so a value that belongs to a type is found the
 same way by both.
 
-**Open**: a skill's `Cmd` schema has no producer yet; when one publishes, it feeds
-the same reader. `CommandSpec` carries no schema on the wire — the client builds it
-from the published arguments with this one builder.
+**The skill producer.** The content's contract already answers a manifest request
+with `inspect.signature`'s reading of every function a package publishes; the
+catalog asks each installed package once per greeting (`content_commands::package_schema`)
+and hangs the answers on `run_skill`'s `cmd`, keyed by skill id. So
+`cmd.name` enumerates that skill's functions and `cmd.args` states the parameters
+of the chosen one — no second list of arguments to drift. A signature states no
+type, so each parameter is a string rather than a guess.
+
+**Open**: `CommandSpec` carries no schema on the wire — the client builds it from
+the published arguments with this one builder.
