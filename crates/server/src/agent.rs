@@ -964,6 +964,8 @@ impl Agent {
             .prompt_in_force(session, id, llm.model(), cwd, source)
             .await?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
+        // A request cannot answer the model's own half step; fill the boundary first.
+        self.fill_resume_mark(id, &name);
         // Pinned here, so every retry of this request replays the window that was
         // current when it started.
         let phase_started = std::time::Instant::now();
@@ -1817,6 +1819,51 @@ impl Agent {
                 call_id: calls.get(&item_id).cloned(),
             }));
             self.settle_item(session, &item_id);
+        }
+    }
+
+    /// Fills the boundary of a request that would otherwise end on the model's own words.
+    ///
+    /// # Invariant
+    ///
+    /// One row at most per request: what it appends is a user turn, so the check after it
+    /// finds a tail to answer. A home with no text for the mark sends the request as it
+    /// stands rather than an empty turn. See `docs/notes/server-agent.md`.
+    fn fill_resume_mark(&self, id: i64, session: &str) {
+        match self.store.answerable_tail(id) {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    session = %session, error = %e,
+                    "cannot tell whether the request ends on the model's own words"
+                );
+                return;
+            }
+        }
+        let text = crate::prompts::shared().render(crate::prompts::RESUME_MARK, &[]);
+        if text.trim().is_empty() {
+            tracing::warn!(
+                session = %session,
+                "the transcript stops on the model's own words, and this home has no resume mark to fill"
+            );
+            return;
+        }
+        match self.store.append_message(
+            id,
+            Kind::ThinkingMark,
+            &json!({"text": crate::prompts::harness_wrap(text)}),
+        ) {
+            Ok(seq) => {
+                self.announce_row(session, Ok(seq));
+                tracing::info!(
+                    session = %session,
+                    "filled a resume boundary: the request would have ended on the model's own words"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(session = %session, error = %e, "cannot append the resume mark")
+            }
         }
     }
 

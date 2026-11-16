@@ -404,6 +404,22 @@ Where the transcript ends. A negative bound in `--range` is resolved against it 
 read time, which is what makes `-1` mean "the newest row" rather than "one row
 before some fixed number".
 
+## Store::answerable_tail
+
+The one question a request asks its own tail: is there anything here for the model to
+answer? Half a step is exactly the tail being the model's own words -- a `reasoning`
+row a cancel kept, or an assistant `text` it cut short -- and asking the same context
+again is what made a resumed session re-derive its reasoning almost verbatim.
+
+Decided from the row's stored wire item rather than from a list of kinds, so it stays
+true if a new kind is added: role `assistant` is the model's, and everything else --
+`function_call_output`, an `error`, a harness mark, the operator's line -- is a turn.
+A `function_call` with no output is a different brokenness (`answer_open_calls` owns
+it): a user turn after it would not make the pair whole.
+
+`Agent::fill_resume_mark` is the only caller, and it appends rather than patches:
+see `docs/notes/server-agent.md`.
+
 ## Store::messages_between
 
 Both ends stated. The cursor form this replaced (`after_seq` plus a count from

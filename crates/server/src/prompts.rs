@@ -121,6 +121,15 @@ pub const LIVE_COMPACT_NOTICE: &str = "live_compact_notice";
 /// The text a turn boundary is written with when the provider refused the transcript.
 pub const THINKING_MARK: &str = "thinking_mark";
 
+/// What fills the boundary a request would otherwise end on, being the model's own words.
+///
+/// # Invariant
+///
+/// Deliberately not in [`REQUIRED`]: a home that predates this template resumes as it did
+/// before -- the request stands as it is -- rather than refusing to start over a mark it
+/// may never need. See [`REVISION`].
+pub const RESUME_MARK: &str = "resume_mark";
+
 /// Every template the code asks for by name.
 ///
 /// # Invariant

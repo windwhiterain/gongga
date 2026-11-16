@@ -515,6 +515,28 @@ replays its text as a `summary` instead -- what it says is what the model though
 and dropping it was losing the half of the turn the reader had already watched.
 See `docs/notes/server-llm.md`.
 
+## Agent::fill_resume_mark
+
+What a cancel keeps leaves the model's own words at the end of the request, and a
+request cannot answer itself: `input` ends on the thought or the half sentence the
+stop froze, and the next step is asked to continue from something it was never
+given a turn to answer. Resuming such a session therefore restarted the thought from
+the same prefix -- a second derivation of the same plan, at full price, for a
+320k-token context.
+
+So a request is checked at send time, before its window is pinned: when the last row
+a request would send is the model's own (`reasoning`, or assistant-role `text`), the
+step appends one `thinking_mark` carrying the home's `resume_mark` template, and the
+request ends on a turn after all. Tool output is the other way round -- it is what
+the model answers -- so an ordinary step whose tools just ran gets no mark.
+
+The mark is appended, never synthesised while the body is written: SPEC's "auto
+validate and fix the latest saved step" is satisfied by a row the next request also
+replays, and a body that could invent its own tail is a body that invents a
+different one later. One row at most, because what it appends is itself a user turn.
+It says nothing about the thought that came before it -- no provider accepts a
+half-finished item back -- so it buys a boundary, not the resume of a thought.
+
 ## a cancelled call is still answered
 
 `run_one_call` returns early when the cancel token is already set, and that used to

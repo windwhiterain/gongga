@@ -2496,6 +2496,41 @@ impl Store {
         })
     }
 
+    /// Whether the model has something to answer at the end of the transcript.
+    ///
+    /// # Invariant
+    ///
+    /// Read from the row's own wire item, never from a list of kinds: the tail is half a
+    /// step exactly when it is the model's own words -- a thought or an answer a stop cut
+    /// short -- and a request cannot answer itself. Tool output, an error and a harness
+    /// mark are what it answers, so they end a whole step. See `docs/notes/server-store.md`.
+    pub fn answerable_tail(&self, session_id: i64) -> anyhow::Result<bool> {
+        let conn = self.lock();
+        let found: Option<(String, String)> = conn
+            .query_row(
+                "SELECT kind, content FROM messages
+                  WHERE session_id = ?1 AND content IS NOT NULL
+                  ORDER BY seq DESC LIMIT 1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((kind, content)) = found else {
+            // Nothing has been sent yet: the request opens on the operator's own line.
+            return Ok(true);
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&content).unwrap_or(serde_json::Value::Null);
+        let said_by_model = match Kind::parse(&kind) {
+            Some(Kind::Reasoning) => true,
+            Some(Kind::Text | Kind::Inject) => {
+                value.get("role").and_then(|role| role.as_str()) == Some("assistant")
+            }
+            _ => false,
+        };
+        Ok(!said_by_model)
+    }
+
     // -- tool calls --------------------------------------------------------
 
     pub fn start_tool_call(
@@ -3912,7 +3947,8 @@ fn wire_item(kind: Kind, value: &serde_json::Value) -> Option<serde_json::Value>
             "name": text_of("name"),
             "arguments": text_of("arguments"),
         })),
-        // A boundary the harness draws, not a thing the reader said.
+        // A boundary the harness draws, not a thing the reader said: see
+        // `docs/notes/server-store.md`.
         Kind::ThinkingMark => Some(json!({"role": "user", "content": text_of("text")})),
         Kind::ToolResult => Some(json!({
             "type": "function_call_output",
