@@ -234,18 +234,16 @@ pub fn roots(project: Option<&Path>) -> skill::Roots {
     )
 }
 
-/// One row: what to call it, the path that names it, where it comes from, what it is
-/// for, and what to open.
+/// One row: what to call it, which layer holds it, what it is for, and what to open.
 ///
 /// # Invariant
 ///
-/// `id` is `skill::Skill::id` and nothing else: `ls_skill` filters a `path` against it
-/// and `run_skill` hands it back unchanged, so the row a reader copies is the word the
-/// call takes. The bucket is a field beside it rather than part of it, so a row says
-/// where a skill came from without the call having to spell it.
+/// `name` is the whole address and the only thing a call spells: `ls_skill` filters a
+/// `path` against it and `run_skill` hands it back unchanged, so the row a reader copies
+/// is the word the call takes. `bucket` stands beside it, so a row says where a skill
+/// came from without the call having to spell it.
 pub(crate) fn row(skill: &Skill) -> Value {
     json!({
-        "id": skill.id(),
         "name": skill.name,
         "description": skill.description,
         "path": skill.path.display().to_string(),

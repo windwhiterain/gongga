@@ -2781,7 +2781,7 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let installed = crate::tools::skill::installed_for(&handle.cwd(), handle.owner());
     let listed: Vec<serde_json::Value> = installed
         .iter()
-        .filter(|skill| under(&skill.id(), &path) || under(skill.bucket.as_str(), &path))
+        .filter(|skill| under(&skill.name, &path) || under(skill.bucket.as_str(), &path))
         .map(crate::tools::skill::row)
         .collect();
     if listed.is_empty() {
@@ -2812,7 +2812,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let roots = crate::tools::skill::session_roots(&handle.cwd(), handle.owner());
     // One resolver, and the walk behind it is `ls_skill`'s.
     let Some(skill) = roots.find(&id) else {
-        let known: Vec<String> = roots.all().iter().map(|skill| skill.id()).collect();
+        let known: Vec<String> = roots.all().iter().map(|skill| skill.name.clone()).collect();
         return Outcome::err(format!(
             "no skill is {id:?} here; `ls_skill` lists {}",
             if known.is_empty() {

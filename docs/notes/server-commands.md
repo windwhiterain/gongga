@@ -743,7 +743,7 @@ one at a time rather than batched.
 
 SPEC's `## Python Cmd` gives skills a namespace, so a skill has a path -- and the path is
 the skill's **name**: `evolve` for the checkout's own, `handoff` for the home's,
-`polity` for the machine's. `skill::Skill::id` is that name and nothing above it, which
+`polity` for the machine's. `Skill::name` is that name and nothing above it, which
 is what lets a row this lists be pasted into `run_skill` unchanged. Which root a row came
 from is a field of its own (`bucket`), not part of the name: a caller who holds a name
 should not have to know which of three directories answers to it.
@@ -753,8 +753,8 @@ the project layer needs the session *on this machine*, so a session whose direct
 on a peer is handed the home's and the machine's rows instead. `path` is filtered with
 `commands::under` against a name **or** a bucket's word, so `harness` is every skill the
 home installed, `self-control` is one, and `har` is nothing -- a component, never a string
-prefix. A row is `tools::skill::row`, so the listing and the call never disagree about an
-`id`.
+prefix. A row is `tools::skill::row`, so the listing and the call never disagree about a
+name.
 
 A name two roots both hold is two rows with one name. `ls_skill` lists both, each with its
 `bucket`; `run_skill` runs the most specific one, the row `@skill(...)` already read. There

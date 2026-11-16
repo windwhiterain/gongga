@@ -11,7 +11,6 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use protocol::{ArgSpec, CommandSpec, CommandTarget, CompletionSource};
-use skill::Skill;
 
 use crate::tools::ToolRegistry;
 use crate::tools::skill::Skills;
@@ -206,7 +205,7 @@ impl ContentCommands {
         declaration: &crate::ship::Command,
     ) -> Result<Manifest, String> {
         let Some(skill) = roots.find(&declaration.skill) else {
-            let known: Vec<String> = roots.all().iter().map(Skill::id).collect();
+            let known: Vec<String> = roots.all().iter().map(|skill| skill.name.clone()).collect();
             return Err(format!(
                 "no skill is {:?} here; `ls_skill` lists {}",
                 declaration.skill,

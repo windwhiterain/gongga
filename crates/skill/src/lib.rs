@@ -136,19 +136,6 @@ impl Skill {
     pub fn dir(&self) -> &Path {
         self.path.parent().unwrap_or(Path::new("."))
     }
-
-    /// What a caller names it by: its own name.
-    ///
-    /// # Invariant
-    ///
-    /// The name is the skill, and where it came from is a field rather than a prefix:
-    /// a caller who has a name does not have to know which root holds it, and the root
-    /// a name came from is still on the row (`bucket`). Two roots spelling one name are
-    /// two rows that answer to one word, which is what [`Roots::find`] and `at` decide
-    /// by precedence.
-    pub fn id(&self) -> String {
-        self.name.clone()
-    }
 }
 
 /// Reads one skill directory's frontmatter, falling back to its directory name.

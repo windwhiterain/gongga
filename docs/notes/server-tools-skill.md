@@ -6,8 +6,8 @@ One skill, run: the function the Python package it is publishes, or the one refu
 naming what the directory would have to become. There is no `skill` tool and no `skill` command -- SPEC's `## Python Cmd`
 gives the namespace two commands, `ls_skill` and `run_skill`, and this module is what
 `run_skill` calls. The table `ls_skill` prints is the same walk, for the reason that
-matters to a reader: a row's `id` is what `run_skill` takes, so a path one lists is a
-path the other runs.
+matters to a reader: a row's `name` is what `run_skill` takes, so a skill one lists is
+a skill the other runs.
 
 ## Two shapes, one door
 
@@ -89,8 +89,9 @@ The project layer needs the session *on this machine*: a session whose directory
 peer gets the home's and the machine's rows, and one sentence saying that checkout's
 skills are that machine's files to `ls` and `cat` over `remote_bash`.
 
-A name in two roots is two rows and two ids. That is the reason `run_skill` takes an
-`id` and never a bare name: a path names one row, a name may name two.
+A name in two roots is two rows with one name, and `run_skill` runs the nearer one --
+the row `@skill(...)` already read. There is no second spelling for "the other one":
+where a row came from is its `bucket`, and a call never says it.
 
 `roots` is that construction, so a caller with no session can ask the same question: the
 catalog is built before any client is greeted, and the command a piece of content
