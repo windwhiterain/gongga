@@ -117,28 +117,27 @@ impl Roots {
     /// first, as [`Self::find`] reads it); two or more are directories under the bucket
     /// the first word names (`harness/a/b`), answered by that root's `stat` alone.
     pub fn at(&self, id: &str) -> Option<Skill> {
-        let mut parts = id
+        let words: Vec<&str> = id
             .trim_matches('/')
             .split('/')
-            .filter(|part| !part.is_empty());
-        let first = parts.next()?;
-        // One word is a name, so every root is a candidate; more is a path, and its
-        // first word names the bucket.
-        let (buckets, rest): (Vec<Bucket>, &str) = match parts.next() {
-            Some(_) => (
-                Bucket::ALL
+            .filter(|part| !part.is_empty())
+            .collect();
+        let (first, below) = words.split_first()?;
+        // One word is a name tried against every root; more names a bucket first.
+        let (buckets, under): (Vec<Bucket>, PathBuf) = match below.is_empty() {
+            true => (Bucket::ALL.to_vec(), PathBuf::from(*first)),
+            false => {
+                let bucket = Bucket::ALL
                     .into_iter()
-                    .find(|bucket| bucket.as_str() == first)
-                    .map(|bucket| vec![bucket])?,
-                first,
-            ),
-            None => (Bucket::ALL.to_vec(), first),
+                    .find(|bucket| bucket.as_str() == *first)?;
+                (vec![bucket], PathBuf::from(below.join("/")))
+            }
         };
         for bucket in buckets {
             let Some(root) = self.dir(bucket) else {
                 continue;
             };
-            let dir = root.join(rest);
+            let dir = root.join(&under);
             if dir.join(SKILL).is_file() {
                 return Some(declared(bucket, &dir));
             }
