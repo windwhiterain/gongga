@@ -474,11 +474,17 @@ fn between(text: &str, at: usize, stack: &[Container]) -> Option<Place> {
         Expect::Done => return None,
     };
     // A name already read keeps its range: accepting a candidate replaces the
-    // name and writes the colon that follows it.
+    // name and writes the colon that follows it -- including a colon the line
+    // already holds, which would otherwise stand after what was written.
     let (start, end, fragment, quoted) = match (typing, frame.expect) {
         (Typing::Key, Expect::Colon) => {
             let (start, end) = frame.key_token?;
-            (start, end, inner(text, start, end), true)
+            let fragment = inner(text, start, end);
+            let end = match text.get(end.min(text.len())..) {
+                Some(rest) if rest.starts_with(':') => end + 1,
+                _ => end,
+            };
+            (start, end, fragment, true)
         }
         _ => (at, at, String::new(), false),
     };
