@@ -1476,8 +1476,55 @@ impl Dispatch {
         all.extend(declared);
         all.extend(crate::tool_cmd::catalog(&tools));
         all.extend(scripts);
+        let home = &crate::ship::roots().home;
+        attach_skill_schemas(&mut all, tools.skills(), home).await;
         all
     }
+}
+
+/// What each skill publishes, as the table `run_skill`'s `cmd` completes from.
+///
+/// # Invariant
+///
+/// The table is keyed by skill name and read where the line states `id`, so the
+/// arguments a line offers are the ones that skill's functions take. A skill that
+/// is not a package publishes nothing, and one that does not answer is left out
+/// rather than failing the catalog.
+async fn attach_skill_schemas(
+    all: &mut [CommandSpec],
+    skills: Option<&crate::tools::skill::Skills>,
+    home: &std::path::Path,
+) {
+    let Some(skills) = skills else { return };
+    let Some(spec) = all.iter_mut().find(|spec| spec.name == "run_skill") else {
+        return;
+    };
+    let Some(command) = spec.args.iter_mut().find(|arg| arg.name == "cmd") else {
+        return;
+    };
+    let mut schemas = serde_json::Map::new();
+    for skill in crate::tools::skill::roots(None).all() {
+        if !::skill::is_package(skill.dir()) {
+            continue;
+        }
+        if let Ok(document) =
+            crate::content_commands::package_schema(skills, home, skill.dir()).await
+        {
+            schemas.insert(skill.name.clone(), document);
+        }
+    }
+    if schemas.is_empty() {
+        return;
+    }
+    let mut extension = serde_json::Map::new();
+    extension.insert("schema_of".into(), serde_json::json!("id"));
+    extension.insert("schemas".into(), serde_json::Value::Object(schemas));
+    let mut schema = serde_json::Map::new();
+    schema.insert(
+        protocol::argschema::EXTENSION.into(),
+        serde_json::Value::Object(extension),
+    );
+    command.schema = Some(serde_json::Value::Object(schema));
 }
 
 async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
