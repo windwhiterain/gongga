@@ -474,18 +474,14 @@ fn in_command_word(line: &str, cursor: usize) -> bool {
 /// sorted apart would read as the server's answers followed by the window's, and
 /// the operator would read that as one list in a strange order.
 fn merged(mut server: crate::Offered, own: crate::Offered, typed: &str) -> crate::Offered {
-    for candidate in own.candidates {
-        if !server
-            .candidates
-            .iter()
-            .any(|held| held.insert == candidate.insert)
-        {
-            server.candidates.push(candidate);
+    for item in own.items {
+        if !server.items.iter().any(|held| held.label == item.label) {
+            server.items.push(item);
         }
     }
     server
-        .candidates
-        .sort_by_key(|c| !c.insert.trim_start_matches('/').starts_with(typed));
+        .items
+        .sort_by_key(|c| !c.label.trim_start_matches('/').starts_with(typed));
     server
 }
 

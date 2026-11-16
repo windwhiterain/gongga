@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Candidate, Layout, LineKind, Sink, protocol};
+use crate::{Item, Layout, LineKind, Sink, protocol};
 
 /// One run of a document row: its words, and the class that says how they look.
 ///
@@ -201,7 +201,7 @@ pub enum RenderMessage {
         start: usize,
         end: usize,
         subject: Option<String>,
-        candidates: Vec<Candidate>,
+        items: Vec<Item>,
     },
     /// A page of the past, to be drawn *above* what the window already holds.
     ///
@@ -593,7 +593,7 @@ mod tests {
                 start: 14,
                 end: 17,
                 subject: Some("id".to_string()),
-                candidates: vec![Candidate::word("main", "a session")],
+                items: vec![Item::word("main", "a session")],
             },
         ];
         for frame in frames {

@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 /// Programs that read stdin and put it on the clipboard, tried in order.
 ///
 /// An empty list is a headless box, not a bug.
-fn candidates() -> &'static [(&'static str, &'static [&'static str])] {
+fn items() -> &'static [(&'static str, &'static [&'static str])] {
     if cfg!(windows) {
         // `clip` ships with Windows; it takes text on stdin and prints nothing.
         &[("clip", &[])]
@@ -199,7 +199,7 @@ pub enum Copied {
 /// A failure is reported, never swallowed: a copy that silently did nothing is
 /// worse than one that says it could not.
 pub fn copy(text: &str) -> Copied {
-    copy_with(text, candidates())
+    copy_with(text, items())
 }
 
 /// [`copy`] against a named list, so a test exercises the spawn and the pipe

@@ -387,7 +387,7 @@ impl Frontend for PipeFrontend {
             start: completion.start,
             end: completion.end,
             subject: completion.subject.clone(),
-            candidates: completion.candidates.clone(),
+            items: completion.items.clone(),
         });
     }
     fn set_server(&mut self, server: Option<Server>) {
