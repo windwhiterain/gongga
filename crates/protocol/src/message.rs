@@ -1308,7 +1308,7 @@ fn spec_arg(
         completions,
         accepts: None,
         sticky_to: None,
-        structure: None,
+        schema: None,
         update: false,
     }
 }
@@ -1389,9 +1389,14 @@ pub struct ArgSpec {
     /// follower of a kind that never changes is never forgotten.
     #[serde(default)]
     pub sticky_to: Option<String>,
-    /// The shape of a structured (JSON object) value, when this argument takes one.
+    /// A structured value's shape: the JSON Schema of that object.
+    ///
+    /// # Invariant
+    ///
+    /// One document, read by both paths: the completion inside the object and the
+    /// fill that stands a sticky entry in for the leaves the line left open.
     #[serde(default)]
-    pub structure: Option<StructSchema>,
+    pub schema: Option<serde_json::Value>,
     /// SPEC's `T{..}`: a struct update, not a value of the type.
     ///
     /// # Invariant
@@ -1405,8 +1410,8 @@ pub struct ArgSpec {
 
 impl ArgSpec {
     /// Names the structured (JSON object) shape this argument's value takes.
-    pub fn with_structure(mut self, schema: StructSchema) -> Self {
-        self.structure = Some(schema);
+    pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
+        self.schema = Some(schema);
         self
     }
 
@@ -1444,68 +1449,6 @@ impl ArgSpec {
         }
         self
     }
-}
-
-/// The shape of a structured (JSON object) argument value, for completing inside
-/// it. See `SPEC.md` (`SessionConfig`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct StructSchema {
-    pub fields: Vec<StructField>,
-}
-
-/// One field of a [`StructSchema`]: either a nested object or a leaf value.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StructField {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    /// Present when this field's value is itself an object.
-    #[serde(default)]
-    pub object: Option<Box<StructSchema>>,
-    /// A leaf value's completion source, when `object` is none.
-    #[serde(default)]
-    pub source: CompletionSource,
-    /// A leaf's closed value set, resolved against the model like `ArgSpec::accepts`.
-    #[serde(default)]
-    pub accepts: Option<Accepts>,
-    #[serde(default)]
-    pub value_hint: Option<String>,
-    /// A model-reference leaf: the chosen `<provider>/<model>` arrives as an object.
-    #[serde(default)]
-    pub model_ref: bool,
-    /// The value this leaf takes, in SPEC's spelling, as `ArgSpec::type_of` states
-    /// an argument's.
-    ///
-    /// # Invariant
-    ///
-    /// The spelling, never its JSON image: `crate::argtype` is the one table that
-    /// maps one to the other, so a value is quoted, left a literal or offered
-    /// `true`/`false` by what the type is. `None` offers nothing beyond the
-    /// published list.
-    /// See `docs/notes/client-complete.md`.
-    #[serde(rename = "type", default)]
-    pub type_of: Option<String>,
-    /// The sticky type this field carries, when SPEC marks its type `# sticky`.
-    ///
-    /// # Invariant
-    ///
-    /// A field with a kind is filled by that type's entry as a whole and written
-    /// back to it; a field without one is a plain member. `Model` and
-    /// `ModelConfig` are the two nested types SPEC marks, `Workspace` is not.
-    /// See `docs/notes/tui-state.md`.
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// The value this field takes when nothing says otherwise, in SPEC's spelling;
-    /// `None` is no default.
-    ///
-    /// # Invariant
-    ///
-    /// Stated wherever SPEC gives the field a default (`provider_default()`, `70%`,
-    /// `none`, `.`, `false`). Only a field without one is filled from a sticky
-    /// entry: a value the type already decides must not be overwritten by one a
-    /// reader typed days ago. See `docs/notes/tui-state.md`.
-    #[serde(default)]
-    pub default: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

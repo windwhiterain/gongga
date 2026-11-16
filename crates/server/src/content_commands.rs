@@ -342,7 +342,7 @@ fn spec_of(manifest: &Manifest, row: Option<&ToolSpec>) -> CommandSpec {
                 kind: None,
                 accepts: None,
                 sticky_to: None,
-                structure: None,
+                schema: None,
                 update: false,
             }
         })

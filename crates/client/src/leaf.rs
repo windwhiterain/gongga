@@ -8,8 +8,6 @@
 //! completion's token and the sticky fill's value. So a string is quoted and a
 //! switch is `true` wherever either writes.
 
-use protocol::StructField;
-
 /// What a leaf's value is, in JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Leaf {
@@ -23,30 +21,6 @@ pub enum Leaf {
 }
 
 impl Leaf {
-    /// The leaf `field` describes.
-    ///
-    /// # Invariant
-    ///
-    /// Read from the stated type through `protocol::argtype`, the one table that
-    /// maps SPEC's spelling to the JSON image; a spelling that table refuses is a
-    /// leaf nothing is known about, never a silent string.
-    pub fn of(field: &StructField) -> Self {
-        let Some(spelling) = field.type_of.as_deref() else {
-            return Leaf::Other;
-        };
-        let Ok(types) = protocol::argtype::schema_types(spelling) else {
-            return Leaf::Other;
-        };
-        // A union that admits a string is typed as one: the operator may write it.
-        if types.contains(&"string") {
-            Leaf::Text
-        } else if types.contains(&"boolean") {
-            Leaf::Switch
-        } else {
-            Leaf::Other
-        }
-    }
-
     /// The leaf a schema's `type` describes.
     ///
     /// # Invariant

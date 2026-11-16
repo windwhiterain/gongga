@@ -4,17 +4,37 @@
 
 use serde_json::{Map, Value, json};
 
-use crate::{Accepts, ArgSpec, CompletionSource, StructField, StructSchema};
+use crate::{Accepts, ArgSpec, CompletionSource};
 
 /// The one keyword this document uses that JSON Schema does not define.
 ///
 /// # Invariant
 ///
 /// Only what the standard cannot state lives here: the live source a value is
-/// completed from, the sets keyed by model, the value placeholder and the
-/// model-reference flag. The standard says an unknown keyword is an annotation, so
-/// a reader that knows no `x-` keyword reads this document as a plain schema.
+/// completed from, the sets keyed by model, the value placeholder, the sticky kind,
+/// the model-reference flag and the struct-update flag. The standard says an unknown
+/// keyword is an annotation, so a reader that knows no `x-` keyword reads a plain
+/// schema.
 pub const EXTENSION: &str = "x-completion";
+
+/// Everything one property is written from, whichever row states it.
+pub struct Row<'a> {
+    /// SPEC's type, e.g. `optional[path]`.
+    pub type_of: Option<&'a str>,
+    pub description: &'a str,
+    /// The object this property holds, when it holds one.
+    pub object: Option<Value>,
+    pub accepts: Option<&'a Accepts>,
+    pub source: &'a CompletionSource,
+    /// The sticky kind: two arguments of one kind share one entry.
+    pub kind: Option<&'a str>,
+    pub hint: Option<&'a str>,
+    /// SPEC's default, spelled as SPEC spells it.
+    pub default: Option<&'a str>,
+    pub model_ref: bool,
+    /// SPEC's `T{..}`: an update says what changes, not what the value is.
+    pub update: bool,
+}
 
 /// The arguments of one command, as the schema of the object they are written as.
 pub fn of(args: &[ArgSpec]) -> Value {
@@ -23,72 +43,45 @@ pub fn of(args: &[ArgSpec]) -> Value {
     for arg in args {
         properties.insert(
             arg.name.clone(),
-            property(Field {
+            property(&Row {
                 type_of: Some(&arg.type_of),
                 description: &arg.description,
-                object: arg.structure.as_ref(),
+                object: arg.schema.clone(),
                 accepts: arg.accepts.as_ref(),
                 source: &arg.completions,
+                kind: arg.kind.as_deref(),
                 hint: arg.value_hint.as_deref(),
                 default: None,
                 model_ref: false,
+                update: arg.update,
             }),
         );
         if arg.required {
             required.push(Value::String(arg.name.clone()));
         }
     }
-    document(properties, required)
-}
-
-/// One field of a structured value, as a property of its object.
-fn nested(schema: &StructSchema) -> Value {
-    let mut properties = Map::new();
-    for field in &schema.fields {
-        properties.insert(field.name.clone(), of_field(field));
+    let mut document = object(properties);
+    if !required.is_empty() {
+        document["required"] = Value::Array(required);
     }
-    document(properties, Vec::new())
+    document
 }
 
-/// One [`StructField`] as a property.
-fn of_field(field: &StructField) -> Value {
-    property(Field {
-        type_of: field.type_of.as_deref(),
-        description: &field.description,
-        object: field.object.as_deref(),
-        accepts: field.accepts.as_ref(),
-        source: &field.source,
-        hint: field.value_hint.as_deref(),
-        default: field.default.as_deref(),
-        model_ref: field.model_ref,
-    })
-}
-
-/// Everything one property is read from, whichever list states it.
-struct Field<'a> {
-    type_of: Option<&'a str>,
-    description: &'a str,
-    object: Option<&'a StructSchema>,
-    accepts: Option<&'a Accepts>,
-    source: &'a CompletionSource,
-    hint: Option<&'a str>,
-    default: Option<&'a str>,
-    model_ref: bool,
-}
-
-/// One property: the standard keywords first, then what they cannot say.
-fn property(field: Field<'_>) -> Value {
+/// One property: the standard's keywords first, then what they cannot say.
+pub fn property(row: &Row<'_>) -> Value {
     let mut out = Map::new();
-    match field.object {
+    match &row.object {
         // A structured value is an object of its own fields.
-        Some(schema) => {
-            let inner = nested(schema);
+        Some(inner) => {
             out.insert("type".into(), json!("object"));
             if let Some(properties) = inner.get("properties") {
                 out.insert("properties".into(), properties.clone());
             }
+            if let Some(required) = inner.get("required") {
+                out.insert("required".into(), required.clone());
+            }
         }
-        None => match field.type_of.map(crate::argtype::schema_types) {
+        None => match row.type_of.map(crate::argtype::schema_types) {
             Some(Ok(types)) if types.len() == 1 => {
                 out.insert("type".into(), json!(types[0].to_string()));
             }
@@ -98,19 +91,19 @@ fn property(field: Field<'_>) -> Value {
                     json!(types.iter().map(|t| t.to_string()).collect::<Vec<_>>()),
                 );
             }
-            // A spelling the table refuses states nothing; the property then
-            // accepts any value, which is what an empty schema means.
+            // A spelling the table refuses states nothing: an empty schema accepts
+            // any value, which is what the reader then reads.
             Some(Err(_)) | None => {}
         },
     }
-    if !field.description.is_empty() {
-        out.insert("description".into(), json!(field.description));
+    if !row.description.is_empty() {
+        out.insert("description".into(), json!(row.description));
     }
-    if let Some(value) = field.default {
+    if let Some(value) = row.default {
         out.insert("default".into(), json!(value));
     }
     // A closed set of values is an `enum`, wherever it was stated.
-    match (field.accepts, field.source) {
+    match (row.accepts, row.source) {
         (Some(Accepts::Same(values)), _) => {
             out.insert("enum".into(), json!(values));
         }
@@ -120,21 +113,27 @@ fn property(field: Field<'_>) -> Value {
         _ => {}
     }
     let mut extension = Map::new();
-    if let Some(accepts @ Accepts::PerModel(_)) = field.accepts {
+    if let Some(accepts @ Accepts::PerModel(_)) = row.accepts {
         extension.insert("accepts".into(), json!(accepts));
     }
     // Carried as the enum states it, so reading it back is the same serde pair.
     if !matches!(
-        field.source,
+        row.source,
         CompletionSource::None | CompletionSource::Static(_)
     ) {
-        extension.insert("source".into(), json!(field.source));
+        extension.insert("source".into(), json!(row.source));
     }
-    if let Some(hint) = field.hint {
+    if let Some(kind) = row.kind {
+        extension.insert("kind".into(), json!(kind));
+    }
+    if let Some(hint) = row.hint {
         extension.insert("hint".into(), json!(hint));
     }
-    if field.model_ref {
+    if row.model_ref {
         extension.insert("model_ref".into(), json!(true));
+    }
+    if row.update {
+        extension.insert("update".into(), json!(true));
     }
     if !extension.is_empty() {
         out.insert(EXTENSION.into(), Value::Object(extension));
@@ -143,13 +142,73 @@ fn property(field: Field<'_>) -> Value {
 }
 
 /// An object schema over `properties`, closed.
-fn document(properties: Map<String, Value>, required: Vec<Value>) -> Value {
+pub fn object(properties: Map<String, Value>) -> Value {
     let mut out = Map::new();
     out.insert("type".into(), json!("object"));
     out.insert("properties".into(), Value::Object(properties));
     out.insert("additionalProperties".into(), json!(false));
-    if !required.is_empty() {
-        out.insert("required".into(), Value::Array(required));
-    }
     Value::Object(out)
+}
+
+/// The properties of an object schema.
+pub fn properties(schema: &Value) -> Option<&Map<String, Value>> {
+    schema.get("properties")?.as_object()
+}
+
+/// The names an object schema insists on.
+pub fn required(schema: &Value) -> Vec<&str> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// What a property says about itself, in the popup's right-hand column.
+pub fn description(property: &Value) -> String {
+    property
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The default the type decides, when it states one.
+pub fn default(property: &Value) -> Option<&str> {
+    property.get("default").and_then(Value::as_str)
+}
+
+/// What this document added to the standard's keywords, when it added anything.
+pub fn extension<'a>(property: &'a Value, key: &str) -> Option<&'a Value> {
+    property.get(EXTENSION)?.get(key)
+}
+
+/// The sticky kind: two properties of one kind share one entry.
+pub fn kind(property: &Value) -> Option<&str> {
+    extension(property, "kind").and_then(Value::as_str)
+}
+
+/// The live source a value is completed from, as the catalog stated it.
+pub fn source(property: &Value) -> Option<CompletionSource> {
+    serde_json::from_value(extension(property, "source")?.clone()).ok()
+}
+
+/// The value sets keyed by model, when the property states them that way.
+pub fn accepts(property: &Value) -> Option<Accepts> {
+    serde_json::from_value(extension(property, "accepts")?.clone()).ok()
+}
+
+/// The value placeholder the popup shows.
+pub fn hint(property: &Value) -> String {
+    extension(property, "hint")
+        .and_then(Value::as_str)
+        .unwrap_or("value")
+        .to_string()
+}
+
+/// Whether this property's value is the object SPEC spells `Model`.
+pub fn model_ref(property: &Value) -> bool {
+    extension(property, "model_ref")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
