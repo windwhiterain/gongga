@@ -302,8 +302,7 @@ pub(crate) async fn package_schema(
         let mut required: Vec<Value> = Vec::new();
         for argument in signature_of(&reply, function)? {
             let mut property = serde_json::Map::new();
-            // The type the annotation named; a signature that named none accepts
-            // whatever the caller writes, which is an empty schema.
+            // A signature naming no type accepts whatever the caller writes.
             if let Some(type_of) = argument.type_of.as_deref() {
                 property.insert("type".into(), Value::String(type_of.to_string()));
             }
