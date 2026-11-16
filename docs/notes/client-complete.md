@@ -91,9 +91,23 @@ object already carries before the line's model or the server's default is asked.
 **Sticky.** The JSON form fills sticky entries by the same rule as the flag form
 (`window_input::sticky_additions`).
 
-## Open
+## Where the shape comes from
 
-The schema is still `protocol::StructSchema`, a shape of our own. The next step is
-a JSON Schema document as the one thing a completer reads, published by the
-server, so a skill's `Cmd` schema completes by the same code path as a server
-command.
+`protocol::argschema::of(&spec.args)` turns a command's arguments into one JSON
+Schema document — `type`, `properties`, `required`, `enum`, `description`,
+`default` — and the completer reads only that.
+
+**What the standard cannot state rides on one extension**, `x-completion`: the live
+source a value is completed from, the value sets keyed by model, the placeholder
+and the model-reference flag. The standard says an unknown keyword is an
+annotation, so any other reader sees a plain schema. The source is carried as the
+enum serde states it, so reading it back is the same pair that wrote it and there
+is no second name table to keep in step.
+
+**One table, one reading.** `protocol::argtype` is what spells SPEC's types as
+JSON Schema types for the model's tool schema, and this document is built from the
+same table, so a type is read once.
+
+**Open**: `window_state`, `window_input` and `commands` still read
+`ArgSpec::structure` when they fill a value; that is the twin of this document and
+the next thing to move onto it.

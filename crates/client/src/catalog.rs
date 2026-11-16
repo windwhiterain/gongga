@@ -10,10 +10,8 @@ use crate::commands::installed_skills;
 use crate::complete::{Completer, Item, Offered, token_bounds};
 use crate::json_place::{self, Read};
 use crate::leaf::Leaf;
-use protocol::{
-    Args, CommandSpec, CompletionSource, ModelInfo, Reference, SessionInfo, StructField,
-    StructSchema,
-};
+use protocol::{Args, CommandSpec, CompletionSource, ModelInfo, Reference, SessionInfo};
+use serde_json::Value;
 
 /// A catalog that can be swapped while the TUI holds a reference to it.
 #[derive(Clone, Default)]
@@ -1006,17 +1004,50 @@ fn separator(text: &str, from: usize) -> bool {
 
 /// The object schema at a path of field names, or `None` when the path leaves
 /// the shape the catalog published.
-fn schema_at<'a>(schema: &'a StructSchema, path: &[String]) -> Option<&'a StructSchema> {
-    let mut at = schema;
-    for name in path {
-        at = at
-            .fields
-            .iter()
-            .find(|field| &field.name == name)?
-            .object
-            .as_deref()?;
-    }
-    Some(at)
+fn schema_at<'a>(schema: &'a Value, path: &[String]) -> Option<&'a Value> {
+    path.iter().try_fold(schema, |at, name| {
+        at.get("properties")
+            .and_then(|properties| properties.get(name))
+    })
+}
+
+/// What a property says about itself, in the popup's right-hand column.
+fn description(property: &Value) -> String {
+    property
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// What this layer added to the standard's keywords, when it added anything.
+fn extension<'a>(property: &'a Value, key: &str) -> Option<&'a Value> {
+    property.get(protocol::argschema::EXTENSION)?.get(key)
+}
+
+/// The live source a value is completed from, as the catalog stated it.
+fn source(property: &Value) -> Option<CompletionSource> {
+    serde_json::from_value(extension(property, "source")?.clone()).ok()
+}
+
+/// The value sets keyed by model, when the argument states them that way.
+fn accepts(property: &Value) -> Option<protocol::Accepts> {
+    serde_json::from_value(extension(property, "accepts")?.clone()).ok()
+}
+
+/// The value placeholder the popup shows.
+fn hint(property: &Value) -> String {
+    extension(property, "hint")
+        .and_then(Value::as_str)
+        .unwrap_or("value")
+        .to_string()
+}
+
+/// Whether this property's value is the object SPEC spells `Model`.
+fn model_ref(property: &Value) -> bool {
+    extension(property, "model_ref")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// One object's field names, as the popup offers them.
@@ -1035,36 +1066,48 @@ fn schema_at<'a>(schema: &'a StructSchema, path: &[String]) -> Option<&'a Struct
 /// and it states where the caret goes, so nothing else has to. A field the
 /// object already states is not offered.
 fn keys(
-    object: &StructSchema,
+    object: &Value,
     fragment: &str,
     range: (usize, usize),
     written: &[(String, Read)],
     closers: usize,
     comma: bool,
 ) -> Vec<Item> {
-    let mut fields: Vec<&StructField> = object
-        .fields
+    let Some(properties) = object.get("properties").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let required: Vec<&str> = object
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let mut fields: Vec<(&String, &Value)> = properties
         .iter()
-        .filter(|field| field.name.contains(fragment))
-        .filter(|field| !written.iter().any(|(name, _)| name == &field.name))
+        .filter(|(name, _)| name.contains(fragment))
+        .filter(|(name, _)| !written.iter().any(|(held, _)| held == *name))
         .collect();
-    // A prefix match is what the operator is most likely typing; stable, so the
-    // schema's order decides between equals.
-    fields.sort_by_key(|field| !field.name.starts_with(fragment));
+    // What the command insists on first, then a prefix match; stable, so the
+    // document's own order decides between equals.
+    fields.sort_by_key(|(name, _)| {
+        (
+            !required.contains(&name.as_str()),
+            !name.starts_with(fragment),
+        )
+    });
     fields
         .into_iter()
-        .map(|field| {
-            let label = format!("\"{}\":", field.name);
-            let mut new_text = match (field.object.is_some(), Leaf::of(field)) {
-                (true, _) => format!("{label}{{$0}}"),
-                (false, Leaf::Text) => format!("{label}\"$0\""),
-                (false, _) => format!("{label}$0"),
+        .map(|(name, property)| {
+            let label = format!("\"{name}\":");
+            let mut new_text = match property.get("type").and_then(Value::as_str) {
+                Some("object") => format!("{label}{{$0}}"),
+                Some("string") => format!("{label}\"$0\""),
+                _ => format!("{label}$0"),
             };
             if comma {
                 new_text.push(',');
             }
             new_text.push_str(&"}".repeat(closers));
-            Item::at(range, new_text, true, label, field.description.clone())
+            Item::at(range, new_text, true, label, description(property))
         })
         .collect()
 }
@@ -1086,7 +1129,7 @@ fn keys(
 /// What a value is written as is its leaf's type's decision (`Leaf`), so one list
 /// of texts offers `"70%"` and `true` without spelling either.
 fn values(
-    field: &StructField,
+    property: &Value,
     place: &json_place::Place,
     ctx: &Ctx,
     words: &[String],
@@ -1095,12 +1138,32 @@ fn values(
     comma: bool,
 ) -> Vec<Item> {
     let model = named_model(&place.fields).or_else(|| model_named(ctx, words));
-    let hint = field.value_hint.as_deref().unwrap_or("value");
-    let leaf = Leaf::of(field);
+    let hint = hint(property);
+    let leaf = Leaf::from_schema(property);
+    // A closed set is the standard's `enum`, and nothing else has to be asked.
+    if let Some(values) = property.get("enum").and_then(Value::as_array) {
+        let chosen: Vec<&str> = values
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| value.contains(&place.fragment))
+            .collect();
+        if !chosen.is_empty() {
+            return chosen
+                .into_iter()
+                .filter_map(|value| {
+                    let text = match model_ref(property) {
+                        true => model_value(value)?,
+                        false => leaf.token(value),
+                    };
+                    Some(member(text, &hint, range, closers, comma))
+                })
+                .collect();
+        }
+    }
     let offered = published(
-        &field.source,
-        field.accepts.as_ref(),
-        hint,
+        &source(property).unwrap_or_default(),
+        accepts(property).as_ref(),
+        &hint,
         &place.fragment,
         ctx,
         words,
@@ -1108,12 +1171,12 @@ fn values(
         0,
     );
     if offered.is_empty() {
-        return owed(field, leaf, place, ctx, range, closers, comma);
+        return owed(property, leaf, place, ctx, range, closers, comma);
     }
     offered
         .into_iter()
         .filter_map(|item| {
-            let value = match field.model_ref {
+            let value = match model_ref(property) {
                 true => model_value(&item.label)?,
                 false => leaf.token(&item.label),
             };
@@ -1149,7 +1212,7 @@ fn member(value: String, detail: &str, range: (usize, usize), closers: usize, co
 /// offered only where there is nothing to choose from, and not while a listing is on
 /// its way, whose answer it would replace. See `docs/notes/client-complete.md`.
 fn owed(
-    field: &StructField,
+    property: &Value,
     leaf: Leaf,
     place: &json_place::Place,
     ctx: &Ctx,
@@ -1160,7 +1223,7 @@ fn owed(
     if ctx.catalog.wants() {
         return Vec::new();
     }
-    let hint = field.value_hint.as_deref().unwrap_or("value");
+    let hint = hint(property);
     let texts: Vec<(String, bool)> = match leaf {
         Leaf::Switch => vec![("true".to_string(), false), ("false".to_string(), false)],
         // Both quotes stand and nothing is inside them: the token is finished.
@@ -1315,7 +1378,7 @@ fn command_names(ctx: &Ctx, fragment: &str, start: usize, end: usize) -> Offered
 /// where one is filled.
 fn object_completion(
     ctx: &Ctx,
-    schema: &StructSchema,
+    schema: &Value,
     cmd: &str,
     text: &str,
     at: usize,
@@ -1348,44 +1411,27 @@ fn object_completion(
             let Some(object) = schema_at(schema, parent) else {
                 return Offered::default();
             };
-            let Some(field) = object.fields.iter().find(|field| &field.name == name) else {
+            let Some(property) = object.get("properties").and_then(|held| held.get(name)) else {
                 return Offered::default();
             };
             // An object field is entered by its name, which wrote the brace.
-            if field.object.is_some() {
+            if property.get("type").and_then(Value::as_str) == Some("object") {
                 return Offered::default();
             }
             Offered {
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
-                items: values(field, &place, ctx, words, range, owed, comma),
+                items: values(property, &place, ctx, words, range, owed, comma),
             }
         }
     }
 }
 
-/// The command's arguments as one object shape: each a field, a structured
-/// argument a nested object.
-fn root_schema(spec: &CommandSpec) -> StructSchema {
-    StructSchema {
-        fields: spec
-            .args
-            .iter()
-            .map(|a| StructField {
-                name: a.name.clone(),
-                description: a.description.clone(),
-                object: a.structure.clone().map(Box::new),
-                source: a.completions.clone(),
-                accepts: a.accepts.clone(),
-                value_hint: a.value_hint.clone(),
-                model_ref: false,
-                type_of: Some(a.type_of.clone()),
-                kind: a.kind.clone(),
-                default: None,
-            })
-            .collect(),
-    }
+/// The command's arguments as one JSON Schema document, built by the one builder
+/// the model's tool schema uses.
+fn root_schema(spec: &CommandSpec) -> Value {
+    protocol::argschema::of(&spec.args)
 }
 
 /// What the popup asks for: the command at the root, then the fields down to the
