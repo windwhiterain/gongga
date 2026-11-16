@@ -41,6 +41,12 @@ hunting the three roots for the directory; measured on 2026-11-04 in one session
 `ls`/`skill` calls before it found `SKILL.md`. `@file(...)` is the opposite case: its
 spelling *is* its path, so it is left exactly as written and still keys the index.
 
+The body an entry carries is two halves and neither is re-rendered: the `SKILL.md`, and
+the `schema.json` its publisher generated beside `__init__.py`, appended as written under
+the `skill_arguments` template. So the model reads one API once -- what a function is
+for, and what its arguments are -- and no `SKILL.md` keeps a second copy of the second
+half.
+
 ## the rules file is sent, not planned
 
 `AGENTS.md` in the session's own directory opens the index on every request, verbatim and

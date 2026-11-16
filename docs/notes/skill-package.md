@@ -8,9 +8,10 @@ gives the model one door, `run_skill`, and a Python call is what that door runs.
 layer has no door either: `gongga-cli` passes server commands, and a skill is reached by
 `run_skill` and by nothing else.
 
-Three functions and a struct, and the split is the caller's: `is_package` answers whether this
+Four functions and a struct, and the split is the caller's: `is_package` answers whether this
 directory is one (the server refuses before it builds anything else), `package_of` answers what
-starts it, and `request` writes the line that start reads. Nothing here looks for a program --
+starts it, `request` writes the line that start reads, and `schema_text` reads back what the
+publisher generated. Nothing here looks for a program --
 that is the caller's half: the server hands `package_of` the single interpreter its config
 resolved.
 
@@ -62,3 +63,20 @@ home's `lib/` -- `gongga_skill.py` and `gongga.py` -- on `sys.path` for the pack
 imports, the second makes `import gongga` reach *this* server as *this* session. Without the
 second a skill written in Python would have to shell out to `gongga-cli` for every command, and
 its `$GONGGA_SESSION` would be the launcher's, not the caller's.
+
+## `schema.json`: what the publisher generates
+
+The package's directory holds one more file, and a reader never derives it again: what the
+functions take, as JSON Schema, generated from the signatures by the *publisher* -- the
+content repository's `python/schemas.py`, which `scripts/ship.sh` runs before it commits and
+checks with `--check` before it publishes. Every reader trusts the file: the catalog hangs it on
+`run_skill`'s `cmd` for a client to complete from, and the prompt index appends its bytes to the
+skill's own prose. So one API has one document, and a signature that moved without the file
+regenerated is caught by `--check`, not by a disagreement between two readings.
+
+# Invariant
+
+Read, never re-derived. Nothing in this crate runs a package to learn its arguments: a second
+reading would disagree with the first exactly where the operator is typing, and the file's
+absence is reported as a reason (`schema_text`'s error) rather than guessed around. A skill that
+is not a package has no schema, which is what a skill with no functions is.

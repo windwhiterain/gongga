@@ -23,6 +23,11 @@
 # (`crates/server/ship.toml`), and the content declares that number in its own
 # `ship.toml`. So a shipped prose fix is one push, and a rebuild happens only when
 # this build's protocol changes.
+#
+# The schemas are the publisher's: a reader of a skill reads the file beside its
+# package and trusts it, so a signature that moved without its file regenerated is a
+# completion that lies. Publishing generates them; `--check` and `--dry-run` write
+# nothing and ask whether each file still says what its package does.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -32,5 +37,20 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 case "${1:-}" in
   -h | --help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; exit 0 ;;
 esac
+
+writing=yes
+for argument in "$@"; do
+  case "$argument" in
+    --check | --dry-run) writing=no ;;
+  esac
+done
+schemas="$here/../ship/python/schemas.py"
+if [[ -f "$schemas" ]]; then
+  if [[ "$writing" == yes ]]; then
+    python "$schemas" "$here/../ship/skills"
+  else
+    python "$schemas" --check "$here/../ship/skills"
+  fi
+fi
 
 exec bash "$here/publish.sh" content "$@"
