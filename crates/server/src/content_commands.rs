@@ -222,40 +222,7 @@ impl ContentCommands {
                 skill.dir().display()
             ));
         }
-        let package = ::skill::package_of(skills.python.as_deref(), skills.lib.as_deref())?;
-        let request = format!(
-            "{}\n",
-            serde_json::json!({
-                "skill": skill.dir().display().to_string(),
-                "manifest": true,
-            })
-        );
-        let mut env: Vec<(String, String)> = Vec::new();
-        if let Some(lib) = skills.lib.as_deref() {
-            env.push((
-                "GONGGA_SKILL_LIB".to_string(),
-                lib.to_string_lossy().into_owned(),
-            ));
-        }
-        let contract = package.contract.display().to_string();
-        let outcome = crate::tools::words::run(
-            &package.python,
-            &[contract],
-            Some(&request),
-            &self.home,
-            &env,
-            MANIFEST_DEADLINE,
-        )
-        .await?;
-        if outcome.code != 0 {
-            return Err(format!(
-                "{} answered exit {}: {}",
-                declaration.skill,
-                outcome.code,
-                crate::script::head(&outcome.stderr)
-            ));
-        }
-        let reply = reply_of(&outcome.stdout)?;
+        let reply = ask(skills, &self.home, skill.dir()).await?;
         Ok(Manifest {
             name: declaration.name.clone(),
             skill: declaration.skill.clone(),
@@ -263,6 +230,105 @@ impl ContentCommands {
             arguments: signature_of(&reply, &declaration.function)?,
         })
     }
+}
+
+/// What one package answered its manifest request with.
+async fn ask(
+    skills: &Skills,
+    home: &std::path::Path,
+    directory: &std::path::Path,
+) -> Result<Value, String> {
+    let package = ::skill::package_of(skills.python.as_deref(), skills.lib.as_deref())?;
+    let request = format!(
+        "{}\n",
+        serde_json::json!({
+            "skill": directory.display().to_string(),
+            "manifest": true,
+        })
+    );
+    let mut env: Vec<(String, String)> = Vec::new();
+    if let Some(lib) = skills.lib.as_deref() {
+        env.push((
+            "GONGGA_SKILL_LIB".to_string(),
+            lib.to_string_lossy().into_owned(),
+        ));
+    }
+    let contract = package.contract.display().to_string();
+    let outcome = crate::tools::words::run(
+        &package.python,
+        &[contract],
+        Some(&request),
+        home,
+        &env,
+        MANIFEST_DEADLINE,
+    )
+    .await?;
+    if outcome.code != 0 {
+        return Err(format!(
+            "{} answered exit {}: {}",
+            directory.display(),
+            outcome.code,
+            crate::script::head(&outcome.stderr)
+        ));
+    }
+    reply_of(&outcome.stdout)
+}
+
+/// What one package publishes, as one schema document.
+///
+/// # Invariant
+///
+/// The arguments are Python's signature, read by the contract itself: a property
+/// per function, a property per parameter, required exactly where Python's default
+/// is absent. A signature the contract publishes states no type, so each parameter
+/// is a string here rather than a guess at one.
+pub(crate) async fn package_schema(
+    skills: &Skills,
+    home: &std::path::Path,
+    directory: &std::path::Path,
+) -> Result<Value, String> {
+    let reply = ask(skills, home, directory).await?;
+    let functions = reply
+        .get("functions")
+        .and_then(Value::as_object)
+        .ok_or("the manifest has no `functions` object")?;
+    let mut names: Vec<Value> = Vec::new();
+    let mut arguments = serde_json::Map::new();
+    for function in functions.keys() {
+        names.push(Value::String(function.clone()));
+        let mut inner = serde_json::Map::new();
+        let mut required: Vec<Value> = Vec::new();
+        for argument in signature_of(&reply, function)? {
+            inner.insert(
+                argument.name.clone(),
+                serde_json::json!({ "type": "string" }),
+            );
+            if argument.required {
+                required.push(Value::String(argument.name));
+            }
+        }
+        let mut object = serde_json::Map::new();
+        object.insert("type".into(), Value::String("object".into()));
+        object.insert("properties".into(), Value::Object(inner));
+        if !required.is_empty() {
+            object.insert("required".into(), Value::Array(required));
+        }
+        arguments.insert(function.clone(), Value::Object(object));
+    }
+    // SPEC's `Cmd := {name, args}`: the names this skill answers to, and the
+    // arguments the chosen one takes.
+    let mut properties = serde_json::Map::new();
+    properties.insert(
+        "name".into(),
+        serde_json::json!({ "type": "string", "enum": names }),
+    );
+    let mut chosen = serde_json::Map::new();
+    chosen.insert("schema_of".into(), Value::String("name".into()));
+    chosen.insert("schemas".into(), Value::Object(arguments));
+    let mut args = serde_json::Map::new();
+    args.insert(protocol::argschema::EXTENSION.into(), Value::Object(chosen));
+    properties.insert("args".into(), Value::Object(args));
+    Ok(protocol::argschema::object(properties))
 }
 
 impl PackageFile {
