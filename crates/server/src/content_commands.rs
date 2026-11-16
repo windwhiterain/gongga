@@ -55,6 +55,8 @@ struct Manifest {
 struct Signature {
     name: String,
     required: bool,
+    /// The JSON Schema type the annotation named; `None` is no type stated.
+    type_of: Option<String>,
 }
 
 /// What a published name runs: the function, and the skill that holds it.
@@ -299,10 +301,13 @@ pub(crate) async fn package_schema(
         let mut inner = serde_json::Map::new();
         let mut required: Vec<Value> = Vec::new();
         for argument in signature_of(&reply, function)? {
-            inner.insert(
-                argument.name.clone(),
-                serde_json::json!({ "type": "string" }),
-            );
+            let mut property = serde_json::Map::new();
+            // The type the annotation named; a signature that named none accepts
+            // whatever the caller writes, which is an empty schema.
+            if let Some(type_of) = argument.type_of.as_deref() {
+                property.insert("type".into(), Value::String(type_of.to_string()));
+            }
+            inner.insert(argument.name.clone(), Value::Object(property));
             if argument.required {
                 required.push(Value::String(argument.name));
             }
@@ -456,6 +461,7 @@ fn signature_of(reply: &Value, function: &str) -> Result<Vec<Signature>, String>
                     .get("required")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                type_of: row.get("type").and_then(Value::as_str).map(str::to_string),
             })
         })
         .collect())
