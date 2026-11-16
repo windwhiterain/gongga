@@ -41,6 +41,11 @@ const COMMAND_TIMEOUT: Duration = Duration::from_millis(crate::config::CALL_TIME
 /// and cutting it would break a read that is working. `run_skill` is started under the
 /// skill runner's own bound. `cancel` is the stop itself: cutting it would leave the
 /// acknowledgement it owes unwritten.
+///
+/// The third of those is a convention and not a check: a skill must not block, and nothing
+/// here refuses one that does (`ship/skills/skill/SKILL.md`, "A skill must not block"). It
+/// is exempt because a skill is a program with its own bound, not because blocking is
+/// allowed.
 const OWN_CLOCK: &[&str] = &["input_channel", "run_skill", "cancel"];
 
 /// The heartbeat's whole content: a clock reading, so a warm prefix is all it buys.
@@ -2450,7 +2455,7 @@ async fn del_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
         let mut failed: Vec<String> = Vec::new();
         for path in &doomed {
             match d.agent.channels.stop(&session, path).await {
-                Ok(_) => ended += 1,
+                Ok(()) => ended += 1,
                 Err(why) => failed.push(format!("{path}: {why}")),
             }
         }
@@ -2467,9 +2472,9 @@ async fn del_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
             failed.join(", ")
         ));
     }
+    // `stop` answers `Ok` once the row is gone, whether the program was still running.
     match d.agent.channels.stop(&session, &id).await {
-        Ok(true) => Outcome::ok(format!("ended channel {id:?}")),
-        Ok(false) => Outcome::ok(format!("channel {id:?} had already ended; forgotten")),
+        Ok(()) => Outcome::ok(format!("ended channel {id:?}")),
         Err(why) => Outcome::err(why),
     }
 }

@@ -87,15 +87,36 @@ what SPEC's `exec`-only waiting allows.
    here. Verified from a caller whose workspace is `lichen-vm`: `ask` returned in 0.43 s, the
    channel row read `"remote": null`, and the answer arrived.
 
+## Round three
+
+1. **`scripts/skill_contract.sh` could not fail.** It built its file list with `find`, which
+   on this machine is `C:\Windows\system32\find.exe`; its refusal went to `/dev/null` and the
+   empty list printed `PASS 0 skill(s)` with exit 0. It now globs (a shell's own expansion,
+   no external tool) and refuses to pass when it checked nothing. Bare shell: `PASS 10`, and
+   a name that matches nothing: `FAIL 0 skill(s) ... this check read nothing`, exit 1.
+3. **`del_channel`'s `Ok(false)` arm was dead.** `Channel::stop` answered `Result<bool, String>`
+   and never returned false -- a channel whose program had already exited is still a row to
+   forget. It is `Result<(), String>` now, and both call sites say so.
+
+## A convention, not a check (user, 2026-11-16)
+
+> 不阻塞是行为约定，无法强制
+
+So `run_skill` stays out of the command clock, and the convention is written where a skill's
+author reads it: `ship/skills/skill/SKILL.md`, "A skill must not block", with the measured cost
+and the shape that avoids it. `OWN_CLOCK`'s comment says the same thing in the code: exempt
+because a skill is a program with its own bound, not because blocking is allowed.
+
 ## What changed
 
 - **server** `crates/server/src/commands.rs`: `new_channel_id` (catalog, dispatch, handler),
   and `first_free` shared with `free_subscription_name` so both families of names are
   minted one way. SPEC `## Server Cmd` gains the signature.
-- **content** (`97f1fd8`, `823434c`, `2c74464`): `skills/self-control/ask_session.py` (the four steps),
+- **content** (`97f1fd8`, `823434c`, `2c74464`, `18b35bf`): `skills/self-control/ask_session.py` (the four steps),
   `answer.py` (the waiter), `SKILL.md` (the `ask` section, a `new_channel_id` section, the
   command list), `__init__.py`, `_client.py` (the fallback import directory moved to
-  `<home>/ship/python`, where protocol 12 put it).
+  `<home>/ship/python`, where protocol 12 put it), and `skills/skill/SKILL.md` (the no-blocking
+  convention).
 - `skills/handoff/{SKILL.md,__init__.py}`: the two places that still promised `ask` waits
   and prints the answer.
 
@@ -114,10 +135,4 @@ what SPEC's `exec`-only waiting allows.
 
 ## Left open
 
-- `scripts/skill_contract.sh` prints `PASS 0 skill(s)` when `find` is Windows' `FIND`
-  (every shell this server starts, since Git's `usr/bin` is not on `PATH`): the
-  `2>/dev/null` hides `FIND: Parameter format not correct`, so the gate cannot fail. With
-  `PATH=/usr/bin:$PATH` it checks 10.
-- `run_skill` is still in `OWN_CLOCK`, so any other skill that blocks still holds a turn up
-  to `CALL_TIMEOUT_MS`.
-- `del_channel`'s `Ok(false)` arm is dead: `stop` never answers false.
+- Nothing of this round's; the decisions it rested on are recorded above.

@@ -23,11 +23,14 @@ cd "$root" || exit 1
 if [[ $# -gt 0 ]]; then
   files=("$@")
 else
-  # Both layers this repository owns: the pinned content and this checkout's own.
+  # Both layers this repository owns: the pinned content and this checkout's own. A shell
+  # glob, not `find`: on a machine whose `PATH` starts with Windows' own tools, `find` is
+  # `C:\Windows\system32\find.exe`, which refuses these arguments -- and with its stderr
+  # discarded that read as "no skills, nothing to check, PASS".
   files=()
-  while IFS= read -r file; do files+=("$file"); done < <(
-    find ship/skills .agents/skills -maxdepth 2 -name SKILL.md -print 2>/dev/null | sort
-  )
+  shopt -s nullglob
+  for file in ship/skills/*/SKILL.md .agents/skills/*/SKILL.md; do files+=("$file"); done
+  shopt -u nullglob
 fi
 
 failed=0
@@ -72,6 +75,11 @@ done
 
 if [[ $failed != 0 ]]; then
   echo "FAIL $checks skill(s) checked" >&2
+  exit 1
+fi
+# A gate that checked nothing is a gate that did not run: say so rather than pass.
+if [[ $checks == 0 ]]; then
+  echo "FAIL 0 skill(s): no SKILL.md under ship/skills or .agents/skills -- this check read nothing" >&2
   exit 1
 fi
 echo "PASS $checks skill(s): no installed path, and every entry names a file"

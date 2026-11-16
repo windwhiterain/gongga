@@ -801,7 +801,13 @@ impl Channels {
     /// `kill` in the command file, then the row, then this home's directory: a channel
     /// whose program is still writing must not look gone while it is not, and the files
     /// outlive the row only as litter nobody can name.
-    pub async fn stop(&self, session: &str, id: &str) -> Result<bool, String> {
+    ///
+    /// # Invariant
+    ///
+    /// `Ok` means the row is gone, and that is the whole answer: a channel whose program
+    /// had already exited is still a row this forgets, so there is no "was running" to
+    /// report -- the name a caller reads afterwards is gone either way.
+    pub async fn stop(&self, session: &str, id: &str) -> Result<(), String> {
         let row = self.row_of(session, id)?;
         let place = self.place_of(&row).await?;
         place.append("in", "kill\n").await?;
@@ -826,7 +832,7 @@ impl Channels {
         if let Where::Here(dir) = &place {
             let _ = std::fs::remove_dir_all(dir);
         }
-        Ok(true)
+        Ok(())
     }
 
     /// Removes the directories no row names: what an ended channel used to leave behind.
