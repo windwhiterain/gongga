@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use protocol::{ArgSpec, Args, CommandSpec, StructSchema};
+use protocol::{ArgSpec, Args, CommandSpec};
 
 /// The skills a session can open: the project's own, the home's, then the machine's.
 ///
@@ -46,29 +46,33 @@ pub fn sticky_kinds(commands: &[CommandSpec]) -> Vec<String> {
     let mut kinds = BTreeSet::new();
     for command in commands {
         for arg in &command.args {
-            let fillable = arg.required || (arg.structure.is_some() && !arg.update);
+            let fillable = arg.required || (arg.schema.is_some() && !arg.update);
             if let Some(kind) = &arg.kind
                 && fillable
             {
                 kinds.insert(kind.clone());
             }
-            if let Some(structure) = &arg.structure {
-                field_kinds(structure, &mut kinds);
+            if let Some(schema) = &arg.schema {
+                field_kinds(schema, &mut kinds);
             }
         }
     }
     kinds.into_iter().collect()
 }
 
-fn field_kinds(schema: &StructSchema, kinds: &mut BTreeSet<String>) {
-    for field in &schema.fields {
-        if field.default.is_none()
-            && let Some(kind) = &field.kind
+fn field_kinds(schema: &serde_json::Value, kinds: &mut BTreeSet<String>) {
+    for property in protocol::argschema::properties(schema)
+        .into_iter()
+        .flatten()
+        .map(|(_, property)| property)
+    {
+        if protocol::argschema::default(property).is_none()
+            && let Some(kind) = protocol::argschema::kind(property)
         {
-            kinds.insert(kind.clone());
+            kinds.insert(kind.to_string());
         }
-        if let Some(nested) = &field.object {
-            field_kinds(nested, kinds);
+        if property.get("type").and_then(serde_json::Value::as_str) == Some("object") {
+            field_kinds(property, kinds);
         }
     }
 }

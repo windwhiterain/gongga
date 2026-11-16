@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::leaf::Leaf;
-use crate::protocol::{self, ArgSpec, Args, CommandSpec, StructField, StructSchema};
+use crate::protocol::{self, ArgSpec, Args, CommandSpec};
 
 /// How many wrapped rows one block may fill. Client-side only.
 ///
@@ -341,7 +341,7 @@ impl Sticky {
     pub fn fill(&self, spec: Option<&CommandSpec>, args: &mut Args) {
         let Some(spec) = spec else { return };
         for a in &spec.args {
-            match &a.structure {
+            match &a.schema {
                 Some(schema) if !a.update => self.fill_struct(a, schema, args),
                 Some(_) => {}
                 None => self.fill_one(a, args),
@@ -373,7 +373,7 @@ impl Sticky {
     /// `config`), and a field with a default is never filled at any depth: it is the
     /// value the type already chose. An object no entry contributed to is left out
     /// instead of sent empty.
-    fn fill_struct(&self, a: &ArgSpec, schema: &StructSchema, args: &mut Args) {
+    fn fill_struct(&self, a: &ArgSpec, schema: &Value, args: &mut Args) {
         let stated = args.get(&a.name).cloned();
         let Some(value) = self.value_of(schema, a.kind.as_deref(), stated.as_ref()) else {
             return;
@@ -388,7 +388,7 @@ impl Sticky {
     /// stated.
     fn value_of(
         &self,
-        schema: &StructSchema,
+        schema: &Value,
         kind: Option<&str>,
         stated: Option<&Value>,
     ) -> Option<Value> {
@@ -396,30 +396,37 @@ impl Sticky {
             .and_then(|kind| self.object_of(kind, schema))
             .unwrap_or_default();
         let stated_object = stated.and_then(Value::as_object);
-        for field in &schema.fields {
-            let stated_field = stated_object.and_then(|object| object.get(&field.name));
-            if let Some(inner) = &field.object {
-                if let Some(filled) = self.value_of(inner, field.kind.as_deref(), stated_field) {
-                    object.insert(field.name.clone(), filled);
+        for (name, property) in protocol::argschema::properties(schema)
+            .into_iter()
+            .flatten()
+        {
+            let stated_field = stated_object.and_then(|object| object.get(name));
+            if property.get("type").and_then(Value::as_str) == Some("object") {
+                if let Some(filled) =
+                    self.value_of(property, protocol::argschema::kind(property), stated_field)
+                {
+                    object.insert(name.clone(), filled);
                 }
                 continue;
             }
             if let Some(stated_field) = stated_field {
-                object.insert(field.name.clone(), stated_field.clone());
+                object.insert(name.clone(), stated_field.clone());
                 continue;
             }
-            if field.default.is_some() {
+            if protocol::argschema::default(property).is_some() {
                 continue;
             }
-            if let Some(value) = field.kind.as_deref().and_then(|kind| self.args.get(kind)) {
-                object.insert(field.name.clone(), leaf_value(field, value));
+            if let Some(value) =
+                protocol::argschema::kind(property).and_then(|kind| self.args.get(kind))
+            {
+                object.insert(name.clone(), leaf_value(property, value));
             }
         }
         (!object.is_empty()).then_some(Value::Object(object))
     }
 
     /// One entry as an object of this shape; anything else is not one.
-    fn object_of(&self, kind: &str, schema: &StructSchema) -> Option<Map<String, Value>> {
+    fn object_of(&self, kind: &str, schema: &Value) -> Option<Map<String, Value>> {
         let text = self.args.get(kind)?;
         let Value::Object(object) = serde_json::from_str(text).ok()? else {
             return None;
@@ -440,7 +447,7 @@ impl Sticky {
             let Some(stated) = typed.get(&a.name) else {
                 continue;
             };
-            let Some(schema) = &a.structure else {
+            let Some(schema) = &a.schema else {
                 if let Some(kind) = a.kind.as_deref() {
                     pairs.push((kind.to_string(), crate::json_command::word(stated)));
                 }
@@ -480,32 +487,35 @@ impl Sticky {
     /// The fields of one object that carry a sticky type of their own.
     fn nested_kinds(
         &self,
-        schema: &StructSchema,
+        schema: &Value,
         object: &Map<String, Value>,
         pairs: &mut Vec<(String, String)>,
     ) {
-        for field in &schema.fields {
-            let Some(value) = object.get(&field.name) else {
+        for (name, property) in protocol::argschema::properties(schema)
+            .into_iter()
+            .flatten()
+        {
+            let Some(value) = object.get(name) else {
                 continue;
             };
-            let Some(inner) = &field.object else {
-                if let Some(kind) = field.kind.as_deref() {
+            if property.get("type").and_then(Value::as_str) != Some("object") {
+                if let Some(kind) = protocol::argschema::kind(property) {
                     pairs.push((kind.to_string(), crate::json_command::word(value)));
                 }
                 continue;
-            };
+            }
             let Value::Object(map) = value else {
                 continue;
             };
-            let kept = prune(inner, map.clone());
+            let kept = prune(property, map.clone());
             if kept.is_empty() {
                 continue;
             }
-            if let Some(kind) = field.kind.as_deref() {
+            if let Some(kind) = protocol::argschema::kind(property) {
                 let whole = self.merged(kind, &kept);
                 pairs.push((kind.to_string(), whole));
             }
-            self.nested_kinds(inner, &kept, pairs);
+            self.nested_kinds(property, &kept, pairs);
         }
     }
 
@@ -539,26 +549,24 @@ impl Sticky {
 /// a value from an older build or a hand edit -- and it is dropped here rather than
 /// sent. A member the schema does not know is dropped too: an entry may not invent
 /// a field. See `docs/notes/tui-state.md`.
-fn prune(schema: &StructSchema, object: Map<String, Value>) -> Map<String, Value> {
+fn prune(schema: &Value, object: Map<String, Value>) -> Map<String, Value> {
     let mut kept = Map::new();
-    for field in &schema.fields {
-        let Some(value) = object.get(&field.name) else {
+    for (name, property) in protocol::argschema::properties(schema)
+        .into_iter()
+        .flatten()
+    {
+        let Some(value) = object.get(name) else {
             continue;
         };
-        match &field.object {
-            Some(inner) => {
-                if let Value::Object(map) = value {
-                    let pruned = prune(inner, map.clone());
-                    if !pruned.is_empty() {
-                        kept.insert(field.name.clone(), Value::Object(pruned));
-                    }
+        if property.get("type").and_then(Value::as_str) == Some("object") {
+            if let Value::Object(map) = value {
+                let pruned = prune(property, map.clone());
+                if !pruned.is_empty() {
+                    kept.insert(name.clone(), Value::Object(pruned));
                 }
             }
-            None => {
-                if field.default.is_none() {
-                    kept.insert(field.name.clone(), value.clone());
-                }
-            }
+        } else if protocol::argschema::default(property).is_none() {
+            kept.insert(name.clone(), value.clone());
         }
     }
     kept
@@ -584,11 +592,11 @@ fn overlay(into: &mut Map<String, Value>, from: &Map<String, Value>) {
 /// completion writes with (`Leaf`): a switch is a boolean, a string keeps the word.
 /// A model is the object SPEC spells, or its flat `provider/model` word.
 /// See `docs/notes/tui-state.md`.
-fn leaf_value(field: &StructField, text: &str) -> Value {
-    if field.model_ref {
+fn leaf_value(property: &Value, text: &str) -> Value {
+    if protocol::argschema::model_ref(property) {
         return serde_json::from_str(text).unwrap_or(Value::String(text.to_string()));
     }
-    Leaf::of(field).value(text)
+    Leaf::from_schema(property).value(text)
 }
 
 /// A sticky value an accepted command writes back, by kind.

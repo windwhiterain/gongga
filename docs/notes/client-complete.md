@@ -108,6 +108,12 @@ is no second name table to keep in step.
 JSON Schema types for the model's tool schema, and this document is built from the
 same table, so a type is read once.
 
-**Open**: `window_state`, `window_input` and `commands` still read
-`ArgSpec::structure` when they fill a value; that is the twin of this document and
-the next thing to move onto it.
+**One document, two readers.** The completion inside an object and the fill that
+stands a sticky entry in for the leaves a line left open read the same document —
+`argschema::properties`, `kind`, `default`, `source`, `accepts`, `model_ref`. The
+sticky kind rides in the extension, so a value that belongs to a type is found the
+same way by both.
+
+**Open**: a skill's `Cmd` schema has no producer yet; when one publishes, it feeds
+the same reader. `CommandSpec` carries no schema on the wire — the client builds it
+from the published arguments with this one builder.

@@ -166,7 +166,7 @@ fn sticky_additions(
         };
         let stated = args.get(&arg.name);
         // A structured argument: the leaves the line left open are the entries'.
-        if arg.structure.is_some() {
+        if arg.schema.is_some() {
             if stated != Some(&value) {
                 additions.push((arg.name.clone(), value));
             }

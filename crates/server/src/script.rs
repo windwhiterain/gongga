@@ -445,7 +445,7 @@ fn parse_arg(raw: &Value) -> Option<ArgSpec> {
         accepts: None,
         // A script declares no dependency: what a value belongs to is its own.
         sticky_to: None,
-        structure: None,
+        schema: None,
         // A script declares flags, not a partial object.
         update: false,
         // Script commands keep the flag spelling; a bare word still binds by

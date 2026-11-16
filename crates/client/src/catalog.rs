@@ -1011,52 +1011,6 @@ fn schema_at<'a>(schema: &'a Value, path: &[String]) -> Option<&'a Value> {
     })
 }
 
-/// What a property says about itself, in the popup's right-hand column.
-fn description(property: &Value) -> String {
-    property
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-/// What this layer added to the standard's keywords, when it added anything.
-fn extension<'a>(property: &'a Value, key: &str) -> Option<&'a Value> {
-    property.get(protocol::argschema::EXTENSION)?.get(key)
-}
-
-/// The live source a value is completed from, as the catalog stated it.
-fn source(property: &Value) -> Option<CompletionSource> {
-    serde_json::from_value(extension(property, "source")?.clone()).ok()
-}
-
-/// The value sets keyed by model, when the argument states them that way.
-fn accepts(property: &Value) -> Option<protocol::Accepts> {
-    serde_json::from_value(extension(property, "accepts")?.clone()).ok()
-}
-
-/// The value placeholder the popup shows.
-fn hint(property: &Value) -> String {
-    extension(property, "hint")
-        .and_then(Value::as_str)
-        .unwrap_or("value")
-        .to_string()
-}
-
-/// Whether this property's value is the object SPEC spells `Model`.
-fn model_ref(property: &Value) -> bool {
-    extension(property, "model_ref")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-/// One object's field names, as the popup offers them.
-///
-/// # Invariant
-///
-/// A name is inserted with the colon that ends it, the brace or the quotes its
-/// value is held in, and every brace the value still owes (`closers`); the caret
-/// lands inside what it opened. A field the object already states is not offered.
 /// One object's field names, as the popup offers them.
 ///
 /// # Invariant
@@ -1073,14 +1027,10 @@ fn keys(
     closers: usize,
     comma: bool,
 ) -> Vec<Item> {
-    let Some(properties) = object.get("properties").and_then(Value::as_object) else {
+    let Some(properties) = protocol::argschema::properties(object) else {
         return Vec::new();
     };
-    let required: Vec<&str> = object
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|names| names.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
+    let required = protocol::argschema::required(object);
     let mut fields: Vec<(&String, &Value)> = properties
         .iter()
         .filter(|(name, _)| name.contains(fragment))
@@ -1107,7 +1057,13 @@ fn keys(
                 new_text.push(',');
             }
             new_text.push_str(&"}".repeat(closers));
-            Item::at(range, new_text, true, label, description(property))
+            Item::at(
+                range,
+                new_text,
+                true,
+                label,
+                protocol::argschema::description(property),
+            )
         })
         .collect()
 }
@@ -1138,7 +1094,7 @@ fn values(
     comma: bool,
 ) -> Vec<Item> {
     let model = named_model(&place.fields).or_else(|| model_named(ctx, words));
-    let hint = hint(property);
+    let hint = protocol::argschema::hint(property);
     let leaf = Leaf::from_schema(property);
     // A closed set is the standard's `enum`, and nothing else has to be asked.
     if let Some(values) = property.get("enum").and_then(Value::as_array) {
@@ -1151,7 +1107,7 @@ fn values(
             return chosen
                 .into_iter()
                 .filter_map(|value| {
-                    let text = match model_ref(property) {
+                    let text = match protocol::argschema::model_ref(property) {
                         true => model_value(value)?,
                         false => leaf.token(value),
                     };
@@ -1161,8 +1117,8 @@ fn values(
         }
     }
     let offered = published(
-        &source(property).unwrap_or_default(),
-        accepts(property).as_ref(),
+        &protocol::argschema::source(property).unwrap_or_default(),
+        protocol::argschema::accepts(property).as_ref(),
         &hint,
         &place.fragment,
         ctx,
@@ -1176,7 +1132,7 @@ fn values(
     offered
         .into_iter()
         .filter_map(|item| {
-            let value = match model_ref(property) {
+            let value = match protocol::argschema::model_ref(property) {
                 true => model_value(&item.label)?,
                 false => leaf.token(&item.label),
             };
@@ -1223,7 +1179,7 @@ fn owed(
     if ctx.catalog.wants() {
         return Vec::new();
     }
-    let hint = hint(property);
+    let hint = protocol::argschema::hint(property);
     let texts: Vec<(String, bool)> = match leaf {
         Leaf::Switch => vec![("true".to_string(), false), ("false".to_string(), false)],
         // Both quotes stand and nothing is inside them: the token is finished.

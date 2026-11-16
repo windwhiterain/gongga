@@ -157,18 +157,61 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
     Ok(())
 }
 
-/// One field SPEC gives a default, spelled as SPEC spells it.
-///
-/// # Invariant
-///
-/// Every default SPEC states is marked here, and a marked field is exactly what a
-/// sticky entry may not fill: a value the type already decides is not a missing
-/// argument. See `docs/notes/server-session-config.md`.
-fn defaulted(field: protocol::StructField, spelling: &str) -> protocol::StructField {
-    protocol::StructField {
-        default: Some(spelling.to_string()),
-        ..field
+/// One property of the `SessionConfig` document, as this file states it.
+#[derive(Default)]
+struct Field<'a> {
+    description: &'a str,
+    /// SPEC's type: from it a client writes `true` and quotes a string.
+    spelling: &'a str,
+    hint: Option<&'a str>,
+    source: Option<protocol::CompletionSource>,
+    accepts: Option<protocol::Accepts>,
+    kind: Option<&'a str>,
+    default: Option<&'a str>,
+    model_ref: bool,
+}
+
+impl Field<'_> {
+    fn build(&self) -> serde_json::Value {
+        let source = self.source.clone().unwrap_or_default();
+        protocol::argschema::property(&protocol::argschema::Row {
+            type_of: Some(self.spelling),
+            description: self.description,
+            object: None,
+            accepts: self.accepts.as_ref(),
+            source: &source,
+            kind: self.kind,
+            hint: self.hint,
+            default: self.default,
+            model_ref: self.model_ref,
+            update: false,
+        })
     }
+}
+
+/// One nested object of the document.
+fn object(
+    description: &str,
+    spelling: &str,
+    kind: Option<&str>,
+    fields: Vec<(&str, serde_json::Value)>,
+) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    for (name, value) in fields {
+        properties.insert(name.to_string(), value);
+    }
+    protocol::argschema::property(&protocol::argschema::Row {
+        type_of: Some(spelling),
+        description,
+        object: Some(protocol::argschema::object(properties)),
+        accepts: None,
+        source: &protocol::CompletionSource::None,
+        kind,
+        hint: None,
+        default: None,
+        model_ref: false,
+        update: false,
+    })
 }
 
 /// The `SessionConfig` shape a client completes inside `--config`.
@@ -176,179 +219,159 @@ fn defaulted(field: protocol::StructField, spelling: &str) -> protocol::StructFi
 /// # Invariant
 ///
 /// Field names, the values each leaf offers, and the default each one has: what a
-/// fill may not stand in for. See `docs/notes/server-session-config.md`.
-pub fn schema(remotes: &[String]) -> protocol::StructSchema {
-    use protocol::{CompletionSource, StructField, StructSchema};
-    // `spelling` is SPEC's type: from it a client writes `true` and quotes a string.
-    let leaf =
-        |name: &str, description: &str, spelling: &str, source: CompletionSource, hint: &str| {
-            StructField {
-                name: name.to_string(),
-                description: description.to_string(),
-                object: None,
-                source,
-                accepts: None,
-                value_hint: Some(hint.to_string()),
-                model_ref: false,
-                type_of: Some(spelling.to_string()),
-                kind: None,
-                default: None,
-            }
-        };
-    let object =
-        |name: &str, description: &str, spelling: &str, fields: Vec<StructField>| StructField {
-            name: name.to_string(),
-            description: description.to_string(),
-            object: Some(Box::new(StructSchema { fields })),
-            source: CompletionSource::None,
-            accepts: None,
-            value_hint: None,
-            model_ref: false,
-            type_of: Some(spelling.to_string()),
-            kind: None,
-            default: None,
-        };
+/// fill may not stand in for. Every default SPEC states is marked here, and a marked
+/// field is exactly what a sticky entry may not fill. See
+/// `docs/notes/server-session-config.md`.
+pub fn schema(remotes: &[String]) -> serde_json::Value {
+    use protocol::CompletionSource;
+    use serde_json::Value;
+
     let mut remote_values = vec![protocol::NONE_VALUE.to_string()];
     remote_values.extend(remotes.iter().cloned());
     // SPEC: `model: Model` -- no default, so an entry may fill it.
-    let model = StructField {
+    // SPEC: `Model := {provider, model} # sticky`.
+    let model = Field {
+        description: "The model this session runs on.",
+        spelling: "Model",
+        hint: Some("provider/model"),
+        source: Some(CompletionSource::Models),
+        kind: Some("model"),
         model_ref: true,
-        // SPEC: `Model := {provider, model} # sticky`.
-        kind: Some("model".into()),
-        ..leaf(
-            "model",
-            "The model this session runs on.",
-            "Model",
-            CompletionSource::Models,
-            "provider/model",
-        )
+        ..Default::default()
     };
     // SPEC: `Thinking = provider_default()`, re-defaulted when the model changes.
-    let thinking = defaulted(
-        StructField {
-            accepts: crate::providers::level_accepts(),
-            ..leaf(
-                "thinking",
-                "How hard the model thinks.",
-                "Thinking",
-                CompletionSource::None,
-                "level",
-            )
-        },
-        "provider_default()",
-    );
+    let thinking = Field {
+        description: "How hard the model thinks.",
+        spelling: "Thinking",
+        hint: Some("level"),
+        accepts: crate::providers::level_accepts(),
+        default: Some("provider_default()"),
+        ..Default::default()
+    };
     // SPEC: `ctx_limit = 70%`.
-    let ctx_limit = defaulted(
-        leaf(
-            "ctx_limit",
-            "The context level for a Context notice.",
-            "str",
-            CompletionSource::Static(
-                [
-                    "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
-                ]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            ),
-            "n%",
-        ),
-        "70%",
-    );
+    let ctx_limit = Field {
+        description: "The context level for a Context notice.",
+        spelling: "str",
+        hint: Some("n%"),
+        source: Some(CompletionSource::Static(
+            [
+                "0", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        )),
+        default: Some("70%"),
+        ..Default::default()
+    };
     // SPEC: `cache_tier = provider_default()`.
-    let cache_tier = defaulted(
-        StructField {
-            accepts: crate::providers::tier_accepts(),
-            ..leaf(
-                "cache_tier",
-                "The cache tier every request sends.",
-                "str",
-                CompletionSource::None,
-                "name",
-            )
-        },
-        "provider_default()",
-    );
+    let cache_tier = Field {
+        description: "The cache tier every request sends.",
+        spelling: "str",
+        hint: Some("name"),
+        accepts: crate::providers::tier_accepts(),
+        default: Some("provider_default()"),
+        ..Default::default()
+    };
     // SPEC: `remote: optional[Remote] = none`.
-    let remote = defaulted(
-        leaf(
-            "remote",
-            "The machine this session's shells run on; none is this machine.",
-            "optional[Remote]",
-            CompletionSource::Static(remote_values),
-            "name",
-        ),
-        "none",
-    );
+    let remote = Field {
+        description: "The machine this session's shells run on; none is this machine.",
+        spelling: "optional[Remote]",
+        hint: Some("name"),
+        source: Some(CompletionSource::Static(remote_values)),
+        default: Some("none"),
+        ..Default::default()
+    };
     // SPEC: `cwd: path = "."`.
-    let cwd = defaulted(
-        leaf(
-            "cwd",
-            "The session's directory.",
-            "path",
-            CompletionSource::Paths,
-            "path",
-        ),
-        ".",
-    );
+    let cwd = Field {
+        description: "The session's directory.",
+        spelling: "path",
+        hint: Some("path"),
+        source: Some(CompletionSource::Paths),
+        default: Some("."),
+        ..Default::default()
+    };
     // SPEC: `worktree: optional[str] = none`.
-    let worktree = defaulted(
-        leaf(
-            "worktree",
-            "A branch and worktree made with this session, in the repository its cwd sits in.",
-            "optional[str]",
-            CompletionSource::None,
-            "name",
-        ),
-        "none",
-    );
+    let worktree = Field {
+        description: "A branch and worktree made with this session, in the repository its cwd sits in.",
+        spelling: "optional[str]",
+        hint: Some("name"),
+        default: Some("none"),
+        ..Default::default()
+    };
     // SPEC: `keep_alive: bool` -- no default, so an entry may fill it.
-    let keep_alive = leaf(
-        "keep_alive",
-        "Whether a periodic notice keeps the prefix warm.",
-        "bool",
-        CompletionSource::Static(vec!["true".to_string(), "false".to_string()]),
-        "true|false",
-    );
-    let live_compact_enabled = leaf(
-        "enabled",
-        "Whether the server asks this session to fold its own context.",
-        "bool",
-        CompletionSource::Static(vec!["true".to_string(), "false".to_string()]),
-        "true|false",
-    );
-    let live_compact_interval = leaf(
-        "interval_tokens",
-        "Input-token growth between this session's checkpoints.",
-        "int",
-        CompletionSource::None,
-        "tokens",
-    );
-    StructSchema {
-        fields: vec![
-            // SPEC: `ModelConfig := {model, thinking, ctx_limit, cache_tier} # sticky`.
-            StructField {
-                kind: Some("model_config".into()),
-                ..object(
-                    "model_config",
-                    "The model and how it is asked.",
-                    "ModelConfig",
-                    vec![model, thinking, ctx_limit, cache_tier],
-                )
-            },
-            object(
-                "workspace",
-                "Where the session works.",
-                "Workspace",
-                vec![remote, cwd, worktree],
-            ),
-            keep_alive,
-            object(
-                "live_compact",
-                "Whether the server asks this session for checkpoint summaries.",
-                "LiveCompact",
-                vec![live_compact_enabled, live_compact_interval],
-            ),
-        ],
-    }
+    let keep_alive = Field {
+        description: "Whether a periodic notice keeps the prefix warm.",
+        spelling: "bool",
+        hint: Some("true|false"),
+        source: Some(CompletionSource::Static(vec![
+            "true".to_string(),
+            "false".to_string(),
+        ])),
+        ..Default::default()
+    };
+    let live_compact_enabled = Field {
+        description: "Whether the server asks this session to fold its own context.",
+        spelling: "bool",
+        hint: Some("true|false"),
+        source: Some(CompletionSource::Static(vec![
+            "true".to_string(),
+            "false".to_string(),
+        ])),
+        ..Default::default()
+    };
+    let live_compact_interval = Field {
+        description: "Input-token growth between this session's checkpoints.",
+        spelling: "int",
+        hint: Some("tokens"),
+        ..Default::default()
+    };
+    let mut fields: Vec<(&str, Value)> = Vec::new();
+    // SPEC: `ModelConfig := {model, thinking, ctx_limit, cache_tier} # sticky`.
+    fields.push((
+        "model_config",
+        object(
+            "The model and how it is asked.",
+            "ModelConfig",
+            Some("model_config"),
+            vec![
+                ("model", model.build()),
+                ("thinking", thinking.build()),
+                ("ctx_limit", ctx_limit.build()),
+                ("cache_tier", cache_tier.build()),
+            ],
+        ),
+    ));
+    fields.push((
+        "workspace",
+        object(
+            "Where the session works.",
+            "Workspace",
+            None,
+            vec![
+                ("remote", remote.build()),
+                ("cwd", cwd.build()),
+                ("worktree", worktree.build()),
+            ],
+        ),
+    ));
+    fields.push(("keep_alive", keep_alive.build()));
+    fields.push((
+        "live_compact",
+        object(
+            "Whether the server asks this session for checkpoint summaries.",
+            "LiveCompact",
+            None,
+            vec![
+                ("enabled", live_compact_enabled.build()),
+                ("interval_tokens", live_compact_interval.build()),
+            ],
+        ),
+    ));
+    object(
+        "The session's settings as SPEC spells them.",
+        "SessionConfig",
+        None,
+        fields,
+    )
 }
