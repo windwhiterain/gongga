@@ -71,8 +71,7 @@ pub fn main(args: client::Args) -> anyhow::Result<()> {
 
 // The vocabulary is the command layer's, re-exported so this crate can name it.
 pub use client::{
-    Candidate, Completer, Completion, Layout, LineKind, Listed, QuotaRow, SharedCompleter,
-    token_bounds,
+    Completer, Completion, Item, Layout, LineKind, Listed, QuotaRow, SharedCompleter, token_bounds,
 };
 
 /// What Ctrl+C does to the terminal rather than to the conversation.
@@ -497,7 +496,7 @@ pub struct Tui {
     /// # Invariant
     ///
     /// Set by [`Tui::for_pipe`]: a pipe window has no vocabulary of its own, so it
-    /// asks its client for candidates and never answers itself. A window that
+    /// asks its client for items and never answers itself. A window that
     /// answers itself — a test — leaves it false and keeps the local completer.
     asks_client: bool,
     /// The panes that have already asked for the row above them.
@@ -510,7 +509,7 @@ pub struct Tui {
     wished: HashSet<String>,
     /// The line the client was last asked about, so one question is one intent.
     asked: (String, usize),
-    /// A Tab pressed before the candidates arrived, waiting for the answer.
+    /// A Tab pressed before the items arrived, waiting for the answer.
     ///
     /// # Invariant
     ///
@@ -527,7 +526,7 @@ pub struct Tui {
     columns: Vec<(String, usize)>,
 }
 
-/// A vocabulary with no words: a pipe window asks its client for candidates.
+/// A vocabulary with no words: a pipe window asks its client for items.
 struct EmptyCompleter;
 
 impl Completer for EmptyCompleter {
@@ -861,7 +860,7 @@ impl Tui {
             return;
         }
         // An answer with nothing in it is the popup shut, and still an answer.
-        let offered = !completion.candidates.is_empty();
+        let offered = !completion.items.is_empty();
         self.screen.completion = offered.then_some(completion);
         if self.tab_asked {
             self.tab_asked = false;
@@ -1838,7 +1837,7 @@ impl Tui {
         // The row the operator moved to survives: an event is not a keystroke.
         self.screen.completion = match (self.screen.completion.take(), fresh) {
             (Some(old), Some(mut new)) if same_offering(&old, &new) => {
-                new.selected = old.selected.min(new.candidates.len() - 1);
+                new.selected = old.selected.min(new.items.len() - 1);
                 Some(new)
             }
             (_, fresh) => fresh,
@@ -2069,8 +2068,8 @@ fn edit_input(input: &mut InputLine, completion: &mut Option<Completion>, key: K
 /// The completer's answer for this input as a popup; bounds share its split.
 fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Completion> {
     let offered = completer.complete(input.text(), input.cursor());
-    let candidates = offered.candidates;
-    if candidates.is_empty() {
+    let items = offered.items;
+    if items.is_empty() {
         return None;
     }
     let (start, end, _) = token_bounds(input.text(), input.cursor());
@@ -2083,7 +2082,7 @@ fn next_completion(input: &InputLine, completer: &SharedCompleter) -> Option<Com
         // A JSON value ends at its own token, not at the whitespace around it.
         end: offered.end.unwrap_or(end),
         subject: offered.subject,
-        candidates,
+        items,
         selected: 0,
     })
 }
@@ -2099,12 +2098,12 @@ fn same_offering(old: &Completion, new: &Completion) -> bool {
     old.start == new.start
         && old.end == new.end
         && old.subject == new.subject
-        && old.candidates.len() == new.candidates.len()
+        && old.items.len() == new.items.len()
         && old
-            .candidates
+            .items
             .iter()
-            .zip(&new.candidates)
-            .all(|(a, b)| a.insert == b.insert && a.detail == b.detail)
+            .zip(&new.items)
+            .all(|(a, b)| a.label == b.label && a.detail == b.detail)
 }
 
 /// Applies the chosen candidate, then asks what the line wants next. See `docs/notes/tui-lib.md`.

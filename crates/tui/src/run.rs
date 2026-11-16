@@ -103,7 +103,7 @@ pub(crate) fn apply_frame(tui: &mut Tui, frame: RenderMessage) -> Option<UiInten
             start,
             end,
             subject,
-            candidates,
+            items,
         } => {
             tui.set_completion(client::Completion {
                 line,
@@ -111,7 +111,7 @@ pub(crate) fn apply_frame(tui: &mut Tui, frame: RenderMessage) -> Option<UiInten
                 start,
                 end,
                 subject,
-                candidates,
+                items,
                 selected: 0,
             });
             None

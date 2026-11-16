@@ -228,28 +228,16 @@ fn boundary(text: &str, at: usize) -> usize {
     at
 }
 
-/// Applies the selected candidate to the input line.
+/// Applies the selected option to the input line.
 pub fn apply_completion(line: &mut InputLine, completion: &Completion) {
-    let Some(candidate) = completion.current() else {
+    let Some(item) = completion.current() else {
         return;
     };
-    if completion.start > completion.end
-        || completion.end > line.text.len()
-        || !line.text.is_char_boundary(completion.start)
-        || !line.text.is_char_boundary(completion.end)
-    {
+    let Some((start, end, new_text, caret)) = completion.apply(item) else {
         return;
-    }
-    line.text
-        .replace_range(completion.start..completion.end, &candidate.insert);
-    // Inside what the candidate opened, when it says so. See `Candidate::cursor`.
-    let at = candidate.cursor.unwrap_or(candidate.insert.len());
-    line.cursor = completion.start + at.min(candidate.insert.len());
-    let ended = at >= candidate.insert.len();
+    };
+    line.text.replace_range(start..end, &new_text);
+    line.cursor = caret;
     // The completion is the text now: what was selected is gone with it.
     line.anchor = None;
-    // Flags need a space before their value; command names before their flags.
-    if ended && candidate.space && !line.text[line.cursor..].starts_with(' ') {
-        line.insert(' ');
-    }
 }

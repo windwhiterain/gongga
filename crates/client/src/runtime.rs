@@ -364,7 +364,7 @@ pub async fn run(
                     // around it.
                     end: offered.end.unwrap_or(end),
                     subject: offered.subject,
-                    candidates: offered.candidates,
+                    items: offered.items,
                     selected: 0,
                 });
             }

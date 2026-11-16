@@ -7,8 +7,8 @@ pub mod commands;
 pub mod complete;
 pub mod document;
 pub mod json_command;
+pub mod json_place;
 pub mod json_text;
-pub mod json_value;
 pub mod leaf;
 pub mod render_wire;
 pub mod runtime;
@@ -24,9 +24,7 @@ pub mod window_state;
 pub mod window_sync;
 
 pub use crate::catalog::Catalog;
-pub use crate::complete::{
-    Candidate, Completer, Completion, Offered, SharedCompleter, token_bounds,
-};
+pub use crate::complete::{Completer, Completion, Item, Offered, SharedCompleter, token_bounds};
 pub use crate::server::{ensure, spawn, starts_here, stop};
 pub use protocol;
 

@@ -1234,7 +1234,7 @@ fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
     let Some(completion) = &s.completion else {
         return;
     };
-    let shown = completion.candidates.len().min(8);
+    let shown = completion.items.len().min(8);
     // The window follows the selection, or a ninth candidate is highlighted off-screen.
     let start = if shown == 0 {
         0
@@ -1253,7 +1253,7 @@ fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
     f.render_widget(Clear, area);
 
     let items: Vec<ListItem> = completion
-        .candidates
+        .items
         .iter()
         .enumerate()
         .skip(start)
@@ -1265,7 +1265,7 @@ fn draw_completion(f: &mut Frame, s: &Screen, input_area: Rect) {
                 Style::default()
             };
             ListItem::new(Line::from(vec![
-                Span::styled(format!(" {:<24}", c.insert), style),
+                Span::styled(format!(" {:<24}", c.label), style),
                 Span::styled(c.detail.clone(), dim()),
             ]))
         })

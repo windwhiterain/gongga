@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use crate::commands::installed_skills;
-use crate::complete::{Candidate, Completer, Offered, token_bounds};
-use crate::json_value::{self, Read};
+use crate::complete::{Completer, Item, Offered, token_bounds};
+use crate::json_place::{self, Read};
 use crate::leaf::Leaf;
 use protocol::{
     Args, CommandSpec, CompletionSource, ModelInfo, Reference, SessionInfo, StructField,
@@ -54,7 +54,7 @@ struct Inner {
     skills: Option<Skills>,
     /// Directories a remote answered with, keyed by remote and directory, and
     /// when each answer arrived.
-    remote_paths: HashMap<(String, String), (Vec<Candidate>, std::time::Instant)>,
+    remote_paths: HashMap<(String, String), (Vec<Item>, std::time::Instant)>,
     /// The names a config holds, for reading `--remote` off the line. Taken from
     /// the published catalog rather than kept here.
     remotes: HashSet<String>,
@@ -199,19 +199,14 @@ impl Catalog {
     /// Records what a remote answered, so the next completion offers it.
     pub fn fill_paths(&self, remote: &str, directory: &str, entries: Vec<(String, bool)>) {
         let typed = directory.to_string();
-        let named: Vec<Candidate> = entries
+        let named: Vec<Item> = entries
             .into_iter()
             .map(|(name, is_dir)| {
                 if is_dir {
                     // Descending is what a directory is for, so no space follows.
-                    Candidate {
-                        insert: format!("{typed}{name}/"),
-                        detail: "dir".into(),
-                        space: false,
-                        cursor: None,
-                    }
+                    Item::path(format!("{typed}{name}/"), "dir")
                 } else {
-                    Candidate::word(format!("{typed}{name}"), "file")
+                    Item::word(format!("{typed}{name}"), "file")
                 }
             })
             .collect();
@@ -470,7 +465,7 @@ fn reference(ctx: &Ctx, line: &str, cursor: usize, token: &str) -> Offered {
         // `@file(pa`: the value is what gets replaced, from just past the `(`.
         return Offered {
             start: Some(start + at + kind.prefix().len()),
-            candidates: closed(value(kind, typed, ctx)),
+            items: closed(value(kind, typed, ctx)),
             ..Offered::default()
         };
     }
@@ -479,7 +474,7 @@ fn reference(ctx: &Ctx, line: &str, cursor: usize, token: &str) -> Offered {
     let previous = line[..start.min(line.len())].split_whitespace().next_back();
     if let Some((_, kind, "")) = previous.and_then(opening) {
         return Offered {
-            candidates: closed(value(kind, token, ctx)),
+            items: closed(value(kind, token, ctx)),
             ..Offered::default()
         };
     }
@@ -490,7 +485,7 @@ fn reference(ctx: &Ctx, line: &str, cursor: usize, token: &str) -> Offered {
     let bare = &token[at + 1..];
     Offered {
         start: Some(start + at),
-        candidates: Reference::ALL
+        items: Reference::ALL
             .into_iter()
             .filter(|kind| kind.name().contains(bare))
             .map(prefix_candidate)
@@ -510,13 +505,8 @@ fn reference_detail(kind: Reference) -> &'static str {
 
 /// The prefix as a candidate: `@file(`, and no space after it, because the value
 /// stands inside the group it opens.
-fn prefix_candidate(kind: Reference) -> Candidate {
-    Candidate {
-        insert: kind.prefix().to_string(),
-        detail: reference_detail(kind).to_string(),
-        space: false,
-        cursor: None,
-    }
+fn prefix_candidate(kind: Reference) -> Item {
+    Item::path(kind.prefix(), reference_detail(kind))
 }
 
 /// Candidates that close the group they are written in.
@@ -526,15 +516,12 @@ fn prefix_candidate(kind: Reference) -> Candidate {
 /// A value is inserted as `path)`, because a group the operator has to close by hand
 /// is a reference the parser reads as prose until they do. A directory keeps its `/`
 /// and its open group: Tab on it descends, so the `)` comes when a name is chosen.
-fn closed(candidates: Vec<Candidate>) -> Vec<Candidate> {
-    candidates
+fn closed(items: Vec<Item>) -> Vec<Item> {
+    items
         .into_iter()
-        .map(|mut candidate| {
-            if !candidate.insert.ends_with('/') {
-                candidate.insert.push(')');
-                candidate.space = true;
-            }
-            candidate
+        .map(|item| match item.label.ends_with('/') {
+            true => item,
+            false => Item::word(format!("{})", item.label), item.detail.clone()),
         })
         .collect()
 }
@@ -548,7 +535,7 @@ fn opening(word: &str) -> Option<(usize, Reference, &str)> {
 }
 
 /// Completes one reference's value.
-fn value(kind: Reference, typed: &str, ctx: &Ctx) -> Vec<Candidate> {
+fn value(kind: Reference, typed: &str, ctx: &Ctx) -> Vec<Item> {
     match kind {
         Reference::Skill => pick(
             ctx.catalog
@@ -582,7 +569,7 @@ fn published(
     words: &[String],
     model: Option<&str>,
     depth: u8,
-) -> Vec<Candidate> {
+) -> Vec<Item> {
     if let Some(accepts) = accepts {
         let values = accepted_values(accepts, model);
         return pick(values.iter().map(String::as_str), token, label);
@@ -809,7 +796,7 @@ fn named_machine(inner: &Inner, words: &[String]) -> Option<String> {
 ///
 /// Never waits for a peer: what has arrived is offered now, and the rest is asked
 /// for, so a completion never blocks the front-end on a network.
-fn remote_paths(ctx: &Ctx, remote: &str, token: &str) -> Vec<Candidate> {
+fn remote_paths(ctx: &Ctx, remote: &str, token: &str) -> Vec<Item> {
     let (typed_dir, prefix) = split_path_token(token);
     let (cached, arrival) = {
         let inner = ctx.catalog.read();
@@ -832,8 +819,8 @@ fn remote_paths(ctx: &Ctx, remote: &str, token: &str) -> Vec<Candidate> {
     };
     entries
         .into_iter()
-        .filter(|candidate| {
-            let Some(name) = candidate.insert.get(typed_dir.len()..) else {
+        .filter(|item| {
+            let Some(name) = item.label.get(typed_dir.len()..) else {
                 return false;
             };
             let name = name.trim_end_matches('/');
@@ -853,13 +840,13 @@ fn remote_paths(ctx: &Ctx, remote: &str, token: &str) -> Vec<Candidate> {
 /// A word already typed keeps its place in the list: an exact match sorts first,
 /// so Tab on `/send_message` completes nothing rather than reordering the popup.
 /// See `docs/notes/cli-catalog.md`.
-fn pick<'a>(values: impl Iterator<Item = &'a str>, token: &str, detail: &str) -> Vec<Candidate> {
-    let mut got: Vec<Candidate> = values
+fn pick<'a>(values: impl Iterator<Item = &'a str>, token: &str, detail: &str) -> Vec<Item> {
+    let mut got: Vec<Item> = values
         .filter(|v| v.contains(token))
-        .map(|v| Candidate::word(v, detail))
+        .map(|v| Item::word(v, detail))
         .collect();
     // Stable sort, so the catalog's own order decides between equals.
-    got.sort_by_key(|c| !c.insert.starts_with(token));
+    got.sort_by_key(|c| !c.label.starts_with(token));
     got
 }
 
@@ -879,12 +866,12 @@ fn flag_value<'a>(words: &'a [String], flag: &str) -> Option<&'a str> {
 
 /// Lists the filesystem under `base`, keeping the directory part already typed; a
 /// directory keeps its trailing `/`.
-fn paths(base: &Path, token: &str) -> Vec<Candidate> {
+fn paths(base: &Path, token: &str) -> Vec<Item> {
     let (typed_dir, prefix) = split_path_token(token);
     let Ok(entries) = std::fs::read_dir(directory(base, &typed_dir)) else {
         return Vec::new();
     };
-    let mut out: Vec<Candidate> = entries
+    let mut out: Vec<Item> = entries
         .flatten()
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -897,18 +884,13 @@ fn paths(base: &Path, token: &str) -> Vec<Candidate> {
                 return None;
             }
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                Some(Candidate {
-                    insert: format!("{typed_dir}{name}/"),
-                    detail: "dir".into(),
-                    space: false,
-                    cursor: None,
-                })
+                Some(Item::path(format!("{typed_dir}{name}/"), "dir"))
             } else {
-                Some(Candidate::word(format!("{typed_dir}{name}"), "file"))
+                Some(Item::word(format!("{typed_dir}{name}"), "file"))
             }
         })
         .collect();
-    out.sort_by(|a, b| a.insert.cmp(&b.insert));
+    out.sort_by(|a, b| a.label.cmp(&b.label));
     out
 }
 
@@ -1007,8 +989,19 @@ fn open_quote(line: &str) -> Option<char> {
 /// Asked of the line, not of the schema: a field the object publishes but nobody
 /// wrote is one a sticky entry fills at submission, and a comma before the close
 /// would still be a trailing one the server refuses.
-fn sibling(written: &[(String, Read)], filling: &str) -> bool {
-    written.iter().any(|(name, _)| name != filling)
+/// Whether a member written to end at `from` owes the comma that ends it.
+///
+/// # Invariant
+///
+/// The standard's separator rule: a comma stands before what follows, never
+/// before a closer and never at the end of the line. The line decides, not the
+/// schema, so what a completion writes is JSON the server can read.
+fn separator(text: &str, from: usize) -> bool {
+    let rest = text.get(from.min(text.len())..).unwrap_or("");
+    match rest.trim_start().chars().next() {
+        None | Some(',') | Some('}') | Some(']') => false,
+        _ => true,
+    }
 }
 
 /// The object schema at a path of field names, or `None` when the path leaves
@@ -1033,14 +1026,22 @@ fn schema_at<'a>(schema: &'a StructSchema, path: &[String]) -> Option<&'a Struct
 /// A name is inserted with the colon that ends it, the brace or the quotes its
 /// value is held in, and every brace the value still owes (`closers`); the caret
 /// lands inside what it opened. A field the object already states is not offered.
+/// One object's field names, as the popup offers them.
+///
+/// # Invariant
+///
+/// A name is written whole -- the colon that ends it, the brace or the quotes its
+/// value is held in, the comma it owes, and every brace the object still owes --
+/// and it states where the caret goes, so nothing else has to. A field the
+/// object already states is not offered.
 fn keys(
     object: &StructSchema,
     fragment: &str,
-    prefix: &str,
+    range: (usize, usize),
     written: &[(String, Read)],
     closers: usize,
-    more: bool,
-) -> Vec<Candidate> {
+    comma: bool,
+) -> Vec<Item> {
     let mut fields: Vec<&StructField> = object
         .fields
         .iter()
@@ -1053,37 +1054,17 @@ fn keys(
     fields
         .into_iter()
         .map(|field| {
-            let mut insert = format!("{prefix}\"{}\":", field.name);
-            let mut tail = String::new();
-            // Where the caret goes when it is not at the insertion's end: inside
-            // the brace or the quotes the name opened.
-            let mut inside = None;
-            if field.object.is_some() {
-                insert.push('{');
-                tail.push('}');
-            } else if Leaf::of(field) == Leaf::Text {
-                // A string writes its own quotes, so the operator never types one.
-                insert.push_str("\"\"");
-                inside = Some(insert.len() - 1);
+            let label = format!("\"{}\":", field.name);
+            let mut new_text = match (field.object.is_some(), Leaf::of(field)) {
+                (true, _) => format!("{label}{{$0}}"),
+                (false, Leaf::Text) => format!("{label}\"$0\""),
+                (false, _) => format!("{label}$0"),
+            };
+            if comma {
+                new_text.push(',');
             }
-            // A name writes the closers of the objects the token stands in: it is
-            // what closes an object nothing else has closed yet.
-            for _ in 0..closers {
-                tail.push('}');
-            }
-            let caret = inside.unwrap_or(insert.len());
-            // The separator stands before the closers the object owes.
-            if more {
-                insert.push(',');
-            }
-            insert.push_str(&tail);
-            Candidate {
-                insert,
-                detail: field.description.clone(),
-                space: false,
-                // Where the name opened something, never past it.
-                cursor: Some(caret),
-            }
+            new_text.push_str(&"}".repeat(closers));
+            Item::at(range, new_text, true, label, field.description.clone())
         })
         .collect()
 }
@@ -1096,52 +1077,69 @@ fn keys(
 /// is keyed by model, and another model's levels are a list the server refuses.
 /// What a value is written as is its leaf's type's decision (`Leaf`), so one list
 /// of texts offers `"70%"` and `true` without spelling either.
+/// The values one leaf field of a structured object offers.
+///
+/// # Invariant
+///
+/// A model is read from the object being typed before the line is asked: `accepts`
+/// is keyed by model, and another model's levels are a list the server refuses.
+/// What a value is written as is its leaf's type's decision (`Leaf`), so one list
+/// of texts offers `"70%"` and `true` without spelling either.
 fn values(
     field: &StructField,
-    spot: &json_value::Spot,
+    place: &json_place::Place,
     ctx: &Ctx,
     words: &[String],
+    range: (usize, usize),
     closers: usize,
-    more: bool,
-) -> Vec<Candidate> {
-    let model = named_model(&spot.fields).or_else(|| model_named(ctx, words));
+    comma: bool,
+) -> Vec<Item> {
+    let model = named_model(&place.fields).or_else(|| model_named(ctx, words));
     let hint = field.value_hint.as_deref().unwrap_or("value");
     let leaf = Leaf::of(field);
     let offered = published(
         &field.source,
         field.accepts.as_ref(),
         hint,
-        &spot.fragment,
+        &place.fragment,
         ctx,
         words,
         model.as_deref(),
         0,
     );
     if offered.is_empty() {
-        return owed(field, leaf, spot, ctx, closers, more);
+        return owed(field, leaf, place, ctx, range, closers, comma);
     }
     offered
         .into_iter()
-        .filter_map(|candidate| {
-            let mut insert = match field.model_ref {
-                true => model_value(&candidate.insert)?,
-                false => leaf.token(&candidate.insert),
+        .filter_map(|item| {
+            let value = match field.model_ref {
+                true => model_value(&item.label)?,
+                false => leaf.token(&item.label),
             };
-            // The separator stands before the closers the object owes.
-            if more {
-                insert.push(',');
-            }
-            insert.push_str(&"}".repeat(closers));
-            Some(Candidate {
-                insert,
-                detail: candidate.detail,
-                space: false,
-                cursor: None,
-            })
+            Some(member(value, &item.detail, range, closers, comma))
         })
         .collect()
 }
 
+/// A member's value, as the item that writes it.
+fn member(value: String, detail: &str, range: (usize, usize), closers: usize, comma: bool) -> Item {
+    let mut new_text = format!("{value}$0");
+    if comma {
+        new_text.push(',');
+    }
+    new_text.push_str(&"}".repeat(closers));
+    Item::at(range, new_text, true, value, detail.to_string())
+}
+
+/// What a leaf owes when the catalog publishes nothing for it: a string's quotes,
+/// a switch's two readings.
+///
+/// # Invariant
+///
+/// A string candidate is the operator's own fragment, closed -- never a value. It is
+/// offered only where there is nothing to choose from, and not while a listing is on
+/// its way, whose answer it would replace. See `docs/notes/client-complete.md`.
 /// What a leaf owes when the catalog publishes nothing for it: a string's quotes,
 /// a switch's two readings.
 ///
@@ -1153,44 +1151,42 @@ fn values(
 fn owed(
     field: &StructField,
     leaf: Leaf,
-    spot: &json_value::Spot,
+    place: &json_place::Place,
     ctx: &Ctx,
+    range: (usize, usize),
     closers: usize,
-    more: bool,
-) -> Vec<Candidate> {
+    comma: bool,
+) -> Vec<Item> {
     if ctx.catalog.wants() {
         return Vec::new();
     }
-    let texts: Vec<String> = match leaf {
-        Leaf::Switch => vec!["true".to_string(), "false".to_string()],
-        // The quotes are there and nothing is inside them: the token is finished,
-        // and offering to write it again is noise.
-        Leaf::Text if spot.quoted => return Vec::new(),
-        Leaf::Text => vec![spot.fragment.clone()],
+    let hint = field.value_hint.as_deref().unwrap_or("value");
+    let texts: Vec<(String, bool)> = match leaf {
+        Leaf::Switch => vec![("true".to_string(), false), ("false".to_string(), false)],
+        // Both quotes stand and nothing is inside them: the token is finished.
+        Leaf::Text if place.quoted => return Vec::new(),
+        // An empty string leaves the caret between its quotes;
+        // a typed one ends where the operator stopped.
+        Leaf::Text if place.fragment.is_empty() => vec![(String::new(), true)],
+        Leaf::Text => vec![(leaf.token(&place.fragment), false)],
         Leaf::Other => return Vec::new(),
     };
-    let hint = field.value_hint.as_deref().unwrap_or("value");
     texts
         .into_iter()
-        .map(|text| {
-            let mut insert = leaf.token(&text);
-            // An empty string leaves the caret between its quotes, ready for the
-            // first character; anything else ends at the cursor.
-            let caret = match (leaf, text.is_empty()) {
-                (Leaf::Text, true) => Some(insert.len() - 1),
-                _ => None,
+        .map(|(text, between_quotes)| {
+            let label = match between_quotes {
+                true => "\"\"".to_string(),
+                false => text.clone(),
             };
-            insert.push_str(&"}".repeat(closers));
-            // The separator belongs to the member, not to the closers.
-            if more {
-                insert.push(',');
+            let mut new_text = match between_quotes {
+                true => "\"$0\"".to_string(),
+                false => format!("{text}$0"),
+            };
+            if comma {
+                new_text.push(',');
             }
-            Candidate {
-                insert,
-                detail: hint.to_string(),
-                space: false,
-                cursor: caret,
-            }
+            new_text.push_str(&"}".repeat(closers));
+            Item::at(range, new_text, true, label, hint.to_string())
         })
         .collect()
 }
@@ -1247,7 +1243,7 @@ fn model_value(spelled: &str) -> Option<String> {
 ///
 /// Every insertion is balanced: a name carries the braces it opens, a value its
 /// quotes, and each owes only the closers the text has not already written
-/// (`json_value::Spot`). The popup therefore never leaves a bracket or a quote
+/// (`json_place::Place`). The popup therefore never leaves a bracket or a quote
 /// unmatched. See `docs/notes/client-complete.md`.
 fn json_complete(ctx: &Ctx, line: &str, cursor: usize, words: &[String]) -> Offered {
     let lead = line.len() - line.trim_start().len();
@@ -1288,35 +1284,28 @@ fn json_complete(ctx: &Ctx, line: &str, cursor: usize, words: &[String]) -> Offe
 /// Command names, matched anywhere; accepting one opens its argument object,
 /// caret inside.
 fn command_names(ctx: &Ctx, fragment: &str, start: usize, end: usize) -> Offered {
-    let mut got: Vec<Candidate> = ctx
+    let mut got: Vec<Item> = ctx
         .all
         .iter()
         .filter(|c| c.name.contains(fragment))
-        .map(|c| {
-            if c.args.is_empty() {
-                Candidate {
-                    insert: format!("/{}", c.name),
-                    detail: c.description.clone(),
-                    space: false,
-                    cursor: None,
-                }
-            } else {
-                // The name opens the object, and the caret lands inside it.
-                Candidate {
-                    insert: format!("/{}{{}}", c.name),
-                    detail: c.description.clone(),
-                    space: false,
-                    cursor: Some(c.name.len() + 2),
-                }
-            }
+        .map(|c| match c.args.is_empty() {
+            true => Item::path(format!("/{}", c.name), c.description.clone()),
+            // The name opens the object, and the caret lands inside it.
+            false => Item::at(
+                (start, end),
+                format!("/{}{{$0}}", c.name),
+                true,
+                format!("/{}", c.name),
+                c.description.clone(),
+            ),
         })
         .collect();
     // A prefix match is what the operator is most likely typing; stable, so the
     // catalog's order decides between equals.
-    got.sort_by_key(|c| !c.insert.trim_start_matches('/').starts_with(fragment));
+    got.sort_by_key(|c| !c.label.trim_start_matches('/').starts_with(fragment));
     Offered {
         subject: None,
-        candidates: got,
+        items: got,
         start: Some(start),
         end: Some(end),
     }
@@ -1333,29 +1322,27 @@ fn object_completion(
     brace: usize,
     words: &[String],
 ) -> Offered {
-    let Some(spot) = json_value::spot(text, at) else {
+    let Some(place) = json_place::place(text, at) else {
         return Offered::default();
     };
-    let start = brace + spot.start;
-    // The token, never past it: an end past the comma eats what follows.
-    let end = brace + spot.end;
-    let owed = spot.open.saturating_sub(spot.after);
-    match spot.typing {
-        json_value::Typing::Key => {
-            let Some(object) = schema_at(schema, &spot.path) else {
+    let range = (brace + place.start, brace + place.end);
+    let owed = place.open.saturating_sub(place.after);
+    // The separator is the line's answer, not the schema's.
+    let comma = separator(text, place.end);
+    match place.typing {
+        json_place::Typing::Key => {
+            let Some(object) = schema_at(schema, &place.path) else {
                 return Offered::default();
             };
-            // A sibling already written means this member is not the last.
-            let more = sibling(&spot.fields, "");
             Offered {
-                subject: Some(subject_name(cmd, &spot.path)),
-                candidates: keys(object, &spot.fragment, "", &spot.fields, owed, more),
-                start: Some(start),
-                end: Some(end),
+                subject: Some(subject_name(cmd, &place.path)),
+                start: Some(range.0),
+                end: Some(range.1),
+                items: keys(object, &place.fragment, range, &place.fields, owed, comma),
             }
         }
-        json_value::Typing::Value => {
-            let Some((name, parent)) = spot.path.split_last() else {
+        json_place::Typing::Value => {
+            let Some((name, parent)) = place.path.split_last() else {
                 return Offered::default();
             };
             let Some(object) = schema_at(schema, parent) else {
@@ -1368,13 +1355,11 @@ fn object_completion(
             if field.object.is_some() {
                 return Offered::default();
             }
-            // A sibling already written means this member is not the last.
-            let more = sibling(&spot.fields, name);
             Offered {
-                subject: Some(subject_name(cmd, &spot.path)),
-                candidates: values(field, &spot, ctx, words, owed, more),
-                start: Some(start),
-                end: Some(end),
+                subject: Some(subject_name(cmd, &place.path)),
+                start: Some(range.0),
+                end: Some(range.1),
+                items: values(field, &place, ctx, words, range, owed, comma),
             }
         }
     }
