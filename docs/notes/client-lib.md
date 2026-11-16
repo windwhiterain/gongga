@@ -132,9 +132,8 @@ that this decision is not a parse of `detail`, which is a sentence for a person.
 Who is speaking belongs on that prefix, not in the text: a session tag in the
 text would be repeated by every delta. The prefix is `[<session>] ` followed by
 the part's own label (`thinking: `, `tool: `, or nothing for output), which is
-the same shape `Event::Status` already uses for `[<session>] idle`. The stream
-key keeps the session for routing (`r:<session>:<turn>:<part>`) and does not
-depend on the tag being shown.
+the same shape `Event::Status` already uses for `[<session>] idle`. The stream key is the block's own name, minted by this client (`<window>#<n>`),
+so it does not depend on the tag being shown either.
 
 A row `get_messages` reads back arrives on this same path, under `REPLAY_TURN`.
 
@@ -145,11 +144,21 @@ fixed for the life of its key.
 
 ## Client::handle_response — one part, one block, one window
 
-A part of a response is its own block (`r:<session>:<turn>:<part>`), and the
-*window* is what keeps sessions apart. The older rule folded a session's non-answer
-parts onto one shared key so a front-end could draw them as one row; that grouping
-was a workaround for having one window for everybody. With one window per session the
-key has nothing left to do, and the answer no longer needs a key of its own.
+A part of a response is its own block, and the *window* is what keeps sessions
+apart. The older rule folded a session's non-answer parts onto one shared key so a
+front-end could draw them as one row; that grouping was a workaround for having one
+window for everybody. With one window per session the key holds nothing but the
+block's own identity, and that identity is the client's to mint.
+
+**A block's name is not the meaning that carried it.** `(turn, step, part)` repeats
+across one transcript: a read hands every row over under `REPLAY_TURN`, and `step`
+starts again each turn, so a name built from those named several rows at once. A
+window then drew them all on one block -- the later row's text appended to the
+earlier row's, and the last row's text written where the first row's block already
+sat, which is a turn shown without its answer. Each block is now named
+`<window>#<n>`, monotonic per window, minted when a row opens and retired when it
+ends, and opaque to the front-end. Measured on a real fill of a 371-row transcript:
+one document per output row, the last one carrying only its own 112 characters.
 
 Dropping it also drops the front-end's rewrite-on-new-label hack: a block is one
 label's text, so a chunk wearing another label opens a new block where the old one
@@ -294,7 +303,8 @@ wants to know where the transcript was read asks with a range and is told by the
 result's `last_seq`; the position was never something the eye needed per line. What it
 keeps is the turn: `REPLAY_TURN` says a part is a row rather than a stream, and that is
 the difference between a block of its own and text appended to the answer a running
-turn is still writing.
+turn is still writing. It is not the block's *name*: that is minted by this client,
+because the turns a read hands over are the turns a transcript already used.
 
 ## kind_of
 

@@ -829,6 +829,20 @@ pub struct Client {
     shown: Vec<String>,
     /// Calls that streamed their arguments, by id: their structure fills that block.
     calls: HashSet<String>,
+    /// The next block name this client will mint, per window.
+    ///
+    /// # Invariant
+    ///
+    /// A block's name is this client's, never the meaning that carried it. See
+    /// [`Client::block_of`] and `docs/notes/client-lib.md`.
+    blocks: HashMap<String, u64>,
+    /// The block a part is still being written into, by window and part identity.
+    ///
+    /// # Invariant
+    ///
+    /// Only a part that has not ended is here: `done` closes a block and forgets
+    /// it, so the next row opens a block of its own whatever it is called.
+    nodes: HashMap<(String, String), String>,
     /// Which window each accepted command's result belongs to, from its echo.
     results: HashMap<u64, String>,
     /// Command lines sent and not answered yet, oldest first, by command id.
@@ -1356,6 +1370,8 @@ impl Client {
             results: HashMap::new(),
             unconfirmed: Vec::new(),
             calls: HashSet::new(),
+            blocks: HashMap::new(),
+            nodes: HashMap::new(),
             sessions: Vec::new(),
             seeded: Vec::new(),
             model: "-".to_string(),
@@ -1812,13 +1828,35 @@ impl Client {
         }
     }
 
+    /// The block a part writes into, minting one when this is a new row.
+    ///
+    /// # Invariant
+    ///
+    /// A block's name is the client's, never the meaning that carried it: a
+    /// transcript repeats its turns and steps -- every read hands its rows over
+    /// under `REPLAY_TURN` -- so a name built from `(turn, step, part)` names
+    /// several rows, and a window drawing one of them draws the others over it.
+    /// The number is monotonic per window and never handed out twice, so a closed
+    /// block's name is retired with it. See `docs/notes/client-lib.md`.
+    fn block_of(&mut self, window: &str, part: String, done: bool) -> String {
+        let slot = (window.to_string(), part);
+        if let Some(name) = self.nodes.get(&slot) {
+            let name = name.clone();
+            if done {
+                self.nodes.remove(&slot);
+            }
+            return name;
+        }
+        let next = self.blocks.entry(window.to_string()).or_insert(0);
+        let name = format!("{window}#{next}");
+        *next += 1;
+        if !done {
+            self.nodes.insert(slot, name.clone());
+        }
+        name
+    }
+
     fn handle_response(&mut self, e: ResponseEvent, sink: &mut dyn Sink) {
-        // One part is one block. A call streams under its result's id, so the
-        // structured event fills the block it opened.
-        let key = match (&e.call_id, e.part) {
-            (Some(call_id), ResponsePart::ToolCall) => format!("c:{call_id}"),
-            _ => format!("r:{}:{}:{}:{:?}", e.session, e.turn, e.step, e.part),
-        };
         // The operator's own words, replayed: a line, exactly as the echo that
         // wrote them live put it there.
         if matches!(e.part, ResponsePart::Input | ResponsePart::Inject) {
@@ -1830,6 +1868,15 @@ impl Client {
             sink.line(&window, kind, &e.text);
             return;
         }
+        // One part is one block, named here. A call streams under its result's id,
+        // so the structured event fills the block it opened.
+        let key = match (&e.call_id, e.part) {
+            (Some(call_id), ResponsePart::ToolCall) => format!("c:{call_id}"),
+            _ => {
+                let part = format!("{}:{}:{:?}", e.turn, e.step, e.part);
+                self.block_of(&e.session, part, e.done)
+            }
+        };
         let (kind, label) = match e.part {
             // No label: the kind's colour (dim italic) already says this is the
             // model thinking, and the label was the word twice.
