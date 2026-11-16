@@ -164,6 +164,16 @@ pub fn required(schema: &Value) -> Vec<&str> {
         .unwrap_or_default()
 }
 
+/// Whether a property is a structured value: it states fields of its own.
+///
+/// # Invariant
+///
+/// `properties`, not `type`. A model reference is an object whose members the
+/// document does not spell out, and reading it as a struct dropped it.
+pub fn is_struct(property: &Value) -> bool {
+    property.get("properties").is_some()
+}
+
 /// What a property says about itself, in the popup's right-hand column.
 pub fn description(property: &Value) -> String {
     property

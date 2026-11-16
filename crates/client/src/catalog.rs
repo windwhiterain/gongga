@@ -1048,10 +1048,12 @@ fn keys(
         .into_iter()
         .map(|(name, property)| {
             let label = format!("\"{name}\":");
-            let mut new_text = match property.get("type").and_then(Value::as_str) {
-                Some("object") => format!("{label}{{$0}}"),
-                Some("string") => format!("{label}\"$0\""),
-                _ => format!("{label}$0"),
+            let mut new_text = match protocol::argschema::is_struct(property) {
+                true => format!("{label}{{$0}}"),
+                false => match property.get("type").and_then(Value::as_str) {
+                    Some("string") => format!("{label}\"$0\""),
+                    _ => format!("{label}$0"),
+                },
             };
             if comma {
                 new_text.push(',');
@@ -1371,7 +1373,7 @@ fn object_completion(
                 return Offered::default();
             };
             // An object field is entered by its name, which wrote the brace.
-            if property.get("type").and_then(Value::as_str) == Some("object") {
+            if protocol::argschema::is_struct(property) {
                 return Offered::default();
             }
             Offered {

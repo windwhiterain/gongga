@@ -71,7 +71,7 @@ fn field_kinds(schema: &serde_json::Value, kinds: &mut BTreeSet<String>) {
         {
             kinds.insert(kind.to_string());
         }
-        if property.get("type").and_then(serde_json::Value::as_str) == Some("object") {
+        if protocol::argschema::is_struct(property) {
             field_kinds(property, kinds);
         }
     }
