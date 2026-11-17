@@ -1403,9 +1403,25 @@ fn object_completion(
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
-                items: values(property, &place, ctx, words, range),
+                items: values(property, &place, ctx, words, with_comma(range, text))
+                    .into_iter()
+                    .map(|mut item| {
+                        if with_comma(range, text).1 > range.1 {
+                            item.new_text = format!("{},$0", item.new_text.replace("$0", ""));
+                        }
+                        item
+                    })
+                    .collect(),
             }
         }
+    }
+}
+
+/// The range a value takes: its token, and the comma after it when the line holds one.
+fn with_comma(range: (usize, usize), text: &str) -> (usize, usize) {
+    match text.get(range.1..) {
+        Some(rest) if rest.starts_with(',') => (range.0, range.1 + 1),
+        _ => range,
     }
 }
 
