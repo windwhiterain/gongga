@@ -1080,13 +1080,17 @@ fn keys(
     fields
         .into_iter()
         .map(|(name, property)| {
-            let whole = match protocol::argschema::enters(property) {
-                true => format!("\"{name}\":{{$0}}"),
-                false => match property.get("type").and_then(Value::as_str) {
-                    Some("string") => format!("\"{name}\":\"$0\""),
-                    _ => format!("\"{name}\":$0"),
-                },
-            };
+            // The comma that starts the next member is written here, with the key.
+            let whole = format!(
+                "{},",
+                match protocol::argschema::enters(property) {
+                    true => format!("\"{name}\":{{$0}}"),
+                    false => match property.get("type").and_then(Value::as_str) {
+                        Some("string") => format!("\"{name}\":\"$0\""),
+                        _ => format!("\"{name}\":$0"),
+                    },
+                }
+            );
             written(
                 &whole,
                 range,
@@ -1366,13 +1370,9 @@ fn object_completion(
     let Some(place) = json_place::place(head, at) else {
         return Offered::default();
     };
-    // A closed token ends at its own quote: the range covers it, or
-    // accepting a value leaves that quote behind.
-    let end = match text.get(at..) {
-        Some(rest) if rest.starts_with('"') => at + 1,
-        _ => at,
-    };
-    let range = (brace + place.start.min(at), brace + end);
+    // The span a candidate rewrites is the token the caret is in.
+    let (start, end) = json_place::token_at(text, at);
+    let range = (brace + start, brace + end);
     match place.typing {
         json_place::Typing::Key => {
             let Some(object) = schema_at(schema, &place.path, &place.levels) else {
