@@ -296,6 +296,8 @@ struct SessionInner {
     explore: Mutex<Option<Arc<crate::explore::Watch>>>,
     /// The session this row is a dream of, fixed at birth; `None` is ordinary.
     dream_of: Option<i64>,
+    /// The session this row is an archive of, fixed at birth; `None` is ordinary.
+    mentor_of: Option<i64>,
     /// Set once the rows are gone, so a queued turn gives up instead of writing.
     deleted: AtomicBool,
     /// Set by a `cancel` that found the turn in `wait`: the next start resumes it.
@@ -499,6 +501,11 @@ impl SessionHandle {
     /// birth. See `docs/notes/server-dream.md`.
     pub fn dream_of(&self) -> Option<i64> {
         self.inner.dream_of
+    }
+
+    /// The session this one is an archive of, if it is one. Fixed at birth.
+    pub fn mentor_of(&self) -> Option<i64> {
+        self.inner.mentor_of
     }
 
     /// The look a program call of this session takes when it ends, if it takes one.
@@ -1342,6 +1349,7 @@ impl SessionManager {
                 worktree_changed: worktree.map(|_| false),
                 // A session a person named is nobody's dream.
                 dream_of: None,
+                mentor_of: None,
                 dreamed_checkpoint_id: None,
             },
             &mut live,
@@ -1635,6 +1643,7 @@ impl SessionManager {
                 }),
                 explore: Mutex::new(crate::explore::watch_of(row.mode)),
                 dream_of: row.dream_of,
+                mentor_of: row.mentor_of,
                 deleted: AtomicBool::new(false),
                 resumable: Arc::new(AtomicBool::new(false)),
                 interrupted: Arc::new(AtomicBool::new(false)),

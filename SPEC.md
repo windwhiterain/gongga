@@ -217,6 +217,16 @@ discards the clone when its turn truly ends.
 - the dream writes workspace documents and nothing else; the session is disposable, the
   files are the memory. deleting the source discards its dreams.
 
+## Mentor
+an archive of a session: its transcript, copied row for row by the `handoff` skill, so a
+continuation can read back what the copy came from.
+- the archive records `mentor_of`: the session it archives. `none` is an ordinary session.
+- an archive is told its size and asked for nothing. A Context notice there carries the
+  current context and the total, never the handoff request: what it holds *is* the
+  transcript, so folding it deletes the archive, and handing it off writes a second copy
+  of the same size, born at the same ceiling. It answers what it is asked, and says so
+  when it can no longer.
+
 ## Monitor
 - providers: spawn/notice when a session failed on an llm request (refused, or the
   answer never finished). Reasons are the provider's, the roster's or the key's;

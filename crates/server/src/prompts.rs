@@ -118,6 +118,16 @@ pub const LOST_NOTICES: &str = "lost_notices";
 /// What asks a session to fold its context: the live compaction interval.
 pub const LIVE_COMPACT_NOTICE: &str = "live_compact_notice";
 
+/// What an archive is told when its request gets big: the measurement, no request.
+///
+/// # Invariant
+///
+/// An archive holds the transcript its continuation reads back, so there is nothing
+/// it could fold away and no hand-off that would make it smaller: the notice names
+/// the size and asks for nothing. See `docs/notes/server-dream.md` for the sibling
+/// case -- a clone told what it may not do.
+pub const CONTEXT_MEASURE: &str = "context_measure";
+
 /// The text a turn boundary is written with when the provider refused the transcript.
 pub const THINKING_MARK: &str = "thinking_mark";
 
@@ -149,6 +159,7 @@ pub const SKILL_ARGUMENTS: &str = "skill_arguments";
 /// empty system prompt and look healthy. Startup asks for this list instead.
 pub const REQUIRED: &[&str] = &[
     "context_notice",
+    CONTEXT_MEASURE,
     "interrupted_call",
     "size_hint",
     "image_refusal",

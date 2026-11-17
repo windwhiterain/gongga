@@ -481,7 +481,11 @@ impl Agent {
         if !session.note_context_asked(tokens, budget, window) {
             return;
         }
-        let message = context_notice(crate::prompts::shared(), name, tokens, budget, window);
+        // SPEC's Mentor: an archive hears its size and is asked for nothing.
+        let message = match session.mentor_of() {
+            Some(_) => context_measure(crate::prompts::shared(), name, tokens, budget, window),
+            None => context_notice(crate::prompts::shared(), name, tokens, budget, window),
+        };
         if let Err(e) = self.store.add_pending_task(
             name,
             "inject",
@@ -501,9 +505,14 @@ impl Agent {
         );
         self.bus.publish(Event::Log {
             level: LogLevel::Info,
-            message: format!(
-                "{name}: context at {tokens} of {budget} tokens; asked the agent to fold"
-            ),
+            message: match session.mentor_of() {
+                Some(_) => format!(
+                    "{name}: context at {tokens} of {budget} tokens; told the archive its size"
+                ),
+                None => format!(
+                    "{name}: context at {tokens} of {budget} tokens; asked the agent to fold"
+                ),
+            },
             session: None,
         });
     }
@@ -2045,6 +2054,32 @@ fn context_notice(
             ("session", session),
             ("tokens", &tokens.to_string()),
             ("budget", &budget.to_string()),
+            ("window", &total.to_string()),
+        ],
+    ))
+}
+
+/// What an archive is told: the measurement, and nothing it could act on.
+///
+/// # Invariant
+///
+/// The same two numbers the agent's notice carries -- where the context is and how
+/// much there is altogether -- and no instruction beside them: there is no tool an
+/// archive could run to make itself smaller. `budget` stands in for a window the
+/// roster does not state, exactly as it does for the agent's notice.
+fn context_measure(
+    prompts: &crate::prompts::Prompts,
+    session: &str,
+    tokens: u64,
+    budget: u64,
+    window: Option<u64>,
+) -> String {
+    let total = window.unwrap_or(budget);
+    crate::prompts::harness_wrap(prompts.render(
+        crate::prompts::CONTEXT_MEASURE,
+        &[
+            ("session", session),
+            ("tokens", &tokens.to_string()),
             ("window", &total.to_string()),
         ],
     ))

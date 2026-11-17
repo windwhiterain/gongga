@@ -198,7 +198,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- The checkpoint generation this row's dreaming concerns: on a source, the
     -- generation its last dream was spawned for; on a dream, the generation it
     -- was spawned for. NULL is a row that has never dreamed.
-    dreamed_checkpoint_id INTEGER
+    dreamed_checkpoint_id INTEGER,
+    -- The session this row is an archive of, by id: its transcript, copied row for
+    -- row by the `handoff` skill. NULL is an ordinary session. An archive is told its
+    -- size and never asked to hand off -- it holds the transcript, so a hand-off of it
+    -- writes a second copy of the same size instead of making anything smaller.
+    mentor_of INTEGER
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -562,6 +567,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         (
             "dreamed_checkpoint_id",
             "ALTER TABLE sessions ADD COLUMN dreamed_checkpoint_id INTEGER",
+        ),
+        (
+            "mentor_of",
+            "ALTER TABLE sessions ADD COLUMN mentor_of INTEGER",
         ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
@@ -1269,7 +1278,7 @@ impl Store {
                     s.cache_tier, s.cache_keepalive, s.ended_at, s.mode,
                     s.live_compact, s.live_compact_interval_tokens, s.worktree,
                     s.worktree_merged, s.worktree_changed,
-                    s.dream_of, s.dreamed_checkpoint_id
+                    s.dream_of, s.dreamed_checkpoint_id, s.mentor_of
              FROM sessions s";
 
     /// Every session in `error` because of a provider, with what a monitor turn
@@ -1410,6 +1419,7 @@ impl Store {
             worktree_changed: r.get::<_, Option<i64>>(23)?.map(|v| v != 0),
             dream_of: r.get(24)?,
             dreamed_checkpoint_id: r.get(25)?,
+            mentor_of: r.get(26)?,
         })
     }
 
@@ -3762,6 +3772,8 @@ pub struct SessionRow {
     pub dream_of: Option<i64>,
     /// The checkpoint generation this row's dreaming concerns; `None` never dreamed.
     pub dreamed_checkpoint_id: Option<i64>,
+    /// The session this row is an archive of; `None` is an ordinary one.
+    pub mentor_of: Option<i64>,
 }
 
 /// A dream clone: keep_alive off, live compact explicitly off, mode `work`.
