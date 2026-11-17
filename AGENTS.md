@@ -315,8 +315,15 @@ shell / tui / 服务端，以及它们再 spawn 的 channel，全都还是旧环
 `ok Cargo shim is active`，不带前缀跑就变成 `warn Cargo shim is current but not active; 
 PATH resolves cargo to ~/.cargo/bin/cargo.exe`。清 PATH 下的那一行才是当前真实状态。
 
-每个会话动手之前自己确认一次，不对就把 `%LOCALAPPDATA%\mbx\bin` 置顶（或重启那条
-会话链）；不要指望父会话替你带上。
+**要让它真的生效，不靠重启，靠位置**：PATH 的**值**是旧的，但它列出的**目录**是真的。把 shim
+硬链接到 `%USERPROFILE%\.local\bin\cargo.exe`（这个目录本来就在所有会话的 PATH 里，
+且排在 `~/.cargo/bin` 之前），同一个会话环境不动、下一次 `cargo` 就走 mbx 了。实测：`which cargo`
+变成 `.local/bin/cargo`，一次 `cargo build` 打出 `mbx[cache]: ... stored locally`。shim 按**文件名**
+分派，与它自己所在的路径无关。
+
+两条注意：`mbx doctor` 的 setup 行会把这种形态报成 `not active`（它只认自己那个目录在 PATH 第一位），
+**不要**据此判断没生效，用 `mbx explain --last` 或 `mbx cache stats`；硬链接是同一个 inode，mbx 升级
+换了 shim 之后要重新链一次。撤销就是删掉那个 `cargo.exe`。
 
 冷构建报 `0 hits, 0 misses, N not looked up` 是正常态：第一次还没有可用的 dep-info，编译完
 仍会入 store，从第二次起才可能命中。
