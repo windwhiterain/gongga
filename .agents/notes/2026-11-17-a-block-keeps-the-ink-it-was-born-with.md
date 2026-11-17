@@ -36,6 +36,21 @@ streaming -- a sealed tool result is a `summary`, so its body is folded away -- 
 why the same scenario passed at 18:07 and timed out at 18:11 on one unchanged build. It
 names `exec` and expects the call row `exec·bash` now.
 
+## The same symptom, reported on `@monitor/providers` (19:59)
+
+The store says the model thought once. Measured read-only on `~/.gongga/gongga.db`:
+349 rows over 5 turns; the newest turn has 30 steps and 111 rows; **no `(turn, step)`
+holds two `reasoning` rows or two `text` rows**; 83 distinct item ids and none appears in
+two rows. The turn's log carries no `retrying`, no `filled a resume boundary`, and one
+`why="interrupt"` (11:51:53, the previous turn, which ended `Cancelled`).
+
+What the window draws with is older than the fix. Its harness is `5a35bd2b977f` (15:38),
+whose `2e497e5d` and `ae036d14` are in but whose `8b79a436` (17:28, a block is named when
+its item is created) is not -- and that is the commit this symptom lives in. The running
+server is the image installed at 16:34 in `~/.gongga/bin`; the exe on disk was rebuilt at
+18:13 by another checkout but no process is running it. A window keeps the build it
+started with, so the fix arrives there only with an evolve.
+
 ## Two things a live run needs
 
 - The worktree's `ship/` is a submodule whose `.git` points at a modules directory a
