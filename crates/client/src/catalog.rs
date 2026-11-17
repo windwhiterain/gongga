@@ -1050,15 +1050,14 @@ fn chosen<'a>(
 ///
 /// # Invariant
 ///
-/// A candidate is an insertion at the caret (`inserted`), so a name is offered only
-/// where the member it spells starts with what the operator has typed of it. A field
-/// the object already states is not offered.
+/// A name is the whole member it spells (`written`), matched against what the operator
+/// has typed of it wherever it falls, and it replaces that token alone. A field the
+/// object already states is not offered.
 fn keys(
     object: &Value,
-    typed: &str,
     fragment: &str,
     range: (usize, usize),
-    written: &[(String, Read)],
+    written_fields: &[(String, Read)],
     separator: bool,
 ) -> Vec<Item> {
     let Some(properties) = protocol::argschema::properties(object) else {
@@ -1067,7 +1066,8 @@ fn keys(
     let required = protocol::argschema::required(object);
     let mut fields: Vec<(&String, &Value)> = properties
         .iter()
-        .filter(|(name, _)| !written.iter().any(|(held, _)| held == *name))
+        .filter(|(name, _)| name.contains(fragment))
+        .filter(|(name, _)| !written_fields.iter().any(|(held, _)| held == *name))
         .collect();
     // What the command insists on first, then a prefix match; stable, so the
     // document's own order decides between equals.
@@ -1079,7 +1079,7 @@ fn keys(
     });
     fields
         .into_iter()
-        .filter_map(|(name, property)| {
+        .map(|(name, property)| {
             let whole = match protocol::argschema::enters(property) {
                 true => format!("\"{name}\":{{$0}}"),
                 false => match property.get("type").and_then(Value::as_str) {
@@ -1087,8 +1087,7 @@ fn keys(
                     _ => format!("\"{name}\":$0"),
                 },
             };
-            inserted(
-                typed,
+            written(
                 &whole,
                 range,
                 format!("\"{name}\":"),
@@ -1107,20 +1106,11 @@ fn keys(
 /// is keyed by model, and another model's levels are a list the server refuses.
 /// What a value is written as is its leaf's type's decision (`Leaf`), so one list
 /// of texts offers `"70%"` and `true` without spelling either.
-/// The values one leaf field of a structured object offers.
-///
-/// # Invariant
-///
-/// A model is read from the object being typed before the line is asked: `accepts`
-/// is keyed by model, and another model's levels are a list the server refuses.
-/// What a value is written as is its leaf's type's decision (`Leaf`), so one list
-/// of texts offers `"70%"` and `true` without spelling either.
 fn values(
     property: &Value,
     place: &json_place::Place,
     ctx: &Ctx,
     words: &[String],
-    typed: &str,
     range: (usize, usize),
 ) -> Vec<Item> {
     let model = named_model(&place.fields).or_else(|| model_named(ctx, words));
@@ -1136,14 +1126,13 @@ fn values(
                     true => model_value(value)?,
                     false => leaf.token(value),
                 };
-                inserted(
-                    typed,
+                Some(written(
                     &format!("{text}$0"),
                     range,
                     text.clone(),
                     &hint,
                     false,
-                )
+                ))
             })
             .collect();
         if !offered.is_empty() {
@@ -1161,7 +1150,7 @@ fn values(
         0,
     );
     if offered.is_empty() {
-        return owed(property, leaf, place, ctx, typed, range);
+        return owed(property, leaf, place, ctx, range);
     }
     offered
         .into_iter()
@@ -1170,40 +1159,37 @@ fn values(
                 true => model_value(&item.label)?,
                 false => leaf.token(&item.label),
             };
-            inserted(
-                typed,
+            Some(written(
                 &format!("{value}$0"),
                 range,
                 value,
                 &item.detail,
                 false,
-            )
+            ))
         })
         .collect()
 }
 
-/// One candidate as what it writes: `whole` minus the token the operator has typed.
+/// One candidate as what it writes: the whole member, plus the separator it owes.
 ///
 /// # Invariant
 ///
-/// Inserted, never written over: the range is empty at the caret, so every byte the line
-/// holds stays where it is. That is why a candidate which does not spell the typed token
-/// is not offered, and why a following member carries its separator at its own front.
-fn inserted(
-    typed: &str,
+/// The range is the token the operator is typing -- what stands before the caret and
+/// nothing else -- so a candidate rewrites that token and writes nothing behind the
+/// caret. A member that follows another carries its separator at its own front, and the
+/// braces an unfinished object owes are the operator's keys.
+fn written(
     whole: &str,
     range: (usize, usize),
     label: String,
     detail: &str,
     separator: bool,
-) -> Option<Item> {
-    let rest = whole.strip_prefix(typed)?;
-    let mut text = String::new();
-    if separator {
-        text.push(',');
-    }
-    text.push_str(rest);
-    Some(Item::at(range, text, true, label, detail.to_string()))
+) -> Item {
+    let text = match separator {
+        true => format!(",{whole}"),
+        false => whole.to_string(),
+    };
+    Item::at(range, text, true, label, detail.to_string())
 }
 
 /// What a leaf owes when the catalog publishes nothing for it: a string's quotes,
@@ -1219,7 +1205,6 @@ fn owed(
     leaf: Leaf,
     place: &json_place::Place,
     ctx: &Ctx,
-    typed: &str,
     range: (usize, usize),
 ) -> Vec<Item> {
     if ctx.catalog.wants() {
@@ -1240,7 +1225,7 @@ fn owed(
         .into_iter()
         .filter_map(|whole| {
             let label = whole.replace("$0", "");
-            inserted(typed, &whole, range, label, &hint, false)
+            Some(written(&whole, range, label, &hint, false))
         })
         .collect()
 }
@@ -1376,36 +1361,25 @@ fn object_completion(
     brace: usize,
     words: &[String],
 ) -> Offered {
-    let Some(place) = json_place::place(text, at) else {
+    // Only what stands before the caret decides the place: the tail is not read.
+    let head = text.get(..at).unwrap_or(text);
+    let Some(place) = json_place::place(head, at) else {
         return Offered::default();
     };
-    // One insertion at the caret: no byte the line holds is replaced, and nothing after
-    // the caret is read.
-    let range = (brace + at, brace + at);
-    // A token that goes on after the caret is not being typed: nothing is offered.
-    if place.end > at {
-        return Offered::default();
-    }
-    let typed = text.get(place.start.min(at)..at).unwrap_or_default();
+    // The token being typed is the whole span a candidate rewrites.
+    let range = (brace + place.start.min(at), brace + at);
     match place.typing {
         json_place::Typing::Key => {
             let Some(object) = schema_at(schema, &place.path, &place.levels) else {
                 return Offered::default();
             };
             // A member that follows another writes its own separator, at its front.
-            let separator = typed.is_empty() && follows_member(text, place.start);
+            let separator = place.start == at && follows_member(text, place.start);
             Offered {
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
-                items: keys(
-                    object,
-                    typed,
-                    &place.fragment,
-                    range,
-                    &place.fields,
-                    separator,
-                ),
+                items: keys(object, &place.fragment, range, &place.fields, separator),
             }
         }
         json_place::Typing::Value => {
@@ -1426,7 +1400,7 @@ fn object_completion(
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
-                items: values(property, &place, ctx, words, typed, range),
+                items: values(property, &place, ctx, words, range),
             }
         }
     }
