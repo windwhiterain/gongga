@@ -1409,6 +1409,12 @@ fn object_completion(
     }
 }
 
+/// Whether the text before `from` ends at `{` or `,`, the two places a member begins.
+fn after_opener(text: &str, from: usize) -> bool {
+    let rest = text.get(..from.min(text.len())).unwrap_or("");
+    matches!(rest.trim_end().chars().next_back(), Some('{') | Some(','))
+}
+
 /// The command's arguments as one JSON Schema document, built by the one builder
 /// the model's tool schema uses.
 fn root_schema(spec: &CommandSpec) -> Value {
