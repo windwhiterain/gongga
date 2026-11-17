@@ -276,6 +276,9 @@ CREATE TABLE IF NOT EXISTS drafts (
     turn       INTEGER NOT NULL,
     part       TEXT NOT NULL,
     text       TEXT NOT NULL,
+    -- The provider's own summary of the thought, when it streamed one: a different
+    -- field of the same item, never merged into `text`.
+    summary    TEXT NOT NULL DEFAULT '',
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (session_id, item_id)
 );
@@ -630,6 +633,13 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         "detached_jobs",
         "noticed",
         "ALTER TABLE detached_jobs ADD COLUMN noticed INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // A draft keeps the two texts apart, so a cut stream can still be sent back.
+    add_column_if_missing(
+        conn,
+        "drafts",
+        "summary",
+        "ALTER TABLE drafts ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
     )?;
     conn.execute(
         "UPDATE detached_jobs SET name = shell || '-' || job WHERE name = ''",
@@ -1923,17 +1933,27 @@ impl Store {
         turn: u64,
         part: &str,
         text: &str,
+        summary: &str,
     ) -> anyhow::Result<()> {
         let conn = self.lock();
         conn.execute(
-            "INSERT INTO drafts (session_id, item_id, turn, part, text, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO drafts (session_id, item_id, turn, part, text, summary, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(session_id, item_id) DO UPDATE SET
                  text = excluded.text,
+                 summary = excluded.summary,
                  part = excluded.part,
                  turn = excluded.turn,
                  updated_at = excluded.updated_at",
-            params![session_id, item_id, turn as i64, part, text, now_millis()],
+            params![
+                session_id,
+                item_id,
+                turn as i64,
+                part,
+                text,
+                summary,
+                now_millis()
+            ],
         )?;
         Ok(())
     }
@@ -1965,11 +1985,11 @@ impl Store {
     /// drafts were last touched. Half a message is what the reader was shown, and a
     /// transcript that dropped it would say the model said nothing at all.
     pub fn settle_drafts(&self, session_id: i64) -> anyhow::Result<usize> {
-        let pending: Vec<(String, u64, String, String)> = {
+        let pending: Vec<(String, u64, String, String, String)> = {
             let conn = self.lock();
             let mut stmt = conn.prepare(
-                "SELECT item_id, turn, part, text FROM drafts
-                  WHERE session_id = ?1 AND text <> ''
+                "SELECT item_id, turn, part, text, summary FROM drafts
+                  WHERE session_id = ?1 AND (text <> '' OR summary <> '')
                   ORDER BY updated_at, item_id",
             )?;
             let rows = stmt.query_map(params![session_id], |row| {
@@ -1978,6 +1998,7 @@ impl Store {
                     row.get::<_, i64>(1)? as u64,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             })?;
             let mut out = Vec::new();
@@ -1987,7 +2008,7 @@ impl Store {
             out
         };
         let mut settled = 0;
-        for (item_id, turn, part, text) in pending {
+        for (item_id, turn, part, text, summary) in pending {
             // Appended last; see `docs/notes/server-store.md`.
             let stored = match part.as_str() {
                 "output" => Some((
@@ -1995,11 +2016,19 @@ impl Store {
                     json!({"role": "assistant", "text": text, "interrupted": true,
                            "item_id": item_id, "turn": turn}),
                 )),
-                "reasoning" => Some((
-                    Kind::Reasoning,
-                    json!({"summary": text, "item_id": item_id,
-                           "interrupted": true, "turn": turn}),
-                )),
+                // The item itself: a row a kill interrupted is one a request can send.
+                "reasoning" => reasoning_item(&item_id, &text, &summary).map(|item| {
+                    let shown = if text.trim().is_empty() {
+                        summary
+                    } else {
+                        text
+                    };
+                    (
+                        Kind::Reasoning,
+                        json!({"item": item, "summary": shown, "interrupted": true,
+                               "item_id": item_id, "turn": turn}),
+                    )
+                }),
                 // A call's text is its arguments, which the call row carries; an
                 // activity is progress, never an answer.
                 _ => None,
@@ -3876,6 +3905,35 @@ pub(crate) fn images_of(value: &serde_json::Value) -> Vec<ImageRef> {
 /// takes is computed on the way in. `None` is the row's own answer to "is any request
 /// built from you": a notice, the prompt in force, a reasoning entry with no encrypted
 /// blob, a provider item whose payload was stripped.
+/// The item an interrupted thought is sent back as.
+///
+/// # Invariant
+///
+/// The text goes into the field its deltas came from -- `content` with `reasoning_text`
+/// for the thought itself, `summary` with `summary_text` for a provider's own summary --
+/// so what a killed stream left on disk is already a sendable item. Guessing the field
+/// is what made a resumed turn re-think its whole step. See `docs/notes/server-store.md`.
+pub(crate) fn reasoning_item(
+    item_id: &str,
+    text: &str,
+    summary: &str,
+) -> Option<serde_json::Value> {
+    let mut item = json!({"type": "reasoning"});
+    if !text.trim().is_empty() {
+        item["content"] = json!([{"type": "reasoning_text", "text": text}]);
+    }
+    if !summary.trim().is_empty() {
+        item["summary"] = json!([{"type": "summary_text", "text": summary}]);
+    }
+    if item.get("content").is_none() && item.get("summary").is_none() {
+        return None;
+    }
+    if !item_id.is_empty() {
+        item["id"] = json!(item_id);
+    }
+    Some(item)
+}
+
 /// The stored row of a user message: its text, and the pictures it named.
 fn user_row(expanded: &crate::meta::Expanded) -> serde_json::Value {
     let mut row = json!({"role": "user", "text": expanded.text});

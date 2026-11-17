@@ -986,7 +986,8 @@ impl Agent {
         // can say that fragment is being withdrawn.
         let mut said: std::collections::HashSet<String> = Default::default();
         // Chunks that no completion event will store. See `docs/notes/server-agent.md`.
-        let mut streamed: std::collections::HashMap<String, (ResponsePart, String)> =
+        // Two buffers: one per field.
+        let mut streamed: std::collections::HashMap<String, (ResponsePart, String, String)> =
             Default::default();
         // When each draft was last written, so a fast stream is not one write per chunk.
         let mut drafted: std::collections::HashMap<String, std::time::Instant> = Default::default();
@@ -1012,14 +1013,19 @@ impl Agent {
                     part,
                     item_id,
                     text,
+                    field,
                 } => {
                     let call_id = calls.get(&item_id).cloned();
                     began.insert((item_id.clone(), part));
                     said.insert(item_id.clone());
                     let whole = streamed
                         .entry(item_id.clone())
-                        .or_insert_with(|| (part, String::new()));
-                    whole.1.push_str(&text);
+                        .or_insert_with(|| (part, String::new(), String::new()));
+                    match field {
+                        Some(crate::llm::Field::SummaryText) => whole.2.push_str(&text),
+                        Some(_) => whole.1.push_str(&text),
+                        None => {}
+                    }
                     // The draft is what survives a process that never finishes this
                     // item: the reader has already seen these chunks.
                     let due = drafted
@@ -1027,9 +1033,14 @@ impl Agent {
                         .is_none_or(|at| at.elapsed() >= DRAFT_FLUSH);
                     if due && text_worth_keeping(part) {
                         drafted.insert(item_id.clone(), std::time::Instant::now());
-                        let _ =
-                            self.store
-                                .save_draft(id, &item_id, turn, part_name(part), &whole.1);
+                        let _ = self.store.save_draft(
+                            id,
+                            &item_id,
+                            turn,
+                            part_name(part),
+                            &whole.1,
+                            &whole.2,
+                        );
                     }
                     // The text and the chunk that carries it are one step: a
                     // snapshot read afterwards sees both, never one of them.
@@ -1764,22 +1775,32 @@ impl Agent {
         id: i64,
         name: &str,
         turn: u64,
-        streamed: &mut std::collections::HashMap<String, (ResponsePart, String)>,
+        streamed: &mut std::collections::HashMap<String, (ResponsePart, String, String)>,
         calls: &std::collections::HashMap<String, String>,
     ) {
-        for (item_id, (part, text)) in streamed.drain() {
-            if !text.trim().is_empty() {
+        for (item_id, (part, text, summary)) in streamed.drain() {
+            if !text.trim().is_empty() || !summary.trim().is_empty() {
                 let stored = match part {
                     ResponsePart::Output => Some((
                         Kind::Text,
                         json!({"role": "assistant", "text": text, "interrupted": true,
                                "turn": turn}),
                     )),
-                    ResponsePart::Reasoning => Some((
-                        Kind::Reasoning,
-                        json!({"summary": text, "item_id": item_id.clone(),
-                               "interrupted": true, "turn": turn}),
-                    )),
+                    ResponsePart::Reasoning => {
+                        crate::store::reasoning_item(&item_id, &text, &summary).map(|item| {
+                            let shown = if text.trim().is_empty() {
+                                summary
+                            } else {
+                                text
+                            };
+                            (
+                                Kind::Reasoning,
+                                json!({"item": item, "summary": shown,
+                                       "item_id": item_id, "interrupted": true,
+                                       "turn": turn}),
+                            )
+                        })
+                    }
                     // A call's text is its arguments; an activity is progress;
                     // the operator's words are not the model's to store.
                     ResponsePart::ToolCall

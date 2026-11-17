@@ -831,6 +831,23 @@ impl StreamWindow {
 ///
 /// Every variant carries `item_id`, which is the only thing that keeps
 /// interleaved output items apart. See `docs/notes/server-llm.md`.
+/// Which field of an item a streamed chunk fills.
+///
+/// # Invariant
+///
+/// The names are the provider's own events: a reasoning item's `reasoning_text` is not
+/// its `summary`, and only a draft that keeps them apart can be sent back as the item
+/// the provider produced. See `docs/notes/server-llm.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    /// `response.output_text.delta`: an assistant message's text.
+    OutputText,
+    /// `response.reasoning_text.delta`: the thought itself.
+    ReasoningText,
+    /// `response.reasoning_summary_text.delta`: the provider's summary of the thought.
+    SummaryText,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum LlmEvent {
@@ -845,6 +862,8 @@ pub enum LlmEvent {
         part: ResponsePart,
         item_id: String,
         text: String,
+        /// Which field the text fills, when it fills one: a draft rebuilds the item from it.
+        field: Option<Field>,
     },
     PartDone {
         part: ResponsePart,
@@ -1461,8 +1480,10 @@ struct ItemMeta {
     kind: ItemKind,
     name: String,
     call_id: String,
-    /// Text accumulated from deltas, the only place a readable summary exists.
+    /// The thought itself, from `reasoning_text` deltas.
     text: String,
+    /// The provider's own summary of the thought, when it streamed one.
+    summary_text: String,
     /// Whether the call went out: providers differ on the event that ends it.
     called: bool,
 }
@@ -1893,6 +1914,7 @@ async fn handle(
                 part: ResponsePart::Activity,
                 item_id: d["item_id"].as_str().unwrap_or_default().to_string(),
                 text: text.to_string(),
+                field: None,
             })
             .await?;
         }
@@ -1916,6 +1938,7 @@ async fn handle(
                     name: item["name"].as_str().unwrap_or_default().to_string(),
                     call_id: item["call_id"].as_str().unwrap_or_default().to_string(),
                     text: String::new(),
+                    summary_text: String::new(),
                     called: false,
                 },
             );
@@ -1949,6 +1972,7 @@ async fn handle(
                         part: ResponsePart::ToolCall,
                         item_id: id,
                         text: format!("{}(", item["name"].as_str().unwrap_or("?")),
+                        field: None,
                     })
                     .await?;
                 }
@@ -1964,6 +1988,7 @@ async fn handle(
                         part: ResponsePart::Activity,
                         item_id: id,
                         text: shown.to_string(),
+                        field: None,
                     })
                     .await?;
                 }
@@ -1973,16 +1998,23 @@ async fn handle(
         "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
             let item_id = d["item_id"].as_str().unwrap_or_default().to_string();
             let delta = d["delta"].as_str().unwrap_or_default().to_string();
+            let field = if event.name.contains("summary") {
+                Field::SummaryText
+            } else {
+                Field::ReasoningText
+            };
             // Deltas can precede `output_item.added`; `done` re-derives the kind.
-            items
-                .entry(item_id.clone())
-                .or_default()
-                .text
-                .push_str(&delta);
+            let meta = items.entry(item_id.clone()).or_default();
+            if field == Field::SummaryText {
+                meta.summary_text.push_str(&delta);
+            } else {
+                meta.text.push_str(&delta);
+            }
             out.send(LlmEvent::Delta {
                 part: ResponsePart::Reasoning,
                 item_id,
                 text: delta,
+                field: Some(field),
             })
             .await?;
         }
@@ -1990,14 +2022,29 @@ async fn handle(
         "response.reasoning_summary_text.done" | "response.reasoning_text.done" => {
             let item_id = d["item_id"].as_str().unwrap_or_default().to_string();
             let full = d["text"].as_str().unwrap_or_default();
+            let field = if event.name.contains("summary") {
+                Field::SummaryText
+            } else {
+                Field::ReasoningText
+            };
             let meta = items.entry(item_id.clone()).or_default();
-            let rest = full.strip_prefix(meta.text.as_str()).map(str::to_string);
+            let seen = if field == Field::SummaryText {
+                meta.summary_text.as_str()
+            } else {
+                meta.text.as_str()
+            };
+            let rest = full.strip_prefix(seen).map(str::to_string);
             if let Some(rest) = rest.filter(|rest| !rest.is_empty()) {
-                meta.text.push_str(&rest);
+                if field == Field::SummaryText {
+                    meta.summary_text.push_str(&rest);
+                } else {
+                    meta.text.push_str(&rest);
+                }
                 out.send(LlmEvent::Delta {
                     part: ResponsePart::Reasoning,
                     item_id,
                     text: rest,
+                    field: Some(field),
                 })
                 .await?;
             }
@@ -2007,6 +2054,7 @@ async fn handle(
                 part: ResponsePart::Output,
                 item_id: d["item_id"].as_str().unwrap_or_default().to_string(),
                 text: d["delta"].as_str().unwrap_or_default().to_string(),
+                field: Some(Field::OutputText),
             })
             .await?;
         }
@@ -2035,6 +2083,7 @@ async fn handle(
                 part: ResponsePart::ToolCall,
                 item_id,
                 text: delta,
+                field: None,
             })
             .await?;
         }
@@ -2102,7 +2151,12 @@ async fn handle(
                         .or_else(|| item["summary"].as_str().map(str::to_string))
                         .unwrap_or_default();
                     if summary.is_empty() {
-                        summary = meta.text.clone();
+                        // The reader wants the thought when the provider summarised nothing.
+                        summary = if meta.summary_text.trim().is_empty() {
+                            meta.text.clone()
+                        } else {
+                            meta.summary_text.clone()
+                        };
                     }
                     out.send(LlmEvent::Reasoning {
                         item_id: id.clone(),
@@ -2153,6 +2207,7 @@ async fn handle(
                             part: ResponsePart::ToolCall,
                             item_id: id.clone(),
                             text: close,
+                            field: None,
                         })
                         .await?;
                         out.send(LlmEvent::ToolCall {
@@ -2175,6 +2230,7 @@ async fn handle(
                         part: ResponsePart::Activity,
                         item_id: id.clone(),
                         text: activity_detail(item),
+                        field: None,
                     })
                     .await?;
                     out.send(LlmEvent::BuiltinCall {

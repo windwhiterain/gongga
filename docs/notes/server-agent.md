@@ -510,10 +510,10 @@ is exactly what no row holds, and `keep_streamed` writes it, marked
 `interrupted: true` in the display payload.
 
 Both halves are replayed. Assistant text is a real message and `wire_item` builds an
-item from it. A reasoning fragment carries no `encrypted` payload, so `wire_item`
-replays its text as a `summary` instead -- what it says is what the model thought,
-and dropping it was losing the half of the turn the reader had already watched.
-See `docs/notes/server-llm.md`.
+item from it. A reasoning fragment is stored as the item its deltas describe -- the
+text in `content` with `reasoning_text`, a provider's summary in `summary` -- so
+`wire_item` sends back an item rather than a guess, and a resumed step reads its own
+thought instead of re-deriving it. See `docs/notes/server-store.md`.
 
 ## Agent::fill_resume_mark
 

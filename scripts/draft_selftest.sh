@@ -174,11 +174,13 @@ half = [json.loads(d) for s, k, d, _ in rows if k == "reasoning" and "interrupte
 assert half, "the half thought was not kept as a reasoning row"
 assert not half[0].get("encrypted"), half[0]
 assert half[0]["summary"].strip(), half[0]
-# The wire item is what the provider was measured to accept: text and no blob.
+# The wire item is what a request sends back: the thought in the field its deltas came
+# from, so a resumed step reads its own reasoning instead of re-deriving it.
 wire = json.loads(next(cl for s, k, d, cl in rows
                        if k == "reasoning" and "interrupted" in d and cl))
 assert wire["type"] == "reasoning", wire
-assert wire["summary"] == [{"type": "summary_text", "text": half[0]["summary"]}], wire
+assert wire["content"] == [{"type": "reasoning_text", "text": half[0]["summary"]}], wire
+assert wire.get("id") == half[0]["item_id"], wire
 assert "encrypted_content" not in wire, wire
 # And its position: after the last tool output, never between a call and its output.
 last_output = max((s for s, k, _, _ in rows if k == "tool_result"), default=0)
@@ -186,6 +188,27 @@ half_at = next(s for s, k, d, _ in rows if k == "reasoning" and "interrupted" in
 assert half_at > last_output, (half_at, last_output)
 INNER
 ok "the half thought is a reasoning row, in a position the provider accepts" $?
+
+# The invariant this exists for: what the kill left on disk is already sendable. The
+# resumed turn's own request carries the half thought back, as a reasoning item whose
+# text sits in `content` -- not a summary the provider would ignore.
+python - "$dump" <<'INNER'
+import json, sys
+seen = 0
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    body = json.loads(line)
+    for item in body.get("input") or []:
+        if item.get("type") != "reasoning":
+            continue
+        parts = item.get("content") or []
+        if any(p.get("type") == "reasoning_text" and p.get("text") for p in parts):
+            seen += 1
+assert seen, "no request carried the half thought back as reasoning_text"
+INNER
+ok "a request sends the half thought back in the field it came from" $?
 
 # A finished answer leaves no draft behind: the normal path is unchanged.
 "${cli[@]}" '{"name":"send_message","args":{"session":"writer","message":"and now a whole one"}}' >/dev/null 2>&1

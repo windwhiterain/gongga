@@ -317,6 +317,7 @@ impl Stream {
                             part: ResponsePart::ToolCall,
                             item_id,
                             text: format!("{}(", open.name),
+                            field: None,
                         })
                         .await?;
                     }
@@ -356,6 +357,7 @@ impl Stream {
                             part: ResponsePart::Output,
                             item_id,
                             text,
+                            field: Some(crate::llm::Field::OutputText),
                         })
                         .await?;
                     }
@@ -366,6 +368,7 @@ impl Stream {
                             part: ResponsePart::Reasoning,
                             item_id,
                             text,
+                            field: Some(crate::llm::Field::ReasoningText),
                         })
                         .await?;
                     }

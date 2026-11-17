@@ -114,13 +114,15 @@ with text becomes an appended row and the table is cleared. Once, because the ro
 record now -- and the test that says so compares *ages*, since the pending turn is
 replayed and streams an answer of its own.
 
-An answer becomes a `text` row marked `interrupted`. A **thought** does not become a
-`reasoning` row: a reasoning item with text and no `encrypted_content` is a shape the
-provider rejects (`reasoning_text must be passed back`, measured in
-`.agents/notes/2026-10-30-tool-call-replay-is-reordered.md`), so half a thought is kept as
-a `notice` -- reader-only, never sent. The reader keeps what it saw; the request keeps
-what the provider will accept. Measured over this machine's transcript: 1,320 reasoning
-rows, all with their blob.
+An answer becomes a `text` row marked `interrupted`. A **thought** becomes a `reasoning`
+row whose stored item is the shape its deltas came from: the text in `content` with
+`reasoning_text`, a provider's own summary in `summary` with `summary_text`. The two
+delta streams are accumulated apart for exactly this reason, so what a killed stream
+left on disk is already an item a request sends back -- no field is guessed at settle
+time. Measured: a reasoning item that carries only a `summary` is the shape qwen's
+thinking mode rejects (`reasoning_text must be passed back`, `.agents/notes/`
+`2026-10-30-tool-call-replay-is-reordered.md`), and a resumed turn handed one re-thought
+its whole step.
 
 `open_calls` answers "what would a provider find unpaired" from the rows themselves, by
 `call_id`, because that is what a provider pairs on. Measured over this machine's

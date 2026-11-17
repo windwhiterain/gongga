@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::Agent;
 use crate::bus::EventBus;
 use crate::session::{SessionHandle, SessionManager, Tuning};
-use crate::store::{Dream, MessageRow, PendingTask, Store, Transcript};
+use crate::store::{Dream, Kind, MessageRow, PendingTask, Store, Transcript};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
 /// still reaches whoever asked for it.
@@ -2758,9 +2758,7 @@ fn replay_transcript(
     let mut events: Vec<(Option<u64>, Event)> = read
         .messages
         .iter()
-        .filter_map(|row| {
-            row_event(name, row, true).map(|event| (Some(row.seq.max(0) as u64), event))
-        })
+        .filter_map(|row| row_event(name, row).map(|event| (Some(row.seq.max(0) as u64), event)))
         .collect();
     // Published and not yet stored: what a window that reconnected has no other copy of.
     for part in &open {
@@ -2822,7 +2820,7 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
     match d.store.messages_between(report.id, 1, report.last_seq) {
         Ok(transcript) => {
             for row in &transcript.messages {
-                if let Some(event) = row_event(&name, row, false) {
+                if let Some(event) = row_event(&name, row) {
                     d.bus.publish(event);
                 }
             }
@@ -2888,7 +2886,7 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
     publish_sessions(d);
     let mut sent = 0usize;
     for row in &transcript.messages {
-        if let Some(event) = row_event(&name, row, false) {
+        if let Some(event) = row_event(&name, row) {
             d.bus.publish(event);
             sent += 1;
         }
@@ -3351,9 +3349,7 @@ fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
     let events = t
         .messages
         .iter()
-        .filter_map(|row| {
-            row_event(name, row, false).map(|event| (Some(row.seq.max(0) as u64), event))
-        })
+        .filter_map(|row| row_event(name, row).map(|event| (Some(row.seq.max(0) as u64), event)))
         .collect();
     // The rows are the events; a long read is many small messages, not one that
     // cannot be carried.
@@ -3372,49 +3368,33 @@ fn transcript_outcome(name: &str, t: Transcript) -> Outcome {
 ///
 /// # Invariant
 ///
-/// The shape is not this function's to invent, or a read could show a line no
-/// front-end drew live. Nothing to show is nothing to send, and `REPLAY_TURN`
-/// keeps a re-sent row out of the block a running turn is still writing.
-fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
+/// One arm per [`Kind`], none dropping the row: a kind nobody decided about does not
+/// compile, so everything the transcript holds is drawn. `REPLAY_TURN` keeps a re-sent
+/// row out of the block a running turn is still writing.
+fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
     if row.text.trim().is_empty() {
         return None;
     }
-    // A failure: the session's own line, on the wire and on replay. `server-agent.md`.
-    if row.kind == "error" {
-        return Some(Event::Log {
+    let said = |part: ResponsePart, call_id: Option<String>| {
+        Event::Response(ResponseEvent {
+            session: name.to_string(),
+            turn: REPLAY_TURN,
+            step: row.step.unwrap_or(0),
+            part,
+            text: row.text.clone(),
+            done: true,
+            call_id,
+        })
+    };
+    Some(match Kind::parse(&row.kind) {
+        // A failure: the session's own line, on the wire and on replay. `server-agent.md`.
+        Some(Kind::Error) => Event::Log {
             level: LogLevel::Error,
             message: row.text.clone(),
             session: Some(name.to_string()),
-        });
-    }
-    // The harness's own words: a row the model reads as a user turn, drawn as the
-    // harness rather than as the operator.
-    if row.kind == "inject" {
-        return Some(Event::Response(ResponseEvent {
-            session: name.to_string(),
-            turn: REPLAY_TURN,
-            step: row.step.unwrap_or(0),
-            part: ResponsePart::Inject,
-            text: row.text.clone(),
-            done: true,
-            call_id: None,
-        }));
-    }
-    // The operator's own message: a line, exactly where the echo put it.
-    if row.role.as_deref() == Some("user") {
-        return Some(Event::Response(ResponseEvent {
-            session: name.to_string(),
-            turn: REPLAY_TURN,
-            step: row.step.unwrap_or(0),
-            part: ResponsePart::Input,
-            text: row.text.clone(),
-            done: true,
-            call_id: None,
-        }));
-    }
-    // A tool's output is addressed by the call that asked for it, never by a turn.
-    if row.kind == "tool_result" {
-        return Some(Event::ToolAnswer(ToolAnswerEvent {
+        },
+        // A tool's output is addressed by the call that asked for it, never by a turn.
+        Some(Kind::ToolResult) => Event::ToolAnswer(ToolAnswerEvent {
             session: name.to_string(),
             call_id: row.call_id.clone().unwrap_or_default(),
             tool: row.name.clone().unwrap_or_default(),
@@ -3425,39 +3405,29 @@ fn row_event(name: &str, row: &MessageRow, drawn: bool) -> Option<Event> {
             head: row
                 .ok
                 .map(|ok| crate::agent::result_head(ok, row.elapsed_ms.unwrap_or(0))),
-        }));
-    }
-    // The call itself, as the item it was asked as: one event, never a stream.
-    if row.kind == "tool_call" {
-        return Some(Event::ToolCall(protocol::ToolCallEvent {
+        }),
+        // The call itself, as the item it was asked as: one event, never a stream.
+        Some(Kind::ToolCall) => Event::ToolCall(protocol::ToolCallEvent {
             session: name.to_string(),
             call_id: row.call_id.clone().unwrap_or_default(),
             head: crate::agent::call_head(row.name.as_deref().unwrap_or_default(), &row.text),
-        }));
-    }
-    let part = match row.kind.as_str() {
-        "reasoning" => ResponsePart::Reasoning,
-        "builtin_call" => ResponsePart::Activity,
-        "text" => ResponsePart::Output,
-        // The harness's own rows: a reader gets a log line, a refilled window nothing.
-        _ => {
-            return (!drawn).then(|| Event::Log {
-                level: LogLevel::Info,
-                message: row.text.clone(),
-                session: None,
-            });
-        }
-    };
-    Some(Event::Response(ResponseEvent {
-        session: name.to_string(),
-        turn: REPLAY_TURN,
-        step: row.step.unwrap_or(0),
-        part,
-        text: row.text.clone(),
-        done: true,
-        // A replayed call streams under the id its result named.
-        call_id: row.call_id.clone(),
-    }))
+        }),
+        Some(Kind::Reasoning) => said(ResponsePart::Reasoning, None),
+        Some(Kind::BuiltinCall) => said(ResponsePart::Activity, None),
+        // The operator's own message: a line, exactly where the echo put it.
+        Some(Kind::Text) if row.role.as_deref() == Some("user") => said(ResponsePart::Input, None),
+        Some(Kind::Text) => said(ResponsePart::Output, row.call_id.clone()),
+        // The harness's own words, drawn as the harness, not as the operator.
+        Some(
+            Kind::Inject
+            | Kind::ThinkingMark
+            | Kind::Notice
+            | Kind::LiveCompactRequest
+            | Kind::System
+            | Kind::Tools,
+        ) => said(ResponsePart::Inject, None),
+        None => said(ResponsePart::Inject, None),
+    })
 }
 
 /// Where a worktree's repository is looked up: the stated directory, in the spelling
