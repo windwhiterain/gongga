@@ -3808,8 +3808,7 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         }
     }
     for session in &running {
-        // The token ends a wait; it never cuts a call. One inside `exec`/`wait` answers
-        // with what it has, anything else answers when its own work is done.
+        // The token ends a wait, never a call: see `docs/notes/server-tools-mod.md`.
         interrupt(d, session.name(), Stop::Cancel);
     }
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);
