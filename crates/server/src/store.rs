@@ -3757,6 +3757,9 @@ pub struct MessageRow {
     /// How long that tool ran, in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    /// The provider's item this row was, when the row kept it: what names its block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
 }
 
 /// What one row of the transcript is, as a closed set.
@@ -3834,6 +3837,7 @@ impl MessageRow {
             step: value.get("step").and_then(|v| v.as_u64()),
             ok: None,
             elapsed_ms: None,
+            item_id: str_of("item_id"),
         };
         match Kind::parse(kind) {
             Some(Kind::Text) => {

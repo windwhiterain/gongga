@@ -1055,6 +1055,7 @@ impl Agent {
                                 part,
                                 text: text.clone(),
                                 done: false,
+                                item_id: item_id.clone(),
                                 call_id,
                             })),
                         )
@@ -1070,6 +1071,7 @@ impl Agent {
                         part,
                         text: String::new(),
                         done: true,
+                        item_id: item_id.clone(),
                         call_id,
                     }));
                 }
@@ -1119,6 +1121,7 @@ impl Agent {
                         part: ResponsePart::Activity,
                         text: text.clone(),
                         done: true,
+                        item_id: String::new(),
                         call_id: None,
                     }));
                     // Operator-only: the model keeps its text, not the annotation.
@@ -1351,6 +1354,7 @@ impl Agent {
                     part,
                     text: String::new(),
                     done: true,
+                    item_id: item_id.clone(),
                     call_id,
                 }));
             }
@@ -1736,6 +1740,7 @@ impl Agent {
                 part,
                 text: line.text.clone(),
                 done: true,
+                item_id: String::new(),
                 call_id: None,
             }));
         }
@@ -1819,6 +1824,7 @@ impl Agent {
                 part,
                 text: String::new(),
                 done: true,
+                item_id: item_id.clone(),
                 call_id: calls.get(&item_id).cloned(),
             }));
             self.settle_item(session, &item_id);

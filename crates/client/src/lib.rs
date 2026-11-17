@@ -1868,10 +1868,12 @@ impl Client {
             sink.line(&window, kind, &e.text);
             return;
         }
-        // One part is one block, named here. A call streams under its result's id,
-        // so the structured event fills the block it opened.
+        // A block is the item's, named when the item was created: the labels repeat
+        // across a restart, and a reused slot is how a killed item's block took the
+        // next item's text and kept the plain ink it was born with.
         let key = match (&e.call_id, e.part) {
             (Some(call_id), ResponsePart::ToolCall) => format!("c:{call_id}"),
+            _ if !e.item_id.is_empty() => self.block_of(&e.session, e.item_id.clone(), e.done),
             _ => {
                 let part = format!("{}:{}:{:?}", e.turn, e.step, e.part);
                 self.block_of(&e.session, part, e.done)

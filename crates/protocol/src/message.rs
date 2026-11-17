@@ -655,6 +655,15 @@ pub struct ResponseEvent {
     /// A read that cannot say leaves 0.
     #[serde(default)]
     pub step: u64,
+    /// The provider's item this part belongs to, minted when the item was created.
+    ///
+    /// # Invariant
+    ///
+    /// A block is named from here, never from `(turn, step, part)`: those labels repeat
+    /// -- a restart restarts the turn count -- so a reused slot hands a killed item's
+    /// block the next item's text. Empty is a row that cannot say; a reader falls back.
+    #[serde(default)]
+    pub item_id: String,
     pub part: ResponsePart,
     pub text: String,
     /// True on the final chunk for this part of this turn.

@@ -2776,6 +2776,7 @@ fn replay_transcript(
                 part: part.part,
                 text: part.text.clone(),
                 done: false,
+                item_id: part.item.clone(),
                 call_id: part.call_id.clone(),
             }),
         ));
@@ -3383,6 +3384,8 @@ fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
             part,
             text: row.text.clone(),
             done: true,
+            // A row that kept its item's id names the block it belongs to.
+            item_id: row.item_id.clone().unwrap_or_default(),
             call_id,
         })
     };
