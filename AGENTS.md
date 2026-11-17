@@ -305,11 +305,14 @@ worktree 之间去重依赖**——省下的是编译时间与 incremental，不
 - **别在关键构建中途让 gc 插进来**：托管 target 属于回收范围（checkout 消失、30 天未用、
   `target.max_size` 预算）。删了能重建，但会打断正在跑的构建。
 
-**一个继承坑，而且是常态**：`mbx setup` **不改任何 PATH**，它只装 shim 二进制；shim 目录被写进
-用户 PATH 之后，注册表里是对的，但 Windows 只把新环境给**之后新起的进程**——已经跑着的
-shell / tui / 服务端，以及它们再 spawn 的 channel，全都还是旧环境。2026-11-17 实测：注册表
-用户 PATH 第一位是 shim，而从服务端起的会话里 `where.exe cargo` 第一条仍是
-`C:\Users\<user>\.cargo\bin\cargo.exe`——那些构建是裸的。
+**一个继承坑，而且是常态**：`mbx setup` **不改任何 PATH**，它只装 shim 二进制。更麻烦的是 mbx
+包一次构建时会把 PATH 里**自己那个目录换掉**，换成 `%TEMP%\mbx-session-<id>` 这样的会话目录
+（实测：一个 build script 看到的 PATH 第 13 项就是它，而 `mbx\bin` 与 `.local\bin` 都不在里面）。
+那个目录随会话结束被删 —— 于是经 mbx 起的 tui / client / 服务端 / channel 继承到的是一份
+"含一个已消失目录、且没有 shim 目录"的 PATH，`cargo` 就落回 `~/.cargo\bin\cargo.exe`，那些
+构建是裸的。2026-11-17 实测链：terminal(11/15) → `mbx\bin\cargo.exe`(pid 14700) → mbx.exe →
+tui → client → server → channel；所以"tui 确实是经 mbx 起的"与"channel 里是裸 cargo"同时成立，
+**重启不解决**——重启还是经同一个 mbx 起，继承的还是同一形态。
 
 **所以 `mbx doctor` 的 setup 行要看是谁在问**：它读的是**调用者**的 PATH。带前缀跑是
 `ok Cargo shim is active`，不带前缀跑就变成 `warn Cargo shim is current but not active; 
