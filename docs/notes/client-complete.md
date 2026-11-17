@@ -73,6 +73,18 @@ by the type the schema states (`crate::leaf`), so `ctx_limit` takes `"70%"` and
 of the roster's `<provider>/<model>`. A field the object already states is not
 offered again.
 
+**A name whose colon the line already holds renames it.** The caret may stand inside a
+name whose member is written -- `{"live_comp|act":true}` -- and there the candidate is the
+quoted name alone: the colon and the value after it are the operator's, so writing a second
+colon, a value or the comma the separator would read off that colon is how an earlier
+field's completion eats the rest of the line. Measured: `new_session{"live_compact_enabled":true}`
+accepted `id` at the name and came out `new_session{"id":"",:true}`; it comes out
+`new_session{"id":true}`.
+
+**The braces the object still owes are written only where the line ends at the token.** A
+line that goes on has its own tail, and a closer put in front of it closes the object over
+the operator's next member.
+
 **The separator is the line's answer.** A comma stands after the member when the
 next non-whitespace character is not `,` `}` `]` and the line does not end there —
 the standard rule. It is read off the line, never off the schema, so no trailing

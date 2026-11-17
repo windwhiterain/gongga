@@ -1043,10 +1043,10 @@ fn chosen<'a>(
 ///
 /// # Invariant
 ///
-/// A name is written whole -- the colon that ends it, the brace or the quotes its
-/// value is held in, the comma it owes, and every brace the object still owes --
-/// and it states where the caret goes, so nothing else has to. A field the
-/// object already states is not offered.
+/// A name is written whole -- its colon, the brace or quotes its value is held in, the
+/// comma it owes, every brace the object still owes -- and it states where the caret
+/// goes. A name whose member already holds a colon is that name alone: a second colon
+/// or value there eats the rest of the line. A field already stated is not offered.
 fn keys(
     object: &Value,
     fragment: &str,
@@ -1054,6 +1054,7 @@ fn keys(
     written: &[(String, Read)],
     closers: usize,
     comma: bool,
+    stated: bool,
 ) -> Vec<Item> {
     let Some(properties) = protocol::argschema::properties(object) else {
         return Vec::new();
@@ -1075,6 +1076,15 @@ fn keys(
     fields
         .into_iter()
         .map(|(name, property)| {
+            if stated {
+                return Item::at(
+                    range,
+                    format!("\"{name}\"$0"),
+                    true,
+                    format!("\"{name}\""),
+                    protocol::argschema::description(property),
+                );
+            }
             let label = format!("\"{name}\":");
             let mut new_text = match protocol::argschema::enters(property) {
                 true => format!("{label}{{$0}}"),
@@ -1375,7 +1385,11 @@ fn object_completion(
         return Offered::default();
     };
     let range = (brace + place.start, brace + place.end);
-    let owed = place.open.saturating_sub(place.after);
+    // A tail is the operator's own: braces are owed only where the line ends.
+    let owed = match text.get(place.end.min(text.len())..) {
+        Some(tail) if tail.trim().is_empty() => place.open.saturating_sub(place.after),
+        _ => 0,
+    };
     // The separator is the line's answer, not the schema's.
     let comma = separator(text, place.end);
     match place.typing {
@@ -1383,11 +1397,23 @@ fn object_completion(
             let Some(object) = schema_at(schema, &place.path, &place.levels) else {
                 return Offered::default();
             };
+            // The colon is the line's: the candidate renames the name.
+            let stated = text[place.end.min(text.len())..]
+                .trim_start()
+                .starts_with(':');
             Offered {
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
-                items: keys(object, &place.fragment, range, &place.fields, owed, comma),
+                items: keys(
+                    object,
+                    &place.fragment,
+                    range,
+                    &place.fields,
+                    owed,
+                    comma,
+                    stated,
+                ),
             }
         }
         json_place::Typing::Value => {
