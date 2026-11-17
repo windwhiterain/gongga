@@ -98,6 +98,17 @@ ceiling, not a budget this server invented) or from `[model] max_output_tokens`.
 neither, a request in this face is refused with a message naming both places: a guessed
 answer length is worse than a refusal.
 
+## an item is named after its response
+
+`content_block_start` numbers its blocks from zero, so the index alone names a different
+item in every response. Items are named `<message.id>-<index>`, and a stream that never
+said `message.id` is named `response-<n>` from a counter: two streams minting the same id
+is the defect, not the fallback.
+
+The client names the block it draws after the item id, so an id that comes back finds the
+previous item's block and appends to it -- a killed stream's block takes the next item's
+text and keeps the plain ink it was born with. See `docs/notes/tui-log.md`.
+
 ## what is not here
 
 - **No `thinking` replay.** This face returns thinking blocks and this server stores a

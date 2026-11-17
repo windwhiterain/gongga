@@ -6,6 +6,7 @@
 //! reads it on the way out.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 
@@ -271,6 +272,8 @@ pub struct Block {
 /// What a stream of this face adds up to, kept between events.
 #[derive(Default)]
 pub struct Stream {
+    /// The response this stream belongs to; every item it opens is named after it.
+    prefix: String,
     blocks: HashMap<u64, Block>,
     input: u64,
     cached: u64,
@@ -278,7 +281,26 @@ pub struct Stream {
     output: u64,
 }
 
+/// Names responses that arrived without an id: counted, never reused.
+static UNNAMED: AtomicU64 = AtomicU64::new(0);
+
 impl Stream {
+    /// The name of this response's block `index`.
+    ///
+    /// # Invariant
+    ///
+    /// An item's id names that item for as long as the session lives: the client names
+    /// the block it draws after it, and a block whose name came back is appended to and
+    /// keeps the ink it was born with. A block's `index` restarts at zero in every
+    /// response, so the response has to be part of the name. See `docs/notes/server-anthropic.md`.
+    fn item_id(&mut self, index: u64) -> String {
+        if self.prefix.is_empty() {
+            let unnamed = UNNAMED.fetch_add(1, Ordering::Relaxed);
+            self.prefix = format!("response-{unnamed}");
+        }
+        format!("{}-{index}", self.prefix)
+    }
+
     /// Feeds one event and hands back what the rest of the server should hear.
     pub async fn handle(
         &mut self,
@@ -288,6 +310,7 @@ impl Stream {
         let d = &event.data;
         match event.name.as_str() {
             "message_start" => {
+                self.prefix = d["message"]["id"].as_str().unwrap_or_default().to_string();
                 let usage = &d["message"]["usage"];
                 self.input = usage["input_tokens"].as_u64().unwrap_or(0);
                 self.cached = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
@@ -303,7 +326,7 @@ impl Stream {
                     name: block["name"].as_str().unwrap_or_default().to_string(),
                     ..Block::default()
                 };
-                let item_id = format!("block-{index}");
+                let item_id = self.item_id(index);
                 match kind.as_str() {
                     "tool_use" => {
                         open.part = Some(ResponsePart::ToolCall);
@@ -345,7 +368,7 @@ impl Stream {
             "content_block_delta" => {
                 let index = d["index"].as_u64().unwrap_or(0);
                 let delta = &d["delta"];
-                let item_id = format!("block-{index}");
+                let item_id = self.item_id(index);
                 let Some(block) = self.blocks.get_mut(&index) else {
                     return Ok(());
                 };
@@ -390,7 +413,7 @@ impl Stream {
                 let Some(block) = self.blocks.remove(&index) else {
                     return Ok(());
                 };
-                let item_id = format!("block-{index}");
+                let item_id = self.item_id(index);
                 match block.part {
                     Some(ResponsePart::ToolCall) => {
                         let arguments = if block.json.trim().is_empty() {
