@@ -1101,7 +1101,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     "The skill to run, as `ls_skill` spells it: its name, and nothing above it.",
                     true,
                     Some("path"),
-                    CompletionSource::None,
+                    CompletionSource::Skills,
                 ),
                 pos(
                     "cmd",
