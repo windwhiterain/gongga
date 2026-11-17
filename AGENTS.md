@@ -6,10 +6,10 @@
 - @skill(whiting-dev) must be followed.
 - when designing new feature, search any existing wheels.
 - setting any limit/budget is forbidden.
-- **构建一律经 mbx**：`cargo` 必须解析到 `%LOCALAPPDATA%\mbx\bin\cargo.exe`（`where.exe cargo` 的第一行）。
-  用绝对路径调用（`~/.cargo/bin/cargo.exe`、rustup toolchain 里那个）的构建绕过 shim，既不进
-  缓存也不进记账，等于退回裸构建。早于 shim 写入 PATH 启动的会话先确认一次，不对就把
-  `%LOCALAPPDATA%\mbx\bin` 置顶。见「构建缓存（mbx）」。
+- **构建一律写成 `mbx <cargo 子命令>`**：`mbx build` / `mbx run` / `mbx test` / `mbx fmt` /
+  `mbx install …`。写 `cargo` 会让构建退回裸的（PATH 上的 `cargo` 常常不是 mbx），既不进缓存
+  也不进记账，还不报错。`mbx` 在 `%LOCALAPPDATA%\Programs\mbx\mbx.exe`，
+  找不到就用它的全路径（对 `mbx` 允许全路径，对 `cargo` 不允许）。见「构建缓存（mbx）」。
 - session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
 - server home for tests should be local to each worktree: a shared home makes worktrees lock each other, and someone else's home is not yours to write in -- the program you run may stop the server on it.
 - pointing at a home in use is not a read-only act: `GONGGA_HOME` on a live home makes the bundle place its payload there and retire the build it replaces, and that asks the home's server to `cancel` -- every turn it is running dies with the ask, unless the program starts no server of its own (as `--client_only` says). See `docs/notes/bundle-main.md`, "There is no read-only run".
@@ -96,8 +96,8 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
   看不见——而内容已经不需要在本仓库留下提交了（`ignore = all`），所以"改了内容"与"本仓库
   有提交"从此是两件事。推送内容之后仍要 `scripts/ship.sh --check`：退出码是契约
   （0 一致 / 1 真漂移 / 3 远端没应答），它不是可选项。
-- **报"做完了"之前，这一轮的每一道门都要有一次真实的执行**：`cargo build`（经 mbx 的 shim）、
-  `cargo fmt --check`、`comments-check`（对着**基线**比，别只看总数）、
+- **报"做完了"之前，这一轮的每一道门都要有一次真实的执行**：`mbx build`、
+  `mbx fmt --check`、`comments-check`（对着**基线**比，别只看总数）、
   `test-layout-check`、`scripts/skill_contract.sh`、`scripts/ship.sh --check`，
   以及单测够不着时的 L3 真进程脚本。没跑就说没跑，跑红了就说红了。
 - **不能只凭"代码看起来对"结案。** 同一类结论至少要有一个可复现的观测：真帧、真进程、
@@ -107,12 +107,12 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
 
 - tests layout:
   ```
-  cargo install --git https://github.com/windwhiterain/test-layout.git test-layout-check --locked
+  mbx install --git https://github.com/windwhiterain/test-layout.git test-layout-check --locked
   test-layout-check --config test-layout.toml
   ```
 - comments test:
   ```
-  cargo install --git https://github.com/windwhiterain/comments-test comments-check --locked
+  mbx install --git https://github.com/windwhiterain/comments-test comments-check --locked
   comments-check --config comments-check.toml
   ```
 
@@ -246,31 +246,33 @@ scripts/ship.sh --dry-run -m "..."               # 会做什么（不写不推�
 git config core.hooksPath scripts/hooks
 ```
 
-## 开发工作流：先 `cargo build`，再 `cargo run`
+## 开发工作流：先 `mbx build`，再 `mbx run`
 
-跑新代码就这两步：`cargo build`（default-members 把 server/relay/client/tui 一次编到
-同一个 BUILD），再 `cargo run -p gongga-server`。别手动替换二进制，也别只重编单个
-crate 就指望跑着的 server 用上。两步都经 mbx 的 shim（下节）走共享缓存：新 worktree 的
-第一次构建是 3 GB 量级（不含 `cargo bundle` 的 payload），不是十几 GB。
+跑新代码就这两步：`mbx build`（default-members 把 server/relay/client/tui 一次编到
+同一个 BUILD），再 `mbx run -p gongga-server`。别手动替换二进制，也别只重编单个
+crate 就指望跑着的 server 用上。两步都走共享缓存（下节）：新 worktree 的第一次构建是
+3 GB 量级（不含 `mbx bundle` 的 payload），不是十几 GB。
 
 机制是 SPEC「Bundled binary」那条：同目录的二进制互相 detect/validate/install。server
 启动时 `ensure_pair` 把自己和身旁的 relay 装进 `home/bin`，channel 用的就是**这份装好的
 副本**（`relay_for_channel`）——所以跑着的 server 始终用它启动时的那一对，构建树后来被
-重编也不影响它。要用新代码，就 `cargo build` + `cargo run` 起一个新进程（它装新的配对）；
+重编也不影响它。要用新代码，就 `mbx build` + `mbx run` 起一个新进程（它装新的配对）；
 接管一个在用的 home 走 `evolve`（下节），不是手动换二进制。
 
 ## 构建缓存（mbx）
 
-`cargo` 解析到 `%LOCALAPPDATA%\mbx\bin\cargo.exe`（用户级 PATH 第一位），普通
-`cargo build` / `run` / `test` 都经它包一层。缓存、托管 target、shims 都在
-`%LOCALAPPDATA%\mbx`。
+**命令一律写成 `mbx <cargo 子命令>`**：`mbx build`、`mbx run -p gongga-server`、`mbx test`、
+`mbx fmt --check`、`mbx install --git …`。mbx 把命令交给 cargo，并在编译器外面挂上共享缓存。
+**不要写 `cargo`**：PATH 上的那个 `cargo` 常常是裸的（下一段解释为什么），而裸构建不报错、
+只是悄悄不进缓存。
 
-**本文档里出现的每一条 `cargo …` 都指经 shim 的那一个**——包括 `cargo fmt`、`cargo clean` 和
-`cargo install --git …`。`where.exe cargo` 第一条不是 shim 就先置顶再跑（写法见下），
-否则那条命令不是这里说的那条：不进缓存、不进 `mbx explain`，也不会报错。
+`mbx` 自己在 `%LOCALAPPDATA%\Programs\mbx\mbx.exe`。`where.exe mbx` 找得到就直接写 `mbx`；
+找不到就写它的全路径——**全路径对 `mbx` 是允许的，对 `cargo` 不是**：`mbx.exe` 就是 mbx 本身，
+而 `~/.cargo/bin/cargo.exe` 是裸 cargo。
 
-一个 checkout 的 target 第一次经 mbx 构建时被接管：`<checkout>/target` 变成指向
-`%LOCALAPPDATA%\mbx\targets\v1\<checkout digest>` 的符号链接。
+缓存、托管 target、shims 都在 `%LOCALAPPDATA%\mbx`。一个 checkout 的 target 第一次经 mbx 构建
+时被接管：`<checkout>/target` 变成指向 `%LOCALAPPDATA%\mbx\targets\v1\<checkout digest>` 的
+符号链接。
 
 诊断三件事，都别靠猜：
 
@@ -282,61 +284,44 @@ mbx gc --dry-run      # 它会删什么（托管 target、incremental、store）
 
 **它买到什么**（本机实测，数字在 `.dev/verify/596a8c653f0e-mbx-*.json`）：
 
-- 换一个 worktree 构建：210 命中 / 47 未命中，省下 7m34s 编译器工作；占盘 3.10 GiB，
-  而同一依赖图的冷构建占 8.81 GiB。
-- `debug/incremental` 按需生成、总量由 `gc.incremental_max_size` 兜住，不再每个 worktree
-  各自长到 6.8–11.5 GB。
+- 换一个 worktree 构建：210 命中 / 47 未命中，省下 7m34s 编译器工作；占盘 3.10 GiB，而同一
+  依赖图的冷构建占 8.81 GiB。
+- `debug/incremental` 按需生成、总量由 `gc.incremental_max_size` 兜住，不再每个 worktree 各自
+  长到 6.8–11.5 GB。
 
 **它不买什么**：本机是 NTFS，没有 reflink，恢复输出走的是**字节拷贝**（实测
 `copied_output_*` 有值，`hardlinked_*` 与 `reflinked_*` 全是 0）。所以**不要指望 mbx 在
 worktree 之间去重依赖**——省下的是编译时间与 incremental，不是 deps。真去重只有 ReFS
-（Dev Drive）一条路，那需要单独腾 50 GB 以上并分区。
+（Dev Drive）一条路，那需要单独腾出 50 GB 以上并分区。
+
+**为什么不要写 `cargo`**：`cargo` 指向谁，只由"发起这次构建的进程自己的 PATH"决定；而 mbx 包
+一次构建时，会把子进程 PATH 里指向自己的目录换成 `%TEMP%\mbx-session-<id>`，那个目录在会话
+结束时被删。于是经 mbx 起的 tui / client / 服务端 / channel 继承到的是一份"含一个已消失目录"
+的 PATH，`cargo` 就落回 `~/.cargo\bin\cargo.exe`。2026-11-17 实测链：terminal →
+`mbx\bin\cargo.exe`(pid 14700) → mbx.exe → tui → client → server → channel，所以"tui 是经 mbx
+起的"与"channel 里是裸 cargo"同时成立。写 `mbx …` 就绕开整件事。
+
+**判据只有一条**：构建时打出 `mbx[cache]: N hits, …` 就是走了缓存；没有这一行就是裸构建。
+`mbx doctor` 的 setup 行**不算**判据——它读的是**调用者**的 PATH，报 `not active` 只说明它自己
+的规范目录不在第一位，说明不了这次构建有没有被包住。冷构建报 `0 hits, 0 misses, N not looked
+up` 是正常态：第一次还没有可用的 dep-info，编译完仍会入 store，从第二次起才可能命中。
 
 **用它时不许做的**：
 
-- **不要 `rm -rf target`**：它是 mbx 的符号链接，删它绕过记账。用 `cargo clean`（经 shim 的那个，清当前
-  checkout）或 `mbx clean`（连托管目录一起）。
-- **不要写 `CARGO_TARGET_DIR= cargo clean`**：cargo 1.98 起把空值当错误（`exit 101`），
-  一条都不删。用 `env -u CARGO_TARGET_DIR cargo clean`。`evolve.sh` 的两处（`clean_build_tree`
-  与接管前的 `--clean`）曾经是这个写法、把失败吞掉，所以它的 clean 一度从未真正执行过；
-  `4d25db10` 起两处都是 `env -u`，实测见 `.dev/verify/596a8c653f0e-evolve-clean-fix.json`
-  （旧写法 `exit 101`、target 还在；新写法 `exit 0`、target 消失）。
-- **不要用绝对路径调 cargo**（`~/.cargo/bin/cargo.exe`、`.../rustup/toolchains/.../bin/cargo.exe`）：
+- **不要 `rm -rf target`**：它是 mbx 的符号链接，删它绕过记账。用 `mbx clean`（连托管目录与
+  learned incremental 一起）。
+- **只在清一棵显式 `CARGO_TARGET_DIR` 的侧树时**才写 `env -u CARGO_TARGET_DIR cargo clean`。
+  不要写 `CARGO_TARGET_DIR= cargo clean`：cargo 1.98 起把空值当错误（`exit 101`），一条都不删。
+  `evolve.sh` 的两处（`clean_build_tree` 与接管前的 `--clean`）曾经是这个写法、把失败吞掉，
+  所以它的 clean 一度从未真正执行过；`4d25db10` 起两处都是 `env -u`，实测见
+  `.dev/verify/596a8c653f0e-evolve-clean-fix.json`（旧写法 `exit 101`、target 还在；新写法
+  `exit 0`、target 消失）。
+- **不要用绝对路径调 `cargo`**（`~/.cargo/bin/cargo.exe`、`.../rustup/toolchains/.../bin/cargo.exe`）：
   那条路绕过 shim，既不进缓存也不出现在 `mbx explain --last` 里，等于偷偷退回裸构建。
-  老会话先 `where.exe cargo` 确认第一条是 shim。
-- **不要在同一 checkout 里并发跑两个 cargo**：Cargo 的目录锁仍在，mbx 只解决跨 checkout
-  的重复编译。
+- **不要在同一 checkout 里并发跑两个构建**：Cargo 的目录锁仍在，mbx 只解决跨 checkout 的
+  重复编译。
 - **别在关键构建中途让 gc 插进来**：托管 target 属于回收范围（checkout 消失、30 天未用、
   `target.max_size` 预算）。删了能重建，但会打断正在跑的构建。
-
-**一个继承坑，而且是常态**：`mbx setup` **不改任何 PATH**，它只装 shim 二进制。更麻烦的是 mbx
-包一次构建时会把 PATH 里**自己那个目录换掉**，换成 `%TEMP%\mbx-session-<id>` 这样的会话目录
-（实测：一个 build script 看到的 PATH 第 13 项就是它，而 `mbx\bin` 已经不在里面）。
-那个目录随会话结束被删 —— 于是经 mbx 起的 tui / client / 服务端 / channel 继承到的是一份
-"含一个已消失目录、且没有 shim 目录"的 PATH，`cargo` 就落回 `~/.cargo\bin\cargo.exe`，那些
-构建是裸的。2026-11-17 实测链：terminal(11/15) → `mbx\bin\cargo.exe`(pid 14700) → mbx.exe →
-tui → client → server → channel；所以"tui 确实是经 mbx 起的"与"channel 里是裸 cargo"同时成立，
-**重启不解决**——重启还是经同一个 mbx 起，继承的还是同一形态。
-
-**所以每个会话自己置顶，别等继承、也别造别名**：动手前看一眼 `where.exe cargo`（Git Bash 里
-`which -a cargo`），第一条必须是 `<home>/AppData/Local/mbx/bin/cargo.exe`；不是，就在命令前
-自己带上：
-
-```bash
-export PATH="/c/Users/<user>/AppData/Local/mbx/bin:$PATH"      # Git Bash
-$env:Path = "$env:LOCALAPPDATA\mbx\bin;$env:Path"              # PowerShell
-path C:\Users\<user>\AppData\Local\mbx\bin;%path%              # cmd
-```
-
-**不要用别名或硬链接把 shim 塞进别的目录图省事**：那会让"哪条是 shim"变得不可读，mbx 升级
-换了 shim 之后它还指着旧二进制，下一个人也看不出这层。置顶是一行、看得见、随时可验证。
-
-判据只有一条：构建时打出 `mbx[cache]: N hits, ...` 就是走了缓存，没打出来就是裸构建。
-`mbx doctor` 的 setup 行**不算**判据——它读的是**调用者**的 PATH，报 `not active` 只说明它的
-规范目录不在第一位，说明不了 cargo 有没有被包住。
-
-冷构建报 `0 hits, 0 misses, N not looked up` 是正常态：第一次还没有可用的 dep-info，编译完
-仍会入 store，从第二次起才可能命中。
 
 ## 改过服务端代码之后
 
