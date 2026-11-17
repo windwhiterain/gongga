@@ -1366,8 +1366,13 @@ fn object_completion(
     let Some(place) = json_place::place(head, at) else {
         return Offered::default();
     };
-    // The token being typed is the whole span a candidate rewrites.
-    let range = (brace + place.start.min(at), brace + at);
+    // A closed token ends at its own quote: the range covers it, or
+    // accepting a value leaves that quote behind.
+    let end = match text.get(at..) {
+        Some(rest) if rest.starts_with('"') => at + 1,
+        _ => at,
+    };
+    let range = (brace + place.start.min(at), brace + end);
     match place.typing {
         json_place::Typing::Key => {
             let Some(object) = schema_at(schema, &place.path, &place.levels) else {
