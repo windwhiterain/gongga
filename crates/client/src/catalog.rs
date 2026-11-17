@@ -994,20 +994,6 @@ fn open_quote(line: &str) -> Option<char> {
 /// The standard's separator rule: a comma stands before what follows, never
 /// before a closer and never at the end of the line. The line decides, not the
 /// schema, so what a completion writes is JSON the server can read.
-/// Whether a member already stands before `from`, so the one written here needs a
-/// separator in front of it.
-///
-/// # Invariant
-///
-/// Read off what the line holds before the caret, never after it: the operator's own tail
-/// is not something a candidate may consult to decide what to write.
-fn follows_member(text: &str, from: usize) -> bool {
-    let rest = text.get(..from.min(text.len())).unwrap_or("");
-    !matches!(
-        rest.trim_end().chars().next_back(),
-        None | Some('{') | Some(',')
-    )
-}
 
 /// The object schema at a path of field names, or `None` when the path leaves
 /// the shape the catalog published.
@@ -1378,13 +1364,11 @@ fn object_completion(
             let Some(object) = schema_at(schema, &place.path, &place.levels) else {
                 return Offered::default();
             };
-            // A member that follows another writes its own separator, at its front.
-            let separator = place.start == at && follows_member(text, place.start);
             Offered {
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
-                items: keys(object, &place.fragment, range, &place.fields, separator),
+                items: keys(object, &place.fragment, range, &place.fields, false),
             }
         }
         json_place::Typing::Value => {
