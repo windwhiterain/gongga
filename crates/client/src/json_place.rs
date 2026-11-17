@@ -454,7 +454,8 @@ fn between(text: &str, at: usize, stack: &[Container]) -> Option<Place> {
     let typing = match frame.expect {
         Expect::Key | Expect::Colon => Typing::Key,
         Expect::Value => Typing::Value,
-        Expect::Done => return None,
+        // A member is finished: what the object takes next is another one.
+        Expect::Done => Typing::Key,
     };
     // A name already read takes the colon that follows it with it.
     let (start, end, fragment, quoted) = match (typing, frame.expect) {
@@ -606,4 +607,56 @@ fn floor(text: &str, at: usize) -> usize {
         at -= 1;
     }
     at
+}
+
+/// The token the caret completes: the span the line states of it.
+///
+/// # Invariant
+///
+/// Lexical, not parsed. A string runs from the unescaped quote before the caret to the
+/// one after it when the line holds one, and stops at the caret when it holds none; a
+/// bare run ends at the next delimiter; a caret on neither stands at an empty span. One
+/// that does not read as a document still says which token the caret is in, and the span
+/// is the line's bytes, never past its end.
+pub fn token_at(text: &str, at: usize) -> (usize, usize) {
+    let at = floor(text, at);
+    let bytes = text.as_bytes();
+    let quote = |index: usize| bytes[index] == b'"' && (index == 0 || bytes[index - 1] != b'\\');
+    // Which quote the caret stands inside, if any: the unescaped ones alternate.
+    let mut opening: Option<usize> = None;
+    for index in 0..at {
+        if quote(index) {
+            opening = match opening {
+                Some(_) => None,
+                None => Some(index),
+            };
+        }
+    }
+    match opening {
+        Some(start) => {
+            let close = (at..bytes.len()).take_while(|index| !quote(*index)).count() + at;
+            let end = match close < bytes.len() {
+                true => close + 1,
+                false => at,
+            };
+            (start, end)
+        }
+        None => {
+            let word = |index: usize| {
+                !matches!(
+                    bytes[index],
+                    b'{' | b'}' | b'[' | b']' | b',' | b':' | b'"' | b' ' | b'\t' | b'\n' | b'\r'
+                )
+            };
+            let mut start = at;
+            while start > 0 && word(start - 1) {
+                start -= 1;
+            }
+            let mut end = at;
+            while end < bytes.len() && word(end) {
+                end += 1;
+            }
+            (start, end)
+        }
+    }
 }
