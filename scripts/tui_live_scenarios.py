@@ -20,7 +20,7 @@ COVER = [
 SCENARIOS = {
     "single-stream": {
         "description": "one session, a long streaming answer that carries a tool call",
-        "options": {"tool": "bash", "fake": "stream"},
+        "options": {"tool": "exec", "fake": "stream"},
         "script": COVER + [
             "# a: the ordinary case -- type a command, send a message, watch it stream",
             "expect session(s) 20000",
@@ -33,7 +33,7 @@ SCENARIOS = {
             "send-message explain the event path in a few sentences and run one bash command",
             "wait 400",
             "sleep-until-frame 4 5000",
-            "expect hi-from-fake 30000",
+            "expect exec·bash 30000",
             "settle 30000",
             "label the second turn streams without a tool call",
             "send-message now say it again with the CJK sample 中文对齐测试",
@@ -59,7 +59,7 @@ SCENARIOS = {
     },
     "quota-block": {
         "description": "two providers stepped in one run, drawn side by side in active_quota",
-        "options": {"tool": "bash", "fake": "stream", "model": "fake/stream-model"},
+        "options": {"tool": "exec", "fake": "stream", "model": "fake/stream-model"},
         "script": COVER + [
             "expect session(s) 20000",
             "keys /set_session main",
@@ -94,7 +94,7 @@ SCENARIOS = {
     },
     "two-sessions": {
         "description": "two sessions streaming at once, interleaved by session tag",
-        "options": {"tool": "bash", "fake": "stream"},
+        "options": {"tool": "exec", "fake": "stream"},
         "script": COVER + [
             "# b: main is mid-turn while peer starts its own; the log carries both",
             "expect session(s) 20000",
@@ -201,7 +201,7 @@ SCENARIOS = {
     },
     "gesture-operations": {
         "description": "the window's own gestures: a click asks for an operation",
-        "options": {"tool": "bash", "fake": "stream"},
+        "options": {"tool": "exec", "fake": "stream"},
         "script": COVER + [
             "# the gestures are operations, not command lines: the window asks for"
             "# what it means and the command layer answers it. Alt is the modifier a"
@@ -226,7 +226,7 @@ SCENARIOS = {
     },
     "event-ui-toggles": {
         "description": "completion popup, block size and split toggled while both sessions stream",
-        "options": {"tool": "bash", "fake": "stream"},
+        "options": {"tool": "exec", "fake": "stream"},
         "script": COVER + [
             "# c: UI state changes on top of two live streams",
             "expect session(s) 20000",
@@ -291,7 +291,7 @@ SCENARIOS = {
     },
     "window-state": {
         "description": "the commands the window runs itself, and SPEC's `sticky to xxx`",
-        "options": {"tool": "bash", "fake": "stream"},
+        "options": {"tool": "exec", "fake": "stream"},
         "script": COVER + [
             "# e: the window's own entries, and what belongs to a model not surviving it",
             "expect session(s) 20000",
@@ -418,7 +418,7 @@ SCENARIOS = {
     },
     "wheel-after-unfold": {
         "description": "the wheel over a folded log, then the wheel over an item opened by a click",
-        "options": {"tool": "bash", "fake": "stream"},
+        "options": {"tool": "exec", "fake": "stream"},
         "script": COVER + [
             "# A log longer than its pane: the wheel, then the wheel again once a",
             "# folded block is open. Repeating one command makes one kind of event,",

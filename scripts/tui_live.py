@@ -2374,7 +2374,7 @@ def build_parser():
     parser.add_argument("--fake", choices=("plain", "stream"), default="stream")
     parser.add_argument("--stream-chunks", type=int, default=24)
     parser.add_argument("--stream-delay-ms", type=float, default=35.0)
-    parser.add_argument("--tool", default="bash", help="empty string for no tool call")
+    parser.add_argument("--tool", default="exec", help="empty string for no tool call")
     parser.add_argument("--tool-args", default=None)
     parser.add_argument("--model", default="fake/stream-model")
     parser.add_argument("--server-log", default="info")
