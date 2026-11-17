@@ -265,6 +265,10 @@ crate 就指望跑着的 server 用上。两步都经 mbx 的 shim（下节）�
 `cargo build` / `run` / `test` 都经它包一层。缓存、托管 target、shims 都在
 `%LOCALAPPDATA%\mbx`。
 
+**本文档里出现的每一条 `cargo …` 都指经 shim 的那一个**——包括 `cargo fmt`、`cargo clean` 和
+`cargo install --git …`。`where.exe cargo` 第一条不是 shim 就先置顶再跑（写法见下），
+否则那条命令不是这里说的那条：不进缓存、不进 `mbx explain`，也不会报错。
+
 一个 checkout 的 target 第一次经 mbx 构建时被接管：`<checkout>/target` 变成指向
 `%LOCALAPPDATA%\mbx\targets\v1\<checkout digest>` 的符号链接。
 
@@ -290,7 +294,7 @@ worktree 之间去重依赖**——省下的是编译时间与 incremental，不
 
 **用它时不许做的**：
 
-- **不要 `rm -rf target`**：它是 mbx 的符号链接，删它绕过记账。用 `cargo clean`（清当前
+- **不要 `rm -rf target`**：它是 mbx 的符号链接，删它绕过记账。用 `cargo clean`（经 shim 的那个，清当前
   checkout）或 `mbx clean`（连托管目录一起）。
 - **不要写 `CARGO_TARGET_DIR= cargo clean`**：cargo 1.98 起把空值当错误（`exit 101`），
   一条都不删。用 `env -u CARGO_TARGET_DIR cargo clean`。`evolve.sh` 的两处（`clean_build_tree`
