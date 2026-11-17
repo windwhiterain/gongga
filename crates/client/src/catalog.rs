@@ -1044,7 +1044,6 @@ fn keys(
     fragment: &str,
     range: (usize, usize),
     written_fields: &[(String, Read)],
-    separator: bool,
 ) -> Vec<Item> {
     let Some(properties) = protocol::argschema::properties(object) else {
         return Vec::new();
@@ -1066,7 +1065,7 @@ fn keys(
     fields
         .into_iter()
         .map(|(name, property)| {
-            // The comma that starts the next member is written here, with the key.
+            // The comma that ends this member is written here, with the name.
             let whole = format!(
                 "{},",
                 match protocol::argschema::enters(property) {
@@ -1082,7 +1081,6 @@ fn keys(
                 range,
                 format!("\"{name}\":"),
                 &protocol::argschema::description(property),
-                separator,
             )
         })
         .collect()
@@ -1116,13 +1114,7 @@ fn values(
                     true => model_value(value)?,
                     false => leaf.token(value),
                 };
-                Some(written(
-                    &format!("{text}$0"),
-                    range,
-                    text.clone(),
-                    &hint,
-                    false,
-                ))
+                Some(written(&format!("{text}$0"), range, text.clone(), &hint))
             })
             .collect();
         if !offered.is_empty() {
@@ -1149,37 +1141,20 @@ fn values(
                 true => model_value(&item.label)?,
                 false => leaf.token(&item.label),
             };
-            Some(written(
-                &format!("{value}$0"),
-                range,
-                value,
-                &item.detail,
-                false,
-            ))
+            Some(written(&format!("{value}$0"), range, value, &item.detail))
         })
         .collect()
 }
 
-/// One candidate as what it writes: the whole member, plus the separator it owes.
+/// One candidate as what it writes: the whole member, in the token's range.
 ///
 /// # Invariant
 ///
 /// The range is the token the operator is typing -- what stands before the caret and
 /// nothing else -- so a candidate rewrites that token and writes nothing behind the
-/// caret. A member that follows another carries its separator at its own front, and the
-/// braces an unfinished object owes are the operator's keys.
-fn written(
-    whole: &str,
-    range: (usize, usize),
-    label: String,
-    detail: &str,
-    separator: bool,
-) -> Item {
-    let text = match separator {
-        true => format!(",{whole}"),
-        false => whole.to_string(),
-    };
-    Item::at(range, text, true, label, detail.to_string())
+/// caret. The braces an unfinished object owes are the operator's keys.
+fn written(whole: &str, range: (usize, usize), label: String, detail: &str) -> Item {
+    Item::at(range, whole.to_string(), true, label, detail.to_string())
 }
 
 /// What a leaf owes when the catalog publishes nothing for it: a string's quotes,
@@ -1215,7 +1190,7 @@ fn owed(
         .into_iter()
         .filter_map(|whole| {
             let label = whole.replace("$0", "");
-            Some(written(&whole, range, label, &hint, false))
+            Some(written(&whole, range, label, &hint))
         })
         .collect()
 }
@@ -1356,18 +1331,20 @@ fn object_completion(
     let Some(place) = json_place::place(head, at) else {
         return Offered::default();
     };
-    // The span a candidate rewrites is the token the caret is in.
-    let (start, end) = json_place::token_at(text, at);
+    // The token the caret is in; a value takes the comma that ends its member.
+    let (start, token_end) = json_place::token_at(text, at);
+    let end = match text.get(token_end..) {
+        Some(rest) if rest.starts_with(',') => token_end + 1,
+        _ => token_end,
+    };
+    let comma = end > token_end;
     let range = (brace + start, brace + end);
-    // A comma ahead is this member's own separator: a member cannot begin before it.
-    if text
-        .get(at..)
-        .is_some_and(|rest| rest.trim_start().starts_with(','))
-    {
-        return Offered::default();
-    }
     match place.typing {
         json_place::Typing::Key => {
+            // A name stands where a member begins, or inside a name being typed.
+            if start == at && !after_opener(text, at) {
+                return Offered::default();
+            }
             let Some(object) = schema_at(schema, &place.path, &place.levels) else {
                 return Offered::default();
             };
@@ -1375,7 +1352,7 @@ fn object_completion(
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
-                items: keys(object, &place.fragment, range, &place.fields, false),
+                items: keys(object, &place.fragment, range, &place.fields),
             }
         }
         json_place::Typing::Value => {
@@ -1388,40 +1365,26 @@ fn object_completion(
             let Some(property) = object.get("properties").and_then(|held| held.get(name)) else {
                 return Offered::default();
             };
-            // An object field holds an object: its value is the brace its members go
-            // inside, and the caret lands in it.
-            if protocol::argschema::enters(property) {
-                let hint = protocol::argschema::hint(property);
-                return Offered {
-                    subject: Some(subject_name(cmd, &place.path)),
-                    start: Some(range.0),
-                    end: Some(range.1),
-                    items: vec![written("{$0}", range, "{}".to_string(), &hint, false)],
-                };
+            let hint = protocol::argschema::hint(property);
+            let mut items = match protocol::argschema::enters(property) {
+                // An object field holds an object: its value is the brace its
+                // members go inside, and the caret lands in it.
+                true => vec![written("{$0}", range, "{}".to_string(), &hint)],
+                false => values(property, &place, ctx, words, range),
+            };
+            if comma {
+                // The member's own comma, so the caret lands after the separator.
+                for item in &mut items {
+                    item.new_text = format!("{},$0", item.new_text.replace("$0", ""));
+                }
             }
             Offered {
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
-                items: values(property, &place, ctx, words, with_comma(range, text))
-                    .into_iter()
-                    .map(|mut item| {
-                        if with_comma(range, text).1 > range.1 {
-                            item.new_text = format!("{},$0", item.new_text.replace("$0", ""));
-                        }
-                        item
-                    })
-                    .collect(),
+                items,
             }
         }
-    }
-}
-
-/// The range a value takes: its token, and the comma after it when the line holds one.
-fn with_comma(range: (usize, usize), text: &str) -> (usize, usize) {
-    match text.get(range.1..) {
-        Some(rest) if rest.starts_with(',') => (range.0, range.1 + 1),
-        _ => range,
     }
 }
 

@@ -11,24 +11,28 @@ popup says it is asking for), the range every item replaces, and the items.
 `Completion` is the open popup: the line and caret it answers, the same range,
 the items, and the selection.
 
-**A JSON candidate is an insertion at the caret and nothing else.** `new_text` is what
-the line still lacks *from the caret on*: the rest of the name being typed, its colon and
-value, the separator a member owes. `range` is empty there, so no byte the operator wrote
-is replaced, and nothing after the caret is read or touched — not to decide a comma, not to
-write a closer. The whole family of "the earlier field ate my next key" was the opposite
-model: a candidate that replaced a token of a line it was only halfway through reading. The
-consequence is stated rather than hidden: a candidate qualifies only where the text it
-spells *starts with* the token already typed (`inserted`), and a caret inside a token that
-goes on after it is offered nothing at all — you cannot insert into the middle of a word
-and be right.
+**A JSON candidate rewrites the token the caret is in**, and reads nothing after it. The
+span is `json_place::token_at`'s: the quoted string the caret stands in, or the bare run
+around it, in the line's own offsets. What the operator wrote behind the caret is theirs —
+the closing braces an unfinished object owes are never written by a candidate.
 
-**A member that follows another writes its own separator, at its front** (`follows_member`).
-Read from what stands before the caret, never after: a comma behind the caret is the
-operator's text, and the owed braces of an unfinished object are the operator's too.
+**A name writes the whole member from the caret, its separator at the tail**:
+`"name":<value>,$0`, the value being `{}` for an object field, `""` with the caret inside
+for a string leaf, and nothing for the rest. A name is offered in exactly two places — where
+a member begins (`{` or `,` behind the caret, `after_opener`) and inside a name the line is
+typing — because anywhere else the line has already ended its member, and a name written
+there would stand beside it with no separator in front of it.
+
+**A value takes the comma that ends its member with it.** Its range grows over that comma
+and the candidate writes it back at its own tail, so the caret lands after the separator
+rather than in front of it. It is the one byte a candidate reads off the far side of the
+caret, and it is the separator the member being filled already owes; the range is widened in
+the line's own coordinates, which is where `token_at`'s tail-relative offsets stop being
+usable.
 
 **A word candidate still replaces the word it completes.** `Completion::apply` takes the
 item's own range or the answer's, never part of either, and a word never doubles the space
-it ends with. That is the flag form and the `@` references; the JSON form's range is empty.
+it ends with. That is the flag form and the `@` references.
 
 **A snippet stop is `$0`..`$9` or `${n}`/`${n:word}`** (`expand`). The lowest stop
 decides, at its first appearance; a snippet stating none leaves the caret at the
@@ -58,9 +62,10 @@ not JSON, so the document is read again with an equally long stand-in (`"x"`,
 `"xx"`, `0`) at every bare token. Offsets do not move, and the item then replaces
 what the operator typed while the fragment stays the operator's own text.
 
-**A key place replaces the colon that follows it**, including one the line
-already holds: otherwise accepting a name leaves the operator's colon after the
-one just written.
+**The span is the token, never the punctuation behind it.** A colon or a comma the line
+already holds stands where the operator put it, so re-accepting a name over one written
+name leaves that name's own colon in place; a value is the one place a candidate takes its
+separator back (`comma`).
 
 **The options**: loose only where a half-typed line is ordinary (a trailing or a
 missing comma). Nothing looser, so what completion reads is what the server reads.
@@ -77,9 +82,10 @@ the popup never offers it.
 a nested object. Completing inside the object is then the same field-name /
 leaf-value completion at every depth.
 
-**What it inserts.** A name is `"name":`, plus `{}` when the field holds an object,
-plus `""` with the caret inside when its leaf is a string. A leaf value is written
-by the type the schema states (`crate::leaf`), so `ctx_limit` takes `"70%"` and
+**What it inserts.** A name is `"name":` with the member's value — `{}` when the field
+holds an object, `""` with the caret inside when its leaf is a string, nothing otherwise —
+and the comma that ends the member. Its leaf is written by the type the schema states
+(`crate::leaf`), so `ctx_limit` takes `"70%"` and
 `keep_alive` takes `true` even though both lists are published as plain texts. A
 `model_ref` leaf is the object SPEC spells `Model := {provider, model}`, split out
 of the roster's `<provider>/<model>`. A field the object already states is not
@@ -88,13 +94,15 @@ offered again.
 **Measured, both ways.** `new_session{"live_compact_enabled":true}` with the caret
 inside the name used to accept `id` and come out `new_session{"id":"",:true}` -- a
 member written over one the line already had. It now offers nothing, and the line is left
-as the operator wrote it. `/set_session{` accepts `id` and comes out `/set_session{"id":""`;
-a comma and a second acceptance give `/set_session{"id":"a","config":{}`.
+as the operator wrote it. `/set_session{` accepts `id` and comes out `/set_session{"id":"",`:
+the member's own comma is already at its tail, so the caret continues after a separator the
+popup wrote rather than one the operator has to remember.
 
-**The separator is a comma at the front of the insertion**, decided by what stands before
-the caret (`follows_member`): a member inserted after another carries it, one inserted just
-after `{` or `,` does not. Nothing is ever written behind the caret, so the operator's own
-tail cannot be read wrongly or overwritten.
+**The separator belongs to the member it ends.** A name writes the comma that closes it, so
+the member after it needs no leading one; a value takes that comma over when it fills the
+member (`comma`). The consequence is stated rather than hidden: a comma typed after an
+accepted member leaves `{"id":"",,`, which no longer reads as a document, so the popup
+offers names nowhere there.
 
 **The braces an unfinished object owes are the operator's.** A candidate completes a
 member, not a document: after `/cmd{` and one acceptance the line is `{"field":value`, and
