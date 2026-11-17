@@ -21,8 +21,8 @@ takes the sentence from there. That is one entry in one table, not a second laye
 tunnel's words are the same sentence for fifteen tools, and fifteen copies of it would
 be fifteen places to mistype it.
 
-The name is `tool_text` and not `tools`: `[tools.bash]` is that tool's runtime settings,
-and a table of settings must not be read as a table of sentences.
+The name is `tool_text` and not `tools`: `[tools.python]` is that tool's runtime
+settings, and a table of settings must not be read as a table of sentences.
 
 ## A config that words nothing is a schema with bare names, not a refusal
 

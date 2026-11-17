@@ -163,9 +163,6 @@ pub struct ToolSpec {
     /// Whether the model is offered this tool; the command layer reaches all of them.
     #[serde(default = "yes")]
     pub offered: bool,
-    /// Output longer than this is capped for it. `0` disables the cap.
-    #[serde(default)]
-    pub max_output_chars: Option<usize>,
 }
 
 impl ToolSpec {

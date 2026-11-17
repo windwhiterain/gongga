@@ -583,13 +583,11 @@ impl ToolRegistry {
         python: Option<std::path::PathBuf>,
         lib: Option<std::path::PathBuf>,
         timeout: Duration,
-        max: usize,
     ) -> Self {
         self.settings.skills = Some(skill::Skills {
             python,
             lib,
             timeout,
-            max_output_chars: max,
         });
         self
     }
@@ -638,19 +636,16 @@ impl ToolRegistry {
 
     /// The command a row names, built with this build's own settings.
     fn command(&self, row: &spec::ToolSpec) -> Result<Box<dyn Cmd>, String> {
-        let max_output_chars = row
-            .max_output_chars
-            .unwrap_or(self.settings.max_output_chars);
         Ok(match row.cmd.as_str() {
             "wait" => Box::new(WaitTool {
                 timeout: WAIT_DEFAULT,
             }),
             "exec" => {
-                // The channels are the call's own, and the default wait is the tool's.
+                // The channels are the call's own, and the default wait is the tool's. The
+                // cap is not: one cap, at the call layer, so `max_output` can raise it.
                 Box::new(exec::ExecTool {
                     wait: exec::Wait {
                         default: exec::DEFAULT_WAIT,
-                        max_output_chars,
                     },
                 })
             }
@@ -728,13 +723,18 @@ impl ToolRegistry {
         // What they said is kept here, because the cap is applied by this layer too.
         let mut args = args;
         let shared = laws::Given::take(&mut args);
+        // The one cap this answer is held to. Read here rather than by a tool, so a call
+        // that runs a command is held to it as well: the command branch below returns
+        // before any tool would have seen it.
+        let cap = shared.cap(self.settings.max_output_chars);
         let Some(tool) = self.get(name) else {
             // SPEC `fn <tool>(**args)`: an unregistered name is a cmd a skill taught; the command layer runs it.
             let words = match args.as_object() {
                 Some(table) => named_words(table),
                 None => protocol::Args::new(),
             };
-            return run_command(&ctx.session, name, words).await;
+            let outcome = run_command(&ctx.session, name, words).await;
+            return capped(ctx, name, &shared, cap, outcome);
         };
         // The name this call was made under, as the row spells it now.
         let mut named = ctx.clone();
@@ -749,26 +749,7 @@ impl ToolRegistry {
             return ToolOutcome::err(message);
         }
         let outcome = invoke(name, tool, args, ctx).await;
-        // SPEC's `max_output`: over the cap the output spills, and the call answers with
-        // the file's metadata. Applied here, where the shared arguments were read, so a
-        // tool that never heard of the cap is held to it all the same.
-        let capped = shared
-            .max_output
-            .and_then(|max| {
-                cap_max_output(
-                    ctx,
-                    name,
-                    shared.description.as_deref(),
-                    &ctx.call_id,
-                    &outcome.output,
-                    max,
-                )
-            })
-            .unwrap_or(outcome.output);
-        let outcome = ToolOutcome {
-            output: capped,
-            ok: outcome.ok,
-        };
+        let outcome = capped(ctx, name, &shared, cap, outcome);
         // The call ended; the look is a task of its own, so nothing waits on it.
         crate::explore::after_job(ctx, name);
         outcome
@@ -1099,42 +1080,48 @@ fn spill_label(session: &str, shell: &str, description: Option<&str>, call_id: &
     }
 }
 
-/// SPEC's per-call `max_output`: over the cap the output spills, and the
-/// call answers with the file's metadata.
+/// The one cap, applied to what a call answered.
 ///
 /// # Invariant
 ///
-/// `None` is "no cap": under it, unparseable, or on an endpoint session,
-/// where a file here is not one its tools can open.
-pub(crate) fn cap_max_output(
+/// One cap, one place, one unit. Every answer a call gives passes through here -- a
+/// tool's, a command's, a skill's -- so a call cannot be capped twice and the smaller
+/// number cannot win. `max_output` states it; the home's `[tools] max_output_chars` is
+/// the default; `0` either way is no cap.
+///
+/// # Invariant
+///
+/// What is spilled is the WHOLE answer, and the notice names that file. A cap that
+/// spilled its own truncated text would point the model at a lie.
+pub(crate) fn capped(
     ctx: &ToolContext,
     tool: &str,
-    description: Option<&str>,
-    call_id: &str,
-    text: &str,
+    shared: &laws::Given,
     max: usize,
-) -> Option<String> {
-    if max == 0 || text.chars().count() <= max {
-        return None;
+    outcome: ToolOutcome,
+) -> ToolOutcome {
+    if max == 0 || outcome.output.chars().count() <= max {
+        return outcome;
     }
-    if ctx.on_endpoint(ctx.machine) {
-        tracing::warn!(
-            session = %ctx.session,
-            tool,
-            "max_output cannot spill on an endpoint session; the cap is left unhonored"
-        );
-        return None;
+    // An answer on an endpoint session is not spilled here: a path on this machine is
+    // not a path the reader can open. It is still cut.
+    let dir = (!ctx.on_endpoint(ctx.machine)).then_some(ctx.output_dir.as_path());
+    let label = spill_label(
+        &ctx.session,
+        tool,
+        shared.description.as_deref(),
+        &ctx.call_id,
+    );
+    ToolOutcome {
+        output: crate::tools::spill::cap_output(
+            crate::prompts::shared(),
+            &outcome.output,
+            max,
+            dir,
+            &label,
+        ),
+        ok: outcome.ok,
     }
-    let label = spill_label(&ctx.session, tool, description, call_id);
-    let path = crate::tools::spill::spill(&ctx.output_dir, &label, text)?;
-    Some(
-        json!({
-            "path": path,
-            "chars": text.chars().count(),
-            "line_count": text.lines().count(),
-        })
-        .to_string(),
-    )
 }
 
 /// Runs one tool and records a failure where the disk monitor can see it.
@@ -1340,6 +1327,69 @@ mod tests {
         assert_eq!(given.description.as_deref(), Some("check the state"));
         assert_eq!(given.max_output, Some(8000));
         assert_eq!(args, json!({ "path": "a-file" }));
+    }
+
+    /// One cap: a call's number, or the home's default, and never the smaller of two.
+    ///
+    /// # Invariant
+    ///
+    /// The defect this pins: a tool that capped as well, so a `max_output` above the
+    /// home's default was silently lowered to it, and asking for more returned less.
+    #[test]
+    fn the_call_s_number_raises_the_cap_rather_than_losing_to_the_default() {
+        let mut args = json!({ "max_output": 50_000 });
+        let given = laws::Given::take(&mut args);
+        assert_eq!(given.cap(8_000), 50_000);
+        // And a call that states none is held to the home's default.
+        assert_eq!(laws::Given::default().cap(8_000), 8_000);
+    }
+
+    /// A count written as text is still a count: a provider may hand one back as a string.
+    #[test]
+    fn a_max_output_written_as_text_is_read_as_a_number() {
+        let mut args = json!({ "max_output": "12000" });
+        assert_eq!(laws::Given::take(&mut args).max_output, Some(12_000));
+    }
+
+    /// The cap counts characters, so a stated length means the same in every language.
+    ///
+    /// # Invariant
+    ///
+    /// The defect this pins: the cap counted bytes, so 4000 CJK characters (12000 bytes)
+    /// were cut to a third of themselves and the notice reported a byte count as though
+    /// it were a length.
+    #[test]
+    fn the_cap_counts_characters_not_bytes() {
+        let text = "\u{4e2d}".repeat(4_000);
+        assert!(
+            text.len() > 8_000,
+            "the text has to be over the cap in bytes"
+        );
+        let kept =
+            crate::tools::spill::cap_output(crate::prompts::shared(), &text, 8_000, None, "t");
+        // 4000 characters is under 8000 characters: nothing is taken away at all.
+        assert_eq!(kept.chars().count(), 4_000, "the whole text survives");
+        assert_eq!(kept, text, "not one character is cut");
+        // And over it, the answer keeps the stated length in characters, head and tail.
+        // Asserted by counting rather than by the notice's prose, which a home supplies.
+        let cut =
+            crate::tools::spill::cap_output(crate::prompts::shared(), &text, 1_000, None, "t");
+        let heads = cut.chars().take(600).filter(|c| *c == '\u{4e2d}').count();
+        let tails = cut
+            .chars()
+            .rev()
+            .take(400)
+            .filter(|c| *c == '\u{4e2d}')
+            .count();
+        assert_eq!(
+            heads, 600,
+            "the head is three fifths of the cap, in characters"
+        );
+        assert_eq!(tails, 400, "the tail is the rest");
+        assert!(
+            cut.chars().count() >= 1_000,
+            "the text kept is the cap itself; a notice, where a home supplies one, rides on top"
+        );
     }
 
     #[test]

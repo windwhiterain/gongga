@@ -381,7 +381,7 @@ impl DetachedRegistry {
     ) -> anyhow::Result<JobView> {
         let mut registry = self.inner.lock().await;
         let Some(program) = registry.program.clone() else {
-            anyhow::bail!("no bash available; set [tools.bash] program");
+            anyhow::bail!("no bash available; set --bash <path>, or GONGGA_BASH");
         };
         if registry
             .jobs

@@ -278,10 +278,19 @@ and every later request pays for it".
 `dir` is where the full output is spilled; `label` names it. A cap of 0 means
 no cap, which is what a deliberately unbounded run wants.
 
-## cap_output (head and tail)
+## cap_output (characters, and the whole output spilled)
 
-Slightly more head than tail: the start of an output usually says what the
-command was about, the end says how it ended.
+The cap counts characters, not bytes: it is a length somebody stated, and the notice
+reports what it took away in the same unit. Counting bytes made a call's number mean
+something else in every language but English -- 4000 CJK characters are 12045 bytes,
+so an 8000-byte cap cut them to about a third.
+
+The file spilled is the WHOLE output, and the notice names it. Spilling the answer's
+own cut would point the model at a lie: the notice would say how much was omitted from
+text that had already lost it.
+
+Slightly more head than tail: the start of an output usually says what the command was
+about, the end says how it ended.
 
 ## spill
 

@@ -78,7 +78,7 @@ pub struct Args {
     pub bind: Option<String>,
     /// Model name. Overrides `[provider] model`.
     pub model: Option<String>,
-    /// Path to bash. Overrides `[tools.bash] program`.
+    /// Path to bash. Overrides `GONGGA_BASH` and the detected shell.
     pub bash: Option<PathBuf>,
     /// Home for the database, config, logs, jobs and lock; beats `[server] home`.
     pub home: Option<PathBuf>,
@@ -385,7 +385,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         store.clone(),
         {
             let store = store.clone();
-            let capped_at = cfg.bash.max_output_chars;
+            let capped_at = cfg.tools.max_output_chars;
             let spill_dir = output_dir.clone();
             Arc::new(move |end: crate::tools::channel::ChannelEnd| {
                 // A deleted session owes nothing, and its rows would be stranded.
@@ -441,13 +441,12 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             let lib = skill_lib.clone();
             crate::live::Derived::new(move |cfg: &config::Config| {
                 Arc::new(
-                    ToolRegistry::settings(cfg.bash.max_output_chars)
+                    ToolRegistry::settings(cfg.tools.max_output_chars)
                         .with_python(cfg.python.clone(), lib.clone())
                         .with_skills(
                             cfg.python.program.clone(),
                             lib.clone(),
                             std::time::Duration::from_millis(crate::config::CALL_TIMEOUT_MS),
-                            cfg.bash.max_output_chars,
                         )
                         .build(&cfg.tools.rows),
                 )

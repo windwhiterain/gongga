@@ -1531,10 +1531,9 @@ impl Agent {
             .attach_references(&ctx, printed_on, &outcome.output)
             .await;
         let attach_ms = attach_started.elapsed().as_millis() as u64;
-        // SPEC's `max_output`: over the cap the output spills, and the model
-        // reads the file's metadata.
-        // The cap was applied where the shared arguments were read, so this is the whole
-        // answer the call gave: the same bytes the model reads.
+        // The call layer applied the one cap before this point, so what arrives here is
+        // the whole answer the model reads: already cut, and already spilled if it was
+        // over. Nothing is done to it again -- a second cap would be a second answer.
         let capped = outcome.output.clone();
         // A tool that streamed nothing owes its output to the final chunk.
         let compacting = tool == crate::tools::live_compact::LIVE_COMPACT_TOOL;

@@ -51,7 +51,8 @@ impl Outcome {
         })
     }
 
-    /// A call's answer, capped like every tool's output.
+    /// A call's answer, capped like every tool's output: the same one cap, in the same
+    /// unit, applied where the notice is built because the call has already ended.
     ///
     /// # Invariant
     ///

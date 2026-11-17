@@ -198,6 +198,18 @@ down: one list of names, kinds and sentences, and every door reads it.
   else sees the arguments, and applies `max_output` itself. A command would answer for a
   name its handler has no parameter for, and a skill's function cannot bind one at all,
   so taking them is what lets a new tool be added without knowing they exist.
+- **One cap, one place.** `Given::cap(home_default)` is the whole rule: the call's own
+  number, or the home's `[tools] max_output_chars`. It is read before the two branches
+  split and applied to whichever answer comes back, so a call routed as a command is held
+  to it as well -- that branch returns before any tool would have seen the number.
+  **No tool caps**, because a tool that also capped would be a second answer to the
+  same question and the smaller number would win: measured, a 12000-character answer
+  with `max_output = 20000` came back at 8347 characters, the tool's own 8000-byte
+  default having cut it first. The unit is **characters**, which is what the notice says
+  and what the room left in a request is measured in; bytes made a stated length mean
+  something else in every language but English (4000 CJK characters are 12045 bytes).
+  And what is spilled is the **whole** answer: an answer that spilled its own cut would
+  name a file that had already lost the text the notice counts.
 - **The operator's line.** `tool_cmd::catalog` appends them to every tool command, so a
   person types what a model spells.
 - **The command doors.** `gongga_cli`'s route and `declared_command` are the two other

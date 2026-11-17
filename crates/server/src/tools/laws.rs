@@ -77,6 +77,20 @@ pub struct Given {
 }
 
 impl Given {
+    /// The one cap this answer is held to: the call's number, or the home's default.
+    ///
+    /// # Invariant
+    ///
+    /// One cap, read once, by the layer that takes the shared arguments. A tool that
+    /// capped as well would be a second answer to the same question, and the smaller of
+    /// the two would win -- so no tool caps, and `0` from either place means no cap.
+    ///
+    /// Characters, not bytes: a length is what the notice says and what the room left in
+    /// a request is measured in. See `docs/notes/server-tools-mod.md`.
+    pub fn cap(&self, home_default: usize) -> usize {
+        self.max_output.unwrap_or(home_default)
+    }
+
     /// Reads them off a call's arguments, and takes them off.
     ///
     /// # Invariant
@@ -95,7 +109,13 @@ impl Given {
                 continue;
             };
             match *name {
-                "max_output" => given.max_output = value.as_u64().map(|max| max as usize),
+                // A count written as one: a provider may hand a number back as text.
+                "max_output" => {
+                    given.max_output = value
+                        .as_u64()
+                        .or_else(|| value.as_str().and_then(|text| text.trim().parse().ok()))
+                        .map(|max| max as usize)
+                }
                 _ => {
                     given.description = value
                         .as_str()

@@ -48,8 +48,8 @@ operator's line spells `cmd` as text.
 What the skill printed, then `[exit status N]`, and `ok` is `code == 0` -- the skill's
 answer *is* the call's answer, unparsed. Re-encoding it (into JSON, into rows) would be
 a second copy of a contract every one of these scripts already keeps, and `jq`-ability
-is why they print what they print. The cap is the shared one: over `max_output_chars`
-the text is spilled to a file and the answer is that file's name.
+is why they print what they print. The cap is the call layer's one cap: over
+`max_output` the text is spilled to a file and the answer names it.
 
 A package's return value is rendered by `gongga_skill.py`: `None` prints nothing, a
 string prints as it is, an `int` is an exit code, anything else prints as JSON.

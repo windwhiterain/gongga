@@ -19,7 +19,6 @@ pub struct Skills {
     /// The home's `lib`: the content installs the package contract and the client there.
     pub lib: Option<PathBuf>,
     pub timeout: Duration,
-    pub max_output_chars: usize,
 }
 
 impl Skills {
@@ -89,13 +88,7 @@ impl Skills {
             }
             text.push_str(&outcome.stderr);
         }
-        let text = ctx.cap(
-            Machine::Local,
-            "run_skill",
-            None,
-            text,
-            self.max_output_chars,
-        );
+        let text = text;
         let code = outcome.code;
         // The skill's own exit code is this call's: a non-zero one is the skill
         // failing, not the command that asked for it.

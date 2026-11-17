@@ -18,8 +18,6 @@ pub const DEFAULT_WAIT: Duration = Duration::from_secs(4);
 #[derive(Debug, Clone, Copy)]
 pub struct Wait {
     pub default: Duration,
-    /// Output longer than this is capped, the whole of it kept on disk. `0` is no cap.
-    pub max_output_chars: usize,
 }
 
 /// SPEC's `exec`: starts a program as a channel, or speaks to the one `id` names.
@@ -185,7 +183,7 @@ impl Cmd for ExecTool {
                     Some(&ctx.cancel),
                 )
                 .await;
-            answer(outcome, self.wait.max_output_chars, ctx)
+            answer(outcome)
         })
     }
 }
@@ -207,18 +205,11 @@ fn wait_of(args: &Value, default: Duration) -> Duration {
     }
 }
 
-/// What a call answers: the window as JSON, capped like every other tool's output.
-fn answer(
-    outcome: Result<crate::tools::channel::Outcome, String>,
-    max_output_chars: usize,
-    ctx: &ToolContext,
-) -> ToolOutcome {
+/// What a call answers: the window as JSON. The call layer caps it, not this tool:
+/// one cap, so `max_output` can raise what the home's default would have cut.
+fn answer(outcome: Result<crate::tools::channel::Outcome, String>) -> ToolOutcome {
     match outcome {
-        Ok(outcome) => ToolOutcome::ok(
-            outcome
-                .result(max_output_chars, &ctx.output_dir)
-                .to_string(),
-        ),
+        Ok(outcome) => ToolOutcome::ok(outcome.to_json().to_string()),
         Err(why) => ToolOutcome::err(why),
     }
 }

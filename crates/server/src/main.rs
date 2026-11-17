@@ -20,7 +20,7 @@ struct Command {
     /// Model name. Overrides `[provider] model`.
     #[arg(long)]
     model: Option<String>,
-    /// Path to bash. Overrides `[tools.bash] program`.
+    /// Path to bash. Overrides `GONGGA_BASH` and the detected shell.
     #[arg(long)]
     bash: Option<PathBuf>,
     /// Home for the database, config, logs, jobs and lock; beats `[server] home`.

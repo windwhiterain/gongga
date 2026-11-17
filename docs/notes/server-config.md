@@ -110,12 +110,17 @@ It is a ceiling on waiting, not on the work. A call that would need longer is re
 and told to say `detached`, which is a call that answers at once and reports when it is
 done -- so the ceiling never costs the work, only the turn's hold on it.
 
-## BashConfig::max_output_chars
+## ToolsConfig::max_output_chars
 
-Tool output longer than this is capped: only the head and the tail come back to
-the model, the whole thing is written to disk. Without this a single `cat` of a
-source file parks tens of kilobytes in the transcript and every later step pays
+The longest answer one tool call returns, in characters: only the head and the tail
+come back to the model, the whole thing is written to disk. Without it a single `cat`
+of a source file parks tens of kilobytes in the transcript and every later step pays
 for it again.
+
+One cap for every call, whatever tool answered it, and a call's own `max_output`
+overrides it for that call. A tool that capped as well would be a second answer to the
+same question, and the smaller number would win -- which is why no tool caps. `0` is
+no cap. See `server-tools-mod.md`, "laws: the arguments every call carries".
 
 ## AgentConfig::compress_above_tokens
 

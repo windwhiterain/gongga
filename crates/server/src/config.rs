@@ -118,8 +118,7 @@ pub struct Config {
     pub key: String,
     /// The model the server runs on when a session names none.
     pub model: ModelConfig,
-    pub bash: BashConfig,
-    /// What every tool call shares: the ceiling on one call's wait.
+    /// What every tool call shares: the cap, and the rows this home declares.
     pub tools: ToolsConfig,
     /// The persistent Python interpreter a `python` call runs in.
     pub python: PythonConfig,
@@ -230,12 +229,6 @@ pub fn image_refusal(
 }
 
 #[derive(Debug, Clone)]
-pub struct BashConfig {
-    /// Tool output longer than this is capped: head and tail only, all of it on disk.
-    pub max_output_chars: usize,
-}
-
-#[derive(Debug, Clone)]
 pub struct PythonConfig {
     /// Explicit interpreter. `None` means `python3`, then `python`, on PATH.
     pub program: Option<PathBuf>,
@@ -243,13 +236,19 @@ pub struct PythonConfig {
     pub args: Vec<String>,
     /// How long a `python` call waits before the interpreter is stopped.
     pub timeout: Duration,
-    /// Tool output longer than this is capped: head and tail only.
-    pub max_output_chars: usize,
 }
 
 /// What every tool call shares.
 #[derive(Debug, Clone)]
 pub struct ToolsConfig {
+    /// The longest answer one tool call returns, in characters; `0` is no cap.
+    ///
+    /// # Invariant
+    ///
+    /// One cap for every call, whatever tool answered it: a tool that capped as well
+    /// would be a second answer to the same question, and the smaller would win. A
+    /// call's own `max_output` overrides this for that call; see `tools::laws`.
+    pub max_output_chars: usize,
     /// Every tool this home declares, in the order the names sort.
     ///
     /// # Invariant
@@ -414,12 +413,15 @@ struct FileModel {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct FileTools {
-    bash: Option<FileBash>,
+    /// The longest answer one tool call returns, in characters; `0` is no cap.
+    max_output_chars: Option<usize>,
+    /// Where this number used to live. Kept so an older home keeps its value.
+    bash: Option<FileLegacyBash>,
     python: Option<FilePython>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-struct FileBash {
+struct FileLegacyBash {
     max_output_chars: Option<usize>,
 }
 
@@ -428,7 +430,6 @@ struct FilePython {
     program: Option<PathBuf>,
     args: Option<Vec<String>>,
     timeout_ms: Option<u64>,
-    max_output_chars: Option<usize>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -676,13 +677,6 @@ impl Config {
         };
 
         let tools_file = file.tools.clone().unwrap_or_default();
-        let bash_file = tools_file.bash.clone().unwrap_or_default();
-        let bash = BashConfig {
-            max_output_chars: bash_file
-                .max_output_chars
-                .or_else(|| env_or("GONGGA_BASH_MAX_OUTPUT_CHARS").and_then(|v| v.parse().ok()))
-                .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS),
-        };
 
         let python_file = tools_file.python.unwrap_or_default();
         let python = PythonConfig {
@@ -696,13 +690,29 @@ impl Config {
                     .or_else(|| env_or("GONGGA_PYTHON_TIMEOUT_MS").and_then(|v| v.parse().ok()))
                     .unwrap_or(120_000),
             ),
-            max_output_chars: python_file
-                .max_output_chars
-                .or_else(|| env_or("GONGGA_PYTHON_MAX_OUTPUT_CHARS").and_then(|v| v.parse().ok()))
-                .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS),
         };
 
         let tools = ToolsConfig {
+            max_output_chars: tools_file
+                .max_output_chars
+                .or_else(|| {
+                    // One cap now: an old home's number is that cap. Dropping it would
+                    // change what every call returns, silently.
+                    let legacy = tools_file
+                        .bash
+                        .as_ref()
+                        .and_then(|bash| bash.max_output_chars);
+                    if let Some(max) = legacy {
+                        tracing::warn!(
+                            max_output_chars = max,
+                            "`[tools.bash] max_output_chars` is `[tools] max_output_chars` now: \
+                             one cap for every call, not one per tool"
+                        );
+                    }
+                    legacy
+                })
+                .or_else(|| env_or("GONGGA_MAX_OUTPUT_CHARS").and_then(|v| v.parse().ok()))
+                .unwrap_or(DEFAULT_MAX_OUTPUT_CHARS),
             rows: file.tool.unwrap_or_default(),
             channels: file.channel.unwrap_or_default(),
         };
@@ -830,7 +840,6 @@ impl Config {
             bind,
             key,
             model,
-            bash,
             tools,
             python,
             scripts,

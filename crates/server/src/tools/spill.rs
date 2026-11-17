@@ -8,6 +8,12 @@ use std::path::Path;
 ///
 /// # Invariant
 ///
+/// Characters, not bytes: a cap is a length somebody stated, and the notice says
+/// what it took away in the same unit. Counting bytes makes a call's number mean
+/// something else in every language but English.
+///
+/// # Invariant
+///
 /// `None` as the directory names no path: a session on a peer cannot promise a file
 /// on a machine its reader is not sitting at. See `docs/notes/server-remote.md`.
 pub fn cap_output(
@@ -17,16 +23,19 @@ pub fn cap_output(
     dir: Option<&Path>,
     label: &str,
 ) -> String {
-    if max == 0 || text.len() <= max {
+    let total_chars = text.chars().count();
+    if max == 0 || total_chars <= max {
         return text.to_string();
     }
-    // More head than tail: the start says what it was, the end says how it went.
-    let head = floor_boundary(text, max * 3 / 5);
-    let tail = ceil_boundary(text, text.len() - (max - head));
-    let omitted = tail.saturating_sub(head);
+    // The split is in characters, so a cut never lands inside one.
+    let head_chars = max * 3 / 5;
+    let tail_chars = max - head_chars;
+    let head = byte_of_char(text, head_chars);
+    let tail = byte_of_char(text, total_chars - tail_chars);
+    let omitted = total_chars - head_chars - tail_chars;
     let spilled = dir.and_then(|dir| spill(dir, label, text));
     let omitted = omitted.to_string();
-    let total = text.len().to_string();
+    let total = total_chars.to_string();
     let notice = match &spilled {
         Some(path) => prompts.render(
             "output_cap",
@@ -40,19 +49,13 @@ pub fn cap_output(
     };
     format!("{}{}{}", &text[..head], notice, &text[tail..])
 }
-/// Rounds `i` down to a UTF-8 boundary, so slicing never splits a character.
-fn floor_boundary(s: &str, mut i: usize) -> usize {
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-/// Rounds `i` up to a UTF-8 boundary.
-fn ceil_boundary(s: &str, mut i: usize) -> usize {
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
+/// The byte index of the `chars`-th character, so a slice never splits one.
+/// The byte index of the `chars`-th character, clamping to the end.
+fn byte_of_char(s: &str, chars: usize) -> usize {
+    s.char_indices()
+        .nth(chars)
+        .map(|(at, _)| at)
+        .unwrap_or(s.len())
 }
 /// Writes the full output under `dir`, returning the path in Git Bash dialect.
 pub(crate) fn spill(dir: &Path, label: &str, text: &str) -> Option<String> {

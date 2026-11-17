@@ -30,7 +30,8 @@ asked politely to give it back.
 `[tools.python] program` and `args` select the interpreter; `uv run python` is
 `program = "uv"` with `args = ["run", "python"]`. `GONGGA_PYTHON` overrides the
 program, and with neither set the server takes `python3`, then `python`, from
-PATH. `timeout_ms` and `max_output_chars` are the same knobs as bash's.
+PATH. `timeout_ms` is the same knob as bash's. There is no per-tool cap: one
+`[tools] max_output_chars` holds every call, whatever tool answered it.
 
 ## background, and why the counters live outside the lock
 

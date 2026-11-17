@@ -334,7 +334,6 @@ pub struct ReadFileTool {
     pub program: Option<PathBuf>,
     pub args: Vec<String>,
     pub timeout: Duration,
-    pub max_output_chars: usize,
 }
 
 impl Cmd for ReadFileTool {
@@ -356,11 +355,6 @@ impl Cmd for ReadFileTool {
             if let Err(why) = file_remote(&args, ctx, "read_file") {
                 return ToolOutcome::err(why);
             }
-            let description = args
-                .get("description")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
             let request = json!({
                 "op": "read",
                 "path": path,
@@ -384,13 +378,7 @@ impl Cmd for ReadFileTool {
                     } else {
                         reply.stdout
                     };
-                    ToolOutcome::ok(ctx.cap(
-                        machine,
-                        "read_file",
-                        description,
-                        text,
-                        self.max_output_chars,
-                    ))
+                    ToolOutcome::ok(text)
                 }
                 Ok(reply) => ToolOutcome::err(reply_text(&reply)),
                 Err(e) => ToolOutcome::err(format!("read_file did not run: {e}")),
@@ -403,7 +391,6 @@ pub struct WriteFileTool {
     pub program: Option<PathBuf>,
     pub args: Vec<String>,
     pub timeout: Duration,
-    pub max_output_chars: usize,
 }
 
 impl Cmd for WriteFileTool {
@@ -426,11 +413,6 @@ impl Cmd for WriteFileTool {
             if let Err(why) = file_remote(&args, ctx, "write_file") {
                 return ToolOutcome::err(why);
             }
-            let description = args
-                .get("description")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
             let request = json!({"op": "write", "path": path, "content": content});
             let machine = file_machine(&args, ctx);
             let outcome = answer(
@@ -443,13 +425,7 @@ impl Cmd for WriteFileTool {
             )
             .await;
             match outcome {
-                Ok(reply) if reply.ok => ToolOutcome::ok(ctx.cap(
-                    machine,
-                    "write_file",
-                    description,
-                    reply_text(&reply),
-                    self.max_output_chars,
-                )),
+                Ok(reply) if reply.ok => ToolOutcome::ok(reply_text(&reply)),
                 Ok(reply) => ToolOutcome::err(reply_text(&reply)),
                 Err(e) => ToolOutcome::err(format!("write_file did not run: {e}")),
             }
@@ -461,7 +437,6 @@ pub struct ReplaceTool {
     pub program: Option<PathBuf>,
     pub args: Vec<String>,
     pub timeout: Duration,
-    pub max_output_chars: usize,
 }
 
 impl Cmd for ReplaceTool {
@@ -490,11 +465,6 @@ impl Cmd for ReplaceTool {
             if let Err(why) = file_remote(&args, ctx, "replace") {
                 return ToolOutcome::err(why);
             }
-            let description = args
-                .get("description")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty());
             let request = json!({
                 "op": "replace",
                 "path": path,
@@ -513,13 +483,7 @@ impl Cmd for ReplaceTool {
             )
             .await;
             match outcome {
-                Ok(reply) if reply.ok => ToolOutcome::ok(ctx.cap(
-                    machine,
-                    "replace",
-                    description,
-                    reply_text(&reply),
-                    self.max_output_chars,
-                )),
+                Ok(reply) if reply.ok => ToolOutcome::ok(reply_text(&reply)),
                 Ok(reply) => ToolOutcome::err(reply_text(&reply)),
                 Err(e) => ToolOutcome::err(format!("replace did not run: {e}")),
             }
