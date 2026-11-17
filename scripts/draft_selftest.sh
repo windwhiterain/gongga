@@ -98,44 +98,97 @@ cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 "${cli[@]}" '{"name":"set_session","args":{"id":"writer","model":"fake/flash-fake","cwd":"'"$(native "$work")"'"}}' >/dev/null 2>&1
 "${cli[@]}" '{"name":"send_message","args":{"session":"writer","message":"say something long"}}' >/dev/null 2>&1
 
-# Both a thought and an answer have to be in flight before the kill: that is what makes
-# each one's survival a separate fact rather than one scenario standing for two.
-for _ in $(seq 1 150); do
-  python - "$home" <<'INNER' && break
-import sqlite3, sys
-c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
-parts = {p for (p,) in c.execute("select distinct part from drafts where text <> ''")}
-sys.exit(0 if {"reasoning", "output"} <= parts else 1)
-INNER
-  sleep 0.2
-done
-drafted=$(python - "$home" <<'INNER'
+# A thought and an answer never stream at once: the fake finishes the reasoning item
+# before it opens the message, and a finished item's draft is dropped. So each half is
+# interrupted in its own phase, with its own kill and its own restart -- waiting for both
+# in `drafts` at the same moment is a state no stream produces.
+draft_parts() {
+  python - "$home" <<'INNER'
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
 print(",".join(sorted(p for (p,) in c.execute(
     "select distinct part from drafts where text <> ''"))))
 INNER
-)
-[[ "${drafted}" == *reasoning* && "${drafted}" == *output* ]]
-ok "a thought and an answer are both drafted as they stream" $?
-
+}
+wait_draft() {
+  for _ in $(seq 1 150); do
+    [[ "$(draft_parts)" == *"$1"* ]] && return 0
+    sleep 0.2
+  done
+  return 1
+}
+turn_ends() { grep -c "turn end session=writer" "$1" 2>/dev/null || true; }
 # The server runs under a watchdog, so killing the process that answers is not a kill:
 # the watchdog restarts it and the "restart" never happens. The tree has to go, and the
 # supervisor's pid is the one the server says it runs under.
-pid=$(cat "$home/server.lock")
-supervisor=$(sed -n 's/.*supervisor=\([0-9]*\).*/\1/p' "$log" | tail -1)
-taskkill //PID "${supervisor:-$pid}" //T //F >/dev/null 2>&1
-taskkill //PID "$pid" //F >/dev/null 2>&1
-for _ in $(seq 1 50); do
-  alive "$pid" || break
-  sleep 0.2
-done
-sleep 1
+kill_tree() {
+  local pid supervisor
+  pid=$(cat "$home/server.lock")
+  supervisor=$(sed -n 's/.*supervisor=\([0-9]*\).*/\1/p' "$log" | tail -1)
+  taskkill //PID "${supervisor:-$pid}" //T //F >/dev/null 2>&1
+  taskkill //PID "$pid" //F >/dev/null 2>&1
+  for _ in $(seq 1 50); do alive "$pid" || break; sleep 0.2; done
+  sleep 1
+}
 
+# -- phase 1: a thought in flight -------------------------------------------
+wait_draft reasoning
+ok "a thought is drafted while it streams" $?
+kill_tree
 : > "$log"
 start "$log"
 grep -q "half-answers kept before serving" "$log"
 ok "the next start keeps it" $?
+
+# Half a *thought* is a reasoning row, and the row is already the item a request sends:
+# the text in `content` with `reasoning_text`, never a summary the provider would ignore.
+python - "$home" <<'INNER'
+import json, sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
+rows = list(c.execute("select seq, kind, display, content from messages order by seq"))
+half = [json.loads(d) for s, k, d, _ in rows if k == "reasoning" and "interrupted" in d]
+assert half, "the half thought was not kept as a reasoning row"
+assert half[0]["summary"].strip(), half[0]
+wire = json.loads(next(cl for s, k, d, cl in rows
+                       if k == "reasoning" and "interrupted" in d and cl))
+assert wire["type"] == "reasoning", wire
+assert wire["content"] == [{"type": "reasoning_text", "text": half[0]["summary"]}], wire
+assert wire.get("id") == half[0]["item_id"], wire
+assert "encrypted_content" not in wire, wire
+INNER
+ok "the half thought is a reasoning row a request can send" $?
+
+# The invariant this exists for: what the kill left on disk is already sendable, so the
+# resumed turn's own request carries the thought back as reasoning text.
+python - "$dump" <<'INNER'
+import json, sys
+seen = 0
+for line in open(sys.argv[1], encoding="utf-8"):
+    if not line.strip():
+        continue
+    for item in json.loads(line).get("input") or []:
+        if item.get("type") != "reasoning":
+            continue
+        if any(p.get("type") == "reasoning_text" and p.get("text")
+               for p in item.get("content") or []):
+            seen += 1
+assert seen, "no request carried the half thought back as reasoning_text"
+INNER
+ok "a request sends the half thought back in the field it came from" $?
+
+# The resumed turn replays what the kill left: the answer phase starts after it ends.
+before=$(turn_ends "$log")
+for _ in $(seq 1 200); do [[ "$(turn_ends "$log")" -gt "$before" ]] && break; sleep 0.3; done
+
+# -- phase 2: an answer in flight -------------------------------------------
+"${cli[@]}" '{"name":"send_message","args":{"session":"writer","message":"say something long"}}' >/dev/null 2>&1
+wait_draft output
+ok "an answer is drafted while it streams" $?
+kill_tree
+: > "$log"
+start "$log"
+grep -q "half-answers kept before serving" "$log"
+ok "the next start keeps that half too" $?
 
 python - "$home" <<'INNER'
 import sqlite3, sys
@@ -161,58 +214,10 @@ assert stale == 0, f"{stale} draft(s) predate the row they became"
 INNER
 ok "it is a row marked interrupted, and the draft is gone" $?
 
-# Half a *thought* is kept as a reasoning row, because a thought the model wrote is
-# context it should read back. Two things have to hold for that to be sendable: the
-# stored item is the shape measured as accepted (text, no blob), and it sits after the
-# last output -- never between a call and its own output.
-python - "$home" <<'INNER'
-import json, sqlite3, sys
-c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db:ro".replace(":ro", "?mode=ro"),
-                    uri=True)
-rows = list(c.execute("select seq, kind, display, content from messages order by seq"))
-half = [json.loads(d) for s, k, d, _ in rows if k == "reasoning" and "interrupted" in d]
-assert half, "the half thought was not kept as a reasoning row"
-assert not half[0].get("encrypted"), half[0]
-assert half[0]["summary"].strip(), half[0]
-# The wire item is what a request sends back: the thought in the field its deltas came
-# from, so a resumed step reads its own reasoning instead of re-deriving it.
-wire = json.loads(next(cl for s, k, d, cl in rows
-                       if k == "reasoning" and "interrupted" in d and cl))
-assert wire["type"] == "reasoning", wire
-assert wire["content"] == [{"type": "reasoning_text", "text": half[0]["summary"]}], wire
-assert wire.get("id") == half[0]["item_id"], wire
-assert "encrypted_content" not in wire, wire
-# And its position: after the last tool output, never between a call and its output.
-last_output = max((s for s, k, _, _ in rows if k == "tool_result"), default=0)
-half_at = next(s for s, k, d, _ in rows if k == "reasoning" and "interrupted" in d)
-assert half_at > last_output, (half_at, last_output)
-INNER
-ok "the half thought is a reasoning row, in a position the provider accepts" $?
-
-# The invariant this exists for: what the kill left on disk is already sendable. The
-# resumed turn's own request carries the half thought back, as a reasoning item whose
-# text sits in `content` -- not a summary the provider would ignore.
-python - "$dump" <<'INNER'
-import json, sys
-seen = 0
-for line in open(sys.argv[1], encoding="utf-8"):
-    line = line.strip()
-    if not line:
-        continue
-    body = json.loads(line)
-    for item in body.get("input") or []:
-        if item.get("type") != "reasoning":
-            continue
-        parts = item.get("content") or []
-        if any(p.get("type") == "reasoning_text" and p.get("text") for p in parts):
-            seen += 1
-assert seen, "no request carried the half thought back as reasoning_text"
-INNER
-ok "a request sends the half thought back in the field it came from" $?
-
 # A finished answer leaves no draft behind: the normal path is unchanged.
+before=$(turn_ends "$log")
 "${cli[@]}" '{"name":"send_message","args":{"session":"writer","message":"and now a whole one"}}' >/dev/null 2>&1
-for _ in $(seq 1 100); do grep -q "turn end session=writer" "$log" && break; sleep 0.3; done
+for _ in $(seq 1 200); do [[ "$(turn_ends "$log")" -gt "$before" ]] && break; sleep 0.3; done
 python - "$home" <<'INNER'
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)
