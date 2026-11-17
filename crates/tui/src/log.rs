@@ -1624,8 +1624,9 @@ impl Log {
         rows: &[Vec<client::render_wire::DocumentSpan>],
         done: bool,
     ) {
+        // One block per key: a body that arrives as rows fills the one its text opened.
         let at = match self.entry_by_key(key) {
-            Some(at) if self.entries[at].document && self.entries[at].window.as_ref() == name => at,
+            Some(at) if self.entries[at].window.as_ref() == name => at,
             _ => {
                 let width = self.width_of(name);
                 let mut entry = Entry::with_tag(name, kind, tag, String::new(), width);
@@ -1643,6 +1644,7 @@ impl Log {
         self.entries[at].tag = tag.to_string();
         self.entries[at].document = true;
         self.entries[at].sealed = done;
+        self.entries[at].text.clear();
         self.entries[at].styled = rows
             .iter()
             .map(|row| Line::from(row.iter().map(document_span).collect::<Vec<_>>()))

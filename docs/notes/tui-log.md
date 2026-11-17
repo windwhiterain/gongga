@@ -678,6 +678,13 @@ A whitespace-only chunk is therefore dropped when it would *open* a block. Insid
 a block it is still appended, because a blank line between two paragraphs is real
 output.
 
+## Log::document
+
+A block is one key, decided when it is opened: a body that arrives as rows fills the
+block its own text opened, and takes it over -- the rows replace that text. Two blocks
+under one key is how a window came to draw the raw text beside a document that never
+landed, in the block's plain ink instead of the answer's.
+
 ## Log::rewrite and a document
 
 `rewrite` replaces what a block holds. For an answer that is the document, compared
