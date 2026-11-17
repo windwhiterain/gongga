@@ -1392,9 +1392,16 @@ fn object_completion(
             let Some(property) = object.get("properties").and_then(|held| held.get(name)) else {
                 return Offered::default();
             };
-            // An object field is entered by its name, which wrote the brace.
+            // An object field holds an object: its value is the brace its members go
+            // inside, and the caret lands in it.
             if protocol::argschema::enters(property) {
-                return Offered::default();
+                let hint = protocol::argschema::hint(property);
+                return Offered {
+                    subject: Some(subject_name(cmd, &place.path)),
+                    start: Some(range.0),
+                    end: Some(range.1),
+                    items: vec![written("{$0}", range, "{}".to_string(), &hint, false)],
+                };
             }
             Offered {
                 subject: Some(subject_name(cmd, &place.path)),
