@@ -1359,6 +1359,13 @@ fn object_completion(
     // The span a candidate rewrites is the token the caret is in.
     let (start, end) = json_place::token_at(text, at);
     let range = (brace + start, brace + end);
+    // A comma ahead is this member's own separator: a member cannot begin before it.
+    if text
+        .get(at..)
+        .is_some_and(|rest| rest.trim_start().starts_with(','))
+    {
+        return Offered::default();
+    }
     match place.typing {
         json_place::Typing::Key => {
             let Some(object) = schema_at(schema, &place.path, &place.levels) else {
