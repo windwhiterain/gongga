@@ -305,9 +305,18 @@ worktree 之间去重依赖**——省下的是编译时间与 incremental，不
 - **别在关键构建中途让 gc 插进来**：托管 target 属于回收范围（checkout 消失、30 天未用、
   `target.max_size` 预算）。删了能重建，但会打断正在跑的构建。
 
-**一个继承坑**：shim 在用户 PATH 里，**新起的进程**自动走 mbx；在这个 PATH 写入之前启动的
-服务端，它的 channel 继承的是旧环境——从那种会话里跑 `cargo` 就是裸 cargo。重启那个服务端，
-或在命令里自己把 `%LOCALAPPDATA%\mbx\bin` 置顶。
+**一个继承坑，而且是常态**：`mbx setup` **不改任何 PATH**，它只装 shim 二进制；shim 目录被写进
+用户 PATH 之后，注册表里是对的，但 Windows 只把新环境给**之后新起的进程**——已经跑着的
+shell / tui / 服务端，以及它们再 spawn 的 channel，全都还是旧环境。2026-11-17 实测：注册表
+用户 PATH 第一位是 shim，而从服务端起的会话里 `where.exe cargo` 第一条仍是
+`C:\Users\<user>\.cargo\bin\cargo.exe`——那些构建是裸的。
+
+**所以 `mbx doctor` 的 setup 行要看是谁在问**：它读的是**调用者**的 PATH。带前缀跑是
+`ok Cargo shim is active`，不带前缀跑就变成 `warn Cargo shim is current but not active; 
+PATH resolves cargo to ~/.cargo/bin/cargo.exe`。清 PATH 下的那一行才是当前真实状态。
+
+每个会话动手之前自己确认一次，不对就把 `%LOCALAPPDATA%\mbx\bin` 置顶（或重启那条
+会话链）；不要指望父会话替你带上。
 
 冷构建报 `0 hits, 0 misses, N not looked up` 是正常态：第一次还没有可用的 dep-info，编译完
 仍会入 store，从第二次起才可能命中。
