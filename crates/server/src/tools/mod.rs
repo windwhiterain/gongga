@@ -405,13 +405,13 @@ fn object_of(value: &Value) -> Option<serde_json::Map<String, Value>> {
 ///
 /// SPEC's `fn <tool>(**args)`: the command layer is the whole door, so a name it does
 /// not know is refused there in the command's own words, and the caller's session
-/// rides along. A call the harness cuts before its command answered says so: a
-/// command's silence is not a result. See `docs/notes/server-tools-mod.md`.
+/// rides along. Nothing races the command against the turn's token: only a wait may
+/// be ended, so the command answers and the turn ends at the next step boundary. See
+/// `docs/notes/server-tools-mod.md`.
 pub(crate) async fn run_command(
     session: &str,
     name: &str,
     words: protocol::Args,
-    cancel: &CancellationToken,
 ) -> ToolOutcome {
     let Some(layer) = crate::commands::layer() else {
         return ToolOutcome::err(format!(
@@ -419,17 +419,7 @@ pub(crate) async fn run_command(
         ));
     };
     let began = std::time::Instant::now();
-    let outcome = tokio::select! {
-        outcome = layer.run(session, name, words) => Some(outcome),
-        _ = cancel.cancelled() => None,
-    };
-    let Some(done) = outcome else {
-        // A cut is not silence: the answer has to say the command did not finish.
-        return ToolOutcome::err(format!(
-            "`{name}` was cut short by the harness before it answered, so it may not 
-             have run at all: read what it would have changed before running it again"
-        ));
-    };
+    let done = layer.run(session, name, words).await;
     let rows = answer_rows(&done.events);
     let mut answer = json!({
         "id": Value::Null,
@@ -748,7 +738,7 @@ impl ToolRegistry {
                 Some(table) => named_words(table),
                 None => protocol::Args::new(),
             };
-            return run_command(&ctx.session, name, words, &ctx.cancel).await;
+            return run_command(&ctx.session, name, words).await;
         };
         // The name this call was made under, as the row spells it now.
         let mut named = ctx.clone();
@@ -821,7 +811,8 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
     let work = Arc::clone(tool);
     let given = args.clone();
     let (tx, mut rx) = mpsc::channel::<ToolOutcome>(1);
-    let task = tokio::spawn(async move {
+    // Detached on purpose: what it is doing is not dropped when the wait ends.
+    tokio::spawn(async move {
         let outcome = work.run(given, &job).await;
         let _ = tx.send(outcome).await;
     });
@@ -847,16 +838,13 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
         elapsed = ?started.elapsed(),
         "the wait ended before the call answered"
     );
-    // SPEC: a waiting call returns early; its token says the wait is over. A tool
-    // with no wait to end is stopped instead.
+    // SPEC: a waiting call returns early; its token says the wait is over. What the
+    // call is doing is not the turn's to kill: one with no wait to end answers on its
+    // own path, and the turn ends at the next step boundary after it.
     token.cancel();
-    match tokio::time::timeout(EARLY_RETURN, rx.recv()).await {
-        Ok(Some(answer)) => answer,
-        _ => {
-            task.abort();
-            let _ = task.await;
-            stopped(tool.name())
-        }
+    match rx.recv().await {
+        Some(answer) => answer,
+        None => stopped(tool.name()),
     }
 }
 

@@ -3808,7 +3808,8 @@ async fn cancel(d: &Dispatch, origin: &Origin, keep_alive: bool) -> Outcome {
         }
     }
     for session in &running {
-        // Fire the token: a stuck call has no boundary. A waiting one gets a deadline.
+        // The token ends a wait; it never cuts a call. One inside `exec`/`wait` answers
+        // with what it has, anything else answers when its own work is done.
         interrupt(d, session.name(), Stop::Cancel);
     }
     let pending = d.store.pending_tasks().map(|t| t.len()).unwrap_or(0);

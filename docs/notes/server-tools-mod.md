@@ -156,17 +156,18 @@ execution it runs, to call a hung mechanism a fault. `CALL_TIMEOUT_MS` is the
 one such number today, the skill program's. No caller sets it, no caller reads
 it, and while the harness is correct the interface is unchanged by it.
 
-## run_command (a command the harness cut)
+## run_command (a command is never cut)
 
-The call is a `select!` between the command layer and the caller's cancel token, so a
-cut can land before the command answered. Nothing in that state says whether the
+The call used to be a `select!` between the command layer and the caller's cancel token,
+so a cut could land before the command answered. Nothing in that state says whether the
 command ran: an empty `Result` (`"exit": null`, no output) reads to a model as "ran,
-said nothing", and that is how one `send_message` was sent twice. The answer is
-therefore an error naming the cut and telling the reader to look at what the call
-would have changed before repeating it -- the same rule as `BashTool::run (a cancelled
-result)`: never let silence pass for success. The only cut that arrives now is the
-turn's own cancel: the prefix cache stops interrupting a tool at all
-(`server-agent.md`, "The tier's deadline belongs to the heartbeat").
+said nothing", and that is how one `send_message` was sent twice.
+
+The select is gone. A command is a call like any other: SPEC lets a stop end a wait, and
+a command that mutates the server -- `new_session`, `send_message`, `del_session`, a
+skill's entry -- has no wait to end, so cutting it half-way is the harness losing a
+mutation it cannot describe. It runs, it answers, and the turn ends at the next step
+boundary.
 
 ## Tool, Cmd::forwards_to
 
@@ -345,10 +346,12 @@ message sat in `pending_tasks` until the timeout it was written against.
 So the wait is `waited`, in `ToolRegistry::run`, and it is the only one: every
 tool is awaited there, the inbox is compared against the copy the context took
 when the call started, and the work's own token is what says the wait is over. A tool
-that watches it answers with what it has and never sees an error; one that does not is
-aborted, which is what makes a program die with its call (`kill_on_drop`, or the peer's
-connection closing) and what frees a shell's lock for the task that reads the rest of
-its output.
+that watches it answers with what it has; one that does not is left alone to finish and
+answers when its own work is done. Nothing here aborts a call: SPEC lets a stop end a
+*wait* and says nothing about the work, and killing it was the harness inventing an
+ending -- a program killed through `kill_on_drop`, a shell's lock released under the
+task that reads the rest of its output, and a model told a call "stopped before it
+could answer" when in fact it had run.
 
 ## a waiting call returns early
 
@@ -366,10 +369,12 @@ Three tools wait, and each one's early answer is the answer it already had:
 - a command route (`Forward`, and `GonggaCli` with it): the command said nothing, so its
   `Result` carries an empty `output`, `exit: null`, and the time it spent.
 
-A tool with no wait to end -- a file read, a skill's entry -- is aborted, and `stopped`
-says the work stopped before it could answer. That is the only sentence left about a
-call's ending, and it is a fact about the call: no tool learns which verb ended the
-turn, because nothing it answers may depend on that.
+A tool with no wait to end -- a file read, a skill's entry -- is not stopped: it answers
+when its own work is done, and the turn ends at the next step boundary after it. The
+cost is stated rather than paid quietly: a call wedged on something that ignores the
+token cannot be ended from inside the running server, only by the process going away.
+`stopped` is left for the work that ends without answering at all -- a task that panicked
+or was torn down with the runtime.
 
 What the stop does to the turn is `commands`' business: whether a restart continues it,
 and what a window is told, are decided there and read from `StopSignal`, not from
