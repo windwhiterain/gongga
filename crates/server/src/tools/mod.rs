@@ -310,7 +310,7 @@ impl Cmd for Forward {
                 Some(table) => named_words(table),
                 None => protocol::Args::new(),
             };
-            run_command(&ctx.session, &self.name, words, &ctx.cancel).await
+            run_command(&ctx.session, &self.name, words).await
         })
     }
 }
@@ -337,7 +337,7 @@ impl Cmd for GonggaCli {
                 Ok(route) => route,
                 Err(refusal) => return ToolOutcome::err(refusal),
             };
-            run_command(&ctx.session, &name, words, &ctx.cancel).await
+            run_command(&ctx.session, &name, words).await
         })
     }
 }
@@ -408,11 +408,7 @@ fn object_of(value: &Value) -> Option<serde_json::Map<String, Value>> {
 /// rides along. Nothing races the command against the turn's token: only a wait may
 /// be ended, so the command answers and the turn ends at the next step boundary. See
 /// `docs/notes/server-tools-mod.md`.
-pub(crate) async fn run_command(
-    session: &str,
-    name: &str,
-    words: protocol::Args,
-) -> ToolOutcome {
+pub(crate) async fn run_command(session: &str, name: &str, words: protocol::Args) -> ToolOutcome {
     let Some(layer) = crate::commands::layer() else {
         return ToolOutcome::err(format!(
             "{name} is a command, and this process has no command layer: it runs one call and answers with a file"
