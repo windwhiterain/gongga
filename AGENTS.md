@@ -6,6 +6,10 @@
 - @skill(whiting-dev) must be followed.
 - when designing new feature, search any existing wheels.
 - setting any limit/budget is forbidden.
+- **构建一律经 mbx**：`cargo` 必须解析到 `%LOCALAPPDATA%\mbx\bin\cargo.exe`（`where.exe cargo` 的第一行）。
+  用绝对路径调用（`~/.cargo/bin/cargo.exe`、rustup toolchain 里那个）的构建绕过 shim，既不进
+  缓存也不进记账，等于退回裸构建。早于 shim 写入 PATH 启动的会话先确认一次，不对就把
+  `%LOCALAPPDATA%\mbx\bin` 置顶。见「构建缓存（mbx）」。
 - session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
 - server home for tests should be local to each worktree: a shared home makes worktrees lock each other, and someone else's home is not yours to write in -- the program you run may stop the server on it.
 - pointing at a home in use is not a read-only act: `GONGGA_HOME` on a live home makes the bundle place its payload there and retire the build it replaces, and that asks the home's server to `cancel` -- every turn it is running dies with the ask, unless the program starts no server of its own (as `--client_only` says). See `docs/notes/bundle-main.md`, "There is no read-only run".
@@ -92,7 +96,7 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
   看不见——而内容已经不需要在本仓库留下提交了（`ignore = all`），所以"改了内容"与"本仓库
   有提交"从此是两件事。推送内容之后仍要 `scripts/ship.sh --check`：退出码是契约
   （0 一致 / 1 真漂移 / 3 远端没应答），它不是可选项。
-- **报"做完了"之前，这一轮的每一道门都要有一次真实的执行**：`cargo build`、
+- **报"做完了"之前，这一轮的每一道门都要有一次真实的执行**：`cargo build`（经 mbx 的 shim）、
   `cargo fmt --check`、`comments-check`（对着**基线**比，别只看总数）、
   `test-layout-check`、`scripts/skill_contract.sh`、`scripts/ship.sh --check`，
   以及单测够不着时的 L3 真进程脚本。没跑就说没跑，跑红了就说红了。
@@ -293,6 +297,9 @@ worktree 之间去重依赖**——省下的是编译时间与 incremental，不
   与接管前的 `--clean`）曾经是这个写法、把失败吞掉，所以它的 clean 一度从未真正执行过；
   `4d25db10` 起两处都是 `env -u`，实测见 `.dev/verify/596a8c653f0e-evolve-clean-fix.json`
   （旧写法 `exit 101`、target 还在；新写法 `exit 0`、target 消失）。
+- **不要用绝对路径调 cargo**（`~/.cargo/bin/cargo.exe`、`.../rustup/toolchains/.../bin/cargo.exe`）：
+  那条路绕过 shim，既不进缓存也不出现在 `mbx explain --last` 里，等于偷偷退回裸构建。
+  老会话先 `where.exe cargo` 确认第一条是 shim。
 - **不要在同一 checkout 里并发跑两个 cargo**：Cargo 的目录锁仍在，mbx 只解决跨 checkout
   的重复编译。
 - **别在关键构建中途让 gc 插进来**：托管 target 属于回收范围（checkout 消失、30 天未用、
