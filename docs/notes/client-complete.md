@@ -11,12 +11,24 @@ popup says it is asking for), the range every item replaces, and the items.
 `Completion` is the open popup: the line and caret it answers, the same range,
 the items, and the selection.
 
-**The item writes a whole token and says where the caret goes.** `new_text` is
-everything the line holds after accepting it — the colon, the quotes, the brace
-it opens, the comma it owes, the closers its object does — and the caret lands on
-the snippet stop `$0`. Nothing else computes an offset: `Candidate::cursor`,
-`Candidate::space` and the per-candidate caret arithmetic are gone, so a new kind
-of option cannot disagree with the front-end about where the caret is.
+**A JSON candidate is an insertion at the caret and nothing else.** `new_text` is what
+the line still lacks *from the caret on*: the rest of the name being typed, its colon and
+value, the separator a member owes. `range` is empty there, so no byte the operator wrote
+is replaced, and nothing after the caret is read or touched — not to decide a comma, not to
+write a closer. The whole family of "the earlier field ate my next key" was the opposite
+model: a candidate that replaced a token of a line it was only halfway through reading. The
+consequence is stated rather than hidden: a candidate qualifies only where the text it
+spells *starts with* the token already typed (`inserted`), and a caret inside a token that
+goes on after it is offered nothing at all — you cannot insert into the middle of a word
+and be right.
+
+**A member that follows another writes its own separator, at its front** (`follows_member`).
+Read from what stands before the caret, never after: a comma behind the caret is the
+operator's text, and the owed braces of an unfinished object are the operator's too.
+
+**A word candidate still replaces the word it completes.** `Completion::apply` takes the
+item's own range or the answer's, never part of either, and a word never doubles the space
+it ends with. That is the flag form and the `@` references; the JSON form's range is empty.
 
 **A snippet stop is `$0`..`$9` or `${n}`/`${n:word}`** (`expand`). The lowest stop
 decides, at its first appearance; a snippet stating none leaves the caret at the
@@ -73,22 +85,21 @@ by the type the schema states (`crate::leaf`), so `ctx_limit` takes `"70%"` and
 of the roster's `<provider>/<model>`. A field the object already states is not
 offered again.
 
-**A name whose colon the line already holds renames it.** The caret may stand inside a
-name whose member is written -- `{"live_comp|act":true}` -- and there the candidate is the
-quoted name alone: the colon and the value after it are the operator's, so writing a second
-colon, a value or the comma the separator would read off that colon is how an earlier
-field's completion eats the rest of the line. Measured: `new_session{"live_compact_enabled":true}`
-accepted `id` at the name and came out `new_session{"id":"",:true}`; it comes out
-`new_session{"id":true}`.
+**Measured, both ways.** `new_session{"live_compact_enabled":true}` with the caret
+inside the name used to accept `id` and come out `new_session{"id":"",:true}` -- a
+member written over one the line already had. It now offers nothing, and the line is left
+as the operator wrote it. `/set_session{` accepts `id` and comes out `/set_session{"id":""`;
+a comma and a second acceptance give `/set_session{"id":"a","config":{}`.
 
-**The braces the object still owes are written only where the line ends at the token.** A
-line that goes on has its own tail, and a closer put in front of it closes the object over
-the operator's next member.
+**The separator is a comma at the front of the insertion**, decided by what stands before
+the caret (`follows_member`): a member inserted after another carries it, one inserted just
+after `{` or `,` does not. Nothing is ever written behind the caret, so the operator's own
+tail cannot be read wrongly or overwritten.
 
-**The separator is the line's answer.** A comma stands after the member when the
-next non-whitespace character is not `,` `}` `]` and the line does not end there —
-the standard rule. It is read off the line, never off the schema, so no trailing
-comma is written and nothing already typed after the caret is touched.
+**The braces an unfinished object owes are the operator's.** A candidate completes a
+member, not a document: after `/cmd{` and one acceptance the line is `{"field":value`, and
+the closers are keys to press. Writing them was what closed an object early and left the
+operator's next member outside it.
 
 **What a leaf with no list offers.** A string leaf offers the operator's own
 fragment, closed, with the caret between the quotes while it is empty. A switch

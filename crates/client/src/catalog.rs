@@ -994,12 +994,19 @@ fn open_quote(line: &str) -> Option<char> {
 /// The standard's separator rule: a comma stands before what follows, never
 /// before a closer and never at the end of the line. The line decides, not the
 /// schema, so what a completion writes is JSON the server can read.
-fn separator(text: &str, from: usize) -> bool {
-    let rest = text.get(from.min(text.len())..).unwrap_or("");
-    match rest.trim_start().chars().next() {
-        None | Some(',') | Some('}') | Some(']') => false,
-        _ => true,
-    }
+/// Whether a member already stands before `from`, so the one written here needs a
+/// separator in front of it.
+///
+/// # Invariant
+///
+/// Read off what the line holds before the caret, never after it: the operator's own tail
+/// is not something a candidate may consult to decide what to write.
+fn follows_member(text: &str, from: usize) -> bool {
+    let rest = text.get(..from.min(text.len())).unwrap_or("");
+    !matches!(
+        rest.trim_end().chars().next_back(),
+        None | Some('{') | Some(',')
+    )
 }
 
 /// The object schema at a path of field names, or `None` when the path leaves
@@ -1043,18 +1050,16 @@ fn chosen<'a>(
 ///
 /// # Invariant
 ///
-/// A name is written whole -- its colon, the brace or quotes its value is held in, the
-/// comma it owes, every brace the object still owes -- and it states where the caret
-/// goes. A name whose member already holds a colon is that name alone: a second colon
-/// or value there eats the rest of the line. A field already stated is not offered.
+/// A candidate is an insertion at the caret (`inserted`), so a name is offered only
+/// where the member it spells starts with what the operator has typed of it. A field
+/// the object already states is not offered.
 fn keys(
     object: &Value,
+    typed: &str,
     fragment: &str,
     range: (usize, usize),
     written: &[(String, Read)],
-    closers: usize,
-    comma: bool,
-    stated: bool,
+    separator: bool,
 ) -> Vec<Item> {
     let Some(properties) = protocol::argschema::properties(object) else {
         return Vec::new();
@@ -1062,7 +1067,6 @@ fn keys(
     let required = protocol::argschema::required(object);
     let mut fields: Vec<(&String, &Value)> = properties
         .iter()
-        .filter(|(name, _)| name.contains(fragment))
         .filter(|(name, _)| !written.iter().any(|(held, _)| held == *name))
         .collect();
     // What the command insists on first, then a prefix match; stable, so the
@@ -1075,34 +1079,21 @@ fn keys(
     });
     fields
         .into_iter()
-        .map(|(name, property)| {
-            if stated {
-                return Item::at(
-                    range,
-                    format!("\"{name}\"$0"),
-                    true,
-                    format!("\"{name}\""),
-                    protocol::argschema::description(property),
-                );
-            }
-            let label = format!("\"{name}\":");
-            let mut new_text = match protocol::argschema::enters(property) {
-                true => format!("{label}{{$0}}"),
+        .filter_map(|(name, property)| {
+            let whole = match protocol::argschema::enters(property) {
+                true => format!("\"{name}\":{{$0}}"),
                 false => match property.get("type").and_then(Value::as_str) {
-                    Some("string") => format!("{label}\"$0\""),
-                    _ => format!("{label}$0"),
+                    Some("string") => format!("\"{name}\":\"$0\""),
+                    _ => format!("\"{name}\":$0"),
                 },
             };
-            if comma {
-                new_text.push(',');
-            }
-            new_text.push_str(&"}".repeat(closers));
-            Item::at(
+            inserted(
+                typed,
+                &whole,
                 range,
-                new_text,
-                true,
-                label,
-                protocol::argschema::description(property),
+                format!("\"{name}\":"),
+                &protocol::argschema::description(property),
+                separator,
             )
         })
         .collect()
@@ -1129,31 +1120,34 @@ fn values(
     place: &json_place::Place,
     ctx: &Ctx,
     words: &[String],
+    typed: &str,
     range: (usize, usize),
-    closers: usize,
-    comma: bool,
 ) -> Vec<Item> {
     let model = named_model(&place.fields).or_else(|| model_named(ctx, words));
     let hint = protocol::argschema::hint(property);
     let leaf = Leaf::from_schema(property);
     // A closed set is the standard's `enum`, and nothing else has to be asked.
     if let Some(values) = property.get("enum").and_then(Value::as_array) {
-        let chosen: Vec<&str> = values
+        let offered: Vec<Item> = values
             .iter()
             .filter_map(Value::as_str)
-            .filter(|value| value.contains(&place.fragment))
+            .filter_map(|value| {
+                let text = match protocol::argschema::model_ref(property) {
+                    true => model_value(value)?,
+                    false => leaf.token(value),
+                };
+                inserted(
+                    typed,
+                    &format!("{text}$0"),
+                    range,
+                    text.clone(),
+                    &hint,
+                    false,
+                )
+            })
             .collect();
-        if !chosen.is_empty() {
-            return chosen
-                .into_iter()
-                .filter_map(|value| {
-                    let text = match protocol::argschema::model_ref(property) {
-                        true => model_value(value)?,
-                        false => leaf.token(value),
-                    };
-                    Some(member(text, &hint, range, closers, comma))
-                })
-                .collect();
+        if !offered.is_empty() {
+            return offered;
         }
     }
     let offered = published(
@@ -1167,7 +1161,7 @@ fn values(
         0,
     );
     if offered.is_empty() {
-        return owed(property, leaf, place, ctx, range, closers, comma);
+        return owed(property, leaf, place, ctx, typed, range);
     }
     offered
         .into_iter()
@@ -1176,19 +1170,40 @@ fn values(
                 true => model_value(&item.label)?,
                 false => leaf.token(&item.label),
             };
-            Some(member(value, &item.detail, range, closers, comma))
+            inserted(
+                typed,
+                &format!("{value}$0"),
+                range,
+                value,
+                &item.detail,
+                false,
+            )
         })
         .collect()
 }
 
-/// A member's value, as the item that writes it.
-fn member(value: String, detail: &str, range: (usize, usize), closers: usize, comma: bool) -> Item {
-    let mut new_text = format!("{value}$0");
-    if comma {
-        new_text.push(',');
+/// One candidate as what it writes: `whole` minus the token the operator has typed.
+///
+/// # Invariant
+///
+/// Inserted, never written over: the range is empty at the caret, so every byte the line
+/// holds stays where it is. That is why a candidate which does not spell the typed token
+/// is not offered, and why a following member carries its separator at its own front.
+fn inserted(
+    typed: &str,
+    whole: &str,
+    range: (usize, usize),
+    label: String,
+    detail: &str,
+    separator: bool,
+) -> Option<Item> {
+    let rest = whole.strip_prefix(typed)?;
+    let mut text = String::new();
+    if separator {
+        text.push(',');
     }
-    new_text.push_str(&"}".repeat(closers));
-    Item::at(range, new_text, true, value, detail.to_string())
+    text.push_str(rest);
+    Some(Item::at(range, text, true, label, detail.to_string()))
 }
 
 /// What a leaf owes when the catalog publishes nothing for it: a string's quotes,
@@ -1198,54 +1213,34 @@ fn member(value: String, detail: &str, range: (usize, usize), closers: usize, co
 ///
 /// A string candidate is the operator's own fragment, closed -- never a value. It is
 /// offered only where there is nothing to choose from, and not while a listing is on
-/// its way, whose answer it would replace. See `docs/notes/client-complete.md`.
-/// What a leaf owes when the catalog publishes nothing for it: a string's quotes,
-/// a switch's two readings.
-///
-/// # Invariant
-///
-/// A string candidate is the operator's own fragment, closed -- never a value. It is
-/// offered only where there is nothing to choose from, and not while a listing is on
-/// its way, whose answer it would replace. See `docs/notes/client-complete.md`.
+/// its way (`Catalog::wants`).
 fn owed(
     property: &Value,
     leaf: Leaf,
     place: &json_place::Place,
     ctx: &Ctx,
+    typed: &str,
     range: (usize, usize),
-    closers: usize,
-    comma: bool,
 ) -> Vec<Item> {
     if ctx.catalog.wants() {
         return Vec::new();
     }
     let hint = protocol::argschema::hint(property);
-    let texts: Vec<(String, bool)> = match leaf {
-        Leaf::Switch => vec![("true".to_string(), false), ("false".to_string(), false)],
-        // Both quotes stand and nothing is inside them: the token is finished.
+    let wholes: Vec<String> = match leaf {
+        Leaf::Switch => vec!["true".to_string(), "false".to_string()],
+        // Both quotes stand: the token is finished, and a finished token is not being typed.
         Leaf::Text if place.quoted => return Vec::new(),
-        // An empty string leaves the caret between its quotes;
-        // a typed one ends where the operator stopped.
-        Leaf::Text if place.fragment.is_empty() => vec![(String::new(), true)],
-        Leaf::Text => vec![(leaf.token(&place.fragment), false)],
+        // An empty string is the two quotes, the caret between them.
+        Leaf::Text if place.fragment.is_empty() => vec!["\"$0\"".to_string()],
+        // A typed one is that text, closed.
+        Leaf::Text => vec![format!("{}$0", leaf.token(&place.fragment))],
         Leaf::Other => return Vec::new(),
     };
-    texts
+    wholes
         .into_iter()
-        .map(|(text, between_quotes)| {
-            let label = match between_quotes {
-                true => "\"\"".to_string(),
-                false => text.clone(),
-            };
-            let mut new_text = match between_quotes {
-                true => "\"$0\"".to_string(),
-                false => format!("{text}$0"),
-            };
-            if comma {
-                new_text.push(',');
-            }
-            new_text.push_str(&"}".repeat(closers));
-            Item::at(range, new_text, true, label, hint.to_string())
+        .filter_map(|whole| {
+            let label = whole.replace("$0", "");
+            inserted(typed, &whole, range, label, &hint, false)
         })
         .collect()
 }
@@ -1384,35 +1379,32 @@ fn object_completion(
     let Some(place) = json_place::place(text, at) else {
         return Offered::default();
     };
-    let range = (brace + place.start, brace + place.end);
-    // A tail is the operator's own: braces are owed only where the line ends.
-    let owed = match text.get(place.end.min(text.len())..) {
-        Some(tail) if tail.trim().is_empty() => place.open.saturating_sub(place.after),
-        _ => 0,
-    };
-    // The separator is the line's answer, not the schema's.
-    let comma = separator(text, place.end);
+    // One insertion at the caret: no byte the line holds is replaced, and nothing after
+    // the caret is read.
+    let range = (brace + at, brace + at);
+    // A token that goes on after the caret is not being typed: nothing is offered.
+    if place.end > at {
+        return Offered::default();
+    }
+    let typed = text.get(place.start.min(at)..at).unwrap_or_default();
     match place.typing {
         json_place::Typing::Key => {
             let Some(object) = schema_at(schema, &place.path, &place.levels) else {
                 return Offered::default();
             };
-            // The colon is the line's: the candidate renames the name.
-            let stated = text[place.end.min(text.len())..]
-                .trim_start()
-                .starts_with(':');
+            // A member that follows another writes its own separator, at its front.
+            let separator = typed.is_empty() && follows_member(text, place.start);
             Offered {
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
                 items: keys(
                     object,
+                    typed,
                     &place.fragment,
                     range,
                     &place.fields,
-                    owed,
-                    comma,
-                    stated,
+                    separator,
                 ),
             }
         }
@@ -1434,7 +1426,7 @@ fn object_completion(
                 subject: Some(subject_name(cmd, &place.path)),
                 start: Some(range.0),
                 end: Some(range.1),
-                items: values(property, &place, ctx, words, range, owed, comma),
+                items: values(property, &place, ctx, words, typed, range),
             }
         }
     }

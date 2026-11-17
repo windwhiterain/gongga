@@ -59,11 +59,6 @@ pub struct Place {
     /// Every object the cursor stands in, outermost first: a property's schema
     /// may be chosen by a sibling of an outer object.
     pub levels: Vec<Vec<(String, Read)>>,
-    /// How many objects enclose the token, its own included.
-    pub open: usize,
-    /// How many closers already stand after it, so what a candidate owes is
-    /// `open - after`.
-    pub after: usize,
 }
 
 /// What an object or a list being read waits for next.
@@ -148,19 +143,6 @@ pub fn place(text: &str, cursor: usize) -> Option<Place> {
             place.quoted = false;
         }
     }
-    place.open = stack
-        .iter()
-        .filter(|one| matches!(one, Container::Object(_)))
-        .count();
-    place.after = tokens
-        .iter()
-        .filter(|token| {
-            matches!(token.kind, PieceKind::CloseBrace)
-                && token.start >= place.end
-                && token.start < line
-        })
-        .count()
-        .min(place.open);
     Some(place)
 }
 
@@ -496,8 +478,6 @@ fn between(text: &str, at: usize, stack: &[Container]) -> Option<Place> {
         quoted,
         fields: frame.members.clone(),
         levels: levels(stack),
-        open: 0,
-        after: 0,
     })
 }
 
@@ -533,8 +513,6 @@ fn inside(
         quoted: end <= line,
         fields: frame.members.clone(),
         levels: levels(stack),
-        open: 0,
-        after: 0,
     })
 }
 
