@@ -307,26 +307,29 @@ worktree 之间去重依赖**——省下的是编译时间与 incremental，不
 
 **一个继承坑，而且是常态**：`mbx setup` **不改任何 PATH**，它只装 shim 二进制。更麻烦的是 mbx
 包一次构建时会把 PATH 里**自己那个目录换掉**，换成 `%TEMP%\mbx-session-<id>` 这样的会话目录
-（实测：一个 build script 看到的 PATH 第 13 项就是它，而 `mbx\bin` 与 `.local\bin` 都不在里面）。
+（实测：一个 build script 看到的 PATH 第 13 项就是它，而 `mbx\bin` 已经不在里面）。
 那个目录随会话结束被删 —— 于是经 mbx 起的 tui / client / 服务端 / channel 继承到的是一份
 "含一个已消失目录、且没有 shim 目录"的 PATH，`cargo` 就落回 `~/.cargo\bin\cargo.exe`，那些
 构建是裸的。2026-11-17 实测链：terminal(11/15) → `mbx\bin\cargo.exe`(pid 14700) → mbx.exe →
 tui → client → server → channel；所以"tui 确实是经 mbx 起的"与"channel 里是裸 cargo"同时成立，
 **重启不解决**——重启还是经同一个 mbx 起，继承的还是同一形态。
 
-**所以 `mbx doctor` 的 setup 行要看是谁在问**：它读的是**调用者**的 PATH。带前缀跑是
-`ok Cargo shim is active`，不带前缀跑就变成 `warn Cargo shim is current but not active; 
-PATH resolves cargo to ~/.cargo/bin/cargo.exe`。清 PATH 下的那一行才是当前真实状态。
+**所以每个会话自己置顶，别等继承、也别造别名**：动手前看一眼 `where.exe cargo`（Git Bash 里
+`which -a cargo`），第一条必须是 `<home>/AppData/Local/mbx/bin/cargo.exe`；不是，就在命令前
+自己带上：
 
-**要让它真的生效，不靠重启，靠位置**：PATH 的**值**是旧的，但它列出的**目录**是真的。把 shim
-硬链接到 `%USERPROFILE%\.local\bin\cargo.exe`（这个目录本来就在所有会话的 PATH 里，
-且排在 `~/.cargo/bin` 之前），同一个会话环境不动、下一次 `cargo` 就走 mbx 了。实测：`which cargo`
-变成 `.local/bin/cargo`，一次 `cargo build` 打出 `mbx[cache]: ... stored locally`。shim 按**文件名**
-分派，与它自己所在的路径无关。
+```bash
+export PATH="/c/Users/<user>/AppData/Local/mbx/bin:$PATH"      # Git Bash
+$env:Path = "$env:LOCALAPPDATA\mbx\bin;$env:Path"              # PowerShell
+path C:\Users\<user>\AppData\Local\mbx\bin;%path%              # cmd
+```
 
-两条注意：`mbx doctor` 的 setup 行会把这种形态报成 `not active`（它只认自己那个目录在 PATH 第一位），
-**不要**据此判断没生效，用 `mbx explain --last` 或 `mbx cache stats`；硬链接是同一个 inode，mbx 升级
-换了 shim 之后要重新链一次。撤销就是删掉那个 `cargo.exe`。
+**不要用别名或硬链接把 shim 塞进别的目录图省事**：那会让"哪条是 shim"变得不可读，mbx 升级
+换了 shim 之后它还指着旧二进制，下一个人也看不出这层。置顶是一行、看得见、随时可验证。
+
+判据只有一条：构建时打出 `mbx[cache]: N hits, ...` 就是走了缓存，没打出来就是裸构建。
+`mbx doctor` 的 setup 行**不算**判据——它读的是**调用者**的 PATH，报 `not active` 只说明它的
+规范目录不在第一位，说明不了 cargo 有没有被包住。
 
 冷构建报 `0 hits, 0 misses, N not looked up` 是正常态：第一次还没有可用的 dep-info，编译完
 仍会入 store，从第二次起才可能命中。
