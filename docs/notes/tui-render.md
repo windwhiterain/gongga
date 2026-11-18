@@ -507,6 +507,12 @@ came to read, so its rows are drawn as the markdown they print -- `markdown::col
 and `docs/notes/tui-markdown.md` for what a row can say. It carries no mark, so its colours
 are spent on structure and none on the question of what kind of row it is.
 
+A page is the other way an answer arrives: `PastRow::Block` carries text, not rows, so
+nothing styled it and it fell to the content ink -- the quiet gray, in a window where every
+answer the operator scrolled back to read was dim and every fresh one was white. `content_for`
+draws `Assistant` white for that reason, beside the operator's own message, and the gray
+stays for the kinds that are meant to be read past.
+
 ## ruled_row
 
 An opened item's box is two rules and the rows between them, and the item's label rides

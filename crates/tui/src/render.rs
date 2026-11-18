@@ -907,12 +907,13 @@ fn item_row(kind: LineKind, text: &str) -> Line<'static> {
 ///
 /// # Invariant
 ///
-/// SPEC gives the operator's message a white content and leaves the
-/// abstraction's quiet: the mark says what an item is, and the reader's own
-/// words are the one body that must not be dimmed.
+/// The two bodies a reader reads rather than skims -- the operator's words and the
+/// answer -- are white; every other body is the kind's mark over the quiet gray. A
+/// streamed answer brings its own ink in a document, a paged one is plain text, so
+/// the ink is here. See `docs/notes/tui-render.md`.
 fn content_for(kind: LineKind) -> Style {
     match kind {
-        LineKind::User => Style::default().fg(Color::White),
+        LineKind::User | LineKind::Assistant => Style::default().fg(Color::White),
         _ => dim(),
     }
 }
