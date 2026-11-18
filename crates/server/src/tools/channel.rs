@@ -125,16 +125,19 @@ pub struct Channels {
     /// The server's own, not a session's: a channel outlives the session's shells,
     /// and the relay it reads runs on the peer whether this process is here or not.
     runners: tokio::sync::Mutex<HashMap<String, Arc<Runner>>>,
-    /// One dial per peer, so a peer that will not greet holds up neither another
-    /// peer nor the table `runners` keeps.
+    /// One dial in flight for one peer, and the outcome the other starts read.
     ///
     /// # Invariant
     ///
-    /// Held across `pick::runner`, which is bounded per step and not per call: the
-    /// table's own lock is taken only to read it, so a slow peer cannot stall a
-    /// remote call aimed at a different machine. See
+    /// No lock is held across `pick::runner`. A start that finds a dial already running
+    /// waits for *that* dial's end instead of taking a turn at a mutex, so one peer's
+    /// silence cannot queue every later start behind it for ever; and a dial that ended
+    /// leaves the map, so the next start dials for itself. See
     /// `docs/notes/server-channel.md`.
-    dialing: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    dialing: std::sync::Mutex<HashMap<String, Arc<Dial>>>,
+    /// The starts in flight, by row id: what a stop ends, and what one name may not
+    /// have twice.
+    bringing_up: std::sync::Mutex<HashMap<i64, CancellationToken>>,
     /// The channels a call is inside right now.
     ///
     /// # Invariant
@@ -174,7 +177,8 @@ impl Channels {
             notify,
             remotes,
             runners: tokio::sync::Mutex::new(HashMap::new()),
-            dialing: tokio::sync::Mutex::new(HashMap::new()),
+            dialing: std::sync::Mutex::new(HashMap::new()),
+            bringing_up: std::sync::Mutex::new(HashMap::new()),
             attached: std::sync::Mutex::new(HashSet::new()),
         }
     }
@@ -238,7 +242,7 @@ impl Channels {
     /// bytes live: nothing renames a directory, and nothing reads a channel by a
     /// path on disk. See [`SPEC`](SPEC.md), "Tool".
     pub async fn start(
-        &self,
+        self: &Arc<Self>,
         session: &str,
         bin: &str,
         args: &[String],
@@ -275,36 +279,135 @@ impl Channels {
             },
             env: env.to_vec(),
         };
-        let started = match remote {
+        match remote {
             // A program there gets that machine's environment, not this one's.
             Some(machine) => {
                 let there = crate::relay::Words {
                     env: Vec::new(),
                     ..words
                 };
-                self.start_there(machine, &there).await
+                self.begin(session, &path, bin, machine, there).await
             }
-            None => self.start_here(&words).await,
-        }?;
-        let (place, pid, relay) = started;
-        self.store
-            .add_channel(
-                session,
-                &path,
-                bin,
-                remote,
-                &place.dir(),
-                pid,
-                relay.map(|r| (r.pid, r.started_at)),
-            )
-            .map_err(quiet)?;
-        let row = self
+            None => {
+                let (place, pid, relay) = self.start_here(&words).await?;
+                self.store
+                    .add_channel(
+                        session,
+                        &path,
+                        bin,
+                        None,
+                        &place.dir(),
+                        pid,
+                        relay.map(|relay| (relay.pid, relay.started_at)),
+                    )
+                    .map_err(quiet)?;
+                let row = self
+                    .store
+                    .channel_of(session, &path)
+                    .map_err(quiet)?
+                    .ok_or_else(|| {
+                        format!("channel {path:?} was written and cannot be read back")
+                    })?;
+                tracing::info!(channel = %path, dir = %place.dir(), pid, "channel started");
+                Ok(row)
+            }
+        }
+    }
+
+    /// Registers a channel on a peer, and starts it behind the call.
+    ///
+    /// # Invariant
+    ///
+    /// Nothing on another machine is awaited here: the row is written, the start is
+    /// spawned, and the caller already has the name. What the peer says -- the directory
+    /// it chose, the pid it runs, or why it refused -- reaches this machine through the
+    /// row, which is what a [`Self::talk`] waits on. See
+    /// `docs/notes/server-channel.md`.
+    async fn begin(
+        self: &Arc<Self>,
+        session: &str,
+        path: &str,
+        bin: &str,
+        machine: &str,
+        words: crate::relay::Words,
+    ) -> Result<ChannelRow, String> {
+        let id = self
             .store
-            .channel_of(session, &path)
+            .begin_channel(session, path, bin, Some(machine))
+            .map_err(quiet)?;
+        let cancel = CancellationToken::new();
+        self.bringing_up
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, cancel.clone());
+        let this = Arc::clone(self);
+        let (there, spoke, named) = (machine.to_string(), session.to_string(), path.to_string());
+        tokio::spawn(async move {
+            this.bring_up(id, &spoke, &named, &there, words, cancel)
+                .await;
+        });
+        self.store
+            .channel_of(session, path)
             .map_err(quiet)?
-            .ok_or_else(|| format!("channel {path:?} was written and cannot be read back"))?;
-        tracing::info!(channel = %path, dir = %place.dir(), pid, "channel started");
-        Ok(row)
+            .ok_or_else(|| format!("channel {path:?} was written and cannot be read back"))
+    }
+
+    /// Starts one channel on a peer, and records what it said.
+    ///
+    /// # Invariant
+    ///
+    /// A failure here is the network's, recorded as such: `start_error`, never an exit
+    /// status. A program that never started has no status to give, and a caller told one
+    /// would read the peer's silence as the program's own failure.
+    ///
+    /// # Invariant
+    ///
+    /// A row that is gone by the time the peer answers is a channel this machine no
+    /// longer names, so what the peer started is killed rather than left running for
+    /// nobody: the answer to "is this row still mine" is the update's own count.
+    async fn bring_up(
+        self: Arc<Self>,
+        id: i64,
+        session: &str,
+        path: &str,
+        machine: &str,
+        words: crate::relay::Words,
+        cancel: CancellationToken,
+    ) {
+        let _registered = BringingUp::of(&self.bringing_up, id);
+        if cancel.is_cancelled() {
+            let _ = self.store.set_channel_start_error(
+                id,
+                &format!(
+                    "remote {machine}: the start was cancelled before anything there was asked"
+                ),
+            );
+            return;
+        }
+        match self.start_there(machine, &words).await {
+            Ok((place, pid, relay)) => {
+                let named = self.store.record_channel_started(
+                    id,
+                    &place.dir(),
+                    pid,
+                    relay.map(|relay| (relay.pid, relay.started_at)),
+                );
+                if named == 0 {
+                    // The name went while this start was in flight: nobody can read what
+                    // the peer is running, so it is told to end.
+                    let _ = place.append("in", "kill\n").await;
+                    tracing::info!(channel = %path, "a channel started after its row went; it was told to end");
+                    return;
+                }
+                tracing::info!(channel = %path, session = %session, machine = %machine, dir = %place.dir(), pid, "channel started");
+            }
+            Err(why) => {
+                // The machine is named once: the cause says what, this says where.
+                let why = format!("remote {machine}: {why}");
+                tracing::warn!(channel = %path, session = %session, why = %why, "a channel could not be started");
+                let _ = self.store.set_channel_start_error(id, &why);
+            }
+        }
     }
 
     /// A channel on this machine: its own directory, and a relay started beside us.
@@ -450,12 +553,9 @@ impl Channels {
         let named = words.cwd != Path::new(".");
         if named {
             let asked = words.cwd.display().to_string();
-            let there = runner
-                .stat(&asked)
-                .await
-                .map_err(|e| format!("{machine}: {e}"))?;
+            let there = runner.stat(&asked).await.map_err(|e| format!("{e}"))?;
             if !there.is_dir {
-                return Err(format!("{machine} has no directory {asked:?}"));
+                return Err(format!("it has no directory {asked:?}"));
             }
         }
         let written = serde_json::to_vec(words)
@@ -464,9 +564,9 @@ impl Channels {
         let started = runner
             .relay(cwd.as_deref(), &written)
             .await
-            .map_err(|e| format!("could not start a channel on {machine}: {e}"))?;
+            .map_err(|e| format!("a channel could not be started there: {e}"))?;
         if started.dir.is_empty() {
-            return Err(format!("{machine} started a relay and named no directory"));
+            return Err("it started a relay and named no directory".to_string());
         }
         let place = Where::There {
             runner,
@@ -504,29 +604,82 @@ impl Channels {
                 }
             ));
         };
-        // Dialled outside the table's lock: one silent peer must not hold up the rest.
-        let dialing = {
-            let mut guards = self.dialing.lock().await;
-            Arc::clone(
-                guards
-                    .entry(machine.to_string())
-                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-            )
-        };
-        let _one_dial = dialing.lock_owned().await;
-        // Whoever held this dial before this caller may have finished it.
-        if let Some(runner) = self.connected_runner(machine).await {
-            return Ok(runner);
+        // One dial per peer, shared: a start joins the one running instead of queueing.
+        let (dial, mine) = self.dial_entry(machine);
+        if !mine {
+            let said = self.join(&dial).await;
+            if let Some(runner) = self.connected_runner(machine).await {
+                return Ok(runner);
+            }
+            return Err(match said {
+                Some(why) if !why.is_empty() => why,
+                _ => format!("{machine}: no connection could be made to it"),
+            });
         }
-        let spawned = crate::remote::pick::runner(&endpoint, endpoint.answer_timeout())
-            .await
-            .map_err(|e| format!("{e}"))?;
-        let runner = Arc::new(spawned);
-        self.runners
-            .lock()
-            .await
-            .insert(machine.to_string(), Arc::clone(&runner));
-        Ok(runner)
+        let spawned = crate::remote::pick::runner(&endpoint, endpoint.answer_timeout()).await;
+        match spawned {
+            Ok(runner) => {
+                let runner = Arc::new(runner);
+                // Kept before the joiners are told, so one that wakes finds it here.
+                self.runners
+                    .lock()
+                    .await
+                    .insert(machine.to_string(), Arc::clone(&runner));
+                let _ = dial.ended.send(Some(String::new()));
+                self.dial_over(machine, &dial);
+                Ok(runner)
+            }
+            Err(e) => {
+                let why = format!("{e}");
+                let _ = dial.ended.send(Some(why.clone()));
+                self.dial_over(machine, &dial);
+                Err(why)
+            }
+        }
+    }
+
+    /// The dial of one peer, and whether this caller is the one that runs it.
+    fn dial_entry(&self, machine: &str) -> (Arc<Dial>, bool) {
+        let mut dialing = self.dialing.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(running) = dialing.get(machine)
+            && running.running()
+        {
+            return (Arc::clone(running), false);
+        }
+        let (ended, _) = tokio::sync::watch::channel(None);
+        let dial = Arc::new(Dial { ended });
+        dialing.insert(machine.to_string(), Arc::clone(&dial));
+        (dial, true)
+    }
+
+    /// Waits for the dial this start joined, and answers how it ended.
+    ///
+    /// # Invariant
+    ///
+    /// The wait is the dial's, not a lock's: it ends when that dial does, which its own
+    /// steps bound. `None` is a dial whose owner vanished without a word -- this caller
+    /// then dials for itself rather than waiting for a start that will never come.
+    async fn join(&self, dial: &Arc<Dial>) -> Option<String> {
+        let mut ended = dial.ended.subscribe();
+        loop {
+            if let Some(said) = ended.borrow().clone() {
+                return Some(said);
+            }
+            if ended.changed().await.is_err() {
+                return None;
+            }
+        }
+    }
+
+    /// Takes this dial's entry out, without disturbing one a later start replaced.
+    fn dial_over(&self, machine: &str, dial: &Arc<Dial>) {
+        let mut dialing = self.dialing.lock().unwrap_or_else(|e| e.into_inner());
+        if dialing
+            .get(machine)
+            .is_some_and(|held| Arc::ptr_eq(held, dial))
+        {
+            dialing.remove(machine);
+        }
     }
 
     /// One peer's kept connection, while it is still the one that answers.
@@ -543,14 +696,78 @@ impl Channels {
             .map(Arc::clone)
     }
 
-    /// Where one channel's files are, for a call that has its row.
-    async fn place_of(&self, row: &ChannelRow) -> Result<Where, String> {
+    /// Where one channel's files are, for a reader that must not wait on a peer.
+    ///
+    /// # Invariant
+    ///
+    /// only a wait dials. Everything else -- `ls_channel`, `reap`, `del_channel`, a stop,
+    /// the watcher -- answers from what this machine already has: a row, and a connection
+    /// that is up. [`Self::place_waiting`] is the one that may dial, and `talk` calls it
+    /// with the call's own clock.
+    async fn place(&self, row: &ChannelRow) -> Result<Where, String> {
         match &row.remote {
             None => Ok(Where::Here(PathBuf::from(&row.dir))),
-            Some(machine) => Ok(Where::There {
-                runner: self.runner_for(machine).await?,
+            Some(machine) => {
+                if row.dir.is_empty() {
+                    return Err(self.starting(row, machine));
+                }
+                match self.connected_runner(machine).await {
+                    Some(runner) => Ok(Where::There {
+                        runner,
+                        dir: row.dir.clone(),
+                    }),
+                    None => Err(format!(
+                        "remote {machine}: its connection is not up, so this channel \
+                         cannot be read from here"
+                    )),
+                }
+            }
+        }
+    }
+
+    /// The same place, dialled when the peer's connection is not up: only a wait asks.
+    async fn place_waiting(&self, row: &ChannelRow) -> Result<Where, String> {
+        let Some(machine) = row.remote.clone() else {
+            return self.place(row).await;
+        };
+        if row.dir.is_empty() {
+            return Err(self.starting(row, &machine));
+        }
+        if let Some(runner) = self.connected_runner(&machine).await {
+            return Ok(Where::There {
+                runner,
                 dir: row.dir.clone(),
-            }),
+            });
+        }
+        Ok(Where::There {
+            runner: self.runner_for(&machine).await?,
+            dir: row.dir.clone(),
+        })
+    }
+
+    /// Tells the start of one row to stop, when it has not got as far as a channel.
+    ///
+    /// # Invariant
+    ///
+    /// A stop is an answer, not a wait: the row is the name's, and a start that is still
+    /// in flight ends itself when it sees the name gone. See [`Channels::bring_up`].
+    fn cancel_start(&self, id: i64) {
+        let cancel = self
+            .bringing_up
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&id)
+            .cloned();
+        if let Some(cancel) = cancel {
+            cancel.cancel();
+        }
+    }
+
+    /// What a row that has no directory yet says, in the words of the network.
+    fn starting(&self, row: &ChannelRow, machine: &str) -> String {
+        match &row.start_error {
+            Some(why) => why.clone(),
+            None => format!("remote {machine}: this channel is still starting there"),
         }
     }
 
@@ -617,16 +834,50 @@ impl Channels {
         until: Option<&str>,
         cancel: Option<&CancellationToken>,
     ) -> Result<Outcome, String> {
-        let row = self.row_of(session, id)?;
+        let mut row = self.row_of(session, id)?;
         // Whoever is inside the channel is the one that tells the session: the watcher
         // skips what a call holds.
         let _held = self.attach(row.id);
         // SPEC: every `exec` resets the flag; only a call that ran out leaves it set.
         self.store.take_channel_wait(row.id).map_err(quiet)?;
-        let place = self.place_of(&row).await?;
-        let grammar = self.grammar_of(&row.program);
         // `time` is what this call cost: from its own write, or from the last one.
         let mut since = row.wrote_at.unwrap_or(row.started_at);
+        // One clock for the whole call: a start, a read and a status are all inside it.
+        let deadline = Instant::now() + wait;
+        // A peer's channel is a name before it is a program: this waits on its start.
+        while row.dir.is_empty() {
+            if let Some(why) = row.start_error.clone() {
+                // The network's own words, never an exit status, and the name goes with
+                // the answer so the next call can use it again.
+                let _ = self.store.claim_channel_end(row.id);
+                return Err(why);
+            }
+            if Instant::now() >= deadline || cancel.is_some_and(CancellationToken::is_cancelled) {
+                if !wait.is_zero() {
+                    self.store
+                        .set_channel_wait(session, id, "")
+                        .map_err(quiet)?;
+                }
+                return Ok(Outcome {
+                    id: row.path.clone(),
+                    output: format!(
+                        "[remote {}: this channel is still starting there; nothing has been \
+                         said yet]",
+                        row.remote.clone().unwrap_or_default()
+                    ),
+                    time: Duration::from_millis(
+                        (now_millis() - since).max(0).try_into().unwrap_or(0),
+                    ),
+                    matched: false,
+                    exit: None,
+                });
+            }
+            tokio::time::sleep(LOOK).await;
+            row = self.row_of(session, id)?;
+        }
+        // Only a wait may dial, and it does so inside the clock above.
+        let place = self.place_waiting(&row).await?;
+        let grammar = self.grammar_of(&row.program);
         // SPEC's util is sticky: the marker the last write left, so a read knows its end.
         let sentinel = if grammar.until.as_deref().is_some_and(has_sentinel) {
             match (row.until_sentinel.is_empty(), input.is_some()) {
@@ -671,11 +922,27 @@ impl Channels {
                 _ => None,
             },
         };
-        let deadline = Instant::now() + wait;
         loop {
-            let fresh = place.read_from("out", row.upto).await?;
+            // What the peer says is inside the call's clock; see `server-remote.md`.
+            let fresh = if wait.is_zero() {
+                place.read_from("out", row.upto).await?
+            } else {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match tokio::time::timeout(left, place.read_from("out", row.upto)).await {
+                    Ok(read) => read?,
+                    Err(_) => Vec::new(),
+                }
+            };
             let looked = look(&fresh, row.upto, marker.as_deref(), &grammar);
-            let ended = place.status().await.and_then(|status| status.exit);
+            let ended = if wait.is_zero() {
+                place.status().await.and_then(|status| status.exit)
+            } else {
+                let left = deadline.saturating_duration_since(Instant::now());
+                match tokio::time::timeout(left, place.status()).await {
+                    Ok(status) => status.and_then(|status| status.exit),
+                    Err(_) => None,
+                }
+            };
             if looked.matched || ended.is_some() || wait.is_zero() {
                 // Two statuses, not one fact: the command's, and the program's ending.
                 return self.answer(
@@ -764,7 +1031,7 @@ impl Channels {
         let rows = self.store.channels_of(session).map_err(quiet)?;
         let mut listed = Vec::with_capacity(rows.len());
         for row in &rows {
-            let unread = match self.place_of(row).await {
+            let unread = match self.place(row).await {
                 Ok(place) => place
                     .read_from("out", row.upto)
                     .await
@@ -810,7 +1077,13 @@ impl Channels {
     /// report -- the name a caller reads afterwards is gone either way.
     pub async fn stop(&self, session: &str, id: &str) -> Result<(), String> {
         let row = self.row_of(session, id)?;
-        let place = self.place_of(&row).await?;
+        if row.dir.is_empty() {
+            // Nothing on the peer is named yet: the start stops, and the name goes.
+            self.cancel_start(row.id);
+            self.store.delete_channel(session, id).map_err(quiet)?;
+            return Ok(());
+        }
+        let place = self.place(&row).await?;
         place.append("in", "kill\n").await?;
         let deadline = Instant::now() + START_DEADLINE;
         while place
@@ -939,7 +1212,19 @@ impl Channels {
             if row.detached {
                 continue;
             }
-            match self.place_of(&row).await {
+            if row.dir.is_empty() {
+                self.cancel_start(row.id);
+                self.notice_end(
+                    &row,
+                    "[the server stopped this channel before it started]".to_string(),
+                    row.upto,
+                    None,
+                    false,
+                    true,
+                );
+                continue;
+            }
+            match self.place(&row).await {
                 Ok(place) => {
                     // What it printed until the kill: the notice is a `Result`, and
                     // an empty one would say nothing about why it stopped.
@@ -986,6 +1271,13 @@ impl Channels {
         };
         let mut gone = 0;
         for row in &rows {
+            if row.dir.is_empty() {
+                // A start the last run did not finish: nothing on the peer is named.
+                if self.store.claim_channel_end(row.id).unwrap_or(false) {
+                    gone += 1;
+                }
+                continue;
+            }
             if self.reap(row).await.is_some() {
                 gone += 1;
             }
@@ -1059,7 +1351,12 @@ impl Channels {
     /// free afterwards. `None` is a program that is still there: the name is not the
     /// caller's to take.
     pub async fn reap(&self, row: &ChannelRow) -> Option<i32> {
-        let place = self.place_of(row).await.ok()?;
+        // A start that failed is not a program: the row goes, and no exit is answered.
+        if row.start_error.is_some() {
+            let _ = self.store.claim_channel_end(row.id);
+            return None;
+        }
+        let place = self.place(row).await.ok()?;
         let exit = place.status().await.and_then(|status| status.exit)?;
         let printed = place.read_from("out", row.upto).await.unwrap_or_default();
         self.notice_end(
@@ -1087,11 +1384,16 @@ impl Channels {
         };
         let mut stopped = 0;
         for row in rows {
-            let alive = match self.place_of(&row).await {
-                Ok(place) => place.append("in", "kill\n").await.is_ok(),
-                Err(e) => {
-                    tracing::warn!(channel = %row.path, "{e}");
-                    false
+            let alive = if row.dir.is_empty() {
+                self.cancel_start(row.id);
+                false
+            } else {
+                match self.place(&row).await {
+                    Ok(place) => place.append("in", "kill\n").await.is_ok(),
+                    Err(e) => {
+                        tracing::warn!(channel = %row.path, "{e}");
+                        false
+                    }
                 }
             };
             if alive {
@@ -1202,7 +1504,12 @@ impl Channels {
                     if channels.is_attached(row.id) {
                         continue;
                     }
-                    let Ok(place) = channels.place_of(&row).await else {
+                    if let Some(why) = row.start_error.clone() {
+                        // A failed start speaks in the network's words, never as an exit.
+                        channels.notice_end(&row, why, row.upto, None, false, true);
+                        continue;
+                    }
+                    let Ok(place) = channels.place(&row).await else {
                         continue;
                     };
                     let ended = place.status().await.and_then(|status| status.exit);
@@ -1330,6 +1637,44 @@ fn named(dir: &str) -> String {
 enum Where {
     Here(PathBuf),
     There { runner: Arc<Runner>, dir: String },
+}
+
+/// A start's own entry in the bring-up registry, released when the start answers.
+struct BringingUp<'a> {
+    held: &'a std::sync::Mutex<HashMap<i64, CancellationToken>>,
+    id: i64,
+}
+
+impl<'a> BringingUp<'a> {
+    fn of(held: &'a std::sync::Mutex<HashMap<i64, CancellationToken>>, id: i64) -> Self {
+        Self { held, id }
+    }
+}
+
+impl Drop for BringingUp<'_> {
+    fn drop(&mut self) {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
+    }
+}
+
+/// One dial to one peer, and the outcome every other start that joined it reads.
+///
+/// # Invariant
+///
+/// `None` is a dial still running, `Some("")` one that connected, `Some(why)` one that
+/// failed. Starts read it instead of taking a lock, so a peer that never answers costs
+/// its own start and no other. See `docs/notes/server-channel.md`.
+struct Dial {
+    ended: tokio::sync::watch::Sender<Option<String>>,
+}
+
+impl Dial {
+    fn running(&self) -> bool {
+        self.ended.borrow().is_none()
+    }
 }
 
 /// A relay's own identity: the pid it runs as, and when it started.

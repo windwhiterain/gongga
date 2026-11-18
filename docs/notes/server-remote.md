@@ -233,6 +233,18 @@ schedule. The answer clock is the only thing a `request` may wait on, so no roun
 trip is unbounded -- `Open`, `Write`, `Stat`, `Read`, `List`, `Space`, `Signal` and
 `Close` alike, and `ShellHandle::write` with them.
 
+The answer clock is a ceiling on one request, never on a call that makes several of
+them: a wait reads `out` and `status` on every look, so a peer that answers each request
+slowly could carry a `wait: 4000` call far past its own deadline. `Channels::talk`
+therefore bounds each of those requests by what is left of the call's clock, and answers
+with what it has when it runs out.
+
+Nor is the dial anyone's mutex. One `Dial` per peer is shared: the start that finds none
+running leads it and a start that finds one joins its outcome, so the only wait a peer's
+silence can cost is the start that is talking to it. Measured, before this: a dropped
+connection left a per-machine dial lock held for forty minutes, and every remote call in
+the server queued behind it -- see `docs/notes/server-channel.md`, "A call never dials".
+
 Measured, before this invariant: a `remote_bash` carrying `timeout_ms: 60000`
 was still `running` two hours later, because its deadline covered `pump` and
 nothing before it -- `connect` and `Op::Write` each waited for an answer that

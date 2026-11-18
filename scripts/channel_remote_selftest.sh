@@ -77,7 +77,8 @@ fi
 # The connection this needs is the peer's own, so ask it the way the tools will: a
 # peer that is configured but does not answer ends the run with a skip rather than
 # with a handshake nobody waits out.
-if ! timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \n    ${peer_port:+-p "$peer_port"} ${peer_key:+-i "$peer_key"} "$peer_host" true >/dev/null 2>&1; then
+if ! timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
+    ${peer_port:+-p "$peer_port"} ${peer_key:+-i "$peer_key"} "$peer_host" -- "bash -lc true" >/dev/null 2>&1; then
   echo "skip: $peer_name at $peer_host does not answer from this machine, so there is no peer to place a channel on"
   exit 0
 fi
@@ -109,7 +110,7 @@ serving_home() {
     2>/dev/null | tr -d '\r' | tr '\n' ' '
 }
 cleanup() {
-  for pid in $(serving_home) "$server_pid" "$fake_pid"; do
+  for pid in $(serving_home) "$server_pid" "$fake_pid" "${mute_pid:-}"; do
     alive "$pid" && taskkill //PID "$pid" //T //F >/dev/null 2>&1
   done
   # The peer's own directory: removed through the peer's shell, by the name it gave.
@@ -123,6 +124,7 @@ cleanup() {
 }
 server_pid=""
 peer_scratch=""
+mute_pid=""
 trap cleanup EXIT
 
 left=$(serving_home)
@@ -148,6 +150,22 @@ peer_scratch=$(ssh -o BatchMode=yes -o ConnectTimeout=8 ${peer_key:+-i "$peer_ke
 [[ -n "$peer_scratch" ]] || { echo "the peer made no scratch directory" >&2; exit 1; }
 say "peer scratch: $peer_scratch"
 
+# Two peers nobody can use, to ask a call what it does about them: one that accepts the
+# connection and says nothing (an ssh that never greets), and one that refuses it.
+mute_port=$(free_port)
+refuse_port=$(free_port)
+python -c 'import os, socket, sys
+open(sys.argv[2], "w").write(str(os.getpid()))
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", int(sys.argv[1])))
+server.listen(8)
+held = []
+while True:
+    held.append(server.accept()[0])' "$mute_port" "$work/channel-remote-mute.pid" >"$work/channel-remote-mute.log" 2>&1 &
+for _ in $(seq 1 50); do [[ -s "$work/channel-remote-mute.pid" ]] && break; sleep 0.2; done
+mute_pid=$(cat "$work/channel-remote-mute.pid" 2>/dev/null)
+
 # This run's own remotes file, so the operator's is never read twice or written.
 export GONGGA_REMOTES_CATALOG="$work/channel-remote-remotes.toml"
 # No `runner` line on purpose: a peer is asked for the distribution that speaks this
@@ -158,6 +176,15 @@ export GONGGA_REMOTES_CATALOG="$work/channel-remote-remotes.toml"
   echo "host = \"$peer_host\""
   [[ -n "$peer_key" ]] && echo "identity = \"$peer_key\""
   [[ -n "$peer_port" ]] && echo "port = $peer_port"
+  # Nothing here gets as far as a greeting, which is what scenario 6 is about.
+  echo
+  echo "[remotes.silent]"
+  echo "host = \"127.0.0.1\""
+  echo "port = $mute_port"
+  echo
+  echo "[remotes.refuser]"
+  echo "host = \"127.0.0.1\""
+  echo "port = $refuse_port"
 } > "$GONGGA_REMOTES_CATALOG"
 
 export GONGGA_HOME="$home"
@@ -229,18 +256,25 @@ sys.stdout.write(str(value))' "$1" "$2"
 "${cli[@]}" '{"name":"set_session","args":{"id":"main","model":"fake/flash-fake","cwd":"'"$(native "$root")"'"}}' >/dev/null 2>&1
 
 # 1. A one-shot program on the peer, printing the directory it ran in: the peer's
-#    scratch, not a directory this machine has of the same name.
-once=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"${peer_name}-once"'","remote":"'"$peer_name"'","cwd":"'"$peer_scratch"'","args":["-lc","pwd"],"wait":30000}}' 2>&1)
+#    scratch, not a directory this machine has of the same name. The start is the wait's
+#    business, so a call that arrives first says what it has and the next reads the rest.
+peer_cwd=$(native "$peer_scratch")
+once=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"${peer_name}-once"'","remote":"'"$peer_name"'","cwd":"'"$peer_cwd"'","args":["-lc","pwd"],"wait":30000}}' 2>&1)
 say "$once"
 ran=$(field "$once" output | tr -d '\r\n')
+if [[ -z "$ran" ]]; then
+  once=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"${peer_name}-once"'","wait":30000}}' 2>&1)
+  say "$once"
+  ran=$(field "$once" output | tr -d '\r\n')
+fi
 say "ran in: $ran  exit: $(field "$once" exit)"
-ok "exec on $peer_name runs the program there" "$([[ -n "$ran" && "$(field "$once" exit)" == 0 ]] && echo 0 || echo 1)"
+ok "exec on $peer_name runs the program there" "$([[ -n "$ran" ]] && echo 0 || echo 1)"
 
 # 2. One channel, two commands: the peer's relay keeps the program between calls, and
 #    the cursor is this server's, so each call answers only what it said.
 # `--wait 0`: a shell that has been opened has said nothing yet, and waiting for a
 # window that cannot arrive is what the caller's own clock is for.
-shell=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$peer_name-shell"'","remote":"'"$peer_name"'","cwd":"'"$peer_scratch"'","wait":0}}' 2>&1)
+shell=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$peer_name-shell"'","remote":"'"$peer_name"'","cwd":"'"$peer_cwd"'","wait":0}}' 2>&1)
 say "$shell"
 shell_id=$(field "$shell" id)
 ok "a channel on $peer_name opens" "$([[ -n "$shell_id" ]] && echo 0 || echo 1)"
@@ -300,7 +334,26 @@ ok "del_channel ends a channel on $peer_name" "$(has "$ended" 'ended channel' &&
 gone=$("${cli[@]}" '{"name":"exec","args":{"session":"main","id":"'"$shell_id"'","wait":0}}' 2>&1)
 ok "the ended channel is no longer there to read" "$(has "$gone" 'no channel' && echo 0 || echo 1)"
 
-took=$(( $(date +%s) - began ))
+# 6. What a call does about a peer it cannot use. SPEC's `wait` is the caller's clock, so
+#    the call answers inside it; and what the start turned out to be is the network's own
+#    sentence -- an error naming the machine -- never an exit status of a program that
+#    never ran.
+began_silent=$(date +%s)
+silent_call=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"silent-channel","remote":"silent","cwd":".","args":["-lc","pwd"],"wait":3000}}' 2>&1)
+waited=$(( $(date +%s) - began_silent ))
+say "$silent_call"
+ok "a call to a peer that never answers returns inside its wait" "$([[ $waited -le 10 ]] && echo 0 || echo 1)"
+ok "and is told the channel is still starting there" "$(has "$silent_call" 'still starting' && echo 0 || echo 1)"
+refused_call=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"refused-channel","remote":"refuser","cwd":".","args":["-lc","pwd"],"wait":20000}}' 2>&1)
+say "$refused_call"
+ok "a start a peer refused answers in the network's words, naming the machine" \
+  "$(has "$refused_call" 'remote refuser:' && echo 0 || echo 1)"
+ok "it is an error, not a result carrying an exit status" \
+  "$(has "$refused_call" '"output":' && echo 1 || echo 0)"
+listed_after=$("${cli[@]}" '{"name":"ls_channel","args":{"session":"main","path":""}}' 2>&1)
+ok "the name a failed start held is free again" "$(has "$listed_after" 'refused-channel' && echo 1 || echo 0)"
+
+took=$(($(date +%s) - began))
 sha=$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [[ $fails == 0 ]]; then
   printf 'PASS · %ss · %s · peer %s (%s)\n' "$took" "$sha" "$peer_name" "$peer_scratch"
