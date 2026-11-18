@@ -32,7 +32,7 @@ cap keeps a server that is down for an hour from spinning.
 
 This is a *redial* cadence, not a budget on anything the agent does: the operator
 keeps the window, the history, the input line and its scroll position throughout,
-and Alt+Q still works while it backs off.
+and Ctrl+Q still works while it backs off.
 
 ## submission and filled
 
@@ -120,7 +120,7 @@ Boxed rather than awaited inside the branch: an unreachable server takes the who
 handshake timeout to give up, and waiting for it inside the loop would freeze the
 keyboard for five seconds at a stretch -- the TUI would be unresponsive exactly
 while the server is down, which is when the operator is most likely to be pressing
-Alt+Q.
+Ctrl+Q.
 
 ## main
 
@@ -174,7 +174,7 @@ the refresh that follows a note wipes a note said once, so a reason said once is
 a reason nobody sees. A window that says `reconnecting` and nothing else is a
 window nobody can tell from a hung one. The line therefore carries the reason
 and the way out: `nothing is listening at 127.0.0.1:9700 (attempt 3) -- still
-trying; Alt+Q leaves`. It is the same words every time, so the outage is not
+trying; Ctrl+Q leaves`. It is the same words every time, so the outage is not
 narrated twice -- one line replaces the last, it does not add to it.
 
 

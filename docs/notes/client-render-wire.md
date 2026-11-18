@@ -2,8 +2,8 @@
 
 ## Why a wire vocabulary at all
 
-`Sink` has always been a protocol: its 17 methods carry a window name, a closed
-set of semantic kinds, and text -- never a ratatui type. It was only expressed as
+`Sink` has always been a protocol: its methods carry a window name, a closed set
+of semantic kinds, and text -- never a ratatui type. It was only expressed as
 a Rust trait, so a front-end had to be Rust and had to live in the same process.
 With `[client]` now a binary (SPEC `## Crate Structure`, 2026-11-07), the UI
 spawns it as a child process and the front-end can be any language. `render_wire.rs` writes the
@@ -15,9 +15,9 @@ See `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` for the verdict.
 
 | enum | direction | variants |
 | --- | --- | --- |
-| `RenderMessage` | client -> front-end | the 12 drawing methods of `Sink`, plus 5 control frames |
-| `CursorMessage` | client -> itself | the 5 journal methods of `Sink` |
-| `UiIntent` | front-end -> client | `Submit`, `Operate`, `Older`, `Complete`, `Quit` |
+| `RenderMessage` | client -> front-end | every variant in `crates/client/src/render_wire.rs`: drawings become `Sink` calls, control frames land on the window's state |
+| `CursorMessage` | client -> itself | `Settled`, `Transcript`, `Rewind`, `Older`, `Landed` -- the journal's answers, never on the pipe |
+| `UiIntent` | front-end -> client | `Submit`, `Operate`, `Older`, `Newer`, `Held`, `Room`, `Columns`, `Complete`, `Quit` |
 
 `RenderMessage` is semantic, not pixel-level: `LineKind` says *what* a row is and
 the front-end decides its colour, column width and wrapping. Putting a colour on
@@ -37,10 +37,10 @@ over it: `Intent(UiIntent)` or `Recomplete`. `Recomplete` is a terminal-only
 signal that the completion wants the loop to go round; it is not an intent and
 never crosses the wire.
 
-## The five control frames
+## The control frames
 
-A `Sink` can only say "draw this". Four things the window does are not drawings,
-so they are `RenderMessage` variants rather than a second protocol:
+A `Sink` can only say "draw this". Some things a window does are not drawings, so
+they are `RenderMessage` variants rather than a second protocol:
 
 | frame | sent by | what the UI does |
 | --- | --- | --- |
@@ -48,7 +48,16 @@ so they are `RenderMessage` variants rather than a second protocol:
 | `Server { label, ours }` | `set_server` | draw the header's own / not own label |
 | `Repoint { endpoint }` | `repoint` | drop the old endpoint's window rows |
 | `Vocabulary { version }` | `refresh_completion` | re-ask for the current line's words |
-| `Completion { line, cursor, start, end, subject, candidates }` | `show_completion` | open the popup, if it is still about this line |
+| `Completion { line, cursor, start, end, subject, items }` | `show_completion` | open the popup, if it is still about this line |
+| `StickySession { name }` | `sticky_session` | move the pane a key or a click acts on |
+| `Row { window, seq }` | `row` | state the stored row the frames after it draw |
+| `Older { window, rows }` / `Newer { window, rows }` | `prepend` / `append_page` | draw a finished page above / below what a window holds |
+
+`Render { block_size, box_edge, keep_rows }` is the window's own settings, `Stopped
+{ session, failed }` is its news, and `Rewind { window }` drops the blocks a window
+had not finished. The drawings proper are `Line`, `Stream`, `Document`, `Rewrite`,
+`ToolCall`, `Relabel`, `Forget`, `Clear`, `Status`, `Note` and `Layout`, plus
+`Stopped` through the sink.
 
 `UiIntent::Complete { line, cursor }` is the request behind the last two. The
 loop clamps a byte cursor to a character boundary, asks the client's own
@@ -59,7 +68,8 @@ vocabulary of its own, so Tab applies what the client last sent. The frame names
 the line and caret it answers, because the window keeps reading keys while the
 round trip is out and an answer about other words must not edit this line.
 `Vocabulary` carries the client's real `paths_version`, so a UI can dedupe
-refreshes. `Candidate` gained serde derives for this.
+refreshes. `Item` gained serde derives for this, so a completion's candidates are
+the same struct the client applies.
 
 `UiIntent::Room { windows }` is the one fact that travels the other way. Only the
 drawing knows how many rows a pane has, and one page of the past is sized by that
@@ -79,9 +89,9 @@ are plain data; no drawing code moved.
 
 ## One definition, not three
 
-The Rust types with serde derives are the only definition. TypeScript and Python
-types are generated from them; hand-writing a parallel schema would recreate the
-duplication `crates/client` exists to prevent.
+The Rust types with serde derives are the only definition. A front-end in another
+language reads them by their `type` tag; hand-writing a parallel schema would
+recreate the duplication `crates/client` exists to prevent.
 
 ## Frames on the pipe
 
@@ -122,9 +132,12 @@ The pipe has sharp edges. `crates/server/src/remote/transport.rs:334-345`
 line-writing loop and a `lines().next_line()` reader) are the existing wheel for
 this shape. stderr must be drained or sent to a log: `NullSink::note` uses
 `eprintln!`, and an unread pipe eventually blocks the client's main loop.
-`WireSink` is a synchronous `&mut Sink`, so the writer has to be its own task
-with a bounded queue and `try_send`; the UI side must drain stdout continuously.
-See `DESIGN.md` §1 for the four hazards and the `--parent` question still open.
+`WireSink` is a synchronous `&mut Sink`, so the writer is its own task: the pipe
+front-end collects encoded frames and writes them from a task, while the UI side
+drains stdout continuously. A bounded queue's two answers -- drop a frame or stall
+the loop -- are both worse than the unbounded channel it uses. `DESIGN.md` §1
+"形态 2" holds the four hazards; the `--parent` question there was answered (the
+UI's pid).
 
 ## A row's place travels with it (2026-11-15)
 

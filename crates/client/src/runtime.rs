@@ -19,7 +19,7 @@ use crate::{Connection, DialFailure, Greeting, LineKind, Link, Listed, Sink};
 /// # Invariant
 ///
 /// Backing off never costs the window: history, input and scroll stay put, and
-/// Alt+Q still leaves. See `docs/notes/client-runtime.md`.
+/// Ctrl+Q still leaves. See `docs/notes/client-runtime.md`.
 pub const RECONNECT_MIN: Duration = Duration::from_millis(250);
 
 /// How much of a burst is decoded before the keyboard is looked at again.
@@ -577,7 +577,7 @@ pub async fn run(
                             ui.sink().note(
                                 LineKind::Error,
                                 &format!(
-                                    "{} (attempt {attempts}) — still trying; Alt+Q leaves",
+                                    "{} (attempt {attempts}) — still trying; Ctrl+Q leaves",
                                     failure.message()
                                 ),
                             );

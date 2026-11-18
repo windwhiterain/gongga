@@ -29,7 +29,9 @@ you are about to touch.
 | change what a client sends or receives | [`client-lib.md`](client-lib.md), [`protocol-lib.md`](protocol-lib.md) |
 | change the window | [`tui-lib.md`](tui-lib.md), [`tui-run.md`](tui-run.md) |
 | open a second window, or a second client on one home | [`home-lock.md`](home-lock.md) -- one owner per home; a second one is refused, and `--instance` gives it its own |
-| rename the client library or add a front-end | `SPEC.md` `## Crate Structure`, [`client-lib.md`](client-lib.md), `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` |
+| rename the client library or add a front-end | `SPEC.md` `## Crate Structure`, [`client-lib.md`](client-lib.md), [`client-child.md`](client-child.md), `.agents/notes/2026-11-07-client-library-and-rpc-layer.md` |
+| run the browser window | [`webui-main.md`](webui-main.md), [`webui-window.md`](webui-window.md), [`webui-server.md`](webui-server.md) |
+| change the page the browser draws | [`webui-web.md`](webui-web.md), `crates/client/src/render_wire.rs` |
 | change what crosses the language boundary | [`client-render-wire.md`](client-render-wire.md), [`client-pipe.md`](client-pipe.md), `DESIGN.md` §1 "形态 2" |
 | change what the window remembers (`client.toml`) | [`tui-state.md`](tui-state.md), [`tui-command.md`](tui-command.md) |
 
@@ -168,6 +170,7 @@ library holds the loop it runs.
 | --- | --- |
 | [`client-lib.md`](client-lib.md) | `crates/client/src/lib.rs` |
 | [`client-server.md`](client-server.md) | `crates/client/src/server.rs` |
+| [`client-child.md`](client-child.md) | `crates/client/src/child.rs` |
 | [`client-catalog.md`](client-catalog.md) | `crates/client/src/catalog.rs` |
 | [`client-complete.md`](client-complete.md) | `crates/client/src/complete.rs` |
 | [`client-commands.md`](client-commands.md) | `crates/client/src/commands.rs` |
@@ -220,6 +223,17 @@ argv to `client::main` when invoked under that name or given a command.
 | [`tui-tree.md`](tui-tree.md) | `crates/tui/src/tree.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |
 | [`tui-frame_cost.md`](tui-frame_cost.md) | `crates/tui/examples/frame_cost.rs` |
+
+### webui
+
+| note | source |
+| --- | --- |
+| [`webui-main.md`](webui-main.md) | `crates/webui/src/main.rs` |
+| [`webui-args.md`](webui-args.md) | `crates/webui/src/args.rs` |
+| [`webui-page.md`](webui-page.md) | `crates/webui/src/page.rs` |
+| [`webui-server.md`](webui-server.md) | `crates/webui/src/server.rs` |
+| [`webui-window.md`](webui-window.md) | `crates/webui/src/window.rs` |
+| [`webui-web.md`](webui-web.md) | `crates/webui/web/` (the page) |
 
 ### bridge
 

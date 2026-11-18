@@ -17,20 +17,24 @@ rpc         层       —— 按 schema 校验后向服务端发命令
   [cli]     python   —— 命令行客户端
 [client]    binary   —— client 子进程（UI 起它、生命周期绑定 UI）：收 delta、校验、维护状态、产出行
   [tui]     binary   —— 终端前端，经管道连 client
-  [webui]   binary   —— 浏览器前端（待新增），与 tui 平级
+  [webui]   binary   —— 浏览器前端，经管道连 client（页面由它自己服务）
 [bundle]    binary   —— 打包与路由
 ```
 
-workspace 现在已经是改名后的名字（`Cargo.toml`，8 个 member，`default-members` 不含 bundle）：
+workspace 现在已经是改名后的名字（`Cargo.toml`，12 个 member，`default-members` 不含 bundle）：
 
 ```text
+crates/bindir    gongga-bindir     别名 bindir
 crates/protocol  gongga-protocol   别名 protocol
 crates/skill     gongga-skill      别名 skill
 crates/console   gongga-console    别名 console
+crates/lock      gongga-lock       别名 home_lock
 crates/client    gongga-client     别名 client  —— [client] 库（原 crates/link）
 crates/server    gongga-server     别名 server
 crates/tui       gongga-tui        别名 tui    —— [tui]
+crates/webui     gongga-webui      别名 webui  —— [webui]
 crates/bridge    gongga-bridge     别名 bridge
+crates/relay     gongga-relay      别名 relay
 crates/bundle    gongga-bundle     别名 bundle
 ```
 
@@ -40,7 +44,7 @@ crates/bundle    gongga-bundle     别名 bundle
 | `rpc` 层 | `client::commands` / `Catalog` / `parse_args`、`gongga_cli.py`（内容仓 `ship/python/`） | 保持为 `client` 库内的逻辑层，不新建 crate |
 | `[cli]` python | 内容仓 `ship/python/` 的 `gongga.py`、`gongga_cli.py`、`gongga_skill.py`，装进 `<home>/lib` | 不再由本仓 `include_str!` 携带 |
 | `[tui]` binary | `crates/tui`：`pipe.rs` 是宿主，`run.rs` 的 `TuiSink` / `apply_frame` 把帧画成终端行，`log.rs` 仍管折行视图；同进程主循环已删 | 退为纯终端前端，键盘与绘制之外不持状态 |
-| `[webui]` binary | 无 | 新增，与 `tui` 平级，用任意语言写 |
+| `[webui]` binary | `crates/webui`（`gongga-webui`）：本地 HTTP + WebSocket 宿主，服务内嵌页面并起 `gongga-client`；页面在 `crates/webui/web/` | 完成（2026-11-18）；页面随二进制分发，不进 bundle |
 
 上提的模块只换了位置：`State::load` 仍独占 `client.toml`，一次性 `gongga-cli` 不读
 不写它；六条 client 命令仍由窗口解析，不上线。行为不变。
@@ -194,6 +198,10 @@ pub enum UiEvent { Submit(String), Quit }
 分步（每步各自跑门禁）：① 抽连接生命周期，TUI 行为不变；② 抽输入翻译与补拉；
 ③ `crates/webui` 实现 `Sink` → JSON 与 WS 广播；④ bundle 布线 `gongga webui`；
 ⑤ 双前端并存 L3（新脚本需用户许可）。
+
+（这一份分步属于被推翻的形态 1 方案。真正的 webui 在 2026-11-18 按形态 2 落地：不起
+第二个广播层，页面经宿主中继同一份 JSON Lines；见本节上面「The second front-end:
+the browser」。）
 
 ### 形态 2：client 子进程与跨语言渲染协议（2026-11-07 已裁定）
 
@@ -493,53 +501,62 @@ client 的 `WindowJournal`。`log.rs` 从 2387 行降到 1490 行，编译零警
 真进程 `tui_live` 退出码 0、254 帧。`client_state_selftest` 与
 `multi_client_selftest` 均 PASS。记录在 `.dev/verify/<sha>-a4-step2.json`。
 
-### The second front-end: Avalonia (2026-11-10)
+### The second front-end: the browser (2026-11-18)
 
-Verdicts given for this turn: full parity with the TUI (not a skeleton); a
-standalone `frontends/avalonia/` that is neither a Cargo member nor part of the
-bundle; install an SDK and really build it; extending the wire contract is
-allowed if the GUI needs it.
+The verdict for this turn: delete `frontends/avalonia/` and replace it with a Web
+front-end. The instruction was direct; the shape below is what implementing it
+decided, recorded because the 2026-11-07 contract held without a change.
 
-**The contract did not need extending.** `render_wire.rs` already carries all 17
-`RenderMessage` variants and all 5 `UiIntent` gestures, and `crates/tui/src/pipe.rs`
-already shows how a window hosts the client child. No Rust source, no protocol
-and no bundle wiring changed. Verdict 2 of §1 ("other UIs distribute themselves")
-therefore stands. `SPEC.md` was not touched.
+**The contract needed no change.** `render_wire.rs` already carries every
+`RenderMessage` and every gesture a window needs, and `crates/client/src/child.rs`
+is the one code that starts the child for any front-end. The browser is another
+front-end in the 2026-11-07 sense: one `UiIntent` per stdin line, one
+`RenderMessage` per stdout line. `SPEC.md` was not touched.
 
-What the second front-end proves is that the 2026-11-07 "cross-process,
-cross-language front-end" decision was real: a C# program can be a full window
-without a single line of Rust. It spawns `gongga-client.exe` with `--parent
-<its own pid>`, pipes one `UiIntent` per stdin line and one `RenderMessage` per
-stdout line, and drains stderr into `<client-home>/client.log`. Closing stdin is
-the window leaving; an ended stdout closes the window. See
-`docs/notes/avalonia-frontend.md` for the frame table, gesture table and the
-UTF-8 byte-cursor conversion (`TextBox.CaretIndex` is UTF-16).
+**Where it sits.** `crates/webui` (`gongga-webui`) is a Cargo member, like `tui`,
+and not in the bundle -- verdict 2 of §1 stands: only the terminal ships, other UIs
+distribute themselves. The front-end is a Rust host plus an embedded page:
 
-Two inconsistencies found while reading the contract, recorded rather than
-silently followed:
+```text
+  [browser page]  HTTP + WebSocket  [gongga-webui]  JSON Lines  [gongga-client]
+      |  frames down, intents up --------------->  spawns   --------------->
+```
 
-- `docs/notes/client-render-wire.md` says "12 drawing + 5 control"; the code has
-  **11 drawing + 6 control** (`StickySession` is a control frame). The C#
-  implementation follows the code.
-- `render_wire.rs` and `docs/notes/tui-run.md` call `UiIntent::Quit` "Alt+Q", but
-  the TUI binds **Ctrl+Q** and swallows every Alt key. The GUI binds Ctrl+Q.
+The page cannot start a process and cannot speak the server's UDP, so the host owns
+both: it serves the page on loopback, starts the client beside itself, and relays
+JSON Lines verbatim. It parses no frame, so it cannot drift from the wire; the page
+holds the state a stateless front-end always holds -- blocks, panes, the session
+tree, the input line, the completion popup. What only a drawing knows travels back
+as `Room` (rows a pane can draw) and `Columns` (the width a document is fitted to:
+measured from a rendered row, and narrowed while one still wraps).
 
-Verification is a headless entry (`--no-window`) that runs the same transport and
-frame model against a real `gongga-client` child and prints one verdict line with
-an exit code, so a machine with no interactive desktop can still prove the round
-trip. Avalonia 12's XAML source generators need Roslyn 4.14 (.NET 10 SDK); the
-official `dotnet new avalonia.app` template does not compile under a .NET 8 SDK
-either.
+**A page is a window, and a reload is a new one.** The pipe has no replay: frames
+between the child starting and a reader attaching are gone. So a WebSocket attach
+spawns the client and a detach ends it; a reloaded page gets a fresh client, which
+dials the server and refills its window from its journal. One page at a time, a
+second tab refused with a reason it can show; two windows are two processes with
+`--instance` homes.
 
-A second window needs a second client home. `gongga-client` now claims
-`client.lock` in it, through the same `home_lock` crate that took over the
-server's `server.lock`; a second client on the same home is refused with the pid
-that holds it, and the window shows that line instead of closing. `--instance
-<name>` maps to `<client-home>/<name>` for that case. `client.toml` -- sticky
-session, shown sessions, block size, remembered address -- moved into that same
-home, so one window's settings are not another's; `config.toml` and `server.key`
-stay in the harness home because they are the server's. A home that predates the
-move keeps its settings through a one-time copy. See `docs/notes/tui-state.md`.
+**Why the browser instead of the desktop window.** The Avalonia front-end proved
+the contract was real -- a full window in another language -- at the price of a
+second toolchain: a .NET 10 SDK, a XAML source generator with its own Roslyn floor,
+a project no other build here can compile. A page needs none of that on the reading
+side, and the one process it does need is this crate. The trade is that the host,
+not the page, is the parent of the client.
+
+**Two things the old front-end recorded were kept as fixes, not as history.**
+`render_wire.rs` and `runtime.rs` called `UiIntent::Quit` "Alt+Q" while the TUI
+binds **Ctrl+Q** (the page binds Ctrl+Q too), and
+`docs/notes/client-render-wire.md`'s frame counts had gone stale; both are corrected
+there now. The second-window rule did not change: `gongga-client` claims
+`client.lock` in its home, a second client on one home is refused with the pid that
+holds it, and `--instance <name>` is `<client-home>/<name>`. `client.toml` lives in
+that home too (see `docs/notes/tui-state.md`).
+
+Verification was real processes, not a mock: a server on a temporary home, a
+`gongga-client` child, this host and a browser. What each source file does is in
+`docs/notes/webui-*.md`; the frame and gesture tables are the wire contract and are
+not repeated here.
 
 ## 2. 传输层：可靠 UDP
 

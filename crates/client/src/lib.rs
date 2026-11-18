@@ -3,6 +3,7 @@
 //! See `docs/notes/client-lib.md`.
 
 pub mod catalog;
+pub mod child;
 pub mod commands;
 pub mod complete;
 pub mod document;

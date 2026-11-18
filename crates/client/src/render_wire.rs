@@ -339,7 +339,7 @@ pub enum UiIntent {
     Columns { windows: Vec<(String, usize)> },
     /// The client answers with candidates, so syntax stays out of the UI.
     Complete { line: String, cursor: usize },
-    /// Alt+Q: leave.
+    /// Ctrl+Q: leave.
     Quit,
 }
 

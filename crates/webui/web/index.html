@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>gongga</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <span class="brand">gongga</span>
+    <span class="chip" id="own" hidden>own</span>
+    <span class="server" id="server"></span>
+    <span class="status kind-system" id="status">starting</span>
+  </header>
+  <main class="split">
+    <aside class="list">
+      <div class="list-scroll">
+        <div class="list-rows" id="list-rows"></div>
+        <p class="list-empty" id="list-empty" hidden>The server knows no sessions yet.</p>
+      </div>
+    </aside>
+    <section class="panes">
+      <div class="panes-list" id="panes-list"></div>
+      <p class="panes-empty" id="panes-empty">No session open - pick one on the left.</p>
+    </section>
+  </main>
+  <section class="quota" id="quota" hidden></section>
+  <section class="command" id="command" hidden>
+    <div class="command-scroll" id="command-scroll"><div class="blocks" id="command-blocks"></div></div>
+  </section>
+  <div class="composer">
+    <div class="completion" id="completion" hidden>
+      <div class="completion-title" id="completion-title"></div>
+      <div class="completion-rows" id="completion-rows"></div>
+    </div>
+    <textarea id="input" class="input" rows="2" spellcheck="false" autocomplete="off"
+      placeholder="Message the sticky session, or type / for a command"></textarea>
+  </div>
+  <footer class="footer">
+    <span class="help">Enter submit · Shift+Enter newline · Tab complete · PageUp/PageDown scroll · Ctrl+↓ newest · Shift+↑/↓ history · Shift+Delete delete session · Ctrl+Q exit</span>
+    <span class="toast" id="toast"></span>
+  </footer>
+</div>
+<div class="overlay" id="overlay" hidden>
+  <div class="overlay-card">
+    <span class="overlay-state" id="overlay-state"></span>
+    <p class="overlay-reason" id="overlay-reason"></p>
+  </div>
+</div>
+<span id="ruler" class="ruler" aria-hidden="true">0123456789</span>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -77,7 +77,7 @@ reported in:
 
 `gongga-server` takes `server.lock`; `gongga-client` takes `client.lock` in its
 own client home (`--client-home` / `GONGGA_CLIENT_HOME` / `~/.gongga-client`).
-A second window therefore needs its own client home -- `gongga-avalonia
+A second window therefore needs its own client home -- `gongga-webui
 --instance <name>` maps to `<client-home>/<name>` for exactly this reason.
 
 ## What a lock does not cover

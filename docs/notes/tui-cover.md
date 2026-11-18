@@ -11,7 +11,7 @@ cell rather than relying on ratatui's empty-cell diff, so neither an earlier pro
 screen nor a blank image cell can leave stale ink behind.
 
 The cover has no timer and does not hide connection errors after an arbitrary delay. The first
-key press or mouse gesture closes it without operating the window underneath; Alt+Q still quits.
+key press or mouse gesture closes it without operating the window underneath; Ctrl+Q still quits.
 A paste closes it and remains a paste. Resizing keeps the cover visible and redraws it at the new
 size. The cursor is hidden for the cover and restored once on the transition to the window, not
 on every repaint.

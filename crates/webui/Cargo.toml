@@ -1,0 +1,27 @@
+[package]
+name = "gongga-webui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Gongga harness browser front-end: one page, gongga-client over a pipe"
+
+# The page is served by this program, so it owns the listener, the socket and the
+# child process; the browser owns only the drawing.
+[[bin]]
+name = "gongga-webui"
+path = "src/main.rs"
+
+[dependencies]
+client = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+clap = { version = "4", features = ["derive", "wrap_help"] }
+futures-util = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+# The same WebSocket implementation the IM bridge links, used as a server here.
+tokio-tungstenite = "0.24"
