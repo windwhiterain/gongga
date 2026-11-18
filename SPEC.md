@@ -135,14 +135,14 @@ fn new_session(id: Session, config: SessionConfig)
 fn set_session(id: Session, config_delta: SessionConfig{..})
 fn ls_session(path: path)
 fn del_session(path: path)
-  # also delete all channel under the session.
+  # also delete all channel/subscription under the session.
 fn sync_session(id: Session,  trajectory: Range)
 fn send_message(session: Session, message: str)
   # inject message when step end.
   # interrupt if tool waiting.
 fn interrupt_session(id: Session):
-  # for waiting tool call, make it early return.
-  # stop llm streaming and loop, everything received must be saved to context.
+  # for waiting channel, make it early return.
+  # stop llm streaming and loop
 fn trigger_event(event: Event)
 Subscription := path
 fn subscribe(id: option[Subscription] = none, pattern: Pattern, cmds: list[Cmd], session: Session = caller()):
