@@ -241,6 +241,14 @@ pub enum PastRow {
         text: String,
     },
     /// A block that streams under `tag`, kept by `key` while it lived.
+    ///
+    /// # Invariant
+    ///
+    /// Its body is `rows`, the same runs a live answer's `document` carries: the client
+    /// parses and fits once, so a page and a stream cannot disagree about a body's ink or
+    /// its shape. `text` stays for the label, the fold and the mark. A block with no rows
+    /// is one that arrived before this build parsed for it. See
+    /// `docs/notes/client-render-wire.md`.
     Block {
         /// The newest transcript row drawn into this block.
         seq: i64,
@@ -250,6 +258,8 @@ pub enum PastRow {
         kind: LineKind,
         tag: String,
         text: String,
+        #[serde(default)]
+        rows: Vec<Vec<DocumentSpan>>,
     },
 }
 

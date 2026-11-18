@@ -148,3 +148,14 @@ because a block spans rows), and `RenderMessage::Newer { window, rows }` is a pa
 what comes *after* what the window holds -- one frame of finished rows, the mirror of
 `Older`. Without the numbers a front-end could only guess at the range it holds, and a
 guess is what makes a page land twice or leave a hole.
+
+## A page's body is the same body (2026-11-19)
+
+A block carries `rows` whether it came from a stream or from a page. A streamed answer
+arrives as text and is restated as a `Document`; a paged one used to arrive as text and
+nothing else, so a front-end drew the same answer two ways: styled while it streamed, and
+as plain text once the operator scrolled back -- dim gray with its markdown unread. The
+client now fits a page's answers to the pane's width (`PipeFrontend::page_rows`), keeps
+them in `answers` so a width change restates them the way it restates a live one, and
+`PastRow::Block.rows` is what both front-ends draw. One rule for a body, wherever it came
+from: an answer is rows, and every other kind is text.

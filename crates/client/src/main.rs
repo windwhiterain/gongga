@@ -165,6 +165,44 @@ impl PipeFrontend {
         self.document_of(window, key)
     }
 
+    /// A page's answers are fitted here: one body rule, and a width change restates it.
+    fn page_rows(&mut self, window: &str, rows: &[PastRow]) -> Vec<PastRow> {
+        let width = self.widths.get(window).copied().unwrap_or(DEFAULT_COLUMNS);
+        rows.iter()
+            .map(|row| match row {
+                PastRow::Block {
+                    seq,
+                    from,
+                    key,
+                    kind,
+                    tag,
+                    text,
+                    ..
+                } if *kind == LineKind::Assistant => {
+                    self.answers.entry(window.to_string()).or_default().insert(
+                        key.clone(),
+                        Answer {
+                            kind: *kind,
+                            tag: tag.clone(),
+                            text: text.clone(),
+                            done: true,
+                        },
+                    );
+                    PastRow::Block {
+                        seq: *seq,
+                        from: *from,
+                        key: key.clone(),
+                        kind: *kind,
+                        tag: tag.clone(),
+                        text: text.clone(),
+                        rows: gongga_client::document::rows(text, width),
+                    }
+                }
+                other => other.clone(),
+            })
+            .collect()
+    }
+
     fn drop_answer(&mut self, window: &str, key: &str) {
         if let Some(held) = self.answers.get_mut(window) {
             held.remove(key);
@@ -525,7 +563,13 @@ impl Sink for PipeSink<'_> {
     fn older_page(&mut self, window: &str, rows: &[PastRow]) {
         // What only the pipe can say: the rows go above what the window holds. See
         // `docs/notes/client-render-wire.md`.
-        self.wire.prepend(window, rows);
+        let rows = self.front.page_rows(window, rows);
+        self.wire.prepend(window, &rows);
+    }
+    fn newer_page(&mut self, window: &str, rows: &[PastRow]) {
+        // The mirror of `older_page`: the rows go below what the window holds.
+        let rows = self.front.page_rows(window, rows);
+        self.wire.append_page(window, &rows);
     }
     fn landed(&mut self, window: &str, created: i64, drawn: i64, floor: i64) {
         self.wire.landed(window, created, drawn, floor);

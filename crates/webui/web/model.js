@@ -177,9 +177,12 @@ export class ClientModel {
       text(row && row.text, ''),
     );
     block.sealed = true;
-    // A page says where each of its rows came from; a line is one row.
+    // A page says where each of its rows came from; a line is one row. A block carries
+    // its body as rows when the client fitted it, as a document does.
     block.seq = count(row && row.seq, 0);
     block.from = text(row && row.row, '') === 'block' ? count(row && row.from, 0) : block.seq;
+    const rows = row && row.rows;
+    block.rows = Array.isArray(rows) && rows.length !== 0 ? spansOf(rows) : null;
     this.dress(block);
     if (block.key.length !== 0) this.remember(block);
     return block;

@@ -507,11 +507,11 @@ came to read, so its rows are drawn as the markdown they print -- `markdown::col
 and `docs/notes/tui-markdown.md` for what a row can say. It carries no mark, so its colours
 are spent on structure and none on the question of what kind of row it is.
 
-A page is the other way an answer arrives: `PastRow::Block` carries text, not rows, so
-nothing styled it and it fell to the content ink -- the quiet gray, in a window where every
-answer the operator scrolled back to read was dim and every fresh one was white. `content_for`
-draws `Assistant` white for that reason, beside the operator's own message, and the gray
-stays for the kinds that are meant to be read past.
+A page is the other way an answer arrives, and it carries the same body: `PastRow::Block.rows`
+is fitted by the client before the page is sent, so `page_entry` fills `styled` exactly as a
+`document` does and the page draws the ink and the shape the stream would have. `content_for`
+keeps `Assistant` white beside the operator's own message for a block that arrives with no
+rows at all -- the mark, the fold and every kind meant to be read past stay quiet.
 
 ## ruled_row
 

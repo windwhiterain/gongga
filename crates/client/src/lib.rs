@@ -711,6 +711,7 @@ impl Sink for Page {
                 kind,
                 tag: tag.to_string(),
                 text: text.to_string(),
+                rows: Vec::new(),
             });
             if !done {
                 self.at.insert(key.to_string(), self.rows.len() - 1);

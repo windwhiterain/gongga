@@ -20,8 +20,9 @@ frame and intent, `crates/tui` for what each frame means to a window,
 ## The contract, not a copy of it
 
 Frames are semantic and the client already wrapped a document: a `Document` frame is
-finished rows, so a row is rendered as exactly one line and the page never re-wraps it.
-Text bodies (a stream, a tool output) are the page's to wrap.
+finished rows, and so is a block of an `Older`/`Newer` page, so a row is rendered as
+exactly one line and the page never re-wraps it. Text bodies (a stream, a tool output) are
+the page's to wrap.
 
 What the page must answer, because only drawing knows it:
 

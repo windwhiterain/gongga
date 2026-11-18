@@ -1128,10 +1128,20 @@ impl Log {
                 kind,
                 tag,
                 text,
+                rows,
                 ..
             } => {
                 let mut entry = Entry::with_tag(name, *kind, tag, text.clone(), width);
                 entry.key = key.clone();
+                // A page's answer arrives fitted, as the document of a streamed one does.
+                if !rows.is_empty() {
+                    entry.styled = rows
+                        .iter()
+                        .map(|row| Line::from(row.iter().map(document_span).collect::<Vec<_>>()))
+                        .collect();
+                    entry.document = true;
+                    entry.text.clear();
+                }
                 entry
             }
         };
