@@ -869,6 +869,8 @@ pub struct Client {
     next_id: u64,
     /// Commands the completion sent, by the remote each asked: a popup, not a line.
     quiet: HashMap<u64, String>,
+    /// The same for a skill listing, keyed by the session that asked.
+    quiet_skills: HashMap<u64, String>,
     /// Whether a link is open right now; while false, all server knowledge is
     /// stale.
     connected: bool,
@@ -1377,6 +1379,7 @@ impl Client {
             model: "-".to_string(),
             next_id: Self::seed_command_id(),
             quiet: HashMap::new(),
+            quiet_skills: HashMap::new(),
             connected: false,
             attempts: 0,
             draining: false,
@@ -1520,6 +1523,23 @@ impl Client {
                 );
             }
         }
+    }
+
+    /// Records a `list_skills` answer, so the popup offers it on the next ask.
+    fn fill_skills(&mut self, session: &str, data: &serde_json::Value) {
+        let Some(rows) = data.get("skills").and_then(|v| v.as_array()) else {
+            return;
+        };
+        let rows: Vec<(String, String)> = rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.get("name")?.as_str()?.to_string(),
+                    row.get("path")?.as_str()?.to_string(),
+                ))
+            })
+            .collect();
+        self.catalog.fill_skills(session, rows);
     }
 
     /// Records a `list_paths` answer, so the popup offers it on the next ask.
@@ -1692,6 +1712,14 @@ impl Client {
                 }
                 // Before the row: an accepted command's news reaches the front-end.
                 sink.settled(id, ok);
+                if let Some(session) = self.quiet_skills.remove(&id) {
+                    match (ok, data.as_ref()) {
+                        (true, Some(answer)) => self.fill_skills(&session, answer),
+                        // Asked again next time: a refusal is not an answer.
+                        _ => self.catalog.fail_skills(&session),
+                    }
+                    return;
+                }
                 if let Some(remote) = self.quiet.remove(&id) {
                     match (ok, data.as_ref()) {
                         (true, Some(named)) => self.fill_listing(named),
@@ -2293,9 +2321,41 @@ impl Client {
         self.catalog.take_wanted()
     }
 
+    /// The sessions whose skills the completion asked for and has no answer for.
+    pub fn take_wanted_skills(&self) -> Vec<String> {
+        self.catalog.take_wanted_skills()
+    }
+
     /// How many listings have landed; a front-end repaints when this changes.
-    pub fn paths_version(&self) -> u64 {
-        self.catalog.paths_version()
+    pub fn listings_version(&self) -> u64 {
+        self.catalog.listings_version()
+    }
+
+    /// Asks the server which skills one session can open.
+    ///
+    /// # Invariant
+    ///
+    /// The server's walk, never this process's: the content is a checkout the
+    /// server owns, and a client that walked its own directories offered skills
+    /// that `run_skill` resolves nowhere. Never echoes the command, for the reason
+    /// [`Client::ask_paths`] states.
+    pub fn ask_skills(&mut self, session: &str) -> Option<ClientMessage> {
+        if !self.connected || self.catalog.command("list_skills").is_none() {
+            return None;
+        }
+        let id = self.next_id();
+        let mut args = protocol::Args::new();
+        // Nothing named is the server's own directory, which is what a line that
+        // names no session resolves against.
+        if !session.is_empty() {
+            args.insert("session".to_string(), session.to_string());
+        }
+        self.quiet_skills.insert(id, session.to_string());
+        Some(ClientMessage::Command {
+            id,
+            name: "list_skills".to_string(),
+            args,
+        })
     }
 
     /// Asks the server what one directory on a remote holds, for `--cwd`; `None`

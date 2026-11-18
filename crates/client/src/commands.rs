@@ -3,36 +3,10 @@
 //! See `docs/notes/cli-commands.md`.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use serde_json::Value;
 
 use protocol::{ArgSpec, Args, CommandSpec};
-
-/// The skills a session can open: the project's own, the home's, then the machine's.
-///
-/// # Invariant
-///
-/// One walk, shared with the server's `ls_skill` and `@skill(...)` -- so a name read
-/// here is a name that can be opened. `project` is the directory the session works in,
-/// and `None` when that directory is another machine's: its checkout is not on this
-/// disk. See `docs/notes/client-commands.md`.
-pub fn installed_skills(home: &Path, project: Option<&Path>) -> Vec<String> {
-    roots(home, project)
-        .all()
-        .into_iter()
-        .map(|skill| skill.name)
-        .collect()
-}
-
-/// The three roots one session reads a skill from, as this machine can see them.
-pub fn roots(home: &Path, project: Option<&Path>) -> skill::Roots {
-    skill::Roots::new(
-        project.map(|dir| dir.join(".agents").join("skills")),
-        home.join("skills"),
-        dirs::home_dir().map(|home| home.join(".agents").join("skills")),
-    )
-}
 
 /// Every sticky type a command can actually take.
 ///

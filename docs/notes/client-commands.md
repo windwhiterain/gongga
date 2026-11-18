@@ -3,8 +3,8 @@
 ## commands.rs
 
 This file is the grammar of a command line and nothing else: `parse_args` binds
-the tokens, `signature` spells a spec back, `roots`/`installed_skills` read where
-a skill lives. The state these were once shared with -- sticky entries, drawn
+the tokens, `signature` spells a spec back. The state these were once shared with --
+sticky entries, drawn
 sessions, block size, box edge, the remembered address -- is the window's, and
 lives in `crates/client/src/window_state.rs` (`docs/notes/tui-state.md`).
 
@@ -61,19 +61,24 @@ The cost is the other direction: a forgotten value swallows the next flag, which
 then fails on whatever follows it -- `send_message --message --session hi` reads
 `--session` as the value of `--message`, and `hi` is what fails.
 
-## installed_skills
+## skills: the server's list, not one of ours
 
-The three roots the server walks, in its order, from the one reading of them:
-`skill::Roots` in `crates/skill`. Completion still runs in a key handler and cannot ask
-the server, so both sides read the same directory walk rather than two walks that are
-kept equal by hope -- which is what this used to be.
+`CompletionSource::Skills` is a live source the front-end fills in, and the walk is the
+server's: `Client::ask_skills` sends `list_skills` for the session the line names
+(nothing named is the server's own directory), `fill_skills` keeps the rows under that
+session, and both the `@skill(...)` reference and `run_skill{"id":` read them -- with
+the `SKILL.md` path as the popup's right-hand column.
 
-`project` is `None` when the session whose skills these are runs on another
-machine. Its checkout is then not on this disk, and reading
-`<that path>/.agents/skills` here would offer the local directory of the same
-name -- a name that cannot be opened, which is the failure this whole area keeps
-producing. The home's and the machine's still count: they are what the server's
-own `@skill(...)` expansion reads, since that expansion runs on the server.
+The client used to walk the three roots itself, with `<home>/skills` in the middle.
+That was the same walk exactly while the server copied the content into the home; it
+does not any more, so the middle root is `<checkout>/<declared skills>`, which is a path
+this layer does not own. What the walk offered was the last copy an older build made:
+`heir`, retired by the content, and none of `skill`, `image`, `providers` or
+`prefix-cache`, which no build had ever copied there. `docs/notes/client-catalog.md`
+carries the rest.
+
+A refusal is `fail_skills`, for the reason `fail_paths` has one: a question the
+completion remembers as in flight is never asked again.
 
 ## sticky_kinds
 

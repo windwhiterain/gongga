@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use crate::commands::installed_skills;
 use crate::complete::{Completer, Item, Offered, token_bounds};
 use crate::json_place::{self, Read};
 use crate::leaf::Leaf;
@@ -48,8 +47,6 @@ struct Inner {
     models: Vec<ModelInfo>,
     /// The model this server runs a session on when nothing names one.
     default_model: Option<String>,
-    /// The skills one directory offers, and what they were read from.
-    skills: Option<Skills>,
     /// Directories a remote answered with, keyed by remote and directory, and
     /// when each answer arrived.
     remote_paths: HashMap<(String, String), (Vec<Item>, std::time::Instant)>,
@@ -67,8 +64,20 @@ struct Inner {
     /// The directory each remote is being asked for right now, so a second
     /// question never queues behind the first.
     inflight: HashMap<String, String>,
-    /// Bumped whenever `remote_paths` changes, so a front-end repaints the popup.
-    paths_version: u64,
+    /// Bumped whenever a listing lands, so a front-end repaints the popup.
+    listings_version: u64,
+    /// The skills each session's roots hold, as the server answered them.
+    ///
+    /// # Invariant
+    ///
+    /// Keyed by the session that asked: the walk is its directory's, its machine's
+    /// and the home's, so a line that names another session is another answer.
+    listed_skills: HashMap<String, (Vec<Item>, std::time::Instant)>,
+    /// The sessions the completion has asked about and has no answer for yet.
+    wanted_skills: HashSet<String>,
+    /// The sessions being asked for right now, so a second question never queues
+    /// behind the first.
+    inflight_skills: HashSet<String>,
 }
 
 /// Where one input line's relative values are read, and how.
@@ -78,24 +87,8 @@ struct Place {
     dir: PathBuf,
     /// The machine that directory is on, when it is not this one.
     peer: Option<String>,
-}
-
-/// What a cached skill list was read from.
-///
-/// # Invariant
-///
-/// The two things the answer depends on and nothing else, so a session that moves
-/// -- or a line that addresses another one -- is read again.
-#[derive(PartialEq, Eq)]
-struct SkillKey {
-    project: Option<PathBuf>,
-    home: PathBuf,
-}
-
-/// A skill list, and what it was read from.
-struct Skills {
-    key: SkillKey,
-    names: Vec<String>,
+    /// The session a skill is read from; empty when the line names none.
+    session: Option<String>,
 }
 
 impl Default for Inner {
@@ -109,12 +102,14 @@ impl Default for Inner {
             sticky_names: Vec::new(),
             models: Vec::new(),
             default_model: None,
-            skills: None,
             remote_paths: HashMap::new(),
             remotes: HashSet::new(),
             wanted: HashMap::new(),
             inflight: HashMap::new(),
-            paths_version: 0,
+            listings_version: 0,
+            listed_skills: HashMap::new(),
+            wanted_skills: HashSet::new(),
+            inflight_skills: HashSet::new(),
         }
     }
 }
@@ -217,7 +212,7 @@ impl Catalog {
             (remote.to_string(), directory.to_string()),
             (named, std::time::Instant::now()),
         );
-        inner.paths_version += 1;
+        inner.listings_version += 1;
     }
 
     /// Records that a remote did not answer one listing.
@@ -232,8 +227,56 @@ impl Catalog {
     }
 
     /// How many listings have arrived; a front-end repaints when this changes.
-    pub fn paths_version(&self) -> u64 {
-        self.read().paths_version
+    pub fn listings_version(&self) -> u64 {
+        self.read().listings_version
+    }
+
+    /// The sessions the completion asked the server about and has no answer for.
+    ///
+    /// # Invariant
+    ///
+    /// A question already in flight is not asked again: the line is completed on
+    /// every keystroke, so a queue that re-asked would be behind the cursor.
+    pub fn take_wanted_skills(&self) -> Vec<String> {
+        let mut inner = self.write();
+        let asked: Vec<String> = inner.wanted_skills.drain().collect();
+        let mut sending = Vec::new();
+        for session in asked {
+            if !inner.inflight_skills.insert(session.clone()) {
+                continue;
+            }
+            sending.push(session);
+        }
+        sending
+    }
+
+    /// Records the skills a session's roots hold, as the server answered them.
+    ///
+    /// # Invariant
+    ///
+    /// A skill's path is its row's `detail`: the popup says where the name stands,
+    /// and that path is the one `@skill(...)` writes into the row it expands.
+    pub fn fill_skills(&self, session: &str, skills: Vec<(String, String)>) {
+        let items: Vec<Item> = skills
+            .into_iter()
+            .map(|(name, path)| Item::word(name, path))
+            .collect();
+        let mut inner = self.write();
+        inner.inflight_skills.remove(session);
+        inner
+            .listed_skills
+            .insert(session.to_string(), (items, std::time::Instant::now()));
+        inner.listings_version += 1;
+    }
+
+    /// Records that the server did not answer one session's skills.
+    ///
+    /// # Invariant
+    ///
+    /// The question is no longer in flight, for the reason [`Catalog::fail_paths`]
+    /// states: a question remembered as still being answered is never asked again.
+    pub fn fail_skills(&self, session: &str) {
+        self.write().inflight_skills.remove(session);
     }
 
     /// Everything a completion reads, for a line whose words are already split.
@@ -330,39 +373,32 @@ impl Catalog {
             .map(|s| PathBuf::from(&s.cwd))
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or_else(|| inner.server_cwd.clone());
-        Place { dir, peer }
+        Place {
+            dir,
+            peer,
+            session: session.map(|s| s.name.clone()),
+        }
     }
 
-    /// The skills a line can open, read where its session reads them.
+    /// The skills a line can open, as the server last answered for its session.
     ///
     /// # Invariant
     ///
-    /// Keyed by what the answer depends on, so a session that moves is read again
-    /// and no call site has to remember to ask. See `docs/notes/cli-catalog.md`.
-    fn skill_names(&self, place: &Place) -> Vec<String> {
-        // A peer's checkout is not here: the home's and the machine's are -- the
-        // same rows `@skill(...)` expands against.
-        let key = SkillKey {
-            project: place.peer.is_none().then(|| place.dir.clone()),
-            home: self.read().home.clone(),
-        };
-        let cached = {
-            let inner = self.read();
-            inner
-                .skills
-                .as_ref()
-                .filter(|read| read.key == key)
-                .map(|read| read.names.clone())
-        };
-        if let Some(names) = cached {
-            return names;
+    /// One walk for the whole harness: the server resolves these with the same
+    /// `installed_for` that `run_skill` and `@skill(...)` read, and this layer only
+    /// remembers an answer and asks for a new one -- it never walks a directory of
+    /// its own, because the content's tree is a path the client does not own. See
+    /// `docs/notes/client-commands.md`.
+    fn skills(&self, place: &Place) -> Vec<Item> {
+        let session = place.session.clone().unwrap_or_default();
+        let cached = self.read().listed_skills.get(&session).cloned();
+        if cached
+            .as_ref()
+            .is_none_or(|(_, at)| at.elapsed() >= REVALIDATE)
+        {
+            self.write().wanted_skills.insert(session);
         }
-        let names = installed_skills(&key.home, key.project.as_deref());
-        self.write().skills = Some(Skills {
-            key,
-            names: names.clone(),
-        });
-        names
+        cached.map(|(items, _)| items).unwrap_or_default()
     }
 
     pub fn commands(&self) -> Vec<CommandSpec> {
@@ -427,7 +463,8 @@ impl Snapshot {
 
 impl Completer for Catalog {
     fn wants(&self) -> bool {
-        !self.read().wanted.is_empty()
+        let inner = self.read();
+        !inner.wanted.is_empty() || !inner.wanted_skills.is_empty()
     }
 
     fn complete(&self, line: &str, cursor: usize) -> Offered {
@@ -535,14 +572,7 @@ fn opening(word: &str) -> Option<(usize, Reference, &str)> {
 /// Completes one reference's value.
 fn value(kind: Reference, typed: &str, ctx: &Ctx) -> Vec<Item> {
     match kind {
-        Reference::Skill => pick(
-            ctx.catalog
-                .skill_names(&ctx.place)
-                .iter()
-                .map(String::as_str),
-            typed,
-            "skill",
-        ),
+        Reference::Skill => narrowed(&ctx.catalog.skills(&ctx.place), typed),
         Reference::Image | Reference::File => match &ctx.place.peer {
             Some(remote) => remote_paths(ctx, remote, typed),
             None => paths(&ctx.place.dir, typed),
@@ -604,14 +634,7 @@ fn published(
             let catalog = ctx.catalog.read();
             pick(catalog.remotes.iter().map(String::as_str), token, "remote")
         }
-        CompletionSource::Skills => pick(
-            ctx.catalog
-                .skill_names(&ctx.place)
-                .iter()
-                .map(String::as_str),
-            token,
-            "skill",
-        ),
+        CompletionSource::Skills => narrowed(&ctx.catalog.skills(&ctx.place), token),
         // The type the first word names; its value completes like that
         // type's argument. See `docs/notes/cli-catalog.md`.
         CompletionSource::OfNamedArgument if depth < 2 => {
@@ -839,11 +862,23 @@ fn remote_paths(ctx: &Ctx, remote: &str, token: &str) -> Vec<Item> {
 /// so Tab on `/send_message` completes nothing rather than reordering the popup.
 /// See `docs/notes/cli-catalog.md`.
 fn pick<'a>(values: impl Iterator<Item = &'a str>, token: &str, detail: &str) -> Vec<Item> {
-    let mut got: Vec<Item> = values
-        .filter(|v| v.contains(token))
-        .map(|v| Item::word(v, detail))
+    let items: Vec<Item> = values.map(|v| Item::word(v, detail)).collect();
+    narrowed(&items, token)
+}
+
+/// The candidates whose label holds `token` anywhere, prefix matches first.
+///
+/// # Invariant
+///
+/// A list that already carries a label and a right-hand column is offered as it
+/// stands: SPEC's `match candidates in any char position`, and a stable order, so
+/// the list's own order decides between equals.
+fn narrowed(items: &[Item], token: &str) -> Vec<Item> {
+    let mut got: Vec<Item> = items
+        .iter()
+        .filter(|item| item.label.contains(token))
+        .cloned()
         .collect();
-    // Stable sort, so the catalog's own order decides between equals.
     got.sort_by_key(|c| !c.label.starts_with(token));
     got
 }

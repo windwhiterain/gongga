@@ -74,8 +74,16 @@ pub async fn answer_completion(
                 break;
             }
         }
+        for session in client.take_wanted_skills() {
+            let Some(message) = client.ask_skills(&session) else {
+                continue;
+            };
+            if open.send(message).await.is_err() {
+                break;
+            }
+        }
     }
-    let version = client.paths_version();
+    let version = client.listings_version();
     if version != *seen {
         *seen = version;
         ui.refresh_completion(version);

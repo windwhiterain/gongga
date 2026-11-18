@@ -75,14 +75,20 @@ One entry per remote rather than one per directory is deliberate: a queue keyed 
 directory asks for a listing per letter typed, answers them in order, and is always
 behind the cursor.
 
-## skill_names
+## skills
 
-Computed lazily against `SkillKey` -- the session's directory and the home --
-rather than pushed in from a setter. The old shape was a `set_skill_names` call
-from `sync_sticky`, which meant the list was right only at the call sites that
-remembered to run it; a session that moved, or a window that switched its sticky
-session, left a list that no longer described anything. A cache keyed by what the
-answer depends on cannot go stale without being asked again.
+The server's answer, not a walk of ours: `list_skills` names the session, the server
+resolves it with the one `installed_for` that `run_skill` and `@skill(...)` read, and
+this catalog keeps the rows under that session's name until `REVALIDATE` calls the
+answer old. A missing answer is asked for; while it is in flight the popup offers
+nothing, the way a remote's directory does.
+
+It used to walk `<home>/skills` here, and that directory stopped being the content:
+a home reads the checkout (`<home>/ship/skills`) and copies nothing into `<home>` any
+more. The walk therefore offered the skills an older build had copied -- `heir`, which
+the content had retired -- and missed every one the content gained since (`skill`,
+`image`, `providers`, `prefix-cache`). One directory walk, on the side that owns the
+checkout, is the only shape that cannot drift again.
 
 ## Ctx
 

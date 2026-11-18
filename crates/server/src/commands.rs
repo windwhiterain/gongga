@@ -1054,6 +1054,24 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         },
         CommandSpec {
             target: CommandTarget::Server,
+            name: "list_skills".into(),
+            description: "Every skill a session can open, for a front-end's completion: \
+                      `name` is what `run_skill` and `@skill(...)` take, `path` is the \
+                      `SKILL.md` it names, and `bucket` says which root it came from."
+                .into(),
+            args: vec![kind_pos(
+                "session",
+                "Whose skills: its directory is the `project` layer, and the machine \
+                 it stands on decides whether that layer is read at all. Omitted is the \
+                 caller's own session.",
+                false,
+                "session",
+                Some("name"),
+                CompletionSource::Sessions,
+            )],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
             name: "ls_skill".into(),
             description: "List the skills a session can open, one row per skill, under \
                       `path`. A row's `id` is the skill's own name, and `bucket` says \
@@ -1420,6 +1438,7 @@ async fn run_now(d: &Dispatch, name: &str, args: &Args, origin: &Origin) -> Outc
         }
         "del_session" => del_session(d, args).await,
         "list_paths" => list_paths(d, args).await,
+        "list_skills" => list_skills(d, args, origin.session()).await,
         "interrupt_session" => interrupt_session(d, args).await,
         "cancel" => {
             // SPEC's flag: `cancel` takes it, the signal path passes false.
@@ -2904,6 +2923,38 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
             "rows": sent,
             "last_seq": last_seq,
         }),
+    )
+}
+
+/// Every skill a session's roots hold: the one walk that `ls_skill` reads too.
+async fn list_skills(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+    let (named, cwd, machine) = match session_of(args, caller) {
+        Some(session) => match d.sessions.get(&session) {
+            Ok(handle) => (session, handle.cwd(), handle.owner()),
+            Err(e) => return Outcome::err(e.to_string()),
+        },
+        // No session named: the server's own directory, as such a line reads it.
+        None => (
+            String::new(),
+            std::env::current_dir().unwrap_or_default(),
+            crate::session::Machine::Local,
+        ),
+    };
+    let rows: Vec<serde_json::Value> = crate::tools::skill::installed_for(&cwd, machine)
+        .iter()
+        .map(crate::tools::skill::row)
+        .collect();
+    Outcome::ok_with(
+        format!(
+            "{}: {} skill(s)",
+            if named.is_empty() {
+                "no session"
+            } else {
+                &named
+            },
+            rows.len()
+        ),
+        json!({"session": named, "skills": rows}),
     )
 }
 
