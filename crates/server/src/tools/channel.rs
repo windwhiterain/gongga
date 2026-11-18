@@ -402,11 +402,9 @@ impl Channels {
                 tracing::info!(channel = %path, session = %session, machine = %machine, dir = %place.dir(), pid, "channel started");
             }
             Err(why) => {
-                let why = if why.starts_with("remote ") {
-                    why
-                } else {
-                    format!("remote {machine}: {why}")
-                };
+                // One place names the machine, so a cause reads the same wherever it is
+                // set: the start's own message says what happened, this says where.
+                let why = format!("remote {machine}: {why}");
                 tracing::warn!(channel = %path, session = %session, why = %why, "a channel could not be started");
                 let _ = self.store.set_channel_start_error(id, &why);
             }
@@ -556,12 +554,9 @@ impl Channels {
         let named = words.cwd != Path::new(".");
         if named {
             let asked = words.cwd.display().to_string();
-            let there = runner
-                .stat(&asked)
-                .await
-                .map_err(|e| format!("{machine}: {e}"))?;
+            let there = runner.stat(&asked).await.map_err(|e| format!("{e}"))?;
             if !there.is_dir {
-                return Err(format!("{machine} has no directory {asked:?}"));
+                return Err(format!("it has no directory {asked:?}"));
             }
         }
         let written = serde_json::to_vec(words)
@@ -570,9 +565,9 @@ impl Channels {
         let started = runner
             .relay(cwd.as_deref(), &written)
             .await
-            .map_err(|e| format!("could not start a channel on {machine}: {e}"))?;
+            .map_err(|e| format!("a channel could not be started there: {e}"))?;
         if started.dir.is_empty() {
-            return Err(format!("{machine} started a relay and named no directory"));
+            return Err("it started a relay and named no directory".to_string());
         }
         let place = Where::There {
             runner,

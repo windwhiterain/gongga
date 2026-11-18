@@ -157,6 +157,40 @@ raises `PROTOCOL` instead of pairing with a peer that keeps the old one. A relay
 which is what `scripts/channel_remote_selftest.sh` proves by killing the server and asking
 the same channel again.
 
+## A call never dials
+
+A channel on a peer is two things in that order: a row, and then a program. The row is
+written by the call (`Channels::begin`, `begin_channel`: the name taken, `dir` empty, pid
+0) and the start is spawned behind it, so what a start needs from the peer -- the dial,
+the directory, the relay, the pid -- is never something a call waits for. `talk` is the
+wait, so the start is the first thing a wait waits on, and it reads it from the row like
+any other silence: inside the caller's own `wait`, and answered as "still starting" when
+that runs out. Every other reader -- `ls_channel`, `reap`, `del_channel`, a stop, the
+watcher -- reads through `place`, which uses a connection that is already up and never
+dials one.
+
+Measured, before this: a peer's ssh dropped mid-turn and the server's per-machine dial
+mutex was never released, because the greeting it waited for was inside the lock and
+nothing bounded that wait. Four turns sat in `tool start` with no `tool end` for forty
+minutes, `new_channel` for the same peer ran out the command layer's own 120 s, and the
+watcher -- which dialled too, through `place` -- stopped noticing every other channel with
+it. SPEC's `interrupt` cannot end such a turn: it does not break a tool call. So the
+invariant is not that a stuck wait gets interrupted; it is that a tool's every await has
+a clock.
+
+The dial is shared, not locked. `Dial` is one per peer: the start that finds none running
+leads it, and a start that finds one joins its outcome instead of queueing on a mutex, so
+a peer that never answers costs its own start and no other. The entry goes when the dial
+ends, and the next start dials for itself.
+
+A start that fails is the network's failure and is stored as such (`start_error`), never as
+an exit status: a program that never ran has no status to give, and a caller told one would
+read the peer's silence as the program's own failure. SPEC's `Result.exit` stays `null`.
+Whoever reads it first says it -- the call inside the start window as an error naming the
+machine, the watcher for a call whose wait ran out first -- and the row goes with the
+answer, so the name is free again. A start that is cancelled, or whose row went while it
+was in flight, ends what it started on the peer rather than leaving it for nobody.
+
 ## Who reads what
 
 `exec` is a row of `[tool.*]`, like every other tool, and it is `tunneled = false`: a
