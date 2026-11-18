@@ -680,6 +680,14 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         "until_sentinel",
         "ALTER TABLE channels ADD COLUMN until_sentinel TEXT NOT NULL DEFAULT ''",
     )?;
+    // A channel on a peer is started after its row exists, so a start that failed has
+    // somewhere to say why: the row holds the name, and the name outlives the attempt.
+    add_column_if_missing(
+        conn,
+        "channels",
+        "start_error",
+        "ALTER TABLE channels ADD COLUMN start_error TEXT",
+    )?;
     // An older build's ended rows held names for nothing: swept, then their columns go.
     if has_column(conn, "channels", "ended_at") {
         let corpses = conn.execute("DELETE FROM channels WHERE ended_at IS NOT NULL", [])?;
@@ -3220,11 +3228,73 @@ impl Store {
         Ok(conn.last_insert_rowid())
     }
 
+    /// The row a channel gets before anything on another machine is asked.
+    ///
+    /// # Invariant
+    ///
+    /// An empty `dir` is a channel that is *starting*: the name is taken and no peer has
+    /// been spoken to. [`Self::record_channel_started`] is what makes it a channel, and
+    /// [`Self::set_channel_start_error`] is what a start that failed leaves behind -- so
+    /// the name is never held by an attempt that produced nothing.
+    pub fn begin_channel(
+        &self,
+        session: &str,
+        path: &str,
+        program: &str,
+        remote: Option<&str>,
+    ) -> anyhow::Result<i64> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO channels (session, path, program, remote, dir, pid, started_at) \
+             VALUES (?1, ?2, ?3, ?4, '', 0, ?5)",
+            params![session, path, program, remote, now_millis()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// What the machine answered: the directory it chose, and the pid it runs.
+    ///
+    /// # Invariant
+    ///
+    /// The count is this row's answer to "is it still mine": zero means the name went
+    /// while the start was in flight, and what that start put on the peer is nobody's.
+    #[must_use]
+    pub fn record_channel_started(
+        &self,
+        id: i64,
+        dir: &str,
+        pid: u32,
+        relay: Option<(u32, i64)>,
+    ) -> usize {
+        self.lock()
+            .execute(
+                "UPDATE channels SET dir = ?2, pid = ?3, relay_pid = ?4, relay_started_at = ?5 \
+                 WHERE id = ?1",
+                params![
+                    id,
+                    dir,
+                    i64::from(pid),
+                    relay.map(|(pid, _)| i64::from(pid)),
+                    relay.map(|(_, at)| at),
+                ],
+            )
+            .unwrap_or(0)
+    }
+
+    /// Why a channel never started, in the words of the network.
+    pub fn set_channel_start_error(&self, id: i64, why: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE channels SET start_error = ?2 WHERE id = ?1",
+            params![id, why],
+        )?;
+        Ok(())
+    }
+
     /// Every channel a session has: one it started, whose program still runs.
     pub fn channels_of(&self, session: &str) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at, start_error
              FROM channels WHERE session = ?1 ORDER BY path",
         )?;
         let rows = stmt
@@ -3242,7 +3312,7 @@ impl Store {
     pub fn every_channel(&self) -> anyhow::Result<Vec<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at, start_error
              FROM channels ORDER BY id",
         )?;
         let rows = stmt
@@ -3255,7 +3325,7 @@ impl Store {
     pub fn channel_of(&self, session: &str, path: &str) -> anyhow::Result<Option<ChannelRow>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at
+            "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, wait_marker, until_sentinel, detached, relay_pid, relay_started_at, start_error
              FROM channels WHERE session = ?1 AND path = ?2",
         )?;
         let mut rows = stmt.query(params![session, path])?;
@@ -3356,7 +3426,7 @@ impl Store {
         let conn = self.lock();
         let mut stmt = conn.prepare(
             "SELECT id, session, path, program, remote, dir, pid, started_at, upto, wrote_at, \
-             wait_marker, until_sentinel, detached, relay_pid, relay_started_at
+             wait_marker, until_sentinel, detached, relay_pid, relay_started_at, start_error
              FROM channels WHERE detached = 1 ORDER BY id",
         )?;
         let rows = stmt
@@ -3610,6 +3680,15 @@ pub struct ChannelRow {
     pub relay_pid: Option<i64>,
     /// When that relay started, so a recycled pid is refused before a job is armed.
     pub relay_started_at: Option<i64>,
+    /// Why a start on a peer failed, in the words of the network rather than the
+    /// program's: a channel whose row exists but whose program never ran.
+    ///
+    /// # Invariant
+    ///
+    /// Not an exit status, and never folded into one: a program that never started has
+    /// no status to give, and a caller told an exit code would read it as the program's
+    /// own failure. Set by the start that failed, cleared by the read that ends the row.
+    pub start_error: Option<String>,
 }
 
 fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
@@ -3629,6 +3708,7 @@ fn channel_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChannelRow> {
         detached: row.get::<_, i64>(12)? != 0,
         relay_pid: row.get(13)?,
         relay_started_at: row.get(14)?,
+        start_error: row.get(15)?,
     })
 }
 
