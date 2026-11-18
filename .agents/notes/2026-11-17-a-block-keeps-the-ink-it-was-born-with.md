@@ -51,6 +51,29 @@ server is the image installed at 16:34 in `~/.gongga/bin`; the exe on disk was r
 18:13 by another checkout but no process is running it. A window keeps the build it
 started with, so the fix arrives there only with an evolve.
 
+## Rusd still draws an answer gray, on `5b6bfa4a` (11-18)
+
+The window is the fixed build: `gongga-tui.exe` and `gongga-client.exe` started 23:42 from
+binaries built 12:24, which is `5b6bfa4a` and contains `8b79a436`. So the report is about the
+new keying.
+
+What a real client says about that window, measured with a second `gongga-client
+--client_only` on the live server and its pipe frames kept (1101 frames, 24 pages):
+126 `assistant` blocks, 155 `reasoning`, 204 `tool_call`, 194 `tool_output`, 10 `tool_error`;
+**no key ever changed kind**, no answer text was drawn twice, and every `(turn, step)` in the
+store holds at most one `text` row and one `reasoning` row. The client names every answer
+`assistant`, which the TUI paints `Color::White` (`crates/tui/src/render.rs::style_for`).
+
+The long, report-shaped paragraphs that *are* gray are stored as reasoning items: turn 1
+step 42 (seq 688) holds `reasoning_text` "Final restore confirmed: ... All four tiers
+verified in the real window: 1. root ...", and seq 689 is that step's short answer; turn 6
+step 98 (seq 441/442) repeats the shape. On `qwen4-max-preview` at `max` the model writes
+its report into the thinking item, and the window draws what the provider said.
+
+So the remaining question is which block the operator means, and it is not answerable from
+the store: a probe that keeps the frames of a *live* step (`.dev/probe_frames.py`) is the
+tool that settles it.
+
 ## Two things a live run needs
 
 - The worktree's `ship/` is a submodule whose `.git` points at a modules directory a
