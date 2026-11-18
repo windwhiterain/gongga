@@ -135,8 +135,8 @@ pub struct Channels {
     /// leaves the map, so the next start dials for itself. See
     /// `docs/notes/server-channel.md`.
     dialing: std::sync::Mutex<HashMap<String, Arc<Dial>>>,
-    /// The starts in flight, by row id: what a `del_channel`, a `del_session` and a
-    /// `cancel` end, and what one name may not have twice.
+    /// The starts in flight, by row id: what a stop ends, and what one name may not
+    /// have twice.
     bringing_up: std::sync::Mutex<HashMap<i64, CancellationToken>>,
     /// The channels a call is inside right now.
     ///
@@ -402,8 +402,7 @@ impl Channels {
                 tracing::info!(channel = %path, session = %session, machine = %machine, dir = %place.dir(), pid, "channel started");
             }
             Err(why) => {
-                // One place names the machine, so a cause reads the same wherever it is
-                // set: the start's own message says what happened, this says where.
+                // The machine is named once: the cause says what, this says where.
                 let why = format!("remote {machine}: {why}");
                 tracing::warn!(channel = %path, session = %session, why = %why, "a channel could not be started");
                 let _ = self.store.set_channel_start_error(id, &why);
@@ -605,8 +604,7 @@ impl Channels {
                 }
             ));
         };
-        // One dial per peer, shared: a start that finds one running joins it instead of
-        // queueing behind a lock, and no lock is held while anyone waits.
+        // One dial per peer, shared: a start joins the one running instead of queueing.
         let (dial, mine) = self.dial_entry(machine);
         if !mine {
             let said = self.join(&dial).await;
@@ -844,12 +842,9 @@ impl Channels {
         self.store.take_channel_wait(row.id).map_err(quiet)?;
         // `time` is what this call cost: from its own write, or from the last one.
         let mut since = row.wrote_at.unwrap_or(row.started_at);
-        // The whole call runs on one clock, the caller's, from before anything is asked
-        // of a peer: a start, a read and a status are all inside it.
+        // One clock for the whole call: a start, a read and a status are all inside it.
         let deadline = Instant::now() + wait;
-        // A channel on a peer is a name before it is a program. The start is the first
-        // thing this wait waits on, and the row is where it is read from: nothing here
-        // asks the peer. See [`Channels::begin`].
+        // A peer's channel is a name before it is a program: this waits on its start.
         while row.dir.is_empty() {
             if let Some(why) = row.start_error.clone() {
                 // The network's own words, never an exit status, and the name goes with
@@ -928,9 +923,7 @@ impl Channels {
             },
         };
         loop {
-            // What the peer says is inside the call's clock: a request that outlasts the
-            // wait answers with what this call already has, and the flag keeps the rest
-            // for a notice. See `docs/notes/server-remote.md`, "two clocks".
+            // What the peer says is inside the call's clock; see `server-remote.md`.
             let fresh = if wait.is_zero() {
                 place.read_from("out", row.upto).await?
             } else {
@@ -1085,8 +1078,7 @@ impl Channels {
     pub async fn stop(&self, session: &str, id: &str) -> Result<(), String> {
         let row = self.row_of(session, id)?;
         if row.dir.is_empty() {
-            // Nothing on the peer is named yet: the start is told to stop and the name
-            // goes. A start that got as far as a relay sees its row gone, and ends it.
+            // Nothing on the peer is named yet: the start stops, and the name goes.
             self.cancel_start(row.id);
             self.store.delete_channel(session, id).map_err(quiet)?;
             return Ok(());
@@ -1280,8 +1272,7 @@ impl Channels {
         let mut gone = 0;
         for row in &rows {
             if row.dir.is_empty() {
-                // A start the last run did not finish: nothing on the peer is named, so
-                // there is nothing to adopt and no name to keep.
+                // A start the last run did not finish: nothing on the peer is named.
                 if self.store.claim_channel_end(row.id).unwrap_or(false) {
                     gone += 1;
                 }
@@ -1360,8 +1351,7 @@ impl Channels {
     /// free afterwards. `None` is a program that is still there: the name is not the
     /// caller's to take.
     pub async fn reap(&self, row: &ChannelRow) -> Option<i32> {
-        // A start that failed is not a program: the row goes so the name is free, and
-        // nothing is answered as an exit status.
+        // A start that failed is not a program: the row goes, and no exit is answered.
         if row.start_error.is_some() {
             let _ = self.store.claim_channel_end(row.id);
             return None;
@@ -1515,8 +1505,7 @@ impl Channels {
                         continue;
                     }
                     if let Some(why) = row.start_error.clone() {
-                        // A start that failed says so in the network's words, and the name
-                        // goes with the notice: never an exit of a program that never ran.
+                        // A failed start speaks in the network's words, never as an exit.
                         channels.notice_end(&row, why, row.upto, None, false, true);
                         continue;
                     }

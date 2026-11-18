@@ -680,8 +680,7 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         "until_sentinel",
         "ALTER TABLE channels ADD COLUMN until_sentinel TEXT NOT NULL DEFAULT ''",
     )?;
-    // A channel on a peer is started after its row exists, so a start that failed has
-    // somewhere to say why: the row holds the name, and the name outlives the attempt.
+    // A peer's start runs after its row exists, so a failed start has somewhere to say why.
     add_column_if_missing(
         conn,
         "channels",
@@ -3680,8 +3679,7 @@ pub struct ChannelRow {
     pub relay_pid: Option<i64>,
     /// When that relay started, so a recycled pid is refused before a job is armed.
     pub relay_started_at: Option<i64>,
-    /// Why a start on a peer failed, in the words of the network rather than the
-    /// program's: a channel whose row exists but whose program never ran.
+    /// Why a start on a peer failed, in the network's words.
     ///
     /// # Invariant
     ///
