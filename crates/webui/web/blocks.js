@@ -76,13 +76,19 @@ export function headLabel(head) {
   return summary.length === 0 ? '' : summary + ' ';
 }
 
-// The body is one of: a one-line abstract, plain pre-wrapped text, finished
-// document rows, or a described call's fields.
+// What a block draws: a summary, plain pre-wrapped text, finished document rows,
+// a described call's fields, or an opened item's box.
 function bodyKindOf(block) {
-  const folded = block.sealed && !block.expanded;
-  if (block.head !== null) return folded ? 'abstract' : 'fields';
-  // A sealing fold owns the body whatever it turned out to hold.
-  if (block.foldable && folded) return 'abstract';
+  if (block.boxed) return 'box';
+  // A sealing fold owns its summary whatever the body turned out to hold.
+  if (block.foldable && block.sealed) return 'summary';
+  if (block.hasRows) return 'rows';
+  return 'text';
+}
+
+// What an opened item's body holds: the same three, minus the summary.
+function innerKindOf(block) {
+  if (block.head !== null) return 'fields';
   if (block.hasRows) return 'rows';
   return 'text';
 }
@@ -110,6 +116,10 @@ export class Block {
     this.dropped = false;
     this.rev = 0;
     this.el = null;
+    // The transcript rows this block came from, and where its box is scrolled.
+    this.seq = 0;
+    this.from = 0;
+    this.inner = 0;
   }
 
   get foldable() {
@@ -120,9 +130,19 @@ export class Block {
     return this.rows !== null && this.rows.length > 0;
   }
 
+  // SPEC's opened item: rules above and below, and a body that scrolls inside.
+  get boxed() {
+    return this.expanded && this.foldable;
+  }
+
   // SPEC caps only a sealed, opened block that folds: it holds rows it does not show.
   get capped() {
-    return this.foldable && this.sealed && this.expanded && this.capRows > 0;
+    return this.boxed && this.sealed && this.capRows > 0;
+  }
+
+  // The top rule's words: the item's own label, without the mark column's space.
+  topLabel() {
+    return this.tag.trim();
   }
 
   mark() {
@@ -134,8 +154,12 @@ export class Block {
     return this.expanded ? '\u25be' : '\u25b8';
   }
 
+  // What a sealed fold shows: its summary, never its body's first line alone.
+  // Contract: crates/tui/src/log.rs summary_text.
   abstract() {
     if (this.head !== null) return headSummary(this.head);
+    const label = this.tag.trim();
+    if (label.length !== 0) return label;
     return firstLine(this.text);
   }
 }
@@ -146,55 +170,103 @@ function makeElement(tagName, className) {
   return element;
 }
 
+// The block's frame: a fold column, the kind's mark, and whatever the body draws.
+// An opened folding item is SPEC's box: a top rule carrying its label, a body that
+// scrolls inside when `block_size` caps it, and a bottom rule.
+// Contract: crates/tui/src/render.rs ruled_row, crates/tui/src/log.rs Rule.
 export function createBlockElement(block) {
   const el = makeElement('div', 'block');
-  const fold = makeElement('span', 'fold');
-  const mark = makeElement('span', 'mark');
-  const main = makeElement('div', 'block-main');
-  const tag = makeElement('div', 'tag');
-  const body = makeElement('div', 'body');
-  main.append(tag, body);
-  el.append(fold, mark, main);
+  el._fold = makeElement('span', 'fold');
+  el._mark = makeElement('span', 'mark');
+  el._main = makeElement('div', 'block-main');
+  el.append(el._fold, el._mark, el._main);
   el._block = block;
-  el._fold = fold;
-  el._mark = mark;
-  el._tag = tag;
-  el._body = body;
   el._contentKind = null;
+  el._innerKind = null;
   el._textHolder = null;
   el._textNode = null;
   el._rows = null;
   el._fields = null;
+  el._boxBody = null;
+  el._content = null;
+  el._tagEl = null;
+  el._topLabel = null;
   updateBlockElement(el, block);
   return el;
 }
 
 export function updateBlockElement(el, block) {
-  el.className = 'block kind-' + block.kind + (block.foldable ? ' foldable' : '');
+  const boxed = block.boxed;
+  const folded = block.foldable && block.sealed && !block.expanded;
+  el.className = 'block kind-' + block.kind + (block.foldable ? ' foldable' : '')
+    + (boxed ? ' boxed' : '') + (folded ? ' folded' : '');
   el._fold.textContent = block.foldMark();
   el._mark.textContent = block.mark();
-  el._tag.textContent = block.tag;
-  el._tag.hidden = block.tag.length === 0;
-
-  const edge = Math.max(0, block.edgeColumns) * 6;
-  el._body.style.marginLeft = edge + 'px';
-  el._body.style.marginRight = edge + 'px';
-  el._body.classList.toggle('capped', block.capped);
-  el._body.style.maxHeight = block.capped ? block.capRows * 20 + 'px' : '';
 
   const kind = bodyKindOf(block);
   if (el._contentKind !== kind) {
     el._contentKind = kind;
-    el._body.replaceChildren();
-    el._textHolder = null;
-    el._textNode = null;
-    el._rows = null;
-    el._fields = null;
+    buildStructure(el, block, kind);
   }
-  if (kind === 'abstract') setText(el, block.abstract(), 'text abstract');
+  if (kind === 'box') {
+    if (el._topLabel !== null) el._topLabel.textContent = block.topLabel();
+    const inner = innerKindOf(block);
+    if (el._innerKind !== inner) {
+      el._innerKind = inner;
+      el._content.replaceChildren();
+      el._textHolder = null;
+      el._textNode = null;
+      el._rows = null;
+      el._fields = null;
+    }
+    if (inner === 'fields') setFields(el, block.head);
+    else if (inner === 'rows') setRows(el, block.rows);
+    else setText(el, block.text, 'text');
+    const body = el._boxBody;
+    body.classList.toggle('capped', block.capped);
+    body.style.maxHeight = block.capped ? block.capRows * 20 + 'px' : '';
+    if (Math.abs(body.scrollTop - block.inner) > 0.5) body.scrollTop = block.inner;
+    return;
+  }
+  if (el._tagEl !== null) el._tagEl.textContent = block.tag;
+  if (kind === 'summary') setText(el, block.abstract(), 'text summary');
   else if (kind === 'text') setText(el, block.text, 'text');
   else if (kind === 'rows') setRows(el, block.rows);
   else setFields(el, block.head);
+}
+
+// One frame change replaces the parts a change of kind makes impossible.
+function buildStructure(el, block, kind) {
+  el._main.replaceChildren();
+  el._content = null;
+  el._boxBody = null;
+  el._tagEl = null;
+  el._topLabel = null;
+  el._textHolder = null;
+  el._textNode = null;
+  el._rows = null;
+  el._fields = null;
+  if (kind === 'box') {
+    const top = makeElement('div', 'box-rule top');
+    el._topLabel = makeElement('span', 'box-label');
+    top.append(el._topLabel, makeElement('span', 'box-fill'));
+    const body = makeElement('div', 'box-body');
+    el._content = makeElement('div', 'block-content');
+    body.append(el._content);
+    body.addEventListener('scroll', () => { el._block.inner = body.scrollTop; }, { passive: true });
+    const bottom = makeElement('div', 'box-rule bottom');
+    bottom.append(makeElement('span', 'box-fill'));
+    el._main.append(top, body, bottom);
+    el._boxBody = body;
+    return;
+  }
+  if (kind !== 'summary' && !block.foldable && block.tag.length !== 0) {
+    el._tagEl = makeElement('div', 'tag');
+    el._tagEl.textContent = block.tag;
+    el._main.append(el._tagEl);
+  }
+  el._content = makeElement('div', 'block-content');
+  el._main.append(el._content);
 }
 
 // A streaming body is appended to, not rewritten: a delta is the delta's worth.
@@ -203,7 +275,7 @@ function setText(el, text, className) {
     el._textHolder = makeElement('div', className);
     el._textNode = document.createTextNode('');
     el._textHolder.append(el._textNode);
-    el._body.append(el._textHolder);
+    el._content.append(el._textHolder);
   }
   el._textHolder.className = className;
   const node = el._textNode;
@@ -216,7 +288,7 @@ function setText(el, text, className) {
 function setRows(el, rows) {
   if (el._rows === null) {
     el._rows = makeElement('div', 'rows');
-    el._body.append(el._rows);
+    el._content.append(el._rows);
   }
   const holder = el._rows;
   const fragment = document.createDocumentFragment();
@@ -236,7 +308,7 @@ function setRows(el, rows) {
 function setFields(el, head) {
   if (el._fields === null) {
     el._fields = makeElement('div', 'head-fields');
-    el._body.append(el._fields);
+    el._content.append(el._fields);
   }
   const holder = el._fields;
   const fragment = document.createDocumentFragment();

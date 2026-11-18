@@ -558,6 +558,18 @@ Verification was real processes, not a mock: a server on a temporary home, a
 `docs/notes/webui-*.md`; the frame and gesture tables are the wire contract and are
 not repeated here.
 
+**The parity pass (same day).** The first delivery was a working window but not the
+terminal's behaviour. The page now trims a window's blocks to `keep_rows` at both
+ends and states the range it holds with `Held`; an opened item is SPEC's box (rules
+above and below, a body that scrolls inside `block_size`, and `box_edge` columns of
+wheel belonging to the pane); a view off its bottom shows the way back; a wheel notch
+is three rows and a page is the pane's own height. Exercising `Held` exposed a wire
+gap rather than a page one: `PipeSink::row` wrote the client's copy and never put
+`RenderMessage::Row` on the pipe, so no front-end could know a live block's transcript
+row (`docs/notes/client-pipe.md`, 2026-11-18). That frame now crosses, which is what
+the terminal's own `take_held` needed as well.
+
+
 ## 2. 传输层：可靠 UDP
 
 按你的选择走「跨机 + 自研轻量可靠层」。没有用 QUIC（强制 TLS，跨机自签证书很麻烦），

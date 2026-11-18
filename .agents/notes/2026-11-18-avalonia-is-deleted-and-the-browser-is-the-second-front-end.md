@@ -28,9 +28,13 @@
   `label/detail/new_text/snippet/range` (not the old insert/detail/space) and
   `RenderMessage::Newer` / `UiIntent::{Newer, Held, Columns, Room}` which the
   C# front-end predated.
-- Deliberate limit: the page holds a window's whole history and never trims, so it
-  never sends `Held`; `keep_rows` is a terminal memory budget. recorded in
-  `crates/webui/web/model.js`'s header and `docs/notes/webui-web.md`.
+- First delivery was a deliberate limit: the page held a window's whole history
+  and never trimmed, so it never sent `Held`; `keep_rows` was treated as a terminal
+  memory budget. **The parity pass of the same day removed that limit**: the page now
+  trims like the terminal (`keep_rows`, oldest and newest ends), sends `Held` for a
+  trimmed window and asks `Newer` for the rows below one. It also got SPEC's box
+  (`block_size` cap, inner scroll, `box_edge` wheel region), the "go to bottom"
+  hint, three rows a wheel notch and a whole pane a page.
 
 ## Found while porting (recorded, then fixed)
 

@@ -512,9 +512,9 @@ impl Sink for PipeSink<'_> {
         self.wire.transcript(session, created, seq);
     }
     fn row(&mut self, window: &str, seq: u64, event: &gongga_client::protocol::Event) {
-        // The client's copy of the server's state, written here and never by the UI:
-        // a frame carries text and no number.
+        // The copy is the client's; the number is the front-end's only coordinate.
         self.front.journal.event(window, seq, window, event);
+        self.wire.row(window, seq, event);
     }
     fn rewind(&mut self, window: &str) {
         self.wire.rewind(window);

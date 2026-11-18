@@ -1,17 +1,12 @@
 // The whole view state a stateless frame front-end has to keep.
 // Contract: crates/tui/src/run.rs apply_frame (which frames are control frames),
 // crates/tui/src/tree.rs rows (the session list), crates/client/src/lib.rs
-// Layout / Listed / QuotaRow, and docs/notes/webui-web.md for this page's limits.
+// Layout / Listed / QuotaRow, and docs/notes/webui-web.md.
 //
-// # Deliberate limit
-//
-// This page holds every row a window ever drew: it never trims blocks, so it never
-// sends Held and never asks Newer for rows a budget dropped. A terminal's keep_rows
-// is a memory concern of that process; the Render frame's keep_rows is therefore read
-// and ignored. Older and Newer pages are still applied as frames, and Newer is still
-// sent when the operator pushes against a pane's newest row. A Row frame names the
-// transcript position that report would be in, so it is read and not kept. See
-// docs/notes/tui-log.md.
+// The window is a view of the transcript, never a copy of it: Render.keep_rows is a
+// budget, trimWindow is trim, and a block carries the transcript rows it came from
+// (Row frames stamp it) so takeHeld can say where the window now stops. The rules are
+// crates/tui/src/log.rs trim/trim_newest/held, read once for both front-ends.
 
 import { Block, headLabel, headLineKind, lineKindOf, sessionRows } from './blocks.js';
 import { applyCompletion, byteLength, indexToByte } from './cursor.js';
@@ -70,6 +65,9 @@ export class ClientModel {
     this.byKey = new Map();
     this.open = new Map();
     this.dirty = new Set();
+    // The transcript row each window's sink is on, and the windows a trim cut down.
+    this.stamps = new Map();
+    this.trimmed = new Set();
 
     // The session list is a view of the layout: folded groups and unseen stops.
     this.folded = new Set();
@@ -141,14 +139,24 @@ export class ClientModel {
   }
 
   touch(block) {
+    this.stamp(block);
     block.rev += 1;
     this.dirty.add(block);
   }
 
   addBlock(block) {
     this.dress(block);
+    this.stamp(block);
     this.window(block.window).push(block);
     if (block.key.length !== 0) this.remember(block);
+  }
+
+  // A block made now takes the row its window's sink is on as its `from` and
+  // its newest row as `seq`; crates/tui/src/log.rs stamp_block is the same rule.
+  stamp(block) {
+    const seq = this.stamps.get(block.window) ?? 0;
+    if (seq > 0 && block.from === 0) block.from = seq;
+    block.seq = seq;
   }
 
   remember(block) {
@@ -169,6 +177,9 @@ export class ClientModel {
       text(row && row.text, ''),
     );
     block.sealed = true;
+    // A page says where each of its rows came from; a line is one row.
+    block.seq = count(row && row.seq, 0);
+    block.from = text(row && row.row, '') === 'block' ? count(row && row.from, 0) : block.seq;
     this.dress(block);
     if (block.key.length !== 0) this.remember(block);
     return block;
@@ -266,9 +277,8 @@ export class ClientModel {
       case 'completion':
         this.applyCompletionFrame(frame);
         break;
-      // A row's place in the transcript is only needed to report what this page
-      // holds; it holds everything, so there is nothing to report (deliberate limit).
       case 'row':
+        this.stamps.set(text(frame.window, ''), count(frame.seq, 0));
         break;
       default:
         break;
@@ -468,6 +478,8 @@ export class ClientModel {
       this.windows.delete(name);
     }
     this.dropOpen(name);
+    this.stamps.delete(name);
+    this.trimmed.delete(name);
     this.unseen.delete(name);
   }
 
@@ -488,6 +500,8 @@ export class ClientModel {
   }
 
   applyRepoint() {
+    this.stamps.clear();
+    this.trimmed.clear();
     for (const [name, blocks] of this.windows) {
       for (const block of blocks) block.dropped = true;
       blocks.length = 0;
@@ -670,13 +684,106 @@ export class ClientModel {
     if (windows.length !== 0) this.send(intents.newer(windows));
   }
 
+  // TUI panes.rs trim: a window is a view of the transcript, and keep_rows is the
+  // margin it may hold above what its pane draws. `rowsOf` is the height the frame
+  // that drew each block gave it, so nothing here guesses a block's height.
+  trimWindow(name, capacity, scrollRows, rowsOf, pixelsOf) {
+    const keep = this.keepRows;
+    if (keep === 0) return null;
+    const blocks = this.windows.get(name);
+    if (blocks === undefined || blocks.length < 2) return null;
+    const measurement = (block) => Math.max(1, rowsOf.get(block) ?? 1);
+    const pixels = (block) => pixelsOf.get(block) ?? measurement(block) * 20;
+    let droppedNewestRows = 0;
+    // The newest end goes first: history behind the row the reader is on.
+    if (scrollRows > keep) {
+      const want = scrollRows - keep;
+      let gone = 0;
+      let count = 0;
+      for (let at = blocks.length - 1; at >= 0 && count + 1 < blocks.length; at -= 1) {
+        if (gone >= want) break;
+        const block = blocks[at];
+        if (!block.sealed) break;
+        const rows = measurement(block);
+        if (gone + rows > scrollRows) break;
+        gone += rows;
+        count += 1;
+      }
+      if (count !== 0) {
+        const at = blocks.length - count;
+        for (let index = at; index < blocks.length; index += 1) blocks[index].dropped = true;
+        blocks.length = at;
+        droppedNewestRows = gone;
+        // What the window holds now ends at its newest surviving block.
+        const last = blocks[at - 1];
+        if (last !== undefined && last.seq > 0) this.stamps.set(name, last.seq);
+      }
+    }
+    // Then the oldest end, down to what the reader scrolled through.
+    const scroll = Math.max(0, scrollRows - droppedNewestRows);
+    const budget = keep + capacity + scroll;
+    let total = 0;
+    for (const block of blocks) total += measurement(block);
+    let drop = 0;
+    while (total > budget && blocks.length - drop > 1) {
+      total -= measurement(blocks[drop]);
+      drop += 1;
+    }
+    let droppedOldestRows = 0;
+    let droppedOldestPixels = 0;
+    if (drop !== 0) {
+      for (let at = 0; at < drop; at += 1) {
+        droppedOldestRows += measurement(blocks[at]);
+        droppedOldestPixels += pixels(blocks[at]);
+        blocks[at].dropped = true;
+      }
+      blocks.splice(0, drop);
+    }
+    if (droppedNewestRows === 0 && droppedOldestRows === 0) return null;
+    this.pruneKeys();
+    this.bumpWindowVersion(name);
+    this.trimmed.add(name);
+    return { oldestRows: droppedOldestRows, newestRows: droppedNewestRows, oldestPixels: droppedOldestPixels };
+  }
+
+  // Forgets the dropped blocks in the key index; a dropped block never answers again.
+  pruneKeys() {
+    for (const [key, list] of this.byKey) {
+      const kept = list.filter((block) => !block.dropped);
+      if (kept.length === 0) this.byKey.delete(key);
+      else if (kept.length !== list.length) this.byKey.set(key, kept);
+    }
+    for (const [key, block] of this.open) {
+      if (block.dropped) this.open.delete(key);
+    }
+  }
+
+  // TUI panes.rs take_held: a window whose rows a trim changed is the client's only
+  // account of where it now stops: its first surviving block's `from` and its stamp.
+  takeHeld() {
+    const out = [];
+    for (const name of this.trimmed) {
+      const blocks = this.windows.get(name);
+      const stamp = this.stamps.get(name) ?? 0;
+      const first = blocks === undefined ? undefined : blocks[0];
+      if (first === undefined || stamp <= 0 || first.from <= 0) continue;
+      if (stamp < first.from) continue;
+      out.push([name, first.from, stamp]);
+    }
+    this.trimmed.clear();
+    return out;
+  }
+
   toggleGroup(name) {
     if (!this.folded.delete(name)) this.folded.add(name);
     this.rebuildSessions();
   }
 
   toggleBlock(block) {
+    // An item opens at its first row, and one that closes forgets where it was:
+    // crates/tui/src/log.rs fold reads either way it was left.
     block.expanded = !block.expanded;
+    block.inner = 0;
     this.touch(block);
   }
 

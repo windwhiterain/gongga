@@ -25,23 +25,55 @@ Text bodies (a stream, a tool output) are the page's to wrap.
 
 What the page must answer, because only drawing knows it:
 
-- `Room` -- rows a pane can draw, at the CSS line height of 20 px;
+- `Room` -- rows a pane can draw, at the CSS line height of 20 px, whenever it changes;
 - `Columns` -- the width a document row is fitted to. Measured, not assumed: a
   rendered span row's content width divided by the measured advance of the monospace
   face. When a row still wraps to two lines while the pane's box did not change, the
   page narrows that pane by one and states the new width; the accepted width is
   remembered per pane and box so it settles.
+- `Held` -- the transcript range a window holds after a trim, as the pair
+  `[name, oldest, newest]`. Only the frame that dropped the blocks knows where the
+  window now stops.
 
 `Older` and `Newer` are pages, not gestures: `Older` goes above what the pane holds and
 `Newer` below. A pane pinned at its oldest row asks for one page (and only one per
 visit); a wheel pushed past the oldest or newest row is the gesture that asks again.
 
+## The window is a view, not a copy
+
+The rules are the terminal's, read once for both front-ends: `crates/tui/src/panes.rs`
+trim and `crates/tui/src/log.rs` trim/trim_newest/held.
+`Render.keep_rows` is a budget -- a pane keeps what it draws plus that margin, and the
+frame that drew it drops the rest. Every block carries the transcript rows it came
+from (`Row` frames stamp it), so a trim can state the range the window holds with
+`Held`; the client's journal then asks the server for what the operator wants again.
+
+The dropped rows are a view change only: the transcript is intact, an older page comes
+back through `Older`, a newer one through `Newer`, and the page never guesses a row it
+did not receive.
+
+## An opened item is a box
+
+SPEC's `summary` opened is a box: a rule above carrying the item's label, a rule
+below, and a body that scrolls inside the `block_size` cap (a body that fits has no
+scroll of its own). A folded item shows its summary instead, and a click toggles
+between the two -- at the block's own mark, never in the `box_edge` columns.
+
+`box_edge` is a region of the wheel, not a column the box gives up: the box is drawn
+at the window's full width, and a wheel in either edge column scrolls the pane rather
+than the box. A wheel that lands in the box's own body scrolls the box three rows a
+notch (one with the gesture modifier), and once a gesture has chosen its target it
+never hands over: `overscroll-behavior: contain` is what makes the browser agree.
+
+## The way back
+
+SPEC draws a "go to bottom" hint only while a view is away from its bottom:
+`↓ bottom · Ctrl+↓` in the corner of that pane, and over the session list when the
+list is scrolled. Clicking it pins the view to its newest row, the same place
+Ctrl+↓ puts it.
+
 ## Deliberate limits
 
-- **No trimming, so no `Held`.** The page holds a window's whole history; the client's
-  `keep_rows` budget is a terminal memory concern, and a browser tab has the room.
-  `Newer` can still be sent by a push against the newest row, and is answered like any
-  other frame.
 - **No markdown renderer.** The wire carries rows and span classes, not a document;
   rendering a second markdown engine inside the page would be a second layout with its
   own bugs. A span class says what a run is, and the CSS decides how it looks.

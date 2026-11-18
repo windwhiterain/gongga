@@ -23,7 +23,7 @@ function emptyBlocksState() {
 function sameRooms(left, right) {
   if (left.length !== right.length) return false;
   for (let at = 0; at < left.length; at += 1) {
-    if (left[at][0] !== right[at][0] || Math.abs(left[at][1] - right[at][1]) >= 2) return false;
+    if (left[at][0] !== right[at][0] || left[at][1] !== right[at][1]) return false;
   }
   return true;
 }
@@ -75,6 +75,9 @@ export class View {
     this.overlayState = document.getElementById('overlay-state');
     this.overlayReason = document.getElementById('overlay-reason');
     this.ruler = document.getElementById('ruler');
+    this.listScroll = document.querySelector('.list-scroll');
+    this.listHint = document.getElementById('list-hint');
+    this.commandScroll = document.getElementById('command-scroll');
 
     this.panes = new Map();
     this.commandState = emptyBlocksState();
@@ -102,6 +105,7 @@ export class View {
     this.wireList();
     this.wirePanes();
     this.wireCompletion();
+    this.wireHints();
     this.scheduleRender();
   }
 
@@ -132,7 +136,9 @@ export class View {
     this.syncEmpty();
     this.settleScroll(anchors);
     this.measure();
+    this.trimPanes();
     this.askPinned();
+    this.updateHints();
     this.flushCompletion();
   }
 
@@ -234,7 +240,9 @@ export class View {
         body.scrollTop = bottom;
         entry.state.follow = true;
         entry.state.wheelOlderAsked = false;
-      } else if (entry.state.follow && bottom > entry.state.seenBottom + 1) {
+      } else if (entry.state.follow) {
+        // A following pane sits on its newest row, however the content changed:
+        // a frame that arrived, or a trim that dropped rows under it.
         body.scrollTop = bottom;
       } else if (!entry.state.follow && anchors !== undefined) {
         const before = anchors.get(pane.name);
@@ -357,6 +365,61 @@ export class View {
     this.send(intents.columns(this.lastColumns));
   }
 
+
+  // TUI panes.rs trim: applied by the frame that drew the pane, because only drawing
+  // knows how tall the pane is and how far it is scrolled. Dropped rows stay in the
+  // transcript; Held is what tells the client where this window now stops.
+  trimPanes() {
+    if (this.model.keepRows === 0) return;
+    let changed = false;
+    for (const pane of this.model.panes) {
+      const entry = this.panes.get(pane.name);
+      if (entry === undefined) continue;
+      if (this.trimOne(pane.name, entry.body, this.paneCapacity(entry), entry)) changed = true;
+    }
+    if (this.model.commandBlocks !== null && this.commandScroll !== null) {
+      const capacity = Math.max(1, Math.floor(this.commandScroll.clientHeight / ROW_HEIGHT));
+      if (this.trimOne(this.model.commandWindow, this.commandScroll, capacity, null)) changed = true;
+    }
+    const ranges = this.model.takeHeld();
+    if (ranges.length !== 0) this.send(intents.held(ranges));
+    if (changed) this.scheduleRender();
+  }
+
+  // One container's budget: what it draws, plus keep_rows, plus what the reader
+  // scrolled through. The heights are the drawn ones, so nothing here guesses.
+  trimOne(name, body, capacity, entry) {
+    if (capacity <= 0) return false;
+    const keep = this.model.keepRows;
+    const bottom = Math.max(0, body.scrollHeight - body.clientHeight);
+    const scrollRows = Math.max(0, Math.round((bottom - body.scrollTop) / ROW_HEIGHT));
+    // A window inside its budget needs no per-block measurement. The newest end is
+    // still trimmed when the reader scrolled past the margin, so that is not optional.
+    const totalRows = Math.round(body.scrollHeight / ROW_HEIGHT);
+    if (scrollRows <= keep && totalRows <= keep + capacity + scrollRows) return false;
+    const rowsOf = new Map();
+    const pixelsOf = new Map();
+    for (const element of body.querySelectorAll('.block')) {
+      const block = element._block;
+      if (block === undefined) continue;
+      const style = getComputedStyle(element);
+      const outer = element.getBoundingClientRect().height
+        + (parseFloat(style.marginTop) || 0) + (parseFloat(style.marginBottom) || 0);
+      pixelsOf.set(block, outer);
+      rowsOf.set(block, Math.max(1, Math.round(outer / ROW_HEIGHT)));
+    }
+    const result = this.model.trimWindow(name, capacity, scrollRows, rowsOf, pixelsOf);
+    if (result === null) return false;
+    // Rows dropped above the reader shrink the height above them, so the rows on
+    // screen stay the same rows. A pane on its newest row is left to the browser's
+    // own clamp, which keeps it there when the content shrinks.
+    if (result.oldestPixels > 0 && scrollRows > 2) {
+      body.scrollTop = Math.max(0, body.scrollTop - result.oldestPixels);
+    }
+    if (entry !== null) entry.state.seenBottom = -1;
+    return true;
+  }
+
   // A frame that cannot fill its pane is the one asking for the page above it.
   askPinned() {
     for (const pane of this.model.panes) {
@@ -409,7 +472,17 @@ export class View {
       },
     };
     body.addEventListener('scroll', () => this.onPaneScroll(entry), { passive: true });
-    body.addEventListener('wheel', (event) => this.onPaneWheel(entry, event), { passive: true });
+    body.addEventListener('wheel', (event) => this.onPaneWheel(entry, event), { passive: false });
+    const hint = make('button', 'bottom-hint pane-hint');
+    hint.type = 'button';
+    hint.textContent = '\u2193 bottom \u00b7 Ctrl+\u2193';
+    hint.hidden = true;
+    hint.addEventListener('click', () => {
+      this.pinSticky(entry.name);
+      this.scheduleRender();
+    });
+    entry.hint = hint;
+    el.append(hint);
     this.resizeObserver.observe(body);
     return entry;
   }
@@ -466,41 +539,126 @@ export class View {
     if (body.scrollTop < bottom - 2) entry.state.wheelNewerAsked = false;
   }
 
+  // TUI lib.rs wheel_rows: a notch is three rows, one with a gesture modifier. The
+  // wheel moves what it is over -- an opened item's box, a pane, the list -- and a box
+  // only when its own content holds the pointer: SPEC's box_edge columns are the
+  // pane's, and a body that fits is no scroll target. See crates/tui/src/log.rs box_at.
   onPaneWheel(entry, event) {
+    event.preventDefault();
+    const step = event.altKey ? 1 : 3;
+    const direction = event.deltaY < 0 ? -1 : 1;
+    const box = this.boxUnder(entry, event);
+    if (box !== null) {
+      const before = box.scrollTop;
+      const limit = Math.max(0, box.scrollHeight - box.clientHeight);
+      box.scrollTop = Math.min(Math.max(0, box.scrollTop + direction * step * ROW_HEIGHT), limit);
+      if (box.scrollTop !== before) {
+        entry.state.wheelOlderAsked = false;
+        entry.state.wheelNewerAsked = false;
+        this.scheduleRender();
+      }
+      // The cell decides once: a box at an end still holds the gesture.
+      return;
+    }
+    const body = entry.body;
+    const before = body.scrollTop;
+    body.scrollTop += direction * step * ROW_HEIGHT;
+    if (body.scrollTop !== before) {
+      entry.state.wheelOlderAsked = false;
+      entry.state.wheelNewerAsked = false;
+      this.scheduleRender();
+    }
+    this.afterWheel(entry, direction);
+  }
+
+  // What a wheel at an end of a pane asks for: one page per visit to that end.
+  afterWheel(entry, direction) {
     const body = entry.body;
     const bottom = Math.max(0, body.scrollHeight - body.clientHeight);
-    if (event.deltaY < 0 && body.scrollTop <= 0) {
-      if (!entry.state.wheelOlderAsked) {
-        entry.state.wheelOlderAsked = true;
-        this.model.requestOlder([entry.name]);
-      }
-    } else if (event.deltaY > 0 && body.scrollTop >= bottom - 2) {
-      if (!entry.state.wheelNewerAsked) {
-        entry.state.wheelNewerAsked = true;
-        this.model.requestNewer([entry.name]);
-      }
+    if (direction < 0 && body.scrollTop <= 0 && !entry.state.wheelOlderAsked) {
+      entry.state.wheelOlderAsked = true;
+      this.model.requestOlder([entry.name]);
+    } else if (direction > 0 && body.scrollTop >= bottom - 2 && !entry.state.wheelNewerAsked) {
+      entry.state.wheelNewerAsked = true;
+      this.model.requestNewer([entry.name]);
     }
   }
 
-  pinStickyToNewest() {
-    const entry = this.panes.get(this.model.sticky);
+  // The opened box holding the pointer, or null when the pane takes the gesture.
+  boxUnder(entry, event) {
+    const target = event.target && event.target.closest ? event.target.closest('.box-body') : null;
+    if (target === null || !entry.body.contains(target)) return null;
+    if (target.scrollHeight <= target.clientHeight + 1) return null;
+    const block = target.closest('.block');
+    if (block === null) return null;
+    // SPEC's box_edge: the columns each side of a box belong to the window's wheel.
+    const rect = block.getBoundingClientRect();
+    const edge = Math.max(0, this.model.boxEdge) * this.advance;
+    if (event.clientX < rect.left + edge || event.clientX > rect.right - edge) return null;
+    return target;
+  }
+
+  // SPEC's hot-key: a view away from its bottom shows the way back, and only then.
+  updateHints() {
+    for (const entry of this.panes.values()) {
+      if (entry.hint === undefined) continue;
+      const bottom = entry.body.scrollHeight - entry.body.clientHeight;
+      entry.hint.hidden = bottom <= 2 || entry.body.scrollTop >= bottom - 2;
+    }
+    if (this.listHint !== null && this.listScroll !== null) {
+      const bottom = this.listScroll.scrollHeight - this.listScroll.clientHeight;
+      this.listHint.hidden = bottom <= 2 || this.listScroll.scrollTop >= bottom - 2;
+    }
+  }
+
+  wireHints() {
+    if (this.listScroll !== null) {
+      this.listScroll.addEventListener('wheel', (event) => this.onListWheel(event), { passive: false });
+    }
+    if (this.listHint !== null) {
+      this.listHint.addEventListener('click', () => {
+        if (this.listScroll !== null) this.listScroll.scrollTop = this.listScroll.scrollHeight;
+        this.scheduleRender();
+      });
+    }
+  }
+
+  // The list is its own scroll, in whole rows like every other view.
+  onListWheel(event) {
+    if (this.listScroll === null) return;
+    event.preventDefault();
+    const step = event.altKey ? 1 : 3;
+    const direction = event.deltaY < 0 ? -1 : 1;
+    this.listScroll.scrollTop += direction * step * ROW_HEIGHT;
+    this.scheduleRender();
+  }
+
+  pinSticky(name) {
+    const entry = this.panes.get(name);
     if (entry === undefined) return;
     const body = entry.body;
     body.scrollTop = Math.max(0, body.scrollHeight - body.clientHeight);
     entry.state.follow = true;
     entry.state.wheelOlderAsked = false;
+    entry.state.wheelNewerAsked = false;
   }
 
+  pinStickyToNewest() {
+    this.pinSticky(this.model.sticky);
+  }
+
+  // TUI lib.rs page_height: a page is the pane's own rows, not a fraction of it.
   pageSticky(direction) {
     const entry = this.panes.get(this.model.sticky);
     if (entry === undefined) return;
     const body = entry.body;
+    const capacity = Math.max(1, this.paneCapacity(entry));
     const bottom = Math.max(0, body.scrollHeight - body.clientHeight);
-    const target = Math.min(Math.max(0, body.scrollTop + direction * body.clientHeight * 0.9), bottom);
-    body.scrollTop = target;
-    entry.state.follow = target >= bottom - 2;
-    if (target > 0) entry.state.wheelOlderAsked = false;
-    if (target < bottom - 2) entry.state.wheelNewerAsked = false;
+    body.scrollTop = Math.min(Math.max(0, body.scrollTop + direction * capacity * ROW_HEIGHT), bottom);
+    entry.state.follow = body.scrollTop >= bottom - 2;
+    entry.state.wheelOlderAsked = false;
+    if (body.scrollTop < bottom - 2) entry.state.wheelNewerAsked = false;
+    this.scheduleRender();
   }
 
   // Remaining view state
@@ -641,10 +799,17 @@ export class View {
         return;
       }
       const blockEl = event.target.closest('.block');
-      if (blockEl !== null && blockEl._block !== undefined && blockEl._block.foldable) {
-        this.model.toggleBlock(blockEl._block);
-        this.scheduleRender();
+      if (blockEl === null || blockEl._block === undefined) return;
+      const block = blockEl._block;
+      if (!block.foldable) return;
+      if (block.boxed) {
+        // SPEC's box_edge: a press in the margin is the window's, not the box's.
+        const rect = blockEl.getBoundingClientRect();
+        const edge = Math.max(0, this.model.boxEdge) * this.advance;
+        if (event.clientX < rect.left + edge || event.clientX > rect.right - edge) return;
       }
+      this.model.toggleBlock(block);
+      this.scheduleRender();
     });
   }
 

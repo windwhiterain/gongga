@@ -131,3 +131,15 @@ row's own `Stream`.
 
 Measured on the live harness: a session hidden and shown again went from "five rows,
 no answer" to `total = 17, blocks = 6` -- every row of the turn, in row order.
+
+## A row's number crosses too (2026-11-18)
+
+`PipeSink::row` wrote the client's own copy of the row and never put the number on
+the pipe, so no pipe front-end could say which stored rows its window held:
+`RenderMessage::Row` was dead on this transport, and a window that trimmed could not
+answer `Held`, which left `Newer` anchoring at a watermark that was never lowered.
+The front-end now gets the frame as `client-render-wire.md` says it does -- the copy
+is still the client's, and the number is the front-end's only coordinate for what it
+holds. The page that found it is `webui-web.md`; the terminal reads the same frame
+through `run.rs::apply_frame`.
+

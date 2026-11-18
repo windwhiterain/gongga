@@ -11,6 +11,8 @@ export const older = (windows) => ({ intent: 'older', windows });
 
 export const newer = (windows) => ({ intent: 'newer', windows });
 
+export const held = (windows) => ({ intent: 'held', windows });
+
 export const room = (windows) => ({ intent: 'room', windows });
 
 export const columns = (windows) => ({ intent: 'columns', windows });
