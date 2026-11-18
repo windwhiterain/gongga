@@ -21,7 +21,8 @@ The client carries no deadline of its own. A client-wide timeout covers the
 body as well as the answer, and a body that is still producing is exactly what
 a long answer is entitled to do -- so the bounds sit where each one knows what
 it bounds: `CONNECT_TIMEOUT` on the socket, `headers_timeout` on the answer's
-headers, `idle_timeout` on the content.
+headers (a floor, see "the wait for an answer grows with the session"),
+`idle_timeout` on the content.
 
 ## LlmClient::model
 
@@ -161,6 +162,30 @@ retry always, unless the provider says the request itself is invalid -- which is
 a transient outage at hour three, so the default retries until the turn's cancel
 token fires. The cancel is the only honest stop -- nothing about a bad
 provider's recovery time is knowable in advance.
+
+## the wait for an answer grows with the session
+
+`headers_timeout` is a floor, not the wait itself. An attempt's wait is
+
+```
+max(configured headers_timeout_ms, 2 x sessions.answer_headers_ms) x 2^(attempt-1)
+```
+
+-- the same `protocol::retry::after` ladder the retry *delay* climbs, so there is one
+definition of "doubles" rather than two. `answer_headers_ms` is the longest wait this
+session has ever seen, from `AttemptProbe::answer_wait_ms`, written back after every
+attempt with `MAX` so a fast attempt cannot lower it.
+
+A timeout counts as the wait it lasted, and that is the whole point: a provider that
+needed 181 seconds once is not cut off at 180 again, and a session whose answer has
+already taken four minutes is allowed eight. Measured on this machine, the same
+650k-token request took 181 seconds at 14:00 and 390 seconds at 14:28
+(`headers_ms=389983`) -- a fixed number was wrong for one of them, and the second is
+what the first's record had already paid to learn.
+
+The record is cleared when the session changes model (`set_session_tuning`): another
+endpoint's latency is a different fact, and a session that never changed one keeps
+its own.
 
 ## LlmEvent::Retrying
 

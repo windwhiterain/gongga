@@ -203,7 +203,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- row by the `handoff` skill. NULL is an ordinary session. An archive is told its
     -- size and never asked to hand off -- it holds the transcript, so a hand-off of it
     -- writes a second copy of the same size instead of making anything smaller.
-    mentor_of INTEGER
+    mentor_of INTEGER,
+    -- The longest this session has ever waited for a provider's answer to begin,
+    -- in milliseconds: NULL until an attempt has measured one. The next request
+    -- allows twice this, so a session that once needed 181 seconds is not cut off
+    -- at 180 again. A timeout counts, as the wait it lasted -- that is what makes
+    -- the ladder climb. Cleared when the session changes model, whose latency is a
+    -- different fact. See `docs/notes/server-llm.md`.
+    answer_headers_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS sessions_by_status ON sessions(status);
 
@@ -571,6 +578,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         (
             "mentor_of",
             "ALTER TABLE sessions ADD COLUMN mentor_of INTEGER",
+        ),
+        (
+            "answer_headers_ms",
+            "ALTER TABLE sessions ADD COLUMN answer_headers_ms INTEGER",
         ),
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
@@ -1443,6 +1454,13 @@ impl Store {
                 SET model = COALESCE(?1, ?2),
                     context_limit = ?3,
                     thinking_effort = ?4,
+                    -- Another endpoint has its own latency: what the old one needed
+                    -- says nothing about it, so the record travels with the model
+                    -- and not with the name.
+                    answer_headers_ms = CASE
+                        WHEN model IS COALESCE(?1, ?2) THEN answer_headers_ms
+                        ELSE NULL
+                    END,
                     updated_at = ?5
               WHERE id = ?6",
             params![
@@ -2168,6 +2186,40 @@ impl Store {
             Some((chars, tokens)) if chars > 0 && tokens > 0 => tokens as f64 / chars as f64,
             _ => 1.0 / CHARS_PER_TOKEN,
         }
+    }
+
+    /// This session's longest wait for a provider's answer, in milliseconds.
+    ///
+    /// `None` is a session nothing has measured yet.
+    pub fn answer_headers_ms(&self, id: i64) -> Option<u64> {
+        let row: Option<Option<i64>> = self
+            .lock()
+            .query_row(
+                "SELECT answer_headers_ms FROM sessions WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+        row.flatten().and_then(|ms| u64::try_from(ms).ok())
+    }
+
+    /// Records one attempt's wait, keeping the longest.
+    ///
+    /// # Invariant
+    ///
+    /// Written with `MAX`, so a fast attempt cannot lower it: the record answers
+    /// "what is the worst this provider has needed", and one quiet request must not
+    /// forget a slow one. The next attempt's timeout is built from it.
+    /// See `docs/notes/server-llm.md`.
+    pub fn note_answer_headers_ms(&self, id: i64, ms: u64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions
+                SET answer_headers_ms = MAX(COALESCE(answer_headers_ms, 0), ?2)
+              WHERE id = ?1",
+            params![id, i64::try_from(ms).unwrap_or(i64::MAX)],
+        )?;
+        Ok(())
     }
 
     /// The orderings `owner` has already emitted, as `prefix_cache` records them.

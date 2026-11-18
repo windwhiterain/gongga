@@ -114,6 +114,20 @@ impl AttemptProbe {
         self.headers_ms = Some(self.ms());
     }
 
+    /// What this attempt saw of the wait for an answer: the time to headers, or the
+    /// limit that cut it off.
+    ///
+    /// # Invariant
+    ///
+    /// The one definition of "how long this session waits for an answer", so the
+    /// record a later attempt's timeout is built from and the measurement it is built
+    /// from cannot disagree. A timeout counts as the wait it lasted: that is what
+    /// makes the next attempt wait longer. See `docs/notes/server-llm.md`.
+    pub fn answer_wait_ms(&self) -> Option<u64> {
+        self.headers_ms
+            .or_else(|| (self.outcome == "headers_timeout").then(|| self.ms()))
+    }
+
     pub fn chunk(&mut self, bytes: usize) {
         let at = self.ms();
         self.first_chunk_ms.get_or_insert(at);

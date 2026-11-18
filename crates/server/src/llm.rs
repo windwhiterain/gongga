@@ -266,7 +266,9 @@ impl LlmClient {
     ///
     /// A failed, timed-out or empty attempt is retried with a doubling delay, so the
     /// caller sees one stream; only the provider saying the request is wrong ends it.
-    /// See `docs/notes/server-llm.md`.
+    /// The wait for an answer grows the same way: each attempt allows the longer of the
+    /// configured wait and twice this session's own longest, and doubles again for
+    /// every attempt already spent. See `docs/notes/server-llm.md`.
     pub fn stream(
         &self,
         instructions: &str,
@@ -322,7 +324,8 @@ impl LlmClient {
         // The measurement's own record: which model, and where to learn from.
         let self_model = self.model_name.clone();
         let self_measure = self.measure.clone();
-        let headers_timeout = self.headers_timeout;
+        // The floor an attempt's own wait is built against.
+        let headers_floor = self.headers_timeout;
         let idle_timeout = self.idle_timeout;
         let max_retries = self.max_retries;
         // The one handle a body may use to reach a provider: which endpoint a picture
@@ -361,6 +364,18 @@ impl LlmClient {
                 };
                 // The same counter the body writes into, kept here to measure against.
                 let sent = bytes.clone();
+                // Twice this session's longest wait; the retry ladder doubles it again.
+                let headers_timeout = protocol::retry::after(
+                    headers_floor.max(
+                        source
+                            .store
+                            .answer_headers_ms(source.session_id)
+                            .map_or(Duration::ZERO, |ms| {
+                                Duration::from_millis(ms.saturating_mul(2))
+                            }),
+                    ),
+                    attempt.saturating_add(1),
+                );
                 let mut once = stream_once(
                     face,
                     &http,
@@ -382,8 +397,13 @@ impl LlmClient {
                 // that retry's `reason` rather than the answer.
                 let mut failure: Option<(String, bool)> = None;
 
+                // What this attempt saw of the wait.
+                let mut answer_wait: Option<u64> = None;
                 while let Some(event) = once.recv().await {
                     produced |= event_produced(&event);
+                    if let LlmEvent::Attempt { probe } = &event {
+                        answer_wait = probe.answer_wait_ms();
+                    }
                     match &event {
                         LlmEvent::Completed { usage, .. } => {
                             completed = true;
@@ -411,6 +431,12 @@ impl LlmClient {
                     if tx.send(event).await.is_err() {
                         return;
                     }
+                }
+                // Kept before anything decides what follows: the next attempt reads it.
+                if let Some(ms) = answer_wait
+                    && let Err(e) = source.store.note_answer_headers_ms(source.session_id, ms)
+                {
+                    tracing::debug!(error = %e, "could not record the wait for an answer");
                 }
                 if cancelled {
                     let _ = tx.send(LlmEvent::Cancelled).await;
