@@ -5,7 +5,9 @@
 # One line of verdict at the end.
 set -uo pipefail
 started=$(date +%s)
-root=/c/resource/gongga/.worktrees/space-unified
+# The checkout this script lives in, whatever it is called: a worktree moves, and a
+# build under it is the one these checks speak to.
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin="$root/target/debug"
 work="$root/.dev/remotemeta"
 home="$work/home"
@@ -225,6 +227,41 @@ INNER
 both() { local a=1 b=1; grep -q "$1" "$3" && a=0; grep -q "$2" "$3" && b=0; [[ $a == 0 && $b == 0 ]]; }
 both 'image-part-in-request True' 'picture-copied True' "$work/d.txt"
 ok "a peer picture is attached to the request ($(tr '\n' ' ' < "$work/d.txt"))" $?
+
+# 6: the clipboard's own picture, in a session working on a peer. The TUI writes it as
+# `@image(remote://local/<path>)` -- the machine stated -- and the server must read it
+# here: a bare path would be read on the peer, where a clipboard file does not exist.
+printf %s "$png" | base64 -d > "$work/local-paste.png"
+pastemsg=$(python - "$work/local-paste.png" <<'INNER'
+import json, os, sys
+path = os.path.abspath(sys.argv[1])
+print(json.dumps({"name": "send_message", "args": {
+    "session": "p", "message": "look at @image(remote://local/" + path + ")"}}))
+INNER
+)
+printf '%s\n' "$pastemsg" > "$work/paste-cmd.txt"
+"${cli[@]}" "$pastemsg" > "$work/paste-send.txt" 2>&1
+for _ in $(seq 1 240); do
+  [[ "$(grep -c 'turn end session=p' "$log" 2>/dev/null)" -ge 5 ]] && break; sleep 0.5
+done
+python - "$dump" "$home" > "$work/e.txt" 2>&1 <<'INNER'
+import json, sqlite3, sys
+dump, home = sys.argv[1], sys.argv[2]
+rows = [json.loads(l) for l in open(dump, encoding="utf-8") if l.strip()]
+blob = json.dumps(rows[-1] if rows else {})
+print("image-part-in-request", '"input_image"' in blob or '"image_url"' in blob)
+c = sqlite3.connect(f"file:{home}/gongga.db?mode=ro", uri=True)
+kept = None
+for (d,) in c.execute("select display from messages order by seq desc limit 12"):
+    row = json.loads(d)
+    if row.get("role") == "user" and row.get("images"):
+        kept = row
+        break
+print("picture-copied", bool(kept and kept.get("images")))
+print("picture-path", (kept or {}).get("images", [{}])[0].get("path", ""))
+INNER
+both 'image-part-in-request True' 'picture-copied True' "$work/e.txt"
+ok "a picture this machine holds reaches the request ($(tr '\n' ' ' < "$work/e.txt"))" $?
 "${cli[@]}" '{"name":"exec","args":{"session":"p","bin":"bash","id":"bash/clean","args":["-lc","rm -rf \"$HOME/'"$tag"'\""],"wait":20000}}' >/dev/null 2>&1
 elapsed=$(($(date +%s) - started))
 if [[ $fails == 0 ]]; then printf 'PASS · %ss · %s\n' "$elapsed" "$(git -C "$root" rev-parse --short HEAD)"
