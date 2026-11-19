@@ -242,6 +242,19 @@ passed through, exactly as it was before this existed: a call that would have
 run is a call the operator wanted, and failing it over an ignored key would
 manufacture the retries this message exists to prevent.
 
+## spelled_values: a text value is the value it spells
+
+An argument the row declares as an object or an array may arrive as text -- an operator's
+line is text, and `hint = "json"` teaches a model to write one too -- so the call layer
+parses it before anything else reads it, and the check and the tool both see the value the
+text spells. `GonggaCli::route` already reads a Cmd spelled that way; without this step the
+kind check refused it first, and that branch was unreachable from every door. An argument
+declared as a string keeps the string it was given, whatever it looks like, and text that
+does not parse is left for the check to refuse in its own words.
+
+A wrong kind is the one refusal that names its tool, `{tool} did not run: ...`: a step may
+carry several calls, and this message is read on its own, out of the row it belongs to.
+
 ## is_shorthand_of
 
 `cmd` is inside `command` and `command` is inside `cmdline`, so direction does
