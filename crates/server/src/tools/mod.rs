@@ -736,6 +736,8 @@ impl ToolRegistry {
             let outcome = run_command(&ctx.session, name, words).await;
             return capped(ctx, name, &shared, cap, outcome);
         };
+        // Before the check and before the tool: a typed line and a `hint = "json"` are text.
+        let args = spelled_values(tool.as_ref(), args);
         // The name this call was made under, as the row spells it now.
         let mut named = ctx.clone();
         named.tool = name.to_string();
@@ -823,6 +825,31 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
         Some(answer) => answer,
         None => stopped(tool.name()),
     }
+}
+
+/// A text value for an object-or-array argument is the value it spells; a string stays text.
+pub(crate) fn spelled_values(tool: &dyn Tool, mut args: Value) -> Value {
+    let schema = tool.spec().schema();
+    let (Some(declared), Some(table)) = (schema["properties"].as_object(), args.as_object_mut())
+    else {
+        return args;
+    };
+    for (name, value) in table.iter_mut() {
+        let Value::String(text) = value else { continue };
+        let Some(property) = declared.get(name) else {
+            continue;
+        };
+        let Ok(spelled) = serde_json::from_str::<Value>(text) else {
+            continue;
+        };
+        if kind_of(property)
+            .split(" or ")
+            .any(|kind| kind == kind_word(&spelled))
+        {
+            *value = spelled;
+        }
+    }
+    args
 }
 
 /// The model-facing schema: what the row declares, plus the shared arguments.
@@ -930,9 +957,10 @@ fn argument_error_for(name: &str, schema: &Value, args: &Value) -> Option<String
         )
         .collect();
 
-    // Wrong kinds are refused here, in the schema own words.
+    // Wrong kinds are refused here, in the schema own words. Named: a step may carry
+    // several calls.
     if let Some(wrong) = wrong_kind(schema, given) {
-        return Some(wrong);
+        return Some(format!("`{name}` did not run: {wrong}"));
     }
 
     if missing.is_empty() && unexpected.is_empty() {
