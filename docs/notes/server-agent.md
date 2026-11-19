@@ -693,3 +693,14 @@ place, and the one value every model does take is `none` -- the session stating 
 it sends no tier at all, which neither the server's own nor the roster's shortest
 answers for. Nothing re-decides the tier between requests. The `usage` row records what
 was actually sent, so the observation layer sees the tier that was in force.
+
+## one start for the row, the event and the timing (2026-11-19)
+
+`started_at` is read once, where the call is announced, and handed to everything that
+records it: the published `ToolCallEvent`, the `tool_call` row's payload and the
+`tool_calls` row (`Store::start_tool_call` takes it as an argument, so the table no
+longer reads its own clock). `run_one_call` takes the same value.
+
+Why: three clocks read a few milliseconds apart are three facts, and the difference
+shows up in the one place a person compares numbers -- a window counting from the
+event against the `tool_timing` row the observation layer reads. One call, one start.

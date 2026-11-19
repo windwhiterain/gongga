@@ -135,6 +135,9 @@ pub enum RenderMessage {
         key: String,
         head: protocol::Head,
         streamed: bool,
+        /// When the tool began, as the server said: what a window's clock counts from.
+        #[serde(default)]
+        started_at: i64,
     },
     Relabel {
         window: String,
@@ -471,12 +474,20 @@ impl Sink for WireSink {
         });
     }
 
-    fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
+    fn tool_call(
+        &mut self,
+        window: &str,
+        key: &str,
+        head: &protocol::Head,
+        streamed: bool,
+        started_at: i64,
+    ) {
         self.render.push(RenderMessage::ToolCall {
             window: window.to_string(),
             key: key.to_string(),
             head: head.clone(),
             streamed,
+            started_at,
         });
     }
 

@@ -1072,3 +1072,11 @@ holds. A name that joins or leaves it is declared empty on the client's side
 (`forget_held`: nothing held, not loaded), so the next frame's restore asks for the
 page instead of appending to a tree that was dropped. Without this, a window hidden
 while rows arrived was considered loaded, and showing it drew nothing.
+
+## CALL_KEY and RESULT_KEY — the pairing is one rename (2026-11-19)
+
+A call opens a block under `c:<call_id>` and its output under `t:<call_id>`. Both
+spellings are now constants here, because two crates depend on them: the client writes
+them, and the window reads the result's key back into the call's to stop a running
+call's clock (`Tui::stop_clock`). One spelling, so a front-end pairs a call with its
+result without keeping a second table of which call is still running.

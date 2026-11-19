@@ -23,6 +23,15 @@ async fn send(input: &mut ChildStdin, intent: &UiIntent) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// How often a running call's clock is asked for a frame.
+///
+/// # Invariant
+///
+/// Shorter than the tenth of a second the duration prints, so no number is drawn
+/// late, and asked for only while something runs (`Tui::is_running`): an idle window
+/// still draws nothing it was not sent.
+const CLOCK: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Runs the window over the two pipes until either end goes away.
 pub async fn run(args: &client::Args) -> anyhow::Result<()> {
     // A terminal that cannot open must not leave a child or a reader behind.
@@ -57,6 +66,13 @@ pub async fn run(args: &client::Args) -> anyhow::Result<()> {
         tokio::select! {
             biased;
             _ = closing::asked() => break Ok(()),
+            // A running tool's clock is the one row that moves with no event.
+            _ = tokio::time::sleep(CLOCK), if tui.is_running() => {
+                tui.tick();
+                if let Err(e) = tui.draw() {
+                    break Err(e);
+                }
+            }
             event = tui.next_event() => {
                 let Some(event) = event else { break Ok(()); };
                 if let UiEvent::Intent(intent) = event

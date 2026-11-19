@@ -254,7 +254,9 @@ events (vertical) :=
     |summary{
       symbol (colored), content (gray),
       |reasoning{beginning (line), ending (line)} (vertical)
-      |toolcall{tool_name·[*summary_args]·description}
+      |toolcall{tool_name·[*summary_args]·description·time}: while the tool runs,
+        `time` is what it has spent so far, redrawn as it grows; it leaves the row
+        when `tool_result`'s own `time` states the one the server measured
       |tool_result{ok, time}
       |harness_injection{beginning (line)}
     } (horizontal, click fold/unfold(show all information), block_size, inner scroll, horizontal_scroll_margin)

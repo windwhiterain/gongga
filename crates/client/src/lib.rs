@@ -474,6 +474,18 @@ pub const QUOTA_PROVIDERS: usize = 3;
 /// What the command line's window is called.
 pub const COMMAND_WINDOW: &str = "cmd";
 
+/// The key a call's own block is opened under, before its result exists.
+///
+/// # Invariant
+///
+/// The result's block is the same call id under [`RESULT_KEY`], so a front-end
+/// pairs a call with its output by one rename and never keeps a second table.
+/// Both spellings live here because the front-end is the one that pairs them.
+pub const CALL_KEY: &str = "c:";
+
+/// The key a call's output block is opened under: its result's.
+pub const RESULT_KEY: &str = "t:";
+
 /// Everything the client can ask a front-end to show; neither implementation
 /// knows what produced the text.
 pub trait Sink {
@@ -496,9 +508,17 @@ pub trait Sink {
     fn layout(&mut self, _layout: &Layout) {}
     /// Replaces the whole text of a block: a call's structure, once known.
     fn rewrite(&mut self, _window: &str, _key: &str, _text: &str) {}
-    /// Describes a call with structured fields for a front-end that shows them.
-    /// Other front-ends keep the detail text.
-    fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
+    /// Describes a call with structured fields, and when it began:
+    /// `started_at`, epoch ms, `0` when no row kept one.
+    fn tool_call(
+        &mut self,
+        window: &str,
+        key: &str,
+        head: &protocol::Head,
+        streamed: bool,
+        started_at: i64,
+    ) {
+        let _ = started_at;
         if streamed {
             self.rewrite(window, key, &head.detail());
             self.relabel(window, key, &head_label(head), kind_of(head.kind));
@@ -747,7 +767,15 @@ impl Sink for Page {
 
     /// A call arrives with the shape it was drawn in, and its key may be unseen: the
     /// row is made here rather than looked for.
-    fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
+    fn tool_call(
+        &mut self,
+        window: &str,
+        key: &str,
+        head: &protocol::Head,
+        streamed: bool,
+        started_at: i64,
+    ) {
+        let _ = started_at;
         if self.at.contains_key(key) {
             self.relabel(window, key, &head_label(head), kind_of(head.kind));
             self.rewrite(window, key, &head.detail());
@@ -1937,9 +1965,9 @@ impl Client {
     ///
     /// The call id pairs this block with its result; their bodies stay separate.
     fn handle_tool_call(&mut self, e: protocol::ToolCallEvent, sink: &mut dyn Sink) {
-        let key = format!("c:{}", e.call_id);
+        let key = format!("{CALL_KEY}{}", e.call_id);
         let streamed = !self.calls.insert(e.call_id.clone());
-        sink.tool_call(&e.session, &key, &e.head, streamed);
+        sink.tool_call(&e.session, &key, &e.head, streamed, e.started_at);
     }
 
     /// A call's output, as one item: SPEC's `tool_result{ok, time (spent)}`.
@@ -1951,7 +1979,7 @@ impl Client {
     /// label is the verdict alone, because the call's summary is the row above
     /// and a result that repeated it would say the same tool twice.
     fn handle_tool_answer(&self, e: ToolAnswerEvent, sink: &mut dyn Sink) {
-        let key = format!("t:{}", e.call_id);
+        let key = format!("{RESULT_KEY}{}", e.call_id);
         let (kind, done) = match &e.head {
             Some(head) => (kind_of(head.kind), true),
             // Output streams do not decide success or failure.

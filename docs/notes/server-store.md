@@ -679,3 +679,15 @@ the drop would append the same lesson again on the next one.
 whole table while `seq` is only monotonic per session. A reader that keeps the last id
 it saw resumes exactly where it stopped, with no overlap and no gap. `kind` and
 `session` are filters on the way out, never on the way in.
+
+## a tool call's start is in the payload, not in the item (2026-11-19)
+
+The `tool_call` row is stored twice: `content` is the provider's function-call item
+(what a request sends back), `display` is the harness's own payload. `started_at` is
+in the payload, because it is the harness's fact and no provider would read it, and
+`MessageRow::parse` reads it from there -- the column a replay reads.
+
+So a window that attaches after the call began is told the true start, through the
+same `messages_between` query every other replayed row comes from, and counts from
+the beginning of the call rather than from its own arrival. A row written before this
+build has no key, which parses as `None` beside `ok` and `elapsed_ms`.

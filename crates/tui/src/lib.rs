@@ -20,7 +20,7 @@ pub mod run;
 mod tree;
 mod vt_input;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Stdout, Write, stdout};
 use std::path::Path;
 
@@ -447,6 +447,36 @@ impl Screen {
     }
 }
 
+/// One running call's clock: when the server started it, and the words last drawn.
+///
+/// # Invariant
+///
+/// The start is the server's, as `ToolCallEvent.started_at` carried it; `0` means no
+/// start was kept, and the moment this window learned of the call is then the
+/// earliest instant it can honestly claim. `drawn` is what the row already says, so
+/// a tick that changes nothing writes nothing. See `docs/notes/tui-lib.md`.
+struct RunClock {
+    /// The window whose row shows it: deleting that window drops its clocks.
+    window: String,
+    /// Milliseconds since the epoch.
+    started_ms: i64,
+    /// The duration the block was last given.
+    drawn: String,
+}
+
+/// This machine's clock, in milliseconds since the epoch.
+///
+/// # Invariant
+///
+/// The same clock the server stated a call's start on, so the difference between the
+/// two is a duration rather than a difference between two machines.
+fn wall_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 pub struct Tui {
     terminal: Terminal<CrosstermBackend<Stdout>>,
     /// What the backend was last told, so only the cover transition changes it.
@@ -524,6 +554,13 @@ pub struct Tui {
     /// these rows, and a height that has not moved is a page already sized.
     rooms: Vec<(String, usize)>,
     columns: Vec<(String, usize)>,
+    /// The calls still running, by the key their own block was opened under.
+    ///
+    /// # Invariant
+    ///
+    /// Only calls with no verdict: a result's last chunk takes its call's clock out,
+    /// and an empty map is what says this window needs no frame it was not sent.
+    running: HashMap<String, RunClock>,
 }
 
 /// A vocabulary with no words: a pipe window asks its client for items.
@@ -789,6 +826,7 @@ impl Tui {
             tab_asked: false,
             rooms: Vec::new(),
             columns: Vec::new(),
+            running: HashMap::new(),
             input: vt_input::Input::open(),
             restored: false,
             // The first frame has to happen even though nothing has changed.
@@ -1015,6 +1053,9 @@ impl Tui {
     /// session made again under the same name opens on its own first line. See
     /// `docs/notes/tui-lib.md`.
     pub fn forget(&mut self, name: &str) {
+        // Its window is gone, so its clocks count for nothing: a block nobody holds
+        // cannot be redrawn.
+        self.running.retain(|_, clock| clock.window != name);
         self.screen.panes.forget(name);
         self.dirty = true;
     }
@@ -1068,6 +1109,10 @@ impl Tui {
         text: &str,
         done: bool,
     ) {
+        // The verdict ends the call this output belongs to: its row stops counting.
+        if done {
+            self.stop_clock(key);
+        }
         if kind != LineKind::Assistant {
             self.screen
                 .panes
@@ -1093,10 +1138,81 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// Shows a call's name and fields as a structured section.
-    pub fn describe(&mut self, name: &str, key: &str, head: &client::protocol::Head) {
+    /// Shows a call's name and fields as a structured section, and starts the clock
+    /// its row shows while the tool runs.
+    ///
+    /// # Invariant
+    ///
+    /// `started_at` is the server's, so a window that opened mid-run counts from the
+    /// beginning of the call; a start no row kept (`0`) is this window's arrival,
+    /// which is the earliest instant it can honestly claim. See `docs/notes/tui-lib.md`.
+    pub fn describe(
+        &mut self,
+        name: &str,
+        key: &str,
+        head: &client::protocol::Head,
+        started_at: i64,
+    ) {
         self.screen.panes.describe(name, key, head);
+        let started_ms = match started_at > 0 {
+            true => started_at,
+            false => wall_millis(),
+        };
+        self.running.insert(
+            key.to_string(),
+            RunClock {
+                window: name.to_string(),
+                started_ms,
+                drawn: String::new(),
+            },
+        );
         self.dirty = true;
+    }
+
+    /// Whether a tool is running here: the one reason this window draws a frame no
+    /// event caused.
+    pub fn is_running(&self) -> bool {
+        !self.running.is_empty()
+    }
+
+    /// Redraws the clock of every running call, and answers whether one moved.
+    ///
+    /// # Invariant
+    ///
+    /// Only running calls are visited -- there are as many as a turn runs at once --
+    /// and a row is written only when the duration it spells changed, so the frame
+    /// this asks for is one the operator can see is different.
+    pub fn tick(&mut self) -> bool {
+        let now = wall_millis();
+        let mut moved = false;
+        for (key, clock) in &mut self.running {
+            let elapsed = client::protocol::spent((now - clock.started_ms).max(0) as u64);
+            if elapsed == clock.drawn {
+                continue;
+            }
+            clock.drawn = elapsed;
+            self.screen.panes.progress(key, &clock.drawn);
+            moved = true;
+        }
+        self.dirty |= moved;
+        moved
+    }
+
+    /// Stops the clock of the call whose result block `key` names, if one runs.
+    ///
+    /// # Invariant
+    ///
+    /// Keyed by the result because that is where the verdict arrives; the call's own
+    /// row is the one that stops. A block a window no longer holds is nothing to
+    /// stop, so a key nobody opened is not an error.
+    fn stop_clock(&mut self, result_key: &str) {
+        let Some(call_id) = result_key.strip_prefix(client::RESULT_KEY) else {
+            return;
+        };
+        let call_key = format!("{}{call_id}", client::CALL_KEY);
+        if self.running.remove(&call_key).is_some() {
+            self.screen.panes.progress(&call_key, "");
+        }
     }
 
     /// The label of a block that learned its outcome after it opened.

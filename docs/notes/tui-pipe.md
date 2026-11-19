@@ -89,3 +89,15 @@ After A-4 the same custom draw script was run once on the pre-A-4 build and once
 on the slimmed build: the final 30-row terminal grids were identical.
 Machine-readable records: `.dev/verify/<sha>-a3.json`,
 `.dev/verify/<sha>-multi-client.json`, `.dev/verify/<sha>-a4-step2.json`.
+
+## The clock branch — one frame no event caused (2026-11-19)
+
+A running call's duration changes with no event behind it, so the loop waits on a
+third thing beside the window's input and the client's frames: a 100ms sleep, disabled
+unless `Tui::is_running`. Shorter than the tenth of a second the duration prints, so no
+number is drawn late; behind the other two arms, so a key or a frame is never waited
+beyond; and gone entirely when nothing runs, so an idle window is the event-driven
+loop it was.
+
+The branch calls `tui.tick()` and then `tui.draw()`, and `draw` already returns early
+when nothing is dirty: a tick that changed no word paints nothing even though it ran.

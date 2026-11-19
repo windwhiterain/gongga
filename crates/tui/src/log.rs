@@ -80,6 +80,15 @@ struct Entry {
     /// made in `reflow` from the same text a frame draws: a `(line)` is cut, a block
     /// wraps. Nothing here is measured again per frame. See `docs/notes/tui-log.md`.
     fold: Vec<String>,
+    /// The clock a running call is spending, as this window last spelled it.
+    ///
+    /// # Invariant
+    ///
+    /// Not part of `tag`: a label is derived from the call's own fields at every
+    /// reflow, so a duration kept there would be lost by the next resize. It rides
+    /// the summary instead, which is made in one place for both the label and the
+    /// fold. Empty for everything that is not a call still running.
+    live: String,
     /// Where this block sits among the blocks of its own window.
     at: usize,
     /// The first and newest transcript rows this block's rows came from.
@@ -125,6 +134,7 @@ impl Entry {
             sections: String::new(),
             styled: Vec::new(),
             fold: Vec::new(),
+            live: String::new(),
             at: 0,
             seq: 0,
             from: 0,
@@ -265,12 +275,31 @@ impl Entry {
             LineKind::ToolOutput | LineKind::ToolError => self.summary(),
             // The summary, not the label: `layout` cuts the label to the row it rides on.
             _ => match &self.call {
-                Some(call) => call.summary(),
+                Some(_) => self.call_label(),
                 None => match self.tag.trim_end() {
                     "" => self.row(0).to_string(),
                     label => label.to_string(),
                 },
             },
+        }
+    }
+
+    /// The row a call is read on: its summary, then the clock while it runs.
+    ///
+    /// # Invariant
+    ///
+    /// One spelling, read by both the label a folded block shows and the box's top
+    /// rule: a call that grew a clock must not say two different things in the two
+    /// places it is drawn.
+    fn call_label(&self) -> String {
+        let base = match &self.call {
+            Some(call) => call.summary(),
+            None => String::new(),
+        };
+        match (base.is_empty(), self.live.is_empty()) {
+            (true, _) => self.live.clone(),
+            (false, true) => base,
+            (false, false) => format!("{base} {}", self.live),
         }
     }
 
@@ -357,10 +386,11 @@ impl Entry {
         let width = width.max(1);
         // A box spends two columns of its label on the top rule's air and dash.
         // See `docs/notes/tui-log.md`.
-        if let Some(call) = &self.call {
+        if self.call.is_some() {
             let rule = 2 * usize::from(self.boxed());
+            let label = self.call_label();
             self.tag = cut(
-                &call.summary(),
+                &label,
                 width.saturating_sub(self.kind.mark().width() + rule),
             );
         }
@@ -1537,6 +1567,30 @@ impl Log {
         let before = self.contributions(at);
         self.entries[at].tag = tag.to_string();
         self.entries[at].kind = kind;
+        let width = self.width_of(&self.entries[at].window);
+        self.entries[at].reflow(width);
+        let after = self.contributions(at);
+        self.shift(at, before, after);
+    }
+
+    /// Shows the clock a running call is spending, on the one row that call is read on.
+    ///
+    /// # Invariant
+    ///
+    /// The duration is not the label: `layout` re-derives that from the call's fields
+    /// at every reflow, so a resize would drop a clock kept there. It lies beside them
+    /// (`Entry::live`), and the row is reflowed here because a longer duration can
+    /// wrap the summary onto another row. Empty stops the clock; a key no block
+    /// answers shows nothing. See `docs/notes/tui-log.md`.
+    pub fn progress(&mut self, key: &str, elapsed: &str) {
+        let Some(at) = self.entry_by_key(key) else {
+            return;
+        };
+        if self.entries[at].live == elapsed {
+            return;
+        }
+        let before = self.contributions(at);
+        self.entries[at].live = elapsed.to_string();
         let width = self.width_of(&self.entries[at].window);
         self.entries[at].reflow(width);
         let after = self.contributions(at);

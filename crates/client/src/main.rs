@@ -523,8 +523,15 @@ impl Sink for PipeSink<'_> {
             self.wire.push(message);
         }
     }
-    fn tool_call(&mut self, window: &str, key: &str, head: &protocol::Head, streamed: bool) {
-        self.wire.tool_call(window, key, head, streamed);
+    fn tool_call(
+        &mut self,
+        window: &str,
+        key: &str,
+        head: &protocol::Head,
+        streamed: bool,
+        started_at: i64,
+    ) {
+        self.wire.tool_call(window, key, head, streamed, started_at);
     }
     fn relabel(&mut self, window: &str, key: &str, tag: &str, kind: LineKind) {
         self.wire.relabel(window, key, tag, kind);

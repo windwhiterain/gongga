@@ -563,3 +563,25 @@ required argument, and a sticky entry fills it. `set_session(id, config_delta:
 SessionConfig{..})` takes a **struct update**: it says what changes, so it is never
 filled -- a fill would restate the whole config on a line that asked for one field
 -- and what it stated is written back to the entries instead.
+
+## ToolCallEvent::started_at — a call's start is the server's (2026-11-19)
+
+A call that is still running shows how long it has been running, and the number it
+counts from had to be decided once. It is `started_at`: milliseconds since the
+epoch, stamped by the one process that measured the call, published in the event
+that announces it and in the row the transcript keeps.
+
+Rejected: a front-end stamping its own arrival. It costs no field, and it is wrong in
+the two cases that matter -- a window opened halfway through a four-minute tool
+printed `100ms`, and two windows on one session disagreed about the same call. A
+client is a copy of the server's state; an instant it invented is not part of it.
+
+The field is `serde(default)`, so a row written before this build reads as `0`, and
+`0` says "no start was kept" rather than a moment in 1970: the reader counts from its
+own arrival, which is the earliest instant such a row can honestly claim.
+
+`spent` moved here from `server/agent.rs` for the same reason. The verdict spells a
+finished call's duration with it, and a window spells a running one with it: two
+spellings would let the duration change shape -- `4.4s` to `4300ms` -- on the frame
+the verdict lands, and a row that grows an extra column at the end of a call is a
+row that jumps.

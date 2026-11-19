@@ -159,3 +159,10 @@ client now fits a page's answers to the pane's width (`PipeFrontend::page_rows`)
 them in `answers` so a width change restates them the way it restates a live one, and
 `PastRow::Block.rows` is what both front-ends draw. One rule for a body, wherever it came
 from: an answer is rows, and every other kind is text.
+
+## ToolCall::started_at — the frame carries the start (2026-11-19)
+
+The frame that describes a call carries the server's `started_at` beside the head, so
+the window that draws it needs no clock of its own to begin: the number it counts
+from crossed the pipe with the call. `serde(default)` keeps a frame from an older
+client readable, reading as `0`, which the window treats as "no start was kept".

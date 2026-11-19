@@ -764,3 +764,21 @@ Measured on the live harness with `keep_rows = 20` and eight short turns: the fi
 a 120-row block the pane was drawing with it; with the block rule the frames move to
 turns 3-5 and back to 6-7 with no repeated and no skipped turn, and one `get_messages`
 answers a push past the newest row.
+
+## Entry::live — a running call's clock is beside the label, not in it (2026-11-19)
+
+A call that is still running shows how long it has been running, on the one row it
+is read on. The duration lives in `Entry::live`, and `Entry::call_label` composes
+what that row says: the call's summary, then the duration. `Log::progress` sets it
+and reflows the block.
+
+Rejected: rewriting `tag` with the duration appended. `layout` derives a described
+call's label from `call.summary()` at every reflow, so the next resize would drop the
+clock -- and a width change mid-call is exactly when nobody is watching for it.
+`live` is not text either: it is empty for everything that is not a running call, so
+`summary_text` appending it changes nothing for a call that has finished.
+
+`Log::progress` reflows rather than only repainting, and shifts the window sum like
+`relabel` does, because a duration is columns: `1.2s` to `10.0s` can wrap a summary
+that sat on one row onto two, and every block below must move with it. Called only
+with the running calls -- a handful -- and only when the spelled duration changed.

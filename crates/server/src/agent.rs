@@ -1157,12 +1157,15 @@ impl Agent {
                     // Its own text is the arguments, which this event stores.
                     streamed.remove(&item_id);
                     self.settle_item(session, &item_id);
+                    // One start for the row, the event and the timing.
+                    let started_at = crate::store::now_millis();
                     // Before it runs: this id is what the result carries, which
                     // is how a front-end holds a call and its output as one item.
                     self.bus.publish(Event::ToolCall(protocol::ToolCallEvent {
                         session: name.to_string(),
                         call_id: call_id.clone(),
                         head: call_head(&tool, &arguments),
+                        started_at,
                     }));
                     self.announce_row(
                         name,
@@ -1170,13 +1173,16 @@ impl Agent {
                             id,
                             Kind::ToolCall,
                             &json!({"call_id": call_id, "name": tool, "arguments": arguments,
-                                    "turn": turn, "step": step}),
+                                    "turn": turn, "step": step, "started_at": started_at}),
                         ),
                     );
-                    let _ = self.store.start_tool_call(id, &call_id, &tool, &arguments);
+                    let _ = self
+                        .store
+                        .start_tool_call(id, &call_id, &tool, &arguments, started_at);
                     if self
                         .run_one_call(
                             session, id, name, turn, step, cancel, llm, call_id, tool, arguments,
+                            started_at,
                         )
                         .await
                     {
@@ -1466,8 +1472,8 @@ impl Agent {
         call_id: String,
         tool: String,
         arguments_given: String,
+        started_at: i64,
     ) -> bool {
-        let started_at = crate::store::now_millis();
         let started = std::time::Instant::now();
         if cancel.is_cancelled() {
             // Its row exists and a provider wants it answered; a row the body would
@@ -2374,15 +2380,7 @@ pub(crate) fn result_head(ok: bool, run_ms: u64) -> protocol::Head {
     } else {
         protocol::HeadKind::Failed
     };
-    protocol::Head::new(kind, spent(run_ms))
-}
-
-/// `820ms`, or `1.2s` past a second: one duration, one spelling, every reader.
-pub(crate) fn spent(millis: u64) -> String {
-    match millis {
-        0..1000 => format!("{millis}ms"),
-        _ => format!("{:.1}s", millis as f64 / 1000.0),
-    }
+    protocol::Head::new(kind, protocol::spent(run_ms))
 }
 
 /// How often a streaming item's draft is written: one write per item per interval.

@@ -3465,6 +3465,8 @@ fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
             session: name.to_string(),
             call_id: row.call_id.clone().unwrap_or_default(),
             head: crate::agent::call_head(row.name.as_deref().unwrap_or_default(), &row.text),
+            // A row that kept no start says 0: no earlier moment is claimed.
+            started_at: row.started_at.unwrap_or(0),
         }),
         Some(Kind::Reasoning) => said(ResponsePart::Reasoning, None),
         Some(Kind::BuiltinCall) => said(ResponsePart::Activity, None),

@@ -825,6 +825,21 @@ fn spelled(field: &Field) -> String {
     }
 }
 
+/// One duration, one spelling: `820ms`, or `1.2s` past a second.
+///
+/// # Invariant
+///
+/// The server spells a finished call's duration with this, and a front-end spells
+/// the clock of a running one with the same function: the number a call shows while
+/// it runs and the number it ends on are one shape, so the verdict cannot reflow the
+/// row it lands on. See `docs/notes/protocol-message.md`.
+pub fn spent(millis: u64) -> String {
+    match millis {
+        0..1000 => format!("{millis}ms"),
+        _ => format!("{:.1}s", millis as f64 / 1000.0),
+    }
+}
+
 /// Which kind of row a [`Head`] introduces, in SPEC's vocabulary.
 ///
 /// # Invariant
@@ -865,6 +880,18 @@ pub struct ToolCallEvent {
     pub call_id: String,
     /// The call's arguments, each marked with whether SPEC's `abstract` shows it.
     pub head: Head,
+    /// When the tool started, in milliseconds since the epoch: `0` when the row
+    /// that published it kept no start.
+    ///
+    /// # Invariant
+    ///
+    /// The start is the server's, because the server is the only one that measured
+    /// the call: a front-end counts *from* it, so the time a running call shows is
+    /// the same number in every window, and a window opened mid-run counts from the
+    /// beginning rather than from its own arrival. The verdict's own duration
+    /// remains the server's spelling of the same measurement.
+    #[serde(default)]
+    pub started_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

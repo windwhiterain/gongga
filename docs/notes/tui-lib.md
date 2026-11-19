@@ -655,3 +655,31 @@ block made then is stamped with. `Tui::append_rows` draws a page of what comes a
 below what a window holds -- the mirror of `prepend_rows`. `next_event` hands the client
 three facts the drawing alone knows: the range a trim left (`UiIntent::Held`), a push
 past the newest row (`UiIntent::Newer`), and, as before, a pane's height and width.
+
+## Tui::describe, Tui::tick, Tui::stop_clock — the row that moves without an event (2026-11-19)
+
+`Tui.running` holds one `RunClock` per call with no verdict: the server's start, the
+window whose row shows it, and the duration last drawn. `describe` inserts it (a
+`started_at` of `0` becoming this window's arrival, the earliest instant such a row can
+claim), `tick` spells `now - started_ms` with `protocol::spent` and writes only the
+rows whose words changed, and `stop_clock` removes it when the result's last chunk
+arrives -- keyed by the result's key, because that is where the verdict lands.
+
+Invariants, all of them the reason this lives on `Tui` and not in the log:
+
+- **Only running calls are visited.** A tick walks the map, not the scrollback: a
+  turn runs one tool at a time, so the map is one entry, and the log is thousands.
+- **The clock stops where the measured time starts.** The verdict's own duration is
+  the server's (`✓ 4.5s`), and the call's row goes back to its summary; the last
+  live number was `4.4s`, so the two never disagree for more than the tick that was
+  already in flight.
+- **A deleted window drops its clocks** (`forget`), because a block nobody holds
+  cannot be redrawn and would tick forever.
+- **`is_running` is the only reason to draw a frame no event caused**, which is what
+  `pipe.rs`'s clock branch asks before waiting.
+
+Observed, not argued: `python scripts/tui_live.py --script .dev/clock.script --tool
+exec --tool-args '{"bin":"bash","args":["-lc","sleep 4"]}'` recorded `▸ exec·bash
+107ms` .. `4.4s` one frame per tenth of a second while the tool ran, one frame with
+`▸ exec·bash` and `✓ 4.5s` under it when it ended, and no frame at all after the last
+change.

@@ -40,6 +40,6 @@ pub use message::{
     ResponseEvent, ResponsePart, SERVER_STOP, SHOW_VALUES, ServerInfo, ServerMessage, SessionInfo,
     SessionStatus, THINKING_DEFAULT, ToolAnswerEvent, ToolCallEvent, ToolStream, TurnOutcome,
     Usage, UsageEvent, Worktree, client_commands, decode_client, decode_server, encode_client,
-    encode_server,
+    encode_server, spent,
 };
 pub use reference::Reference;

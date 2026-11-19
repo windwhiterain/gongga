@@ -49,8 +49,9 @@ impl Sink for TuiSink<'_> {
         key: &str,
         head: &client::protocol::Head,
         _streamed: bool,
+        started_at: i64,
     ) {
-        self.0.describe(window, key, head);
+        self.0.describe(window, key, head, started_at);
     }
 
     fn relabel(&mut self, window: &str, key: &str, tag: &str, kind: LineKind) {
@@ -172,7 +173,8 @@ fn draw(sink: &mut TuiSink<'_>, frame: RenderMessage) {
             key,
             head,
             streamed,
-        } => sink.tool_call(&window, &key, &head, streamed),
+            started_at,
+        } => sink.tool_call(&window, &key, &head, streamed, started_at),
         RenderMessage::Relabel {
             window,
             key,

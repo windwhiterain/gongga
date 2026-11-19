@@ -456,6 +456,11 @@ impl Panes {
         self.log.relabel(key, tag, kind);
     }
 
+    /// Shows (or clears) the clock a running call is spending on the call's own row.
+    pub fn progress(&mut self, key: &str, elapsed: &str) {
+        self.log.progress(key, elapsed);
+    }
+
     /// Puts a page of the past above what `window` holds, and answers its rows.
     pub fn prepend(&mut self, window: &str, rows: &[client::render_wire::PastRow]) -> usize {
         self.log.prepend(window, rows)

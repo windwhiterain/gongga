@@ -2575,11 +2575,12 @@ impl Store {
         call_id: &str,
         name: &str,
         arguments: &str,
+        started_at: i64,
     ) -> anyhow::Result<()> {
         self.lock().execute(
             "INSERT INTO tool_calls (session_id, call_id, name, arguments, status, started_at)
              VALUES (?1, ?2, ?3, ?4, 'running', ?5)",
-            params![session_id, call_id, name, arguments, now_millis()],
+            params![session_id, call_id, name, arguments, started_at],
         )?;
         Ok(())
     }
@@ -3835,6 +3836,14 @@ pub struct MessageRow {
     /// How long that tool ran, in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    /// When a `tool_call` started, in milliseconds since the epoch.
+    ///
+    /// # Invariant
+    ///
+    /// Absent on a row written before the start was kept: a reader then counts from
+    /// the moment it learned of the call, which is all such a row can say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<i64>,
     /// The provider's item this row was, when the row kept it: what names its block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
@@ -3915,6 +3924,7 @@ impl MessageRow {
             step: value.get("step").and_then(|v| v.as_u64()),
             ok: None,
             elapsed_ms: None,
+            started_at: None,
             item_id: str_of("item_id"),
         };
         match Kind::parse(kind) {
@@ -3927,6 +3937,7 @@ impl MessageRow {
                 row.call_id = str_of("call_id");
                 row.name = str_of("name");
                 row.text = str_of("arguments").unwrap_or_default();
+                row.started_at = value.get("started_at").and_then(serde_json::Value::as_i64);
             }
             Some(Kind::ToolResult) => {
                 row.call_id = str_of("call_id");
