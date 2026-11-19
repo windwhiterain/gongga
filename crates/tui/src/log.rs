@@ -1272,8 +1272,20 @@ impl Log {
         }
         let mut moved = Vec::with_capacity(self.entries.len());
         let mut kept = Vec::with_capacity(self.entries.len());
+        // A rewind is the past arriving again: the block still being written is not it.
+        let open: Vec<String> = self
+            .open
+            .iter()
+            .filter(|(_, at)| {
+                self.entries
+                    .get(**at)
+                    .is_some_and(|entry| entry.window.as_ref() == window)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
         for entry in std::mem::take(&mut self.entries) {
-            let mine = entry.window.as_ref() != window || (unfinished && entry.sealed);
+            let mine = entry.window.as_ref() != window
+                || (unfinished && (entry.sealed || open.contains(&entry.key)));
             moved.push(mine.then_some(kept.len()));
             if mine {
                 kept.push(entry);

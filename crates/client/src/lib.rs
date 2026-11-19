@@ -2218,6 +2218,8 @@ impl Client {
             }
             self.hand_over(sink, &name, seq, &event);
             if is_page {
+                // The page's own sink is stamped first: a row it makes carries its row.
+                page.row(&name, seq, &event);
                 self.handle_event(event, &mut page);
             } else {
                 self.handle_event(event, sink);
