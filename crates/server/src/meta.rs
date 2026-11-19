@@ -12,21 +12,33 @@ use crate::llm::LlmClient;
 pub struct Mention {
     /// Byte offset of the opening `@`.
     pub start: usize,
-    /// Byte offset just past the closing `)`, or past the closing quote when the
-    /// value was written in one.
+    /// Byte offset just past the closing `)`.
     pub end: usize,
     pub kind: Reference,
+    /// The value as the reference means it, the machine prefix taken off.
     pub value: String,
+    /// The machine this reference names, when it names one; `none` is the session's own.
+    pub remote: Option<String>,
 }
+
+/// The prefix that names a machine inside a reference's own group.
+///
+/// # Invariant
+///
+/// One group and one value: `@file(remote://p/notes.md)` is a peer's file, and
+/// `@file(notes.md)` is the session's. The group is what a caller has to close, so a
+/// second group would be a second thing to complete and a second thing to forget. See
+/// `docs/notes/server-meta.md`.
+pub use protocol::meta_prefix;
 
 /// Every reference in `text`, oldest first.
 ///
 /// # Invariant
 ///
-/// A reference is `@kind(value)`, and the parentheses do the delimiting: the value
-/// ends where its group closes, so no prose around it is guessed at -- `@` need not
-/// open a word, and a name need not stop at a space. See
-/// `docs/notes/server-meta.md`.
+/// A reference is `@kind(value)`, the parentheses doing the delimiting: the value ends
+/// where its group closes, so no prose around it is guessed at -- `@` need not open a
+/// word, and a name need not stop at a space. A value that opens `remote://<name>/`
+/// names the machine to read it on. See `docs/notes/server-meta.md`.
 pub fn mentions(text: &str) -> Vec<Mention> {
     let mut out = Vec::new();
     let mut cursor = 0;
@@ -46,14 +58,36 @@ pub fn mentions(text: &str) -> Vec<Mention> {
             continue;
         }
         cursor = end;
+        let (remote, value) = split_remote(value);
         out.push(Mention {
             start,
             end,
             kind,
             value: value.to_string(),
+            remote,
         });
     }
     out
+}
+
+/// A value split at its machine prefix: `remote://p/x` is peer `p` and `x`.
+///
+/// # Invariant
+///
+/// Read only when the prefix is complete -- a name and a `/` after it. A value that
+/// merely starts with those letters is a path that starts with those letters.
+fn split_remote(value: &str) -> (Option<String>, &str) {
+    let Some(rest) = value.strip_prefix(meta_prefix()) else {
+        return (None, value);
+    };
+    let Some((name, path)) = rest.split_once('/') else {
+        return (None, value);
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        return (None, value);
+    }
+    (Some(name.to_string()), path)
 }
 
 /// The value of the group whose `(` is the byte before `open`, and the byte just
@@ -113,66 +147,6 @@ pub struct Root {
     pub content: String,
 }
 
-/// Where a message's references are read: this machine, or a session's remote.
-///
-/// # Invariant
-///
-/// One answer for one message: a reference is read on the machine that produced the
-/// text it is written in, and never on whichever machine has a file of that name.
-#[derive(Clone, Copy)]
-pub enum Source<'a> {
-    Local,
-    Remote(&'a crate::remote::Reader),
-    /// A remote session with no connection: every read fails.
-    Unreachable,
-}
-
-impl Source<'_> {
-    pub fn machine(&self) -> crate::session::Machine {
-        match self {
-            Source::Local => crate::session::Machine::Local,
-            Source::Remote(_) | Source::Unreachable => crate::session::Machine::Remote,
-        }
-    }
-
-    /// The bytes of `named`, resolved against `home` as that machine spells paths.
-    pub async fn read(&self, home: &Path, named: &str) -> Option<Vec<u8>> {
-        let path = self.spelling(home, named);
-        match self {
-            Source::Local => std::fs::read(path).ok(),
-            Source::Remote(reader) => reader.read(&path).await.ok(),
-            Source::Unreachable => None,
-        }
-    }
-
-    /// The one path a name means on this machine.
-    ///
-    /// # Invariant
-    ///
-    /// A peer's path is joined the way its own shell joins it, not this platform's.
-    pub fn spelling(&self, home: &Path, named: &str) -> String {
-        match self {
-            Source::Local => crate::image::resolve(home, named)
-                .to_string_lossy()
-                .into_owned(),
-            Source::Remote(_) | Source::Unreachable => peer_path(&home.to_string_lossy(), named),
-        }
-    }
-}
-
-/// `named` as a peer spells it, resolved against the peer's `home`.
-fn peer_path(home: &str, named: &str) -> String {
-    let named = named.replace('\\', "/");
-    let absolute = named.starts_with('/')
-        || named.char_indices().nth(1).is_some_and(|(at, c)| {
-            c == ':' && named.as_bytes()[0].is_ascii_alphabetic() && at == 1
-        });
-    if absolute || home.is_empty() {
-        return named;
-    }
-    format!("{}/{}", home.trim_end_matches('/'), named)
-}
-
 /// The skill that teaches how a session on a peer is put together.
 ///
 /// # Invariant
@@ -202,8 +176,8 @@ pub fn rules_spelling() -> String {
 /// Not a memory module: what this returns opens the index on every request, verbatim,
 /// so no plan can reorder it, patch it, or let it expire, and the model reads the rules
 /// that are on disk rather than the ones a provider was holding.
-pub async fn rules(source: Source<'_>, home: &Path) -> Option<String> {
-    content(source, home, &rules_spelling()).await
+pub async fn rules(machines: &Machines<'_>, home: &Path) -> Option<String> {
+    content(machines, home, &rules_spelling(), None, RULES).await
 }
 
 /// Every reference the rules name, every reference `texts` name, and their own.
@@ -215,69 +189,104 @@ pub async fn rules(source: Source<'_>, home: &Path) -> Option<String> {
 /// must not follow a `cd`. The rules file is no entry, only what it names; breadth-first
 /// by first-seen order, and what cannot be read is left out.
 /// See `docs/notes/server-meta.md`.
-pub async fn roots(source: Source<'_>, home: &Path, texts: &[&str]) -> Vec<Root> {
+pub async fn roots(machines: &Machines<'_>, home: &Path, texts: &[&str]) -> Vec<Root> {
     // Named by a message or met by the walk, the rules file is never an entry.
     let mut seen: Vec<String> = vec![rules_spelling()];
-    let mut queue: Vec<String> = Vec::new();
-    if let Some(rules) = rules(source, home).await {
+    let mut queue: Vec<(String, Option<String>, String)> = Vec::new();
+    if let Some(rules) = rules(machines, home).await {
         for mention in mentions(&rules) {
-            enqueue(&mut queue, &mut seen, spelling(&mention));
+            enqueue(&mut queue, &mut seen, &mention);
         }
     }
     // The shape of a session on a peer, told to it without being asked.
-    if source.machine() == crate::session::Machine::Remote {
-        let skill = format!("@{}({})", Reference::Skill.name(), REMOTE_SKILL);
-        enqueue(&mut queue, &mut seen, skill);
+    if !machines.session.is_local() {
+        let skill = Mention {
+            start: 0,
+            end: 0,
+            kind: Reference::Skill,
+            value: REMOTE_SKILL.to_string(),
+            remote: None,
+        };
+        enqueue(&mut queue, &mut seen, &skill);
     }
     for text in texts {
         for mention in mentions(text) {
-            enqueue(&mut queue, &mut seen, spelling(&mention));
+            enqueue(&mut queue, &mut seen, &mention);
         }
     }
     let mut out: Vec<Root> = Vec::new();
     let mut index = 0;
     while index < queue.len() {
-        let named = queue[index].clone();
+        let (named, remote, value) = queue[index].clone();
         index += 1;
-        let Some(content) = content(source, home, &named).await else {
+        let Some(body) = content(machines, home, &named, remote.as_deref(), &value).await else {
             continue;
         };
-        for mention in mentions(&content) {
-            enqueue(&mut queue, &mut seen, spelling(&mention));
+        for mention in mentions(&body) {
+            enqueue(&mut queue, &mut seen, &mention);
         }
         out.push(Root {
             spelling: named,
-            content,
+            content: body,
         });
     }
     out
 }
 
-/// `spelling` at the end of the walk's queue, unless it is already there.
-fn enqueue(queue: &mut Vec<String>, seen: &mut Vec<String>, spelling: String) {
-    if seen.contains(&spelling) {
+/// `mention` at the end of the walk's queue, unless it is already there.
+fn enqueue(
+    queue: &mut Vec<(String, Option<String>, String)>,
+    seen: &mut Vec<String>,
+    mention: &Mention,
+) {
+    let named = spelling(mention);
+    if seen.contains(&named) {
         return;
     }
-    seen.push(spelling.clone());
-    queue.push(spelling);
+    seen.push(named.clone());
+    queue.push((named, mention.remote.clone(), mention.value.clone()));
 }
 
-/// The spelling a reference is indexed under: its prefix and its value, written
-/// together.
+/// The spelling a reference is indexed under: its prefix, its value, and its machine.
 ///
 /// # Invariant
 ///
 /// One spelling for one reference, whoever asks: the index carries these and
 /// `expand` writes one back into every `@skill(...)` mention, so a second way of
-/// writing it would make the same file two entries.
+/// writing it would make the same file two entries. The machine is part of the
+/// spelling because `@file(x)` on this machine and `@file(x)` on a peer are two
+/// different texts. See `docs/notes/server-meta.md`.
 pub fn spelling(mention: &Mention) -> String {
-    format!("@{}({})", mention.kind.name(), mention.value)
+    format!(
+        "@{}({})",
+        mention.kind.name(),
+        spelled(mention.remote.as_deref(), &mention.value)
+    )
+}
+
+/// A value as a group writes it: the machine prefix when one is named.
+///
+/// # Invariant
+///
+/// The inverse of `split_remote`, so a spelling that came from a mention parses back to
+/// the same mention. See `docs/notes/server-meta.md`.
+pub fn spelled(remote: Option<&str>, value: &str) -> String {
+    match remote.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => format!("{}{name}/{value}", meta_prefix()),
+        None => value.to_string(),
+    }
 }
 
 /// The machine a reference stands on: a skill is the server's own, a file the peer's.
-pub fn machine_note(spelling: &str, source: Source<'_>, remote: Option<&str>) -> String {
-    let server = matches!(Reference::of_prefix(spelling), Some(Reference::Skill))
-        || source.machine() == crate::session::Machine::Local;
+///
+/// # Invariant
+///
+/// The machine is the one the reference named, not the one the message was written on:
+/// `@file(x) (remote=p)` on a local session says `on remote p`, and a skill is always
+/// this server's own because it runs here. See `docs/notes/server-meta.md`.
+pub fn machine_note(spelling: &str, space: &crate::space::Space, remote: Option<&str>) -> String {
+    let server =
+        matches!(Reference::of_prefix(spelling), Some(Reference::Skill)) || space.is_local();
     if server {
         "on the server".to_string()
     } else {
@@ -290,17 +299,24 @@ pub fn machine_note(spelling: &str, source: Source<'_>, remote: Option<&str>) ->
 /// # Invariant
 ///
 /// A picture is not text and an unknown skill has no body: neither is invented, and
-/// both leave the mention literal in the prompt.
-async fn content(source: Source<'_>, home: &Path, spelling: &str) -> Option<String> {
+/// both leave the mention literal in the prompt. The machine is the one the reference
+/// named, and its own spelling of the path.
+async fn content(
+    machines: &Machines<'_>,
+    home: &Path,
+    spelling: &str,
+    remote: Option<&str>,
+    value: &str,
+) -> Option<String> {
     let kind = Reference::of_prefix(spelling)?;
-    let value = spelling
-        .strip_prefix(kind.prefix())?
-        .strip_suffix(')')
-        .unwrap_or_default();
+    let space = machines.in_space(remote);
     match kind {
         Reference::Image => None,
-        Reference::File => String::from_utf8(source.read(home, value).await?).ok(),
-        Reference::Skill => skill_body(home, source.machine(), value),
+        Reference::File => {
+            let path = space.spell(home, value);
+            String::from_utf8(space.read_bytes(&path).await?).ok()
+        }
+        Reference::Skill => skill_body(&space, home, value).await,
     }
 }
 
@@ -310,24 +326,62 @@ async fn content(source: Source<'_>, home: &Path, spelling: &str) -> Option<Stri
 ///
 /// One body, both halves, and neither re-rendered: the prose is the file's, and the
 /// arguments are the generated document's bytes, trusted rather than read out of the
-/// package again. `SKILL.md` states no second copy of them.
-fn skill_body(home: &Path, machine: crate::session::Machine, name: &str) -> Option<String> {
-    // Only a row this server holds: a peer's checkout skill is not.
-    let found = crate::tools::skill::installed_for(home, machine)
-        .into_iter()
-        .find(|skill| skill.name == name)?;
-    let mut body = std::fs::read_to_string(&found.path).ok()?;
+/// package again. `SKILL.md` states no second copy of them. A skill found on a peer is
+/// read through that peer's own space, so a project's skill there is a skill here.
+async fn skill_body(space: &crate::space::Space, home: &Path, name: &str) -> Option<String> {
+    let found = crate::tools::skill::find(space, home, name).await?;
+    let path = found.path.clone();
+    let mut body = String::from_utf8(space.read_bytes(&path).await?).ok()?;
     let prompts = crate::prompts::shared();
     if let Some(template) = prompts.text(crate::prompts::SKILL_ARGUMENTS) {
-        if let Ok(arguments) = ::skill::schema_text(found.dir()) {
-            body.push_str("\n\n");
-            body.push_str(&crate::prompts::substitute(
-                &template,
-                &[("arguments", arguments.trim())],
-            ));
+        let beside = format!("{}/schema.json", found.dir.trim_end_matches('/'));
+        if let Some(arguments) = space.read_bytes(&beside).await {
+            if let Ok(arguments) = String::from_utf8(arguments) {
+                body.push_str("\n\n");
+                body.push_str(&crate::prompts::substitute(
+                    &template,
+                    &[("arguments", arguments.trim())],
+                ));
+            }
         }
     }
     Some(body)
+}
+
+/// Which machine a reference is read on, resolved once per mention.
+///
+/// # Invariant
+///
+/// The session's own machine unless the reference names another, and one answer per
+/// reference: a message may name a file here and a picture on a peer, and each is read
+/// where it says. A name is resolved through the space's own catalog of peers, so the
+/// one value a caller already holds also answers "and which other machine could this
+/// be?". See `docs/notes/server-meta.md`.
+#[derive(Clone, Copy)]
+pub struct Machines<'a> {
+    /// The space of the machine the text was written on, and what an unnamed reference
+    /// is read in.
+    pub session: &'a crate::space::Space,
+}
+
+impl<'a> Machines<'a> {
+    /// The machines one session can read a reference on.
+    pub fn of(session: &'a crate::space::Space) -> Machines<'a> {
+        Machines { session }
+    }
+
+    /// The space one reference is read in.
+    ///
+    /// # Invariant
+    ///
+    /// A stated machine this server cannot name falls back to the session's own, so a
+    /// typo in a message reads as it would have without one rather than as a hole.
+    pub fn in_space(&self, remote: Option<&str>) -> crate::space::Space {
+        match remote.map(str::trim).filter(|name| !name.is_empty()) {
+            None | Some("none") => self.session.clone(),
+            Some(name) => self.session.peer(name),
+        }
+    }
 }
 
 /// A message with its references resolved, and the pictures they named.
@@ -367,14 +421,22 @@ impl Expanded {
 
 /// Inlines a summary's text references so the artifact stands alone; the
 /// unreadable and any picture stay literal.
-pub async fn embed(source: Source<'_>, home: &Path, text: &str) -> String {
+pub async fn embed(machines: &Machines<'_>, home: &Path, text: &str) -> String {
     let mut out = String::new();
     let mut cursor = 0;
     for mention in mentions(text) {
         if mention.start < cursor {
             continue;
         }
-        let Some(body) = content(source, home, &spelling(&mention)).await else {
+        let Some(body) = content(
+            machines,
+            home,
+            &spelling(&mention),
+            mention.remote.as_deref(),
+            &mention.value,
+        )
+        .await
+        else {
             continue;
         };
         let from = if mention.start > cursor && text[cursor..mention.start].ends_with(' ') {
@@ -402,7 +464,7 @@ pub async fn embed(source: Source<'_>, home: &Path, text: &str) -> String {
 /// resolved, and then only skill references are expanded.
 pub async fn expand(
     store: &crate::store::Store,
-    source: Source<'_>,
+    machines: &Machines<'_>,
     home: &Path,
     text: &str,
     llm: Option<&LlmClient>,
@@ -415,19 +477,25 @@ pub async fn expand(
         }
         let (replacement, image) = match mention.kind {
             Reference::File => continue,
-            Reference::Skill => match skill_at(home, source.machine(), &mention.value) {
+            Reference::Skill => match crate::tools::skill::find(
+                &machines.in_space(mention.remote.as_deref()),
+                home,
+                &mention.value,
+            )
+            .await
+            {
                 Some(skill) => {
                     // Idempotent: a mention already carrying its ` (path)`
                     // suffix is left alone, or a re-sent row grows another.
-                    if text[mention.end..].starts_with(&format!(" ({})", skill.path.display())) {
+                    if text[mention.end..].starts_with(&format!(" ({})", skill.path)) {
                         continue;
                     }
                     (
                         format!(
                             "@{}({}) ({})",
                             Reference::Skill.name(),
-                            skill.name,
-                            skill.path.display()
+                            spelled(mention.remote.as_deref(), &skill.name),
+                            skill.path
                         ),
                         None,
                     )
@@ -437,7 +505,8 @@ pub async fn expand(
             Reference::Image => {
                 // Idempotent, the same rule by the copy's id: text already
                 // carrying ` (id)` is not copied to or appended again.
-                let named = source.spelling(home, &mention.value);
+                let space = machines.in_space(mention.remote.as_deref());
+                let named = space.spell(home, &mention.value);
                 let kept_copy = store
                     .picture_of(&named)
                     .map(|(id, _)| format!(" ({id})"))
@@ -445,7 +514,7 @@ pub async fn expand(
                 if kept_copy.is_some() {
                     continue;
                 }
-                match picture(store, source, home, &mention.value, llm).await {
+                match picture(store, &space, home, &mention.value, llm).await {
                     Some(image) => {
                         // SPEC keeps the mention and appends the copy it stands for, so
                         // the row still says which picture it was sent with.
@@ -474,19 +543,6 @@ pub async fn expand(
     out
 }
 
-/// The `SKILL.md` one `@skill(<name>)` names, wherever this machine reads skills.
-///
-/// # Invariant
-///
-/// The spelling survives, so the index keys the entry a message wrote: the body is
-/// charged once in the prompt's index and the row keeps a pointer to it. See
-/// `docs/notes/server-meta.md`.
-fn skill_at(home: &Path, machine: crate::session::Machine, name: &str) -> Option<skill::Skill> {
-    crate::tools::skill::installed_for(home, machine)
-        .into_iter()
-        .find(|skill| skill.name == name)
-}
-
 /// The picture `@image(<path>)` names, copied into this home.
 ///
 /// # Invariant
@@ -496,15 +552,25 @@ fn skill_at(home: &Path, machine: crate::session::Machine, name: &str) -> Option
 /// none. A picture named here is therefore never lost to a Files API that is down.
 async fn picture(
     store: &crate::store::Store,
-    source: Source<'_>,
+    space: &crate::space::Space,
     home: &Path,
     given: &str,
     llm: Option<&LlmClient>,
 ) -> Option<ImageRef> {
-    let path = source.spelling(home, given);
-    let bytes = source.read(home, given).await?;
-    let media = image::media_type(&bytes)?;
-    let llm = llm?;
+    let path = space.spell(home, given);
+    // Said, not swallowed: a silent `?` made one bug look like "nothing happened".
+    let Some(bytes) = space.read_bytes(&path).await else {
+        tracing::warn!(path = %path, space = %space.describe(), "a picture was named and nothing could be read there");
+        return None;
+    };
+    let Some(media) = image::media_type(&bytes) else {
+        tracing::warn!(path = %path, bytes = bytes.len(), "a picture was named and the bytes are not one it takes");
+        return None;
+    };
+    let Some(llm) = llm else {
+        tracing::warn!(path = %path, "a picture was named with no model client to send it to");
+        return None;
+    };
     if !llm.accepts_image() {
         tracing::warn!(path = %path, "a picture was named for a model that cannot see one");
         return None;

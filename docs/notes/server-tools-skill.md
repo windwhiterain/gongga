@@ -56,17 +56,21 @@ string prints as it is, an `int` is an exit code, anything else prints as JSON.
 
 ## Where it runs
 
-On this machine, in the session's directory, whatever machine the session works on. The
-skill is a directory this server can open -- the checkout of a peer session is not in the
-roots at all, so a `remote` session runs the home's and the machine's skills and is
-never handed a path it cannot read. The package is handed `GONGGA_SKILL_LIB`, so a
-skill's own `import gongga` resolves against the home's client; its contract file is
-the content repository's `gongga_skill.py`, read in the checkout
-(`<home>/ship/python/gongga_skill.py` under the shipped mapping).
+On this machine, in the session's directory as this machine spells it, whatever machine
+the session works on: a package's program is here, and its files are here. The project
+layer the session's own checkout holds is read where that checkout is, so a session on a
+peer is handed that peer's `.agents/skills` too -- read through its `Space`, never
+through this disk. The package is handed `GONGGA_SKILL_LIB`, so a skill's own `import
+gongga` resolves against the home's client; its contract file is the content
+repository's `gongga_skill.py`, read in the checkout (`<home>/ship/python/gongga_skill.py`
+under the shipped mapping).
 
 A session whose own directory is on a peer has none *here*, so the process stands in this
 server's own directory (`tools::standing_dir`): a package takes no `cwd` argument, so a
-directory it cannot stand in is a call that cannot be made, not a failure to report. See
+directory it cannot stand in is a call that cannot be made, not a failure to report. What
+it needs from the session's placement it reads from the environment instead:
+`GONGGA_REMOTE` names the peer and `GONGGA_REMOTE_CWD` says where the session stands
+there, which is what `image`'s `show` joins a relative path against. See
 `server-tools-words.md`, "The directory a program stands in".
 
 The run is the session's work: it holds the turn (`tool_cmd::context` is the same
@@ -76,18 +80,19 @@ skill is a program of the caller's choosing.
 
 ## The three roots
 
-`installed_for` walks three roots, nearest first, and `@skill(...)` expansion, `ls_skill`
+`installed_in` walks three layers, nearest first, and `@skill(...)` expansion, `ls_skill`
 and `run_skill` all read that one walk:
 
 | bucket | whose | where |
 | --- | --- | --- |
-| `project` | this checkout | the session's `.agents/skills` |
-| `harness` | the content repository | the home's `skills` |
-| `general` | this machine | `~/.agents/skills` |
+| `project` | this checkout | the session's `.agents/skills`, on the session's own machine |
+| `harness` | the content repository | the home's `skills`, here |
+| `general` | this machine | `~/.agents/skills`, here |
 
-The project layer needs the session *on this machine*: a session whose directory is on a
-peer gets the home's and the machine's rows, and one sentence saying that checkout's
-skills are that machine's files to `ls` and `cat` over `remote_bash`.
+The project layer is read on the machine the session stands on, through its `Space`: a
+session on a peer gets that checkout's own skills, exactly as a local session gets its
+own. The other two layers are this server's, so they are read here whatever machine the
+session works on.
 
 A name in two roots is two rows with one name, and `run_skill` runs the nearer one --
 the row `@skill(...)` already read. There is no second spelling for "the other one":

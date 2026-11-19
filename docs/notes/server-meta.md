@@ -110,9 +110,9 @@ A model that is never told reads `remote_bash` as a second `bash`, which is what
 before this: one turn spent on a tool that could only refuse, and then a search for the
 same thing under another name.
 
-The seeding is by machine, not by message: `Source::machine` is `Remote` for a session
-placed on a peer and for one whose peer is unreachable, and the skill's body is read from
-this machine's own home either way. A session on this machine gets nothing — its index
+The seeding is by machine, not by message: `Space::is_local` is false for a session
+placed on a peer, whether or not its link answers right now, and the skill's body is read
+from this machine's own home either way. A session on this machine gets nothing — its index
 does not grow by a skill it has no use for.
 
 Measured on a real server, three cases: a local session's request carries no
@@ -228,12 +228,44 @@ has to close by hand is a reference the parser reads as prose until they do.
 
 ## which machine a reference is read on
 
-One session may have shells on two machines, and a reference is read on the machine
-that produced the text it is written in: a tool's output on the machine that ran the
-tool (`Tool::machine`), a user's message on the machine the session stands on. Never
-on whichever machine happens to have a file with a similar name -- that is how a
-Windows spelling of a peer's path once made this server read a *different* checkout's
-`AGENTS.md` into the prompt.
+A reference is read on the machine that produced the text it is written in: a tool's
+output on the machine that ran the tool (`Tool::machine`), a user's message on the
+machine the session stands on. Never on whichever machine happens to have a file with a
+similar name -- that is how a Windows spelling of a peer's path once made this server
+read a *different* checkout's `AGENTS.md` into the prompt.
+
+One `Space` answers it (`docs/notes/server-space.md`): `meta` takes a `Machines` and asks
+`in_space(remote)` for the machine a mention names, defaulting to the session's own. The
+space then does the rest -- `spell`, `read_bytes`, `list`, `is_local` -- with no second
+way to read a reference and no "unreachable" third answer: a peer whose link cannot be
+dialled is still a peer, so its reference stays literal instead of being read here.
+
+## a reference may name its machine: `remote://<name>/<value>`
+
+`@file(remote://p/x)` is read on peer `p` whatever machine the session stands on, and is
+joined against the session's directory as `p` spells it. The prefix sits *inside* the
+reference's own group, so a reference stays one group and one value: a second group would
+be a second thing to complete and a second thing to forget in a hand-typed message. The
+machine is part of the spelling, because `@file(x)` on this machine and `@file(x)` on a
+peer are two different texts; the index keys them apart.
+
+The prefix counts only when it is whole -- `remote://` then a name then `/`. A value that
+merely begins with those letters is a path that begins with them. `remote://none/` is the
+session's own machine.
+
+A name this machine does not configure is not a peer: it reads as it would have without
+one, and never as a path this machine invented.
+
+A skill is the one kind that is always looked up where it runs: `installed_in` reads the
+session's project layer on the session's machine -- so a peer's own checkout `.agents/skills`
+is a skill here -- while the home's and the machine's layers are read here, because that is
+where a skill's program runs.
+
+The session's directory belongs to one machine, and it is the *placement* -- what
+`set_session --cwd` last said -- not where its shell happens to stand: a `cd` moves a
+shell and not a session, so it is not a rewrite of what was already sent, while a move
+is, and a move therefore writes a new prompt row. The old row keeps the old directory,
+which is what "already sent" means.
 
 The session's directory belongs to one machine, and it is the *placement* -- what
 `set_session --cwd` last said -- not where its shell happens to stand: a `cd` moves a

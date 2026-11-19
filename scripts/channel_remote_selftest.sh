@@ -224,7 +224,7 @@ sys.exit(0 if s.connect_ex(("127.0.0.1",int(sys.argv[1])))==0 else 1)' "$fake_po
   sleep 0.2
 done
 start_server() {
-  env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY \
+  env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_HOME -u GONGGA_SERVER -u GONGGA_BIND -u GONGGA_KEY -u GONGGA_SESSION -u GONGGA_CLI -u GONGGA_REMOTE -u GONGGA_REMOTE_CWD \
       -u GONGGA_API_KEY_ENV -u GONGGA_SESSION \
       "$server_bin" --home "$home" --bind "127.0.0.1:$port" \
       --log info >>"$log" 2>&1 &

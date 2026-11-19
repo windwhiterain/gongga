@@ -1665,18 +1665,14 @@ async fn expand_message(
     session: &crate::session::SessionHandle,
     message: String,
 ) -> Result<crate::meta::Expanded, String> {
-    // Where this message's references are read: the machine the session stands on;
-    // a remote with no connection says so.
-    let reader = session.reader();
-    let source = match (&reader, session.owner()) {
-        (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
-        (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
-        (_, crate::session::Machine::Local) => crate::meta::Source::Local,
-    };
+    // Where this message's references are read: the machine the session stands on,
+    // unless a reference names another.
+    let space = session.space();
+    let machines = crate::meta::Machines::of(&space);
     let llm = d.agent.route(session.name(), &session.tuning()).ok();
     let llm = llm.as_ref().map(|(client, _, _)| client.as_ref());
     let home = session.cwd();
-    Ok(crate::meta::expand(&d.store, source, &home, &message, llm).await)
+    Ok(crate::meta::expand(&d.store, &machines, &home, &message, llm).await)
 }
 
 /// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.
@@ -2928,21 +2924,22 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
 
 /// Every skill a session's roots hold: the one walk that `ls_skill` reads too.
 async fn list_skills(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let (named, cwd, machine) = match session_of(args, caller) {
+    let (named, space, cwd) = match session_of(args, caller) {
         Some(session) => match d.sessions.get(&session) {
-            Ok(handle) => (session, handle.cwd(), handle.owner()),
+            Ok(handle) => (session, handle.space(), handle.cwd()),
             Err(e) => return Outcome::err(e.to_string()),
         },
         // No session named: the server's own directory, as such a line reads it.
         None => (
             String::new(),
+            crate::space::Space::local(),
             std::env::current_dir().unwrap_or_default(),
-            crate::session::Machine::Local,
         ),
     };
-    let rows: Vec<serde_json::Value> = crate::tools::skill::installed_for(&cwd, machine)
+    let rows: Vec<serde_json::Value> = crate::tools::skill::installed_in(&space, &cwd)
+        .await
         .iter()
-        .map(crate::tools::skill::row)
+        .map(crate::tools::skill::found_row)
         .collect();
     Outcome::ok_with(
         format!(
@@ -2964,7 +2961,7 @@ async fn list_skills(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
 ///
 /// # Invariant
 ///
-/// One walk: the same `installed_for` that `run_skill` and `@skill(...)` read, so a
+/// One walk: the same `installed_in` that `run_skill` and `@skill(...)` read, so a
 /// name this lists is a name `run_skill` takes. `path` is a bucket's own word or a
 /// skill's name, matched by component (`under`): `harness` is every skill the home
 /// installed, `har` is nothing, and a nested skill answers to the directories under it.
@@ -2978,11 +2975,11 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let installed = crate::tools::skill::installed_for(&handle.cwd(), handle.owner());
+    let installed = crate::tools::skill::installed_in(&handle.space(), &handle.cwd()).await;
     let listed: Vec<serde_json::Value> = installed
         .iter()
-        .filter(|skill| under(&skill.name, &path) || under(skill.bucket.as_str(), &path))
-        .map(crate::tools::skill::row)
+        .filter(|skill| under(&skill.name, &path) || under(&skill.bucket, &path))
+        .map(crate::tools::skill::found_row)
         .collect();
     if listed.is_empty() {
         return Outcome::ok(format!("{session}: no skill matches {path:?}"));
@@ -3009,10 +3006,10 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let roots = crate::tools::skill::session_roots(&handle.cwd(), handle.owner());
+    let roots = crate::tools::skill::installed_in(&handle.space(), &handle.cwd()).await;
     // One resolver, and the walk behind it is `ls_skill`'s.
-    let Some(skill) = roots.find(&id) else {
-        let known: Vec<String> = roots.all().iter().map(|skill| skill.name.clone()).collect();
+    let Some(found) = roots.iter().find(|skill| skill.name == id) else {
+        let known: Vec<String> = roots.iter().map(|skill| skill.name.clone()).collect();
         return Outcome::err(format!(
             "no skill is {id:?} here; `ls_skill` lists {}",
             if known.is_empty() {
@@ -3021,6 +3018,18 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
                 known.join(", ")
             }
         ));
+    };
+    // The program runs on this machine, whatever machine the skill's file is on: a
+    // package is fetched here, and its entries run under this server's interpreter.
+    let skill = ::skill::Skill {
+        name: found.name.clone(),
+        description: found.description.clone(),
+        path: std::path::PathBuf::from(&found.path),
+        bucket: match found.bucket.as_str() {
+            "project" => ::skill::Bucket::Project,
+            "harness" => ::skill::Bucket::Harness,
+            _ => ::skill::Bucket::General,
+        },
     };
     let table = d.agent.tools();
     let Some(skills) = table.skills() else {

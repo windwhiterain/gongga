@@ -103,7 +103,7 @@ export MULTI_CLIENT_SELFTEST_KEY=sk-fake
 
 # The key is passed to this one process only. Every dial below spells it out,
 # because a server started from GONGGA_KEY does not write server.key.
-env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY \
+env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_HOME -u GONGGA_SERVER -u GONGGA_BIND -u GONGGA_KEY -u GONGGA_SESSION -u GONGGA_CLI -u GONGGA_REMOTE -u GONGGA_REMOTE_CWD \
   -u GONGGA_API_KEY_ENV GONGGA_KEY="$key" \
   "$server_bin" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done

@@ -577,7 +577,7 @@ impl Agent {
         id: i64,
         model: &str,
         cwd: &std::path::Path,
-        source: crate::meta::Source<'_>,
+        machines: &crate::meta::Machines<'_>,
     ) -> anyhow::Result<crate::store::Prompt> {
         // All three "where"s come from the session: its name, a stated placement, the
         // peer.
@@ -628,7 +628,7 @@ impl Agent {
         // Where the conversation's references stand now, planned once, for the one
         // request that carries it.
         let (index, rooted) = match self
-            .index_of(id, name, model, &here, &home, source, remote)
+            .index_of(id, name, model, &here, &home, machines, remote)
             .await
         {
             Some((index, rooted)) => (Some(index), rooted),
@@ -797,7 +797,7 @@ impl Agent {
         model: &str,
         owner: &str,
         home: &std::path::Path,
-        source: crate::meta::Source<'_>,
+        machines: &crate::meta::Machines<'_>,
         remote: Option<&str>,
     ) -> Option<(String, Vec<String>)> {
         // The queue as well as the transcript: an early message left its `@file(...)`
@@ -805,8 +805,8 @@ impl Agent {
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
-        let rules = crate::meta::rules(source, home).await;
-        let roots = crate::meta::roots(source, home, &borrowed).await;
+        let rules = crate::meta::rules(machines, home).await;
+        let roots = crate::meta::roots(machines, home, &borrowed).await;
         if rules.is_none() && roots.is_empty() {
             return None;
         }
@@ -834,7 +834,7 @@ impl Agent {
                 format!(
                     "{spelling} ({})
 {text}",
-                    crate::meta::machine_note(spelling, source, remote)
+                    crate::meta::machine_note(spelling, &machines.in_space(None), remote)
                 )
             })
             .collect::<Vec<_>>()
@@ -845,7 +845,7 @@ impl Agent {
                 let spelling = crate::meta::rules_spelling();
                 let rules = format!(
                     "{spelling} ({})\n{text}",
-                    crate::meta::machine_note(&spelling, source, remote)
+                    crate::meta::machine_note(&spelling, &machines.session, remote)
                 );
                 if body.is_empty() {
                     rules
@@ -936,14 +936,10 @@ impl Agent {
         let phase_started = std::time::Instant::now();
         // Read beside the stored prompt; a request assembles no part of its head.
         let tools = self.tool_set_in_force(session, id, llm.model(), llm)?;
-        let reader = session.reader();
-        let source = match (&reader, session.owner()) {
-            (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
-            (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
-            (_, crate::session::Machine::Local) => crate::meta::Source::Local,
-        };
+        let space = session.space();
+        let machines = crate::meta::Machines::of(&space);
         let prompt = self
-            .prompt_in_force(session, id, llm.model(), cwd, source)
+            .prompt_in_force(session, id, llm.model(), cwd, &machines)
             .await?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
         // A request cannot answer the model's own half step; fill the boundary first.
@@ -1413,24 +1409,26 @@ impl Agent {
         output: &str,
     ) -> Vec<crate::image::ImageRef> {
         let mut out = Vec::new();
-        // The bytes are on the machine that printed the name. See
+        // The bytes are on the machine that printed the name, unless the reference
+        // names another: `@image(x) (remote=p)` is read there. See
         // `docs/notes/server-meta.md`.
-        let reader = ctx.reader();
-        let source = match (&reader, printed_on) {
-            (Some(reader), crate::session::Machine::Remote) => crate::meta::Source::Remote(reader),
-            (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
-            (_, crate::session::Machine::Local) => crate::meta::Source::Local,
-        };
-        let dir = ctx.dir(printed_on);
-        let named = crate::meta::mentions(output)
+        let printed_space = ctx.space_on(printed_on);
+        let machines = crate::meta::Machines::of(&printed_space);
+        let named: Vec<(String, Option<String>)> = crate::meta::mentions(output)
             .into_iter()
             .filter(|m| m.kind == protocol::Reference::Image)
-            .map(|m| m.value);
-        for given in named {
+            .map(|m| (m.value, m.remote))
+            .collect();
+        for (given, stated) in named {
             // Read on the machine that printed it: a `bash` picture here, a `remote_bash`
             // one there.
-            let path = source.spelling(&dir, &given);
-            let bytes = match source.read(&dir, &given).await {
+            let space = machines.in_space(stated.as_deref());
+            let dir = match stated.as_deref() {
+                None | Some("none") => ctx.dir(printed_on),
+                Some(_) => ctx.session_dir(),
+            };
+            let path = space.spell(&dir, &given);
+            let bytes = match space.read_bytes(&path).await {
                 Some(b) => b,
                 // Not a picture this harness can read: leave the text alone.
                 None => continue,
@@ -1509,7 +1507,7 @@ impl Agent {
             home: self.home.clone(),
             output_dir: self.output_dir.clone(),
             workspace: session.workspace(),
-            reader: session.reader(),
+            space: session.space(),
             machine,
             remote: session.remote_name(),
             events: Some(tx),

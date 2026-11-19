@@ -317,7 +317,7 @@ Two rules a reader should not have to re-derive:
   its own, after which the reported path is adopted as the shell's directory and
   written into `sessions.cwd`, so the next start begins where the endpoint is.
 - **a stated directory is checked before the move.** `set_session` asks the
-  destination -- `is_dir` here, `Op::Stat` through the remote's `Reader` on a peer --
+  destination -- `is_dir` here, `Op::Stat` through the session's `Space` on a peer --
   and refuses the command when the answer is no. Both machines are asked the same
   question, so a local `--cwd` no longer falls back to the server's directory and
   reports `ok`; a session whose row already names a removed directory still starts,

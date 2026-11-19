@@ -56,9 +56,13 @@ pub struct ToolContext {
     /// The session's named shells, on this machine and -- when it names one --
     /// on its remote. See `crate::session::Shells`.
     pub workspace: Arc<StdMutex<Workspace>>,
-    /// The connection this session's references are read through, when its
-    /// directory is on a remote.
-    pub reader: Option<Arc<crate::remote::Reader>>,
+    /// The session's one path space, holding the connection a peer is read through.
+    ///
+    /// # Invariant
+    ///
+    /// Cloned from the session, never built here: a fresh space per call would dial the
+    /// peer afresh, and a message naming twelve files would cost twelve dials.
+    pub space: crate::space::Space,
     /// The machine this session's directory belongs to.
     ///
     /// # Invariant
@@ -114,11 +118,6 @@ impl ToolContext {
             .is_remote(machine)
     }
 
-    /// The connection this session's references are read through, if any.
-    pub(crate) fn reader(&self) -> Option<Arc<crate::remote::Reader>> {
-        self.reader.clone()
-    }
-
     /// The path space this call's paths live in: where the session stands.
     ///
     /// # Invariant
@@ -127,10 +126,21 @@ impl ToolContext {
     /// path in this space and asks nothing about whether it is a peer. See
     /// `docs/notes/server-space.md`.
     pub(crate) fn space(&self) -> crate::space::Space {
-        let workspace = self.workspace.lock().unwrap_or_else(|e| e.into_inner());
-        match workspace.endpoint(workspace.owner()) {
-            Some(endpoint) => crate::space::Space::of(endpoint),
-            None => crate::space::Space::local(),
+        self.space_on(self.machine)
+    }
+
+    /// The space one of this session's two machines spells paths in.
+    ///
+    /// # Invariant
+    ///
+    /// `machine` is the one that produced the text being read, never inferred from the
+    /// path's spelling: a tool's output is read where the tool ran, a message where the
+    /// session stands. The session's own machine is its held space, connection and all;
+    /// the other machine is this one, which needs none.
+    pub(crate) fn space_on(&self, machine: Machine) -> crate::space::Space {
+        match machine == self.machine {
+            true => self.space.clone(),
+            false => crate::space::Space::local(),
         }
     }
 
@@ -140,6 +150,17 @@ impl ToolContext {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .dir(machine)
+    }
+
+    /// The session's own directory, on whichever machine owns it.
+    ///
+    /// # Invariant
+    ///
+    /// The one directory a reference that names a machine out loud is joined against:
+    /// a message's `@image(x) (remote=p)` stands in the session's directory as the peer
+    /// spells it, never in whatever directory the tool that printed it ran in.
+    pub(crate) fn session_dir(&self) -> PathBuf {
+        self.cwd.clone()
     }
 
     /// Caps one command's output, spilling the rest to a file named after it.
@@ -1214,16 +1235,16 @@ pub(crate) async fn invoke(
     ctx: &ToolContext,
 ) -> ToolOutcome {
     let outcome = waited(&tool, &args, ctx).await;
-    // The machine this call ran on reports its own room.
-    let peer = match (&ctx.remote, &ctx.reader) {
-        (Some(machine), reader) => Some(crate::disk::Peer {
-            machine: machine.clone(),
-            volumes: match reader {
-                Some(reader) => reader
-                    .space(&ctx.cwd.to_string_lossy())
+    // The machine this call ran on reports its own room, through the one space the
+    // session reads and runs in.
+    let peer = match &ctx.remote {
+        Some(machine) => {
+            let space = ctx.space_on(crate::session::Machine::Remote);
+            let volumes = match space.is_local() {
+                true => Vec::new(),
+                false => space
+                    .free_space(&ctx.cwd.to_string_lossy())
                     .await
-                    .ok()
-                    .flatten()
                     .map(|free| {
                         vec![crate::disk::Volume {
                             label: machine.clone(),
@@ -1231,10 +1252,13 @@ pub(crate) async fn invoke(
                         }]
                     })
                     .unwrap_or_default(),
-                None => Vec::new(),
-            },
-        }),
-        _ => None,
+            };
+            Some(crate::disk::Peer {
+                machine: machine.clone(),
+                volumes,
+            })
+        }
+        None => None,
     };
     crate::disk::note_tool_end(
         &ctx.store,

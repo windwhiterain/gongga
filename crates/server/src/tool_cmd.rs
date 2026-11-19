@@ -58,7 +58,7 @@ pub fn context(
         home: agent.home.clone(),
         output_dir: agent.output_dir.clone(),
         workspace: handle.workspace(),
-        reader: handle.reader(),
+        space: handle.space(),
         machine: handle.owner(),
         remote: handle.remote_name(),
         events: None,

@@ -194,26 +194,95 @@ fn call_of(cmd: Option<&Value>) -> Result<Call, String> {
     })
 }
 
-/// The three roots a session standing on `machine` in `cwd` reads.
+/// A skill this build found, and the directory it lives in.
 ///
 /// # Invariant
 ///
-/// One construction: the walk ([`installed_for`]) and the path resolver (`Roots::at`)
-/// come from the same three directories, so a name this lists is a name that resolves.
-/// The project layer is the checkout's, so a session whose directory is on a remote is
-/// handed the home's and the machine's rows. See `docs/notes/server-tools-skill.md`.
-pub fn session_roots(cwd: &Path, machine: Machine) -> skill::Roots {
-    roots((machine == Machine::Local).then_some(cwd))
+/// `path` is spelled for the machine the skill is on, and is the string a body is read
+/// by and a row reports: a project's skill on a peer is a peer path, not this machine's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub name: String,
+    pub description: String,
+    pub path: String,
+    /// The directory holding `SKILL.md`, spelled the same way.
+    pub dir: String,
+    pub bucket: String,
 }
 
-/// Every skill a session standing on `machine` in `cwd` can open.
+/// Every skill a session standing on `space`'s machine in `cwd` can open.
 ///
 /// # Invariant
 ///
 /// One walk, shared with the command layer and with `@skill(...)`: a name this lists is
-/// a name `run_skill` takes. See `docs/notes/server-tools-skill.md`.
-pub fn installed_for(cwd: &Path, machine: Machine) -> Vec<Skill> {
-    session_roots(cwd, machine).all()
+/// a name `run_skill` takes. The project layer is the checkout the session stands in,
+/// so on a peer it is the peer's own `.agents/skills` read through that peer's space;
+/// the home's and the machine's layers are this server's, wherever the session works.
+/// See `docs/notes/server-tools-skill.md`.
+pub async fn installed_in(space: &crate::space::Space, cwd: &Path) -> Vec<Found> {
+    let mut out = Vec::new();
+    // The project layer first: the most specific, and the session's own checkout,
+    // which may be a peer's.
+    let project = space.spell(cwd, ".agents/skills");
+    out.extend(read_layer(space, &project, skill::Bucket::Project.as_str()).await);
+    // Read here, whatever machine the session works on.
+    let here = crate::space::Space::local();
+    let roots = crate::ship::roots();
+    for (dir, bucket) in [
+        (crate::ship::skills(&roots.home), skill::Bucket::Harness),
+        (roots.machine.join("skills"), skill::Bucket::General),
+    ] {
+        let spelled = dir.to_string_lossy().into_owned();
+        out.extend(read_layer(&here, &spelled, bucket.as_str()).await);
+    }
+    out
+}
+
+/// The skills whose `SKILL.md` one directory holds, sorted by directory.
+///
+async fn read_layer(space: &crate::space::Space, dir: &str, bucket: &str) -> Vec<Found> {
+    let Some(entries) = space.list(dir).await else {
+        return Vec::new();
+    };
+    // Sorted, so a table drawn twice is the same table.
+    let mut dirs: Vec<String> = entries
+        .iter()
+        .filter(|entry| entry.is_dir)
+        .map(|entry| format!("{}/{}", dir.trim_end_matches(['/', '\\']), entry.name))
+        .collect();
+    dirs.sort();
+    let mut out = Vec::new();
+    for one in dirs {
+        let skill_file = format!("{one}/SKILL.md");
+        let Some(bytes) = space.read_bytes(&skill_file).await else {
+            continue;
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        let declared = ::skill::declared_of(&text, &one);
+        out.push(Found {
+            name: declared.0,
+            description: declared.1,
+            path: skill_file,
+            dir: one,
+            bucket: bucket.to_string(),
+        });
+    }
+    out
+}
+
+/// The one skill `name` opens, on the machine `space` is, in the checkout `cwd`.
+///
+/// # Invariant
+///
+/// The precedence is `Bucket::ALL`: a project's own skill beats this home's, which
+/// beats the machine's, and a name in two layers is the first one read.
+pub async fn find(space: &crate::space::Space, cwd: &Path, name: &str) -> Option<Found> {
+    installed_in(space, cwd)
+        .await
+        .into_iter()
+        .find(|skill| skill.name == name)
 }
 
 /// The same three roots, for a caller with no session to stand in a project root.
@@ -235,6 +304,16 @@ pub fn roots(project: Option<&Path>) -> skill::Roots {
 /// `path` against it and `run_skill` hands it back unchanged, so the row a reader copies
 /// is the word the call takes. `bucket` stands beside it, so a row says where a skill
 /// came from without the call having to spell it.
+pub(crate) fn found_row(skill: &Found) -> Value {
+    json!({
+        "name": skill.name,
+        "description": skill.description,
+        "path": skill.path,
+        "bucket": skill.bucket,
+    })
+}
+
+/// The same row for a skill this machine holds, which is what `roots` reads.
 pub(crate) fn row(skill: &Skill) -> Value {
     json!({
         "name": skill.name,

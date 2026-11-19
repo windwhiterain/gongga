@@ -126,7 +126,7 @@ start_server() {
   log="$work/channel-notice-server-$run.log"
   : > "$log"
   # A session's shell exports these; a test roster cannot honour them.
-  env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY \
+  env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_HOME -u GONGGA_SERVER -u GONGGA_BIND -u GONGGA_KEY -u GONGGA_SESSION -u GONGGA_CLI -u GONGGA_REMOTE -u GONGGA_REMOTE_CWD \
       -u GONGGA_API_KEY_ENV -u GONGGA_SESSION GONGGA_SUPERVISED=1 \
       ${relay_bin:+GONGGA_RELAY_BIN="$relay_bin"} \
       "$server_bin" --home "$home" --bind "127.0.0.1:$port" >"$log" 2>&1 &

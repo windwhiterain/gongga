@@ -16,11 +16,28 @@ Space::local()            this machine, no protocol
 Space::of(endpoint)       the endpoint's own machine, always through its runner
 ```
 
-`run` is the whole surface so far, because the file tools already have a driver: a
+`run` was the whole surface at first, because the file tools already have a driver: a
 request goes to a Python interpreter the *space* starts, and the answer is what that
 interpreter printed. What a tool must not do is look at the machine at all. Anything
 that needs a second primitive -- a file read that is cheaper than an interpreter, a
 listing -- belongs here, next to `run`, never inside the caller.
+
+## One space, one connection
+
+A `Space` holds the peer's connection inside itself (`Arc<Mutex<Option<Runner>>>`), and
+`Clone` shares it rather than copying it. So `read_bytes`, `list`, `stat`, `free_space`
+and `run` all ride one dialled runner: a message naming twelve files costs one
+dial, and the disk report after a tool call costs none.
+
+Before this, a peer was reached two ways: `Space::run` dialled through `pick::runner` on
+every call, while `remote::Reader` kept its own connection for file reads. `meta` used the
+second, the file tools the first, and a session with a peer therefore held two runners
+and dialled once per program it ran. `Reader` is gone; its job is this space's file side
+(a `read` loop that advances the cursor, a `redial` that costs one re-dial for the whole
+read, a `Drop` that leaves the peer reaping its own shells).
+
+The null `Space::local()` has the same field and never fills it: there is no peer to
+dial, and the file primitives take the `std::fs` and `std::process` path.
 
 ## Where the run goes
 
@@ -42,11 +59,16 @@ number here would kill legitimate work. A caller that wants a deadline states it
 
 ## What is not yet here
 
-The `bash`/`exec`/channel paths still hold their own session shells: they are long-lived
-conversations with a workspace, not one-shot runs, and moving them onto this seam is a
-separate change. `meta::Source` reads a reference's bytes, and knows three answers
-(`Local`, `Remote(reader)`, `Unreachable`) where `Space` knows two -- a reference names
-its machine in the text, so it can point at one the session does not stand on.
+This machine's space has no notion of a working tree it owns, and the `bash`/`exec`/channel
+paths still hold their own session shells: they are long-lived conversations with a
+workspace, not one-shot runs, and moving them onto this seam is a separate change.
+
+`meta` reads no source of its own. A reference is resolved through the same `Space` a
+tool's path is: `spell` joins the name the way that machine joins paths, `read_bytes`
+answers the bytes, and `is_local` says which machine a `@skill(...)` is looked up on. The
+three answers `Source` used to know collapsed into one -- a peer whose link cannot be
+dialled is still a peer, and its unreadable reference stays literal, exactly as an
+unreachable one did before. See `docs/notes/server-meta.md`.
 
 ## The Python mirror
 

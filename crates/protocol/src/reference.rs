@@ -51,3 +51,15 @@ impl Reference {
             .find(|kind| word.starts_with(kind.prefix()))
     }
 }
+
+/// The prefix that names a machine inside a reference's own group.
+///
+/// # Invariant
+///
+/// One group and one value: `@file(remote://p/notes.md)` is a peer's file, and
+/// `@file(notes.md)` is the session's. The server parses this and the client completes
+/// it, so one spelling is what keeps a machine a caller picked parseable. See
+/// `docs/notes/protocol-reference.md`.
+pub fn meta_prefix() -> &'static str {
+    "remote://"
+}

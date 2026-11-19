@@ -570,14 +570,63 @@ fn opening(word: &str) -> Option<(usize, Reference, &str)> {
 }
 
 /// Completes one reference's value.
+///
+/// # Invariant
+///
+/// One group, so one value, and the machine is part of it: `@file(remote://` lists the
+/// peers this server knows and `@file(remote://p/` lists that peer's directory. A value
+/// already carrying a prefix is completed on the prefix's own machine, exactly as a bare
+/// path is completed on the one the line's session stands on.
 fn value(kind: Reference, typed: &str, ctx: &Ctx) -> Vec<Item> {
-    match kind {
+    if let Some(rest) = typed.strip_prefix(protocol::meta_prefix()) {
+        return remote_value(rest, ctx);
+    }
+    let items = match kind {
         Reference::Skill => narrowed(&ctx.catalog.skills(&ctx.place), typed),
         Reference::Image | Reference::File => match &ctx.place.peer {
             Some(remote) => remote_paths(ctx, remote, typed),
             None => paths(&ctx.place.dir, typed),
         },
+    };
+    // The way to name another machine, beside the value that needs none. A skill is not
+    // one: its program runs on this machine, so there is no other machine to name.
+    let mut items = items;
+    let prefix = protocol::meta_prefix();
+    if kind != Reference::Skill && prefix.starts_with(typed) && typed != prefix {
+        items.insert(
+            0,
+            Item::word(prefix.to_string(), "another machine's".to_string()),
+        );
     }
+    items
+}
+
+/// The value after `remote://`: a peer's name, then that peer's directory.
+fn remote_value(rest: &str, ctx: &Ctx) -> Vec<Item> {
+    let prefix = protocol::meta_prefix();
+    let Some((name, path)) = rest.split_once('/') else {
+        // A peer's name, listed from what the catalog publishes about remotes.
+        let names: Vec<String> = {
+            let catalog = ctx.catalog.read();
+            let mut names: Vec<String> = catalog.remotes.iter().cloned().collect();
+            names.sort();
+            names
+        };
+        return names
+            .iter()
+            .filter(|remote| remote.starts_with(rest))
+            .map(|remote| Item::path(format!("{prefix}{remote}/"), "machine".to_string()))
+            .collect();
+    };
+    remote_paths(ctx, name, path)
+        .into_iter()
+        .map(|item| {
+            let mut item = item;
+            let label = item.label.clone();
+            item.label = format!("{prefix}{name}/{label}");
+            item
+        })
+        .collect()
 }
 
 /// One value's completion, from what the catalog publishes about it.

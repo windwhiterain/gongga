@@ -314,8 +314,14 @@ struct SessionInner {
     until: Arc<AtomicI64>,
     /// Set before the workspace end, so a stop announced now is the command's, not the exit's.
     closing: Arc<AtomicBool>,
-    /// The connection this session's references are read through, if any.
-    reader: Mutex<Option<Arc<crate::remote::Reader>>>,
+    /// The path space this session's paths live on, and the connection it keeps.
+    ///
+    /// # Invariant
+    ///
+    /// Read from the live workspace's machine, and held as one value: a move replaces
+    /// it, and every reader of a reference shares the one connection inside it.
+    /// See `docs/notes/server-space.md`.
+    space: Mutex<crate::space::Space>,
     /// The directory this session was placed at, as `set_session` last said.
     ///
     /// # Invariant
@@ -711,39 +717,30 @@ impl SessionHandle {
             .cwd()
     }
 
-    /// The path space this session's paths live in: the machine its directory is on.
+    /// The path space this session's paths live on: the machine its directory is on.
     ///
     /// # Invariant
     ///
     /// The space is the session's own machine, never the caller's: a tool that touches
-    /// a path touches it there, and asks nothing about which machine that is.
-    /// `owner()` is `Remote` only while the workspace holds a peer, so this never falls
-    /// back to this machine for a session that has one.
+    /// a path touches it there, and asks nothing about which machine that is. It is one
+    /// value held for the session's life, so the peer's connection is dialled once. See
+    /// `docs/notes/server-space.md`.
     pub fn space(&self) -> crate::space::Space {
-        let workspace = self
-            .inner
-            .workspace
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        match workspace.endpoint(workspace.owner()) {
-            Some(endpoint) => crate::space::Space::of(endpoint),
-            None => crate::space::Space::local(),
-        }
-    }
-
-    /// The connection this session's references are read through, when its
-    /// directory is on a remote.
-    pub fn reader(&self) -> Option<Arc<crate::remote::Reader>> {
         self.inner
-            .reader
+            .space
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
-    /// Points the reading side at the machine the session now stands on.
-    pub fn set_reader(&self, reader: Option<Arc<crate::remote::Reader>>) {
-        *self.inner.reader.lock().unwrap_or_else(|e| e.into_inner()) = reader;
+    /// Points the space at the machine the session now stands on.
+    ///
+    /// # Invariant
+    ///
+    /// One value decides the machine for reads and runs alike, so a move swaps it
+    /// rather than leaving a stale peer's connection behind.
+    pub fn set_space(&self, space: crate::space::Space) {
+        *self.inner.space.lock().unwrap_or_else(|e| e.into_inner()) = space;
     }
 
     /// The directory this session was placed at, when one has been named.
@@ -1037,7 +1034,8 @@ pub struct SessionManager {
     /// Not a session's shell: a message is delivered while that session's command may
     /// be running, and waiting for its lock would make an instant inject wait for a
     /// build. Keyed by remote, so two sessions on one peer share one connection.
-    readers: Arc<Mutex<HashMap<String, Arc<crate::remote::Reader>>>>,
+    /// One space per remote, so a completion listing and a reference read share a dial.
+    spaces: Arc<Mutex<HashMap<String, crate::space::Space>>>,
 }
 
 /// What one session adds to either base environment: its name, its model, its machine.
@@ -1045,7 +1043,9 @@ pub struct SessionManager {
 /// # Invariant
 ///
 /// Read from the rows every time, so a `set_session --model` is what the next child
-/// sees: a shell, a Python and an entry asked the same question give one answer.
+/// sees: a shell, a Python and an entry asked the same question give one answer. A
+/// session on a peer also says where it stands there (`GONGGA_REMOTE_CWD`), because a
+/// skill runs here and joins a relative reference against that directory.
 fn session_vars(store: &Store, name: &str) -> Vec<(String, String)> {
     let mut env = Vec::new();
     // A shell cannot learn its own session's name from the outside.
@@ -1056,8 +1056,15 @@ fn session_vars(store: &Store, name: &str) -> Vec<(String, String)> {
         if !row.model.trim().is_empty() {
             env.push(("GONGGA_MODEL".to_string(), row.model.clone()));
         }
-        if let Some(remote) = row.remote.filter(|remote| !remote.trim().is_empty()) {
+        if let Some(remote) = row
+            .remote
+            .clone()
+            .filter(|remote| !remote.trim().is_empty())
+        {
             env.push(("GONGGA_REMOTE".to_string(), remote));
+            if !row.cwd.trim().is_empty() {
+                env.push(("GONGGA_REMOTE_CWD".to_string(), row.cwd.clone()));
+            }
         }
     }
     env
@@ -1080,7 +1087,7 @@ impl SessionManager {
             script_env,
             remotes,
             live: Arc::new(Mutex::new(HashMap::new())),
-            readers: Arc::new(Mutex::new(HashMap::new())),
+            spaces: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1115,12 +1122,11 @@ impl SessionManager {
             return Ok(entries);
         }
         // A peer's directory is one `read_dir` through the connection kept to it.
-        let reader = self.reader_for(remote).ok_or_else(|| {
-            anyhow::anyhow!("remote {remote:?} keeps no file connection for a listing")
-        })?;
-        let mut entries: Vec<(String, bool)> = reader
+        let space = self.space_for(remote)?;
+        let mut entries: Vec<(String, bool)> = space
             .list(directory)
-            .await?
+            .await
+            .ok_or_else(|| anyhow::anyhow!("remote {remote:?} did not list {directory:?}"))?
             .iter()
             .filter(|entry| entry.is_dir || entry.is_file)
             .map(|entry| (entry.name.clone(), entry.is_dir))
@@ -1154,11 +1160,14 @@ impl SessionManager {
             anyhow::bail!("--cwd {} {fault} on this machine", directory.display());
         }
         let name = remote.unwrap_or_default();
-        let reader = self
-            .reader_for(Some(name))
-            .ok_or_else(|| anyhow::anyhow!("remote {name:?} has no readable filesystem"))?;
+        let space = self
+            .space_for(Some(name))
+            .map_err(|e| anyhow::anyhow!("remote {name:?} has no readable filesystem: {e}"))?;
         let path = directory.to_string_lossy();
-        let file = reader.stat(&path).await?;
+        let file = space
+            .stat(&path)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("remote {name:?} did not answer about {path}"))?;
         if file.is_dir {
             return Ok(());
         }
@@ -1170,32 +1179,35 @@ impl SessionManager {
         anyhow::bail!("--cwd {path} {fault} on remote {name:?}")
     }
 
-    /// The connection a session on `remote` reads its files through.
+    /// The space a session on `remote` reads and runs in, its connection kept.
     ///
     /// # Invariant
     ///
-    /// One per remote, and `None` when the session stands on this machine: a local
-    /// file is read by the process that is already able to.
-    fn reader_for(&self, remote: Option<&str>) -> Option<Arc<crate::remote::Reader>> {
-        let name = remote.map(str::trim).filter(|n| !n.is_empty())?;
-        if let Some(reader) = self
-            .readers
+    /// One space per remote, so one connection: a listing and a reference read for the
+    /// same peer share the dial. A session standing on this machine keeps its own.
+    /// See `docs/notes/server-space.md`.
+    fn space_for(&self, remote: Option<&str>) -> anyhow::Result<crate::space::Space> {
+        let endpoint = self.endpoint_for(remote)?;
+        // Keyed by the operator's name, which is what a later call spells again.
+        let name = remote
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("")
+            .to_string();
+        if let Some(space) = self
+            .spaces
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(name)
+            .get(&name)
         {
-            return Some(reader.clone());
+            return Ok(space.clone());
         }
-        let endpoint = self.endpoint_for(Some(name)).ok()?;
-        if !endpoint.is_remote() {
-            return None;
-        }
-        let reader = Arc::new(crate::remote::Reader::new(endpoint));
-        self.readers
+        let space = crate::space::Space::of(endpoint);
+        self.spaces
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(name.to_string(), reader.clone());
-        Some(reader)
+            .insert(name, space.clone());
+        Ok(space)
     }
 
     /// The remote names a session may name, in the file's order.
@@ -1415,7 +1427,6 @@ impl SessionManager {
     }
 
     fn local_endpoint(&self) -> anyhow::Result<Endpoint> {
-        let current = self.config.now();
         let program = crate::config::detect_git_bash()
             .ok_or_else(|| anyhow::anyhow!("no bash on this machine"))?;
         Ok(Endpoint::local(program))
@@ -1500,8 +1511,8 @@ impl SessionManager {
         session
             .relocate(self.local_endpoint()?, remote, wanted.clone())
             .await?;
-        // The reading side moves with the workspace.
-        session.set_reader(self.reader_for(request.remote.as_deref()));
+        // The space moves with the workspace.
+        session.set_space(self.space_for(request.remote.as_deref())?);
         // A move states the placement; a shell's report does not.
         session.set_placed(wanted.clone());
         // The row is what the next start hands back to the endpoint, so it moves
@@ -1591,7 +1602,7 @@ impl SessionManager {
             (Some(_), cwd) => cwd,
         };
         let workspace = Workspace::of(self.local_endpoint()?, remote, cwd.clone())?;
-        let reader = self.reader_for(row.remote.as_deref());
+        let space = self.space_for(row.remote.as_deref())?;
         tracing::debug!(session = %row.name, model = %row.model, cwd = ?cwd, "session workspace ready");
         let handle = SessionHandle {
             inner: Arc::new(SessionInner {
@@ -1630,7 +1641,7 @@ impl SessionManager {
                 waiting: Arc::new(AtomicBool::new(false)),
                 until: Arc::new(AtomicI64::new(0)),
                 closing: Arc::new(AtomicBool::new(false)),
-                reader: Mutex::new(reader),
+                space: Mutex::new(space),
                 placed: Mutex::new((!row_cwd.trim().is_empty()).then(|| PathBuf::from(&row_cwd))),
                 open: Mutex::new(Vec::new()),
                 pending_move: Mutex::new(None),

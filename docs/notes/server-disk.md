@@ -92,7 +92,7 @@ that can fill up. Its room is asked for on the runner, not here:
 | `remote/protocol.rs` | `Op::Space { path }` |
 | `remote/runner.rs` | answered on the peer, with the same `disk::volumes()`/`free_space()` this machine uses on itself |
 | `remote/transport.rs` | `Runner::space`, one request on the connection the session already keeps |
-| `remote/files.rs` | `Reader::space`, so a tool call costs one round trip and touches no shell |
+| `space.rs` | `Space::free_space`, asked on that same kept connection, so a tool call costs one round trip and touches no shell |
 | `disk.rs` | one episode per **machine**, and the row carries `machine` |
 
 The scheme is the same point values as locally: a request multiplexed by id cannot

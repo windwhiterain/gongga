@@ -150,6 +150,26 @@ fn declared(bucket: Bucket, dir: &Path) -> Skill {
     }
 }
 
+/// The name and description a `SKILL.md` declares, read from its text.
+///
+/// # Invariant
+///
+/// One parse, whoever holds the bytes: a skill read on a peer is this function's answer
+/// too, so the body a peer's project layer carries is declared the way this machine's
+/// is. `dir` is the skill's directory, spelled for the machine it is on, and names it
+/// when the header does not.
+pub fn declared_of(text: &str, dir: &str) -> (String, String) {
+    let meta = frontmatter_text(text);
+    let name = meta.name.unwrap_or_else(|| {
+        dir.trim_end_matches(['/', '\\'])
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    });
+    (name, meta.description)
+}
+
 fn dir_name(dir: &Path) -> String {
     dir.file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -174,6 +194,11 @@ fn frontmatter(file: &Path) -> Meta {
     let Ok(text) = std::fs::read_to_string(file) else {
         return Meta::default();
     };
+    frontmatter_text(&text)
+}
+
+/// The same header block, from the file's own text.
+fn frontmatter_text(text: &str) -> Meta {
     let mut lines = text.lines();
     if lines.next().map(str::trim) != Some("---") {
         return Meta::default();

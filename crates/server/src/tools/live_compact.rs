@@ -24,14 +24,9 @@ impl Cmd for LiveCompactTool {
                 return ToolOutcome::err("settled must not be empty");
             }
             // Where this session's references are read: the machine it stands on.
-            let source = match (&ctx.reader, ctx.machine) {
-                (Some(reader), crate::session::Machine::Remote) => {
-                    crate::meta::Source::Remote(reader)
-                }
-                (None, crate::session::Machine::Remote) => crate::meta::Source::Unreachable,
-                (_, crate::session::Machine::Local) => crate::meta::Source::Local,
-            };
-            ToolOutcome::ok(crate::meta::embed(source, &ctx.cwd, settled).await)
+            let space = ctx.space();
+            let machines = crate::meta::Machines::of(&space);
+            ToolOutcome::ok(crate::meta::embed(&machines, &ctx.cwd, settled).await)
         })
     }
 }

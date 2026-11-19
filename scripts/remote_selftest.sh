@@ -107,7 +107,8 @@ fi
 # The connection this needs is the peer's own, so ask it the way the tools will: a
 # peer that is configured but does not answer ends the run with a skip rather than
 # with a handshake nobody waits out.
-if ! timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \n    ${peer_port:+-p "$peer_port"} ${peer_key:+-i "$peer_key"} "$peer_host" true >/dev/null 2>&1; then
+if ! timeout 20 ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new \
+    ${peer_port:+-p "$peer_port"} ${peer_key:+-i "$peer_key"} "$peer_host" "exit 0" >/dev/null 2>&1; then
   echo "skip: $peer_name at $peer_host does not answer from this machine, so there is no peer to prove this against"
   exit 0
 fi
@@ -219,10 +220,10 @@ print(json.loads(row[0]).get("output", "") if row else "")
 INNER
 }
 
-fake_up exec "{\"bin\":\"bash\",\"args\":[\"-lc\",\"mkdir -p \\\"\$HOME/$tag\\\" && printf '# $marker\\n' > \\\"\$HOME/$tag/AGENTS.md\\\" && cygpath -w \\\"\$HOME/$tag\\\" && cygpath -w \\\"\$HOME\\\"\"],\"name\":\"peer\",\"task\":\"make the peer scratch\"}" || {
+fake_up exec "{\"bin\":\"bash\",\"args\":[\"-lc\",\"mkdir -p \\\"\$HOME/$tag\\\" && printf '# $marker\\n' > \\\"\$HOME/$tag/AGENTS.md\\\" && cygpath -w \\\"\$HOME/$tag\\\" && cygpath -w \\\"\$HOME\\\"\"]}" || {
   echo "the stand-in never answered on 127.0.0.1:$fake_port" >&2; exit 1; }
 
-env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV "$server_bin" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
+env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV -u GONGGA_HOME -u GONGGA_SERVER -u GONGGA_BIND -u GONGGA_KEY -u GONGGA_SESSION -u GONGGA_CLI -u GONGGA_REMOTE -u GONGGA_REMOTE_CWD "$server_bin" --home "$home" --bind "127.0.0.1:$port" --log info >>"$log" 2>&1 &
 for _ in $(seq 1 150); do [[ -s "$home/server.lock" ]] && break; sleep 0.2; done
 wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exit 1; }
 server_pid=$(child_pid)
@@ -316,7 +317,7 @@ back=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","cwd":"'"$peer_ho
 [[ "$back" == *'"ok":true'* ]]
 ok "the session moves out of its scratch" $?
 
-fake_up exec "{\"bin\":\"bash\",\"args\":[\"-lc\",\"rm -rf \\\"\$HOME/$tag\\\" && echo peer-clean\"],\"name\":\"cleanup\",\"task\":\"remove the peer scratch\"}"
+fake_up exec "{\"bin\":\"bash\",\"args\":[\"-lc\",\"rm -rf \\\"\$HOME/$tag\\\" && echo peer-clean\"]}"
 "${cli[@]}" '{"name":"send_message","args":{"message":"clean up the peer","session":"probe"}}' >/dev/null 2>&1
 wait_turn probe; say_turn probe
 python - "$home" <<'INNER'

@@ -42,4 +42,4 @@ pub use message::{
     Usage, UsageEvent, Worktree, client_commands, decode_client, decode_server, encode_client,
     encode_server, spent,
 };
-pub use reference::Reference;
+pub use reference::{Reference, meta_prefix};
