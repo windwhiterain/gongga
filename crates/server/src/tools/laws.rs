@@ -36,8 +36,8 @@ pub const ALL: &[(&str, &str, &str)] = &[
 ///
 /// Injected in the model-facing schema only, so a provider's validator accepts what the
 /// call layer reads. A property the row already declares wins. `null` comes out of every
-/// kind because a provider compiles a union only when the other branch is a string: a
-/// model is offered the kind itself, and omits what it wants defaulted.
+/// kind: a provider compiles a union only when the other branch is a string. Two kinds are
+/// offered as none -- constrained decoding compiles no union; the sentence says both.
 pub fn schema(declared: Value) -> Value {
     let mut schema = declared;
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
@@ -48,9 +48,22 @@ pub fn schema(declared: Value) -> Value {
         }
         for property in properties.values_mut() {
             without_null(property);
+            without_union(property);
         }
     }
     schema
+}
+
+/// One property without a union: two kinds are stated as no kind, which takes any value.
+fn without_union(property: &mut Value) {
+    let Some(Value::Array(kinds)) = property.get("type") else {
+        return;
+    };
+    if kinds.len() > 1 {
+        if let Some(table) = property.as_object_mut() {
+            table.remove("type");
+        }
+    }
 }
 
 /// One property without `null`: no model states it, and no provider compiles it beside a number.
