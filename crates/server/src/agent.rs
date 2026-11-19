@@ -1409,9 +1409,7 @@ impl Agent {
         output: &str,
     ) -> Vec<crate::image::ImageRef> {
         let mut out = Vec::new();
-        // The bytes are on the machine that printed the name, unless the reference
-        // names another: `@image(x) (remote=p)` is read there. See
-        // `docs/notes/server-meta.md`.
+        // Read where printed, unless `remote://` names another. docs/notes/server-meta.md
         let printed_space = ctx.space_on(printed_on);
         let machines = crate::meta::Machines::of(&printed_space);
         let named: Vec<(String, Option<String>)> = crate::meta::mentions(output)

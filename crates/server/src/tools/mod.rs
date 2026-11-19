@@ -157,7 +157,7 @@ impl ToolContext {
     /// # Invariant
     ///
     /// The one directory a reference that names a machine out loud is joined against:
-    /// a message's `@image(x) (remote=p)` stands in the session's directory as the peer
+    /// a message's `@image(remote://p/x)` stands in the session's directory as the peer
     /// spells it, never in whatever directory the tool that printed it ran in.
     pub(crate) fn session_dir(&self) -> PathBuf {
         self.cwd.clone()

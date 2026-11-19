@@ -588,8 +588,7 @@ fn value(kind: Reference, typed: &str, ctx: &Ctx) -> Vec<Item> {
             None => paths(&ctx.place.dir, typed),
         },
     };
-    // The way to name another machine, beside the value that needs none. A skill is not
-    // one: its program runs on this machine, so there is no other machine to name.
+    // Another machine is nameable beside a value that needs none; a skill's program runs here.
     let mut items = items;
     let prefix = protocol::meta_prefix();
     if kind != Reference::Skill && prefix.starts_with(typed) && typed != prefix {

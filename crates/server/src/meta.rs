@@ -282,7 +282,7 @@ pub fn spelled(remote: Option<&str>, value: &str) -> String {
 /// # Invariant
 ///
 /// The machine is the one the reference named, not the one the message was written on:
-/// `@file(x) (remote=p)` on a local session says `on remote p`, and a skill is always
+/// `@file(remote://p/x)` on a local session says `on remote p`, and a skill is always
 /// this server's own because it runs here. See `docs/notes/server-meta.md`.
 pub fn machine_note(spelling: &str, space: &crate::space::Space, remote: Option<&str>) -> String {
     let server =

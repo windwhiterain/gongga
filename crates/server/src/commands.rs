@@ -3019,8 +3019,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
             }
         ));
     };
-    // The program runs on this machine, whatever machine the skill's file is on: a
-    // package is fetched here, and its entries run under this server's interpreter.
+    // The program runs here, whatever machine the skill's file is on.
     let skill = ::skill::Skill {
         name: found.name.clone(),
         description: found.description.clone(),
