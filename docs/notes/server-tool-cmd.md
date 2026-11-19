@@ -63,6 +63,21 @@ a command layer's `write_file` is refused on the same terms as a model's, and th
 that follows a foreground call is taken inside `ToolRegistry::run` -- once for every
 caller -- rather than here: see `docs/notes/server-explore.md`.
 
+## A forwarding row's arguments are the function's
+
+A row whose `cmd` a package declares -- `[tool.read]` with `cmd = "read"` -- takes its
+arguments from that function: `Registry::build` asks `content_commands::declared`, which
+reads the schema the package generated, and `ToolSpec::from_declared` keeps only what
+prose can say (a sentence, a hint, a place on an operator's line) plus a kind for an
+argument the function left untyped. The names, the kinds and `required` are the
+function's, in the model's schema, the check and the operator's catalog alike.
+
+Before that, the row was a second copy: `offset`/`limit` were offered as strings while
+`read` was annotated `int`, `all` as a string while `edit` said `bool`, and `remote`/`cwd`
+were missing from the row altogether, so a model could not name them. A row that restates
+a kind the function stated is now ignored with a warning, and a name the function does not
+take is dropped the same way.
+
 ## The tool list and the greeting
 
 The catalog publishes every tool, including `remote_bash`, which only a session
