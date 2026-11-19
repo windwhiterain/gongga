@@ -2244,18 +2244,19 @@ impl Completer for NoCompleter {
     }
 }
 
-/// The reference the prompt shows for a pasted picture: `@image(<path>)`.
+/// The reference the prompt shows for a pasted picture: `@image(remote://local/<path>)`.
 ///
 /// # Invariant
 ///
-/// The path is inserted verbatim inside the group, and that is exactly the spelling
-/// the server's Meta parser reads, so the server replaces the mention with a file id
-/// when the message is sent. Nothing needs escaping: the parenthesis is what ends
-/// the value, and a path holding a space is written like any other.
+/// The machine is stated, because a bare value is read on the session's machine -- which
+/// for a session working on a peer is the peer, where the clipboard's file is not. The
+/// path itself is verbatim: a space needs no escaping, the `)` ends the value.
 fn image_reference(path: &Path) -> String {
     format!(
-        "@{}({})",
+        "@{}({}{}/{})",
         client::protocol::Reference::Image.name(),
+        client::protocol::meta_prefix(),
+        client::protocol::local_machine(),
         path.display()
     )
 }

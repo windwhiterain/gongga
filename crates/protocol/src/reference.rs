@@ -63,3 +63,14 @@ impl Reference {
 pub fn meta_prefix() -> &'static str {
     "remote://"
 }
+
+/// The name that stands for the machine a reference is read on, when it must be said.
+///
+/// # Invariant
+///
+/// A bare value is the session's machine, so a caller holding a file of *this* machine's
+/// has to say so: `@image(remote://local/C:\x.png)` is the clipboard's own picture. One
+/// name for it, shared by the parser that reads it and the window that writes it.
+pub fn local_machine() -> &'static str {
+    "local"
+}
