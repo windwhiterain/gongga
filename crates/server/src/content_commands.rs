@@ -29,6 +29,8 @@ pub struct ContentCommands {
     /// The home whose content declares them.
     home: PathBuf,
     state: Mutex<State>,
+    /// What each declared function takes, for the rows that forward to it.
+    declared: crate::tools::Declared,
 }
 
 /// What one publish reads besides the content itself.
@@ -95,10 +97,11 @@ struct PackageFile {
 }
 
 impl ContentCommands {
-    pub fn new(home: PathBuf) -> Arc<Self> {
+    pub fn new(home: PathBuf, declared: crate::tools::Declared) -> Arc<Self> {
         Arc::new(Self {
             home,
             state: Mutex::new(State::default()),
+            declared,
         })
     }
 
@@ -120,7 +123,9 @@ impl ContentCommands {
                     state.manifests.clear();
                     state.problems = vec![why];
                 }
-                return publish(&mut state, at);
+                let published = publish(&mut state, at);
+                self.publish_arguments(&state.manifests);
+                return published;
             }
         };
         let fingerprint = self.fingerprint(&declared);
@@ -133,7 +138,27 @@ impl ContentCommands {
             state.manifests = manifests;
             state.problems = problems;
         }
-        publish(&mut state, at)
+        let published = publish(&mut state, at);
+        self.publish_arguments(&state.manifests);
+        published
+    }
+
+    /// Writes what each function takes into the table every forwarding row derives from.
+    ///
+    /// # Invariant
+    ///
+    /// The one read of the content, published twice: the catalog names the arguments and
+    /// this table hands the same ones to the rows, so a model, a check and an operator
+    /// cannot disagree about what a declared function takes.
+    fn publish_arguments(&self, manifests: &[Manifest]) {
+        let mut table = self.declared.write().unwrap_or_else(|e| e.into_inner());
+        table.clear();
+        for manifest in manifests {
+            table.insert(
+                manifest.name.clone(),
+                manifest.arguments.iter().map(argument_of).collect(),
+            );
+        }
     }
 
     /// The call a published name runs, or `None` when no declaration answers it.
@@ -312,97 +337,24 @@ pub(crate) fn package_schema(directory: &Path) -> Result<Value, String> {
     Ok(protocol::argschema::object(properties))
 }
 
-/// The arguments every declared command's function takes, by the command's name.
+/// What one declared function takes, as a row a tool row may derive from.
 ///
 /// # Invariant
 ///
-/// The function is the one truth: it names its arguments, kinds them and says which are
-/// required, so a tool row of the same name may restate none of that. A kind the function
-/// did not state stays empty, and a row is allowed to supply one there. A declaration that
-/// cannot be read is left out, said once, so a home whose content predates a package still
-/// starts.
-pub fn declared(home: &Path) -> std::collections::BTreeMap<String, Vec<Row>> {
-    let mut table = std::collections::BTreeMap::new();
-    let content = match crate::ship::content(home) {
-        Ok(content) => content,
-        Err(why) => {
-            tracing::warn!(problem = %why, "no declared function's arguments could be read");
-            return table;
-        }
-    };
-    let roots = crate::tools::skill::roots(None);
-    for command in content.commands() {
-        let Some(skill) = roots.find(&command.skill) else {
-            tracing::warn!(
-                command = %command.name,
-                "no skill is {:?} here, so its function's arguments are not read",
-                command.skill
-            );
-            continue;
-        };
-        match arguments_of(skill.dir(), &command.function) {
-            Ok(arguments) => {
-                table.insert(command.name.clone(), arguments);
-            }
-            Err(why) => tracing::warn!(
-                command = %command.name,
-                function = %command.function,
-                "this function's arguments were not read: {why}"
-            ),
-        }
+/// The signature's own answer: a name, whether a call must carry it, and the JSON Schema
+/// type the annotation named. A type it did not name stays empty, which is the one thing a
+/// row is still allowed to state. See `tools::Declared`.
+fn argument_of(signature: &Signature) -> Row {
+    Row {
+        name: signature.name.clone(),
+        kind: signature.type_of.clone().unwrap_or_default(),
+        items: None,
+        required: signature.required,
+        positional: None,
+        hint: None,
+        completion: Default::default(),
+        sentence: None,
     }
-    table
-}
-
-/// One function's arguments, as the schema its package generated states them.
-fn arguments_of(directory: &Path, function: &str) -> Result<Vec<Row>, String> {
-    let document = ::skill::schema_of(directory)?;
-    let Some(schema) = document
-        .get("functions")
-        .and_then(Value::as_object)
-        .and_then(|functions| functions.get(function))
-    else {
-        return Err(format!(
-            "the generated schema of {} publishes no {function:?}",
-            directory.display()
-        ));
-    };
-    let required: Vec<String> = schema
-        .get("required")
-        .and_then(Value::as_array)
-        .map(|names| {
-            names
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
-        return Ok(Vec::new());
-    };
-    Ok(properties
-        .iter()
-        .map(|(name, property)| Row {
-            name: name.clone(),
-            // Empty is the function stating no kind, which only a row may fill in.
-            kind: property
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            items: property
-                .get("items")
-                .and_then(|items| items.get("type"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            required: required.contains(name),
-            positional: None,
-            hint: None,
-            completion: Default::default(),
-            sentence: None,
-        })
-        .collect())
 }
 
 impl PackageFile {
@@ -428,7 +380,7 @@ fn publish(state: &mut State, at: &Publish<'_>) -> Vec<CommandSpec> {
         }
         let held = at.tools.get(&manifest.name);
         let row = held.as_ref().map(|tool| tool.spec());
-        published.push(spec_of(manifest, row));
+        published.push(spec_of(manifest, row.as_ref()));
         routes.insert(
             manifest.name.clone(),
             Route {

@@ -181,7 +181,7 @@ impl ToolSpec {
                 let said = self.parameters.iter().find(|row| row.name == given.name);
                 if let Some(said) = said.filter(|said| !given.kind.is_empty() && said.kind != given.kind)
                 {
-                    tracing::warn!(
+                    tracing::debug!(
                         argument = %given.name,
                         said = %said.kind,
                         function = %given.kind,
@@ -208,7 +208,7 @@ impl ToolSpec {
             .collect();
         for row in &self.parameters {
             if !declared.iter().any(|given| given.name == row.name) {
-                tracing::warn!(
+                tracing::debug!(
                     argument = %row.name,
                     "this argument is not one the function takes: the row's is dropped"
                 );

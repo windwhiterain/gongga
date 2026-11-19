@@ -66,11 +66,13 @@ caller -- rather than here: see `docs/notes/server-explore.md`.
 ## A forwarding row's arguments are the function's
 
 A row whose `cmd` a package declares -- `[tool.read]` with `cmd = "read"` -- takes its
-arguments from that function: `Registry::build` asks `content_commands::declared`, which
-reads the schema the package generated, and `ToolSpec::from_declared` keeps only what
-prose can say (a sentence, a hint, a place on an operator's line) plus a kind for an
-argument the function left untyped. The names, the kinds and `required` are the
-function's, in the model's schema, the check and the operator's catalog alike.
+arguments from that function's signature. `ContentCommands::commands` already asks each
+package what it publishes (`inspect.signature` through the contract) and publishes the
+answer as a command; the same answer is written into `tools::Declared`, and
+`Specd::spec` renders a forwarding row from it: the row keeps only what prose can say (a
+sentence, a hint, a place on an operator's line) and a kind for an argument the function
+left unannotated. One read of the content, so the model's schema, the check and the
+operator's catalog cannot disagree.
 
 Before that, the row was a second copy: `offset`/`limit` were offered as strings while
 `read` was annotated `int`, `all` as a string while `edit` said `bool`, and `remote`/`cwd`

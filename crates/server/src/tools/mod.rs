@@ -201,7 +201,13 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
 
     /// The row this tool is: its arguments, its sentences and every flag below.
-    fn spec(&self) -> &spec::ToolSpec;
+    ///
+    /// # Invariant
+    ///
+    /// By value because a row that forwards to a declared function is re-stated by that
+    /// function's own answer as it is read: the table is filled when the content is first
+    /// read, so a row renders the same arguments the catalog published. See `Specd::spec`.
+    fn spec(&self) -> spec::ToolSpec;
 
     /// Which machine this call's paths belong to.
     ///
@@ -479,15 +485,22 @@ pub(crate) fn named_words(table: &serde_json::Map<String, Value>) -> protocol::A
 pub struct Specd {
     /// The row's name: the key it is declared under.
     name: String,
-    /// The row: everything said about this tool.
-    spec: spec::ToolSpec,
+    /// The row: everything said about this tool, less what its function states.
+    row: spec::ToolSpec,
+    /// The commands a package declares, and the arguments each one's function takes.
+    declared: Declared,
     /// The command the row names, which does the work.
     work: Box<dyn Cmd>,
 }
 
 impl Specd {
-    pub fn new(name: String, spec: spec::ToolSpec, work: Box<dyn Cmd>) -> Self {
-        Self { name, spec, work }
+    pub fn new(name: String, row: spec::ToolSpec, declared: Declared, work: Box<dyn Cmd>) -> Self {
+        Self {
+            name,
+            row,
+            declared,
+            work,
+        }
     }
 }
 
@@ -496,26 +509,30 @@ impl Tool for Specd {
         &self.name
     }
 
-    fn spec(&self) -> &spec::ToolSpec {
-        &self.spec
+    fn spec(&self) -> spec::ToolSpec {
+        let declared = self.declared.read().unwrap_or_else(|e| e.into_inner());
+        match declared.get(&self.row.cmd) {
+            Some(given) => self.row.clone().from_declared(given),
+            None => self.row.clone(),
+        }
     }
 
     fn machine(&self, args: &Value, ctx: &ToolContext) -> Machine {
         self.work
             .machine(args, ctx)
-            .unwrap_or_else(|| self.spec.machine.machine())
+            .unwrap_or_else(|| self.row.machine.machine())
     }
 
     fn offered(&self) -> bool {
-        self.spec.offered
+        self.row.offered
     }
 
     fn is_remote(&self) -> bool {
-        self.spec.machine == spec::Side::Remote
+        self.row.machine == spec::Side::Remote
     }
 
     fn writes(&self) -> bool {
-        self.spec.writes
+        self.row.writes
     }
 
     fn forwards_to(&self) -> Option<&str> {
@@ -537,6 +554,17 @@ pub struct ToolRegistry {
     settings: Settings,
 }
 
+/// The arguments each declared command's function takes, by the command's name.
+///
+/// # Invariant
+///
+/// One table, written where the content is read and read where a row is rendered: a tool
+/// row that forwards to a declared function states no arguments of its own, so what the
+/// model is offered, what a call is checked against and what an operator completes all
+/// come from the function's signature. Empty until the content is first read.
+pub type Declared =
+    std::sync::Arc<std::sync::RwLock<std::collections::BTreeMap<String, Vec<spec::Argument>>>>;
+
 /// What this build hands a command the config names.
 ///
 /// # Invariant
@@ -545,6 +573,8 @@ pub struct ToolRegistry {
 /// which belong to the machine and not to what the model is told.
 struct Settings {
     max_output_chars: usize,
+    /// The declared arguments every forwarding row derives from; empty until read.
+    declared: Declared,
     python: Option<(crate::config::PythonConfig, Option<std::path::PathBuf>)>,
     skills: Option<skill::Skills>,
 }
@@ -563,8 +593,15 @@ impl ToolRegistry {
                 max_output_chars,
                 python: None,
                 skills: None,
+                declared: Default::default(),
             },
         }
+    }
+
+    /// The table a forwarding row derives its arguments from, filled when the content is read.
+    pub fn with_declared(mut self, declared: Declared) -> Self {
+        self.settings.declared = declared;
+        self
     }
 
     /// The interpreter a `python` row runs in, and where its package import lives.
@@ -602,6 +639,11 @@ impl ToolRegistry {
         self.settings.skills.as_ref()
     }
 
+    /// The table a forwarding row derives its arguments from.
+    pub fn declared(&self) -> &Declared {
+        &self.settings.declared
+    }
+
     /// Builds one tool per row the config declares.
     ///
     /// # Invariant
@@ -611,21 +653,15 @@ impl ToolRegistry {
     /// or one whose setting is missing, is not carried and the reason is kept in
     /// [`Self::problems`]: a tool that vanished quietly is a model calling what is not
     /// there.
-    pub fn build(
-        mut self,
-        rows: &std::collections::BTreeMap<String, spec::ToolSpec>,
-        declared: &std::collections::BTreeMap<String, Vec<spec::Argument>>,
-    ) -> Self {
+    pub fn build(mut self, rows: &std::collections::BTreeMap<String, spec::ToolSpec>) -> Self {
         for (name, row) in rows {
-            // A declared function names its arguments; a row this build answers states them.
-            let row = match declared.get(&row.cmd) {
-                Some(given) => row.clone().from_declared(given),
-                None => row.clone(),
-            };
-            match self.command(&row) {
-                Ok(work) => self
-                    .tools
-                    .push(Arc::new(Specd::new(name.clone(), row, work))),
+            match self.command(row) {
+                Ok(work) => self.tools.push(Arc::new(Specd::new(
+                    name.clone(),
+                    row.clone(),
+                    self.declared().clone(),
+                    work,
+                ))),
                 Err(why) => tracing::warn!(
                     row = %name,
                     "`[tool.{name}]` is not carried: {why}"

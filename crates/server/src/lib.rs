@@ -361,8 +361,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         tracing::warn!(error = %e, "cannot create {output_dir:?}; capped output will be dropped");
     }
 
-    // The commands the content declares: a skill's function, published under its own name.
-    let declared = content_commands::ContentCommands::new(cfg.home.clone());
+    // The commands the content declares, and one table of what each function takes.
+    let arguments: crate::tools::Declared = Default::default();
+    let declared = content_commands::ContentCommands::new(cfg.home.clone(), arguments.clone());
 
     // Scripts register commands; the directory is data, so nothing here knows one.
     let scripts = script::Scripts::new(
@@ -448,10 +449,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                             lib.clone(),
                             std::time::Duration::from_millis(crate::config::CALL_TIMEOUT_MS),
                         )
-                        .build(
-                            &cfg.tools.rows,
-                            &crate::content_commands::declared(&cfg.home),
-                        ),
+                        .with_declared(arguments.clone())
+                        .build(&cfg.tools.rows),
                 )
             })
         },
@@ -482,6 +481,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         published: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
     });
     clock.step("dispatch");
+
+    // Read before any turn, so a forwarding row renders from its function, greeted or not.
+    dispatch.catalog().await;
+    clock.step("declared");
 
     // Before any turn: a run that died inside a tool leaves a call no request
     // can carry, and the answer is a row.
