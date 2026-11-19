@@ -59,6 +59,8 @@ struct Signature {
     required: bool,
     /// The JSON Schema type the annotation named; `None` is no type stated.
     type_of: Option<String>,
+    /// What an array's elements are, when the annotation named one.
+    items: Option<String>,
 }
 
 /// What a published name runs: the function, and the skill that holds it.
@@ -348,7 +350,7 @@ fn argument_of(signature: &Signature) -> Row {
     Row {
         name: signature.name.clone(),
         kind: signature.type_of.clone().unwrap_or_default(),
-        items: None,
+        items: signature.items.clone(),
         required: signature.required,
         positional: None,
         hint: None,
@@ -485,6 +487,7 @@ fn signature_of(reply: &Value, function: &str) -> Result<Vec<Signature>, String>
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 type_of: row.get("type").and_then(Value::as_str).map(str::to_string),
+                items: row.get("items").and_then(Value::as_str).map(str::to_string),
             })
         })
         .collect())

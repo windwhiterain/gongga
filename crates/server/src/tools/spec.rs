@@ -192,10 +192,7 @@ impl ToolSpec {
                     name: given.name.clone(),
                     // Empty is the function naming no type, which is an untyped argument.
                     kind: given.kind.clone(),
-                    items: given
-                        .items
-                        .clone()
-                        .or_else(|| said.and_then(|said| said.items.clone())),
+                    items: given.items.clone(),
                     required: given.required,
                     positional: said.and_then(|said| said.positional),
                     hint: said.and_then(|said| said.hint.clone()),
