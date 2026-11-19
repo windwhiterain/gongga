@@ -171,9 +171,9 @@ impl ToolSpec {
     /// # Invariant
     ///
     /// The function names its arguments, kinds them and says which are required; the row
-    /// adds only what the generated schema cannot say -- a kind the function left out, a
-    /// sentence, a hint, a place on an operator's line. A name the function does not take is
-    /// dropped, and a kind the row restates differently loses.
+    /// adds only what a signature cannot say -- a sentence, a hint, a place on an operator's
+    /// line. A name the function does not take is dropped, and a kind the row states is
+    /// ignored: one statement, or none.
     pub fn from_declared(self, declared: &[Argument]) -> Self {
         let parameters = declared
             .iter()
@@ -190,10 +190,8 @@ impl ToolSpec {
                 }
                 Argument {
                     name: given.name.clone(),
-                    kind: match given.kind.is_empty() {
-                        false => given.kind.clone(),
-                        true => said.map(|said| said.kind.clone()).unwrap_or_else(string_type),
-                    },
+                    // Empty is the function naming no type, which is an untyped argument.
+                    kind: given.kind.clone(),
                     items: given
                         .items
                         .clone()
@@ -224,8 +222,9 @@ impl ToolSpec {
         for argument in &self.parameters {
             let kind = argument.kind.as_str();
             let name = &argument.name;
-            // SPEC's spelling, mapped once by `protocol::argtype`.
+            // SPEC's spelling, mapped once. A kind nothing named is a property with no type.
             let mut property = match protocol::argtype::schema_types(kind) {
+                _ if kind.trim().is_empty() => json!({}),
                 Ok(types) if types.len() == 1 => json!({ "type": types[0] }),
                 Ok(types) => json!({ "type": types }),
                 Err(why) => panic!("the row for {name:?} says {why}"),
