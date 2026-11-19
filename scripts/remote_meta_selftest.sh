@@ -168,7 +168,8 @@ print("peer-rules-in-request", "peer rules" in blob)
 print("nothing-sent", "" not in blob)
 INNER
 grep -q 'peer-rules-in-request True' "$work/a.txt"
-ok "the peer's @file reached the request ($(tr '\n' ' ' < "$work/a.txt"))" $?
+verdict=$?
+ok "the peer's @file reached the request ($(tr '\n' ' ' < "$work/a.txt"))" "$verdict"
 
 # 2: a skill in the peer's own checkout is a skill here.
 python - "$home" > "$work/b.txt" 2>&1 <<'INNER'
@@ -192,12 +193,27 @@ blob = json.dumps(rows[-1] if rows else {})
 print("named-remote-read", "peer rules" in blob)
 INNER
 grep -q 'named-remote-read True' "$work/c.txt"
-ok "an explicit remote:// reference is read there ($(cat "$work/c.txt"))" $?
+verdict=$?
+ok "an explicit remote:// reference is read there ($(cat "$work/c.txt"))" "$verdict"
 
 # 4: the image skill prints a peer reference.
 img=$("${cli[@]}" '{"name":"run_skill","args":{"session":"p","id":"image","cmd":{"name":"show","args":{"paths":["shot.png"]}}}}' 2>&1)
 printf '%s\n' "$img" > "$work/img.json"
 [[ "$img" == *"@image(remote://$peer_name/"* ]]; ok "the image skill prints a remote reference" $?
+
+# 4b: a path this machine holds is named as this machine's, whatever session it is asked
+# in. Naming the peer for a clipboard's own file is a reference nothing can read there.
+printf %s "$png" | base64 -d > "$work/skill-local.png"
+localmsg=$(python - "$work/skill-local.png" <<'INNER'
+import json, os, sys
+print(json.dumps({"name": "run_skill", "args": {
+    "session": "p", "id": "image",
+    "cmd": {"name": "show", "args": {"paths": [os.path.abspath(sys.argv[1])]}}}}))
+INNER
+)
+localref=$("${cli[@]}" "$localmsg" 2>&1)
+printf '%s\n' "$localref" > "$work/skill-local.json"
+[[ "$localref" == *"@image(remote://local/"* ]]; ok "the image skill names this machine for the path it holds" $?
 
 # 5: that reference, written into a message, is a picture the request carries: the
 # bytes came off the peer, and no local file of that name is involved.
@@ -226,7 +242,8 @@ print("picture-path", (kept or {}).get("images", [{}])[0].get("path", ""))
 INNER
 both() { local a=1 b=1; grep -q "$1" "$3" && a=0; grep -q "$2" "$3" && b=0; [[ $a == 0 && $b == 0 ]]; }
 both 'image-part-in-request True' 'picture-copied True' "$work/d.txt"
-ok "a peer picture is attached to the request ($(tr '\n' ' ' < "$work/d.txt"))" $?
+verdict=$?
+ok "a peer picture is attached to the request ($(tr '\n' ' ' < "$work/d.txt"))" "$verdict"
 
 # 6: the clipboard's own picture, in a session working on a peer. The TUI writes it as
 # `@image(remote://local/<path>)` -- the machine stated -- and the server must read it
@@ -261,7 +278,8 @@ print("picture-copied", bool(kept and kept.get("images")))
 print("picture-path", (kept or {}).get("images", [{}])[0].get("path", ""))
 INNER
 both 'image-part-in-request True' 'picture-copied True' "$work/e.txt"
-ok "a picture this machine holds reaches the request ($(tr '\n' ' ' < "$work/e.txt"))" $?
+verdict=$?
+ok "a picture this machine holds reaches the request ($(tr '\n' ' ' < "$work/e.txt"))" "$verdict"
 "${cli[@]}" '{"name":"exec","args":{"session":"p","bin":"bash","id":"bash/clean","args":["-lc","rm -rf \"$HOME/'"$tag"'\""],"wait":20000}}' >/dev/null 2>&1
 elapsed=$(($(date +%s) - started))
 if [[ $fails == 0 ]]; then printf 'PASS · %ss · %s\n' "$elapsed" "$(git -C "$root" rev-parse --short HEAD)"
