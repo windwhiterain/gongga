@@ -611,12 +611,21 @@ impl ToolRegistry {
     /// or one whose setting is missing, is not carried and the reason is kept in
     /// [`Self::problems`]: a tool that vanished quietly is a model calling what is not
     /// there.
-    pub fn build(mut self, rows: &std::collections::BTreeMap<String, spec::ToolSpec>) -> Self {
+    pub fn build(
+        mut self,
+        rows: &std::collections::BTreeMap<String, spec::ToolSpec>,
+        declared: &std::collections::BTreeMap<String, Vec<spec::Argument>>,
+    ) -> Self {
         for (name, row) in rows {
-            match self.command(row) {
+            // A declared function names its arguments; a row this build answers states them.
+            let row = match declared.get(&row.cmd) {
+                Some(given) => row.clone().from_declared(given),
+                None => row.clone(),
+            };
+            match self.command(&row) {
                 Ok(work) => self
                     .tools
-                    .push(Arc::new(Specd::new(name.clone(), row.clone(), work))),
+                    .push(Arc::new(Specd::new(name.clone(), row, work))),
                 Err(why) => tracing::warn!(
                     row = %name,
                     "`[tool.{name}]` is not carried: {why}"
@@ -842,6 +851,10 @@ pub(crate) fn spelled_values(tool: &dyn Tool, mut args: Value) -> Value {
         let Ok(spelled) = serde_json::from_str::<Value>(text) else {
             continue;
         };
+        // A text that spells a string is the text itself: quoting is not a value.
+        if kind_word(&spelled) == "string" {
+            continue;
+        }
         if kind_of(property)
             .split(" or ")
             .any(|kind| kind == kind_word(&spelled))

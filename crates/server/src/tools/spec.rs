@@ -166,6 +166,57 @@ pub struct ToolSpec {
 }
 
 impl ToolSpec {
+    /// The row as the declared function it forwards to re-states it.
+    ///
+    /// # Invariant
+    ///
+    /// The function names its arguments, kinds them and says which are required; the row
+    /// adds only what the generated schema cannot say -- a kind the function left out, a
+    /// sentence, a hint, a place on an operator's line. A name the function does not take is
+    /// dropped, and a kind the row restates differently loses.
+    pub fn from_declared(self, declared: &[Argument]) -> Self {
+        let parameters = declared
+            .iter()
+            .map(|given| {
+                let said = self.parameters.iter().find(|row| row.name == given.name);
+                if let Some(said) = said.filter(|said| !given.kind.is_empty() && said.kind != given.kind)
+                {
+                    tracing::warn!(
+                        argument = %given.name,
+                        said = %said.kind,
+                        function = %given.kind,
+                        "this argument is typed by the function it forwards to: the row's kind is ignored"
+                    );
+                }
+                Argument {
+                    name: given.name.clone(),
+                    kind: match given.kind.is_empty() {
+                        false => given.kind.clone(),
+                        true => said.map(|said| said.kind.clone()).unwrap_or_else(string_type),
+                    },
+                    items: given
+                        .items
+                        .clone()
+                        .or_else(|| said.and_then(|said| said.items.clone())),
+                    required: given.required,
+                    positional: said.and_then(|said| said.positional),
+                    hint: said.and_then(|said| said.hint.clone()),
+                    completion: said.map(|said| said.completion).unwrap_or_default(),
+                    sentence: said.and_then(|said| said.sentence.clone()),
+                }
+            })
+            .collect();
+        for row in &self.parameters {
+            if !declared.iter().any(|given| given.name == row.name) {
+                tracing::warn!(
+                    argument = %row.name,
+                    "this argument is not one the function takes: the row's is dropped"
+                );
+            }
+        }
+        Self { parameters, ..self }
+    }
+
     /// The model-facing schema: what the row declares, and nothing else.
     pub fn schema(&self) -> Value {
         let mut properties = serde_json::Map::new();

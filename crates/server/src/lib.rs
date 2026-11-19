@@ -448,7 +448,10 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                             lib.clone(),
                             std::time::Duration::from_millis(crate::config::CALL_TIMEOUT_MS),
                         )
-                        .build(&cfg.tools.rows),
+                        .build(
+                            &cfg.tools.rows,
+                            &crate::content_commands::declared(&cfg.home),
+                        ),
                 )
             })
         },

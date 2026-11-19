@@ -312,6 +312,99 @@ pub(crate) fn package_schema(directory: &Path) -> Result<Value, String> {
     Ok(protocol::argschema::object(properties))
 }
 
+/// The arguments every declared command's function takes, by the command's name.
+///
+/// # Invariant
+///
+/// The function is the one truth: it names its arguments, kinds them and says which are
+/// required, so a tool row of the same name may restate none of that. A kind the function
+/// did not state stays empty, and a row is allowed to supply one there. A declaration that
+/// cannot be read is left out, said once, so a home whose content predates a package still
+/// starts.
+pub fn declared(home: &Path) -> std::collections::BTreeMap<String, Vec<Row>> {
+    let mut table = std::collections::BTreeMap::new();
+    let content = match crate::ship::content(home) {
+        Ok(content) => content,
+        Err(why) => {
+            tracing::warn!(problem = %why, "no declared function's arguments could be read");
+            return table;
+        }
+    };
+    let roots = crate::tools::skill::roots(None);
+    for command in content.commands() {
+        let Some(skill) = roots.find(&command.skill) else {
+            tracing::warn!(
+                command = %command.name,
+                "no skill is {:?} here, so its function's arguments are not read",
+                command.skill
+            );
+            continue;
+        };
+        match arguments_of(skill.dir(), &command.function) {
+            Ok(arguments) => {
+                table.insert(command.name.clone(), arguments);
+            }
+            Err(why) => tracing::warn!(
+                command = %command.name,
+                function = %command.function,
+                "this function's arguments were not read: {why}"
+            ),
+        }
+    }
+    table
+}
+
+/// One function's arguments, as the schema its package generated states them.
+fn arguments_of(directory: &Path, function: &str) -> Result<Vec<Row>, String> {
+    let document = ::skill::schema_of(directory)?;
+    let Some(schema) = document
+        .get("functions")
+        .and_then(Value::as_object)
+        .and_then(|functions| functions.get(function))
+    else {
+        return Err(format!(
+            "the generated schema of {} publishes no {function:?}",
+            directory.display()
+        ));
+    };
+    let required: Vec<String> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return Ok(Vec::new());
+    };
+    Ok(properties
+        .iter()
+        .map(|(name, property)| Row {
+            name: name.clone(),
+            // Empty is the function stating no kind, which only a row may fill in.
+            kind: property
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            items: property
+                .get("items")
+                .and_then(|items| items.get("type"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            required: required.contains(name),
+            positional: None,
+            hint: None,
+            completion: Default::default(),
+            sentence: None,
+        })
+        .collect())
+}
+
 impl PackageFile {
     fn of(dir: &Path) -> Self {
         let path = dir.join("__init__.py");
@@ -373,8 +466,10 @@ fn spec_of(manifest: &Manifest, row: Option<&ToolSpec>) -> CommandSpec {
         .map(|argument| {
             let said = row.and_then(|row| argued(row, &argument.name));
             ArgSpec {
-                type_of: said
-                    .map(|said| said.kind.clone())
+                type_of: argument
+                    .type_of
+                    .clone()
+                    .or_else(|| said.map(|said| said.kind.clone()))
                     .unwrap_or_else(|| "str".to_string()),
                 name: argument.name.clone(),
                 description: said
