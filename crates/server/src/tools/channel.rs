@@ -118,6 +118,14 @@ pub struct Channels {
     notify: Notifier,
     /// The peers a call may name: this machine's remotes file, followed live.
     remotes: Arc<crate::remotes::Catalog>,
+    /// How long a stop waits on one channel's files before it moves on.
+    ///
+    /// # Invariant
+    ///
+    /// A `cancel` must not hang on a peer that never answers: the server is
+    /// stopping, and a wedged read cannot keep the port and home. Same clock as
+    /// every other peer answer -- see `docs/notes/server-channel.md`.
+    stop_timeout: std::time::Duration,
     /// One connection per peer, kept because a channel is read on every look.
     ///
     /// # Invariant
@@ -168,6 +176,7 @@ impl Channels {
         grammar: HashMap<String, spec::ChannelSpec>,
         notify: Notifier,
         remotes: Arc<crate::remotes::Catalog>,
+        stop_timeout: std::time::Duration,
     ) -> Self {
         Self {
             store,
@@ -176,6 +185,7 @@ impl Channels {
             grammar,
             notify,
             remotes,
+            stop_timeout,
             runners: tokio::sync::Mutex::new(HashMap::new()),
             dialing: std::sync::Mutex::new(HashMap::new()),
             bringing_up: std::sync::Mutex::new(HashMap::new()),
@@ -199,6 +209,7 @@ impl Channels {
             cfg.tools.channels.clone().into_iter().collect(),
             notify,
             crate::remotes::Catalog::load(cfg.endpoint.answer_timeout),
+            cfg.endpoint.answer_timeout,
         )
     }
 
@@ -217,6 +228,7 @@ impl Channels {
             HashMap::new(),
             Arc::new(|_| {}),
             crate::remotes::Catalog::load(cfg.endpoint.answer_timeout),
+            cfg.endpoint.answer_timeout,
         )
     }
 
@@ -1227,6 +1239,9 @@ impl Channels {
             }
         };
         let mut ended = 0;
+        // One clock for the whole stop: a silent peer costs its answer timeout
+        // once, however many rows it owns.
+        let deadline = tokio::time::Instant::now() + self.stop_timeout;
         for row in rows {
             if row.detached {
                 continue;
@@ -1243,12 +1258,22 @@ impl Channels {
                 );
                 continue;
             }
-            match self.place(&row).await {
-                Ok(place) => {
-                    // What it printed until the kill: the notice is a `Result`, and
-                    // an empty one would say nothing about why it stopped.
-                    let printed = place.read_from("out", row.upto).await.unwrap_or_default();
-                    if place.append("in", "kill\n").await.is_ok() {
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if left.is_zero() {
+                tracing::warn!(channel = %row.path, "stop deadline passed; this channel is left for the next start");
+                continue;
+            }
+            // Read and kill share the deadline: a wedged read must not eat the
+            // time meant for the kill.
+            let reached = async {
+                let place = self.place(&row).await?;
+                let printed = place.read_from("out", row.upto).await.unwrap_or_default();
+                let killed = place.append("in", "kill\n").await.is_ok();
+                Ok::<_, String>((printed, killed))
+            };
+            match tokio::time::timeout(left, reached).await {
+                Ok(Ok((printed, killed))) => {
+                    if killed {
                         ended += 1;
                     }
                     // SPEC: killing a channel produces its end notice; the row is gone.
@@ -1265,7 +1290,12 @@ impl Channels {
                         true,
                     );
                 }
-                Err(e) => tracing::warn!(channel = %row.path, "{e}"),
+                Ok(Err(e)) => {
+                    tracing::warn!(channel = %row.path, error = %e, "could not reach this channel; it is left for the next start")
+                }
+                Err(_) => {
+                    tracing::warn!(channel = %row.path, "the stop deadline passed on this channel; it is left for the next start")
+                }
             }
         }
         ended

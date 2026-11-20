@@ -348,3 +348,11 @@ Both functions take the row's wait flag before they speak, and hand it on as
 waiting for this end, so it owes the session a turn, or nobody was, so the notice is
 queued. Neither is ever dropped -- the bytes and the exit are the last thing that
 channel will say, and a session that reads them a turn later has lost nothing.
+
+A stop is bounded. The kill and notice above assume the channel answers, but a
+peer can go silent, and a stop that waits for it holds the port and home open --
+the window is gone and no new server can start. `stop_every` therefore shares one
+deadline across all rows, this home's `[remote] answer_timeout`, and a row that
+misses it is left for the next start's `adopt` rather than blocking the exit. The
+notice keeps its promise for every channel that did answer; a silent one owes no
+bytes, and its row is still there for the successor to say what it ended with.
