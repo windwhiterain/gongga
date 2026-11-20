@@ -198,9 +198,13 @@ impl Space {
                     .flatten()
                     .map(|entry| {
                         let kind = entry.file_type().ok();
+                        // A link to a directory is listed as one: the community bucket
+                        // is junctions, and a skipped junction hides its skills.
+                        let linked_dir =
+                            kind.is_some_and(|kind| kind.is_symlink()) && entry.path().is_dir();
                         DirEntry {
                             name: entry.file_name().to_string_lossy().into_owned(),
-                            is_dir: kind.is_some_and(|kind| kind.is_dir()),
+                            is_dir: linked_dir || kind.is_some_and(|kind| kind.is_dir()),
                             is_file: kind.is_some_and(|kind| kind.is_file()),
                         }
                     })
