@@ -263,15 +263,9 @@ where a skill's program runs.
 
 The session's directory belongs to one machine, and it is the *placement* -- what
 `set_session --cwd` last said -- not where its shell happens to stand: a `cd` moves a
-shell and not a session, so it is not a rewrite of what was already sent, while a move
-is, and a move therefore writes a new prompt row. The old row keeps the old directory,
-which is what "already sent" means.
-
-The session's directory belongs to one machine, and it is the *placement* -- what
-`set_session --cwd` last said -- not where its shell happens to stand: a `cd` moves a
-shell and not a session, so it is not a rewrite of what was already sent, while a move
-is, and a move therefore writes a new prompt row. The old row keeps the old directory,
-which is what "already sent" means.
+shell and not a session. The placement at the first request is what the prompt row
+records; a later move changes where tools run but not the bytes already sent, so no new
+prompt row follows it.
 
 A path is joined the way the reading machine joins paths, so a peer's `C:\Users\...`
 and a Linux `/home/...` each stay what they are. A reference that cannot be read is

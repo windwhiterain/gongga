@@ -632,13 +632,17 @@ written once and read from the store after that. A template edit, a rewritten
 whole transcript behind it. What the references say is still read every step, but a
 change is a row appended to the transcript, never a head that moves.
 
-**The one exception is a move.** A prompt row records the directory and the peer it was
-written for (`Prompt::cwd`, `Prompt::remote`), so the next step can tell that the session
-is somewhere else. Then — and only then — a new row is appended: the card would otherwise
-name a machine the session is not on, and the index would lack the `remote` skill that
-the new arrangement is indexed with. The old row stays as it was; nothing already sent is
-rewritten. A row written before `remote` existed reads as `None`, which is a session on a
-peer getting its card once, on purpose.
+**There is no exception.** `Prompt::cwd`, `Prompt::remote` and `Prompt::model` record the
+facts of the first request, but nothing compares them: a move or a model swap is a
+setting, not context. The card may name a machine or model the session has since left,
+and the index may lack a skill the new arrangement would bring in. That is the price of
+a byte prefix that never moves, and it is visible to the reader in `messages_between`.
+`Store::prompt` reads slot 1, the fixed first row, so what was sent first is what every
+later request sends -- no search among rows. The tool schema sits in slot 2 and the first
+transcript row in slot 3. A version 5 session, whose head followed its opening line, is
+moved into these slots by the 5-to-6 migrator before the store opens it; there is no read
+path that walks. A row written before `remote` or `model` existed reads as `None`, which
+is a record of a first request that did not carry that fact.
 
 **The index.** The order is `prefix_cache`'s, which is a permutation of what it was
 given: no entry is invented for a reference that could not be read, and the spellings

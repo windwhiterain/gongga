@@ -38,20 +38,13 @@ pub struct Prompt {
     /// The spellings `index` carries, so a mention of one stays literal.
     #[serde(default)]
     pub rooted: Vec<String>,
-    /// The directory the shell stood in, so a move is noticed.
+    /// The directory this row's index was read from; the cache owner names it.
     #[serde(default)]
     pub cwd: String,
-    /// The model the card was stamped for, so a swap shows: a stale name lies.
+    /// The model of the first request. A record, like `cwd`, never compared.
     #[serde(default)]
     pub model: Option<String>,
-    /// The peer that directory was on, when it was one.
-    ///
-    /// # Invariant
-    ///
-    /// A record, like `cwd`, and read for the same thing: `--remote none` in the
-    /// directory the session left is still a move, and the card that says "on remote
-    /// `x`" must not survive it. A row written before this field existed has `None`,
-    /// which is a session on a peer getting its card rewritten once.
+    /// The peer of the first request, when there was one. A record, never compared.
     #[serde(default)]
     pub remote: Option<String>,
 }
@@ -61,29 +54,23 @@ pub struct Prompt {
 /// # Invariant
 ///
 /// A stored row, like [`Prompt`]: what is sent is the context, and the context is
-/// append-only, so a request reads this row instead of assembling a tool list. A
-/// stamp is appended only when one of the facts below differs from the newest
-/// row's, so the head moves at a stored change and nowhere else.
+/// append-only, so a request reads this row instead of assembling a tool list. It
+/// is written once; the facts below are a record of the first request, never a
+/// reason to write again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSet {
     /// The block exactly as it goes on the wire, in this session's face.
     pub tools: serde_json::Value,
-    /// The model it was stamped for: the roster's built-in tools follow the model.
+    /// The model of the first request: a record, never compared.
     #[serde(default)]
     pub model: Option<String>,
-    /// The peer it was stamped for: a move changes which machine a schema names.
+    /// The peer of the first request: a record, never compared.
     #[serde(default)]
     pub remote: Option<String>,
-    /// The build that rendered it.
-    ///
-    /// # Invariant
-    ///
-    /// A build may rename or reshape a tool, so a session that outlived it must not
-    /// keep advertising the old schema: the model would call a tool this server no
-    /// longer has. Comparing it re-stamps once per build.
+    /// The build that rendered it: a record, never compared.
     #[serde(default)]
     pub build: String,
-    /// Which stored change wrote this row. Read by a person, never compared.
+    /// Which stored change wrote this row: `first`, read by a person only.
     #[serde(default)]
     pub event: String,
 }
@@ -1646,7 +1633,8 @@ impl Store {
                  (session_id, seq, kind, content, display, call_id, turn, step, created_at)
              VALUES (
                 ?1,
-                (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1),
+                -- Slots 1 and 2 are reserved for the head; the first transcript row is 3.
+                (SELECT MAX(COALESCE(MAX(seq), 2), 2) + 1 FROM messages WHERE session_id = ?1),
                 ?2,
                 ?3,
                 ?4,
@@ -1887,42 +1875,74 @@ impl Store {
         Ok(())
     }
 
-    /// The newest stored prompt, or nothing before a session's first request.
+    /// The prompt in slot 1, the fixed first row of the context.
+    ///
+    /// # Invariant
+    ///
+    /// Read by position, never by kind: slot 1 is the head. Version 5 sessions
+    /// were moved there by the 5-to-6 migrator before this build opened them, so
+    /// no walk is needed and storage order is send order.
     pub fn prompt(&self, session_id: i64) -> anyhow::Result<Option<Prompt>> {
-        let row = {
-            let conn = self.lock();
-            conn.query_row(
-                "SELECT display FROM messages \
-                  WHERE session_id = ?1 AND kind = 'system' ORDER BY seq DESC LIMIT 1",
+        let conn = self.lock();
+        let display = conn
+            .query_row(
+                "SELECT display FROM messages WHERE session_id = ?1 AND seq = 1 AND kind = 'system'",
                 params![session_id],
                 |r| r.get::<_, String>(0),
             )
-            .optional()?
-        };
-        let Some(content) = row else { return Ok(None) };
-        Ok(serde_json::from_str::<Prompt>(&content).ok())
+            .optional()?;
+        Ok(display.and_then(|d| serde_json::from_str::<Prompt>(&d).ok()))
     }
 
-    /// Stores the prompt the next request is built from, bytes and all.
+    /// Appends a row at an explicit slot. The head uses slots 1 and 2, written
+    /// after the user's line at 3.
+    fn append_head_conn(
+        conn: &rusqlite::Connection,
+        session_id: i64,
+        seq: i64,
+        kind: Kind,
+        content: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO messages
+                 (session_id, seq, kind, content, display, call_id, turn, step, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, ?6)",
+            params![
+                session_id,
+                seq,
+                kind.as_str(),
+                wire_item(kind, content).map(|item| item.to_string()),
+                serde_json::to_string(content)?,
+                now_millis()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Stores the prompt in slot 1, the first byte of the context.
     pub fn append_prompt(&self, session_id: i64, prompt: &Prompt) -> anyhow::Result<i64> {
         let payload = serde_json::to_value(prompt)?;
-        self.append_message(session_id, Kind::System, &payload)
+        let conn = self.lock();
+        Self::append_head_conn(&conn, session_id, 1, Kind::System, &payload)?;
+        Ok(1)
     }
 
-    /// The newest stored tool set, or nothing before a session's first stamp.
+    /// The tool set in slot 2, the fixed second row of the context.
+    ///
+    /// # Invariant
+    ///
+    /// Read by position, never by kind: slot 2 is the head. Version 5 sessions
+    /// were moved there by the 5-to-6 migrator before this build opened them.
     pub fn tool_set(&self, session_id: i64) -> anyhow::Result<Option<ToolSet>> {
-        let row = {
-            let conn = self.lock();
-            conn.query_row(
-                "SELECT display FROM messages \
-                  WHERE session_id = ?1 AND kind = 'tools' ORDER BY seq ASC LIMIT 1",
+        let conn = self.lock();
+        let display = conn
+            .query_row(
+                "SELECT display FROM messages WHERE session_id = ?1 AND seq = 2 AND kind = 'tools'",
                 params![session_id],
                 |r| r.get::<_, String>(0),
             )
-            .optional()?
-        };
-        let Some(display) = row else { return Ok(None) };
-        Ok(serde_json::from_str::<ToolSet>(&display).ok())
+            .optional()?;
+        Ok(display.and_then(|d| serde_json::from_str::<ToolSet>(&d).ok()))
     }
 
     /// Writes the head once. Context has two operations, append and cut, and a schema
@@ -1934,10 +1954,11 @@ impl Store {
     /// this an error, so no code path -- a setting, a skill, a tool, a command --
     /// can express appending another schema. Settings are not context.
     pub fn write_head_once(&self, session_id: i64, tool_set: &ToolSet) -> anyhow::Result<()> {
+        // Slot 2 is the head; the migrator moved version 5 sessions there.
         let already = {
             let conn = self.lock();
             conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ?1 AND kind = 'tools')",
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id = ?1 AND seq = 2 AND kind = 'tools')",
                 params![session_id],
                 |r| r.get::<_, bool>(0),
             )?
@@ -1948,7 +1969,8 @@ impl Store {
             );
         }
         let payload = serde_json::to_value(tool_set)?;
-        self.append_message(session_id, Kind::Tools, &payload)?;
+        let conn = self.lock();
+        Self::append_head_conn(&conn, session_id, 2, Kind::Tools, &payload)?;
         Ok(())
     }
 

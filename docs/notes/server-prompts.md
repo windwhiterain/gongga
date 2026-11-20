@@ -266,10 +266,9 @@ it is told only there: a local session is not, because the bytes it has already 
 are the ones it keeps.
 
 Which one is chosen is the machine the shells are on (`Prompt.remote`, read from
-`Shells::remote_name`) and whether a directory is known, and the row records the machine.
-That record is why `--remote none` in the directory the session left is a move:
-`Prompt::rewritten_by` compares the texts, but the *choice* of template is decided by a
-value that has to be recorded to be compared.
+`Shells::remote_name`) and whether a directory is known. Both are decided at the first
+request and recorded in the row; no later comparison changes the choice or the bytes.
+The record is for the reader, not a trigger: the head is written once.
 
 ## substitute
 
@@ -335,10 +334,10 @@ the turn needed it is what a skill exists to avoid. It is why the machine's rule
 a skill, and why the directory's rules -- which are about the work in that directory, and
 which every turn there is done under -- are read from that directory and not from home.
 
-What stays is where the reads sit: the templates are re-read whenever the file's stamp
-moves, and `prompt_in_force` renders them at every step and stores a new row only when
-the text differs. So a template edit is in the next request rather than the next turn,
-and a step whose prose did not change writes nothing.
+What stays is where the reads sit: the templates are read once, on the first request,
+and `prompt_in_force` stores the rendered bytes in one row that every later request
+reads back. A template edit does not reach a session already under way: the head is a
+cached byte prefix, and moving it would re-bill the whole transcript behind it.
 
 ## where the prose comes from, and why not from here
 

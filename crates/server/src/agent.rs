@@ -600,13 +600,8 @@ impl Agent {
             Some(path) => crate::session::stated(path),
             None => crate::session::stated(cwd),
         };
-        // Stamped once, and again only on a move: the row records the directory
-        // and the peer it was written for.
-        if let Some(kept) = self.store.prompt(id)?
-            && kept.cwd == here
-            && kept.remote.as_deref() == remote
-            && kept.model.as_deref() == Some(model)
-        {
+        // The first row is the head: storage order and send order are the same one.
+        if let Some(kept) = self.store.prompt(id)? {
             return Ok(kept);
         }
         let prompts = crate::prompts::shared();
@@ -657,7 +652,7 @@ impl Agent {
         Ok(prompt)
     }
 
-    /// The stored tool set this session sends, stamped when a fact has moved.
+    /// The stored tool set this session sends, written once and only read after.
     ///
     /// # Invariant
     ///

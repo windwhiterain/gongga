@@ -123,13 +123,13 @@ Workspace := {
 }
 SessionConfig := { # sticky
   model_config: ModelConfig,
-  workspace: Workspace,
-  keep_alive: bool, # if auto send message to interrup waiting when approaching the cache alive deadline.
-  live_compact: LiveCompact,
+  workspace: Workspace = default(),
+  keep_alive: bool = false, # if auto send message to interrup waiting when approaching the cache alive deadline.
+  live_compact: LiveCompact = default(),
 }
 LiveCompact := { # sticky; the opt-in is a switch, never a token count
-  enabled: bool = agent_default(), # unset follows the home's [agent] live_compact_enabled
-  interval_tokens: int = agent_default(), # the threshold only; [agent] live_compact_interval_tokens
+  enabled: bool = default(), # unset follows the home's [agent] live_compact_enabled
+  interval_tokens: int = default(), # the threshold only; [agent] live_compact_interval_tokens
 }
 fn new_session(id: Session, config: SessionConfig)
 fn set_session(id: Session, config_delta: SessionConfig{..})
@@ -300,17 +300,22 @@ use struct update type will also update the sticky value with corresponding type
 
 
 ## Client Cmd
-all named argument's name can be ommited via argument order.
-- client:
-  - `set_sticky --type <type> --value <value>`:
-  - `del_sticky --type <type>`
-  - `set_render [--block_size <n>](initial: 8) [--box_edge <n>](initial: 2)`:
-    - `block_size`: max line count of non-output block, auto scroll.
-    - `box_edge`: columns at each side of an opened block where the wheel scrolls the
-      events instead of the block; the block is drawn there like anywhere else.
-  - `set_render_session --show <bool> --session <session>(stikcy)`
-  - `connect_server [--ip <ip>](default: localhost) --port <port>`
-  - `serve --port <port> [--home <home>](default: "~/.gongga")`
+```python
+def set_sticky(type: type, value)
+def del_sticky(type: type)
+RenderConfig := {
+  block_size: int = 8, # max line count of non-output block, auto scroll.
+  box_edge: int = 2, # columns at each side of an opened block where the wheel scrolls the
+}
+def set_render(config: RenderConfig[..])
+ClientSessionConfig := {
+  client: bool = default(), # if create in client, defailt true, else false
+  show: bool = default(), # if create in client, default true, else false.
+}
+def set_client_session(config: ClientSessionConfig[..], session: Session)
+def connect_server(port: Port, ip: IP = localhost)
+def serve(port: Port, home: path = "~/.gongga")
+```
 
 ## Git Managed Config
 auto choose the latest commit within same protocol, personal(local) change rebase on official(remote).
@@ -323,6 +328,11 @@ Bundle or binaries placed in the same directory should:
 
 ## Skill
 provider uv python package, API can be called by harness cmd or python import.
+
+searching directory:
+- <cwd>/.agents/skills/
+- ~/.agents/skills/
+- ~/<GONGGA_HOME>/ship/skills/
 
 ## Skill: Self Control
 do whatever user can do to the server.

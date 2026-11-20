@@ -249,16 +249,36 @@ fail every request, and may equally **silently ignore it**:
 |---|---|---|
 | `web_search` | `deepseek-v4-pro` | real searches; answers with `web_search_call` items |
 | `web_search` | `deepseek-flash` | ignored, HTTP 200, no `*_call` item, model says it has no web access |
+| `deepseek_web_search`, `deepseek_read_url` | `deepseek-flash` | real searches since 2026-11-13; `web_search_call` items with `kind=deep_search`, `action.sources` and `page` |
 
 The second row is the dangerous one: nothing errors, the transcript looks
 healthy, and the model simply answers from memory. So declaring a capability is
-a claim that must be verified against the model it is declared for, not against
-the provider. A roster entry asserting what a model cannot do is worse than an
-absent entry, because it produces confidence instead of an error.
+a claim that must be verified against the model **and the tool name** it is
+declared for, not against the provider or an older note about it. A roster entry
+asserting what a model cannot do is worse than an absent entry, because it
+produces confidence instead of an error.
 
 DeepSeek's own Responses guide states the general rule: unsupported parameters
 are silently ignored so that existing clients can connect unmodified. That is a
 compatibility feature for them and a trap for a roster.
+
+## A tool name is a capability, not a provider fact
+
+DeepSeek's 2026-11-13 release put the App's server-side tools on `deepseek-flash`
+across Messages, Responses and Chat Completions, under names of their own:
+`deepseek_web_search` (search, with citations; deep thinking search when
+reasoning is on) and `deepseek_read_url` (fetch a URL in the last user message).
+The older Responses `web_search` remains flash-ignored and Pro-only. Verified
+2026-11-20 against `/v1/responses` with `store: false`: HTTP 200, `web_search_call`
+items carrying `kind`, `action.type`, `action.sources`, `page` and `signature`,
+plus `response.web_search_call.*` beats and `output_text.annotation.added` source
+annotations. Feeding those items back verbatim in `input[]` was accepted, so the
+replay risk recorded in `docs/notes/server-llm.md` does not bite this provider.
+
+Why the note was stale: a capability once measured absent on a model can appear
+later under a different name. The fix is not to trust the old measurement but to
+check the tool name against the provider's current spelling, exactly as the
+verbatim-no-mapping-table rule above already implies.
 
 ## Entry::key
 

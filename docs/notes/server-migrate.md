@@ -41,6 +41,17 @@ shape healing the store already does at every open (`store::migrate`, which also
 renames the columns two builds disagreed about), and a build that reads the column
 still adds it back on its own open.
 
+## an_ordered_rewrite_is_a_versioned_step
+
+The 5-to-6 step moves each session's head into reserved slots: the prompt to
+seq 1, the tool schema to seq 2, the rows they displaced following in order.
+That is a rewrite of rows already sent, not a column heal -- it is order-dependent,
+so it cannot live in `store::migrate`, which runs on every open and must be
+order-free. It drops `context_no_update` for the duration and leaves the server
+to recreate it with `CREATE TRIGGER IF NOT EXISTS` when it opens; a migrator runs
+before that open. Only the head region moves: monitor marks and compact
+checkpoints name seqs far past it, so they keep pointing at the same rows.
+
 ## an_interpreter_is_asked_not_looked_for
 
 `python3` on a Windows PATH can be an execution alias that exits 9009 because the

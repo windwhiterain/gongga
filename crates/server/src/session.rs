@@ -329,9 +329,9 @@ struct SessionInner {
     /// # Invariant
     ///
     /// Not where its shell stands: a `cd` moves a shell and not a session, so this is
-    /// what the prompt's index is read against. Only a move changes it, and a session
-    /// on a remote it has not reached yet has none -- the first connection fills it.
-    /// See `docs/notes/server-meta.md`.
+    /// what the prompt's index was read against when the head was stamped. A later
+    /// move does not rewrite that head. A session on a remote it has not reached yet
+    /// has none -- the first connection fills it. See `docs/notes/server-meta.md`.
     placed: Mutex<Option<PathBuf>>,
     /// The parts of an answer that are still being written.
     ///

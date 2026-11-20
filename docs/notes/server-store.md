@@ -14,11 +14,14 @@ if that stops being true the fix is `spawn_blocking`, not a redesign.
 
 ## Prompt -- written once, never compared
 
-The head of a request is `instructions`, `index` and `tail`, and it is stamped with the
-session's first prompt row and read from the store after that. There is no comparison,
-because there is nothing to compare it against: a second rendering would be a second set
-of bytes for a prefix the provider has already cached, and everything behind it would be
-billed again.
+The head of a request is `instructions`, `index` and `tail`, and it is stamped once and
+read from the store after that. The prompt lives in slot 1 and the tool schema in slot 2;
+the first transcript row is slot 3, so storage order is send order and neither read nor
+send searches for a row -- each takes the fixed slot. There is no comparison, because
+there is nothing to compare it against: a second rendering would be a second set of
+bytes for a prefix the provider has already cached, and everything behind it would be
+billed again. A version 5 session, whose head sat after its opening line, is moved into
+these slots by the 5-to-6 migrator before the store opens it; the read never walks.
 
 This replaced `Prompt::rewritten_by`, which compared the three wire texts at every step
 and appended a row whenever they differed. The rule was right about `cwd` -- a shell
@@ -53,9 +56,9 @@ can be forgotten by the next caller; a trigger cannot.
 ## Store::write_head_once
 
 The tool head is context too, and it is written once. `write_head_once` appends the
-`tools` row only if the session has none, and refuses otherwise -- so "append another
-schema" is not an operation the store has. `Agent::tool_set_in_force` reads the
-stored head and returns it; only a session with no head stamps one. See
+`tools` row at slot 2 only if the session has none, and refuses otherwise -- so "append
+another schema" is not an operation the store has. `Agent::tool_set_in_force` reads
+slot 2 and returns it; only a session with no head stamps one. See
 `docs/notes/server-tools.md`.
 
 ## interrupted_call
@@ -496,7 +499,7 @@ kept nowhere, so the database could not say what the model had actually been tol
 `Prompt` is that missing piece: the rendered instructions with the project's rules
 already joined, the index behind them, the start card, and the directory the rules
 were read from. It is written as a `system` row, and `Store::prompt` returns the
-newest one.
+first one, so storage order and send order are the same.
 
 `system` is excluded from history the way `notice` is -- it *is* the prompt, and
 appending it as a row inside the transcript would send the instructions twice -- but
