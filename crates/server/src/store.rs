@@ -199,6 +199,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- generation its last dream was spawned for; on a dream, the generation it
     -- was spawned for. NULL is a row that has never dreamed.
     dreamed_checkpoint_id INTEGER,
+    -- When a heartbeat prompted this session to hand off. Non-NULL mutes every
+    -- later heartbeat until a genuine user prompt arrives. Only `send_message`
+    -- from a client clears it: the handoff's own note arrives from a tool.
+    keepalive_handoff_at INTEGER,
     -- The session this row is an archive of, by id: its transcript, copied row for
     -- row by the `handoff` skill. NULL is an ordinary session. An archive is told its
     -- size and never asked to hand off -- it holds the transcript, so a hand-off of it
@@ -574,6 +578,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         (
             "dreamed_checkpoint_id",
             "ALTER TABLE sessions ADD COLUMN dreamed_checkpoint_id INTEGER",
+        ),
+        (
+            "keepalive_handoff_at",
+            "ALTER TABLE sessions ADD COLUMN keepalive_handoff_at INTEGER",
         ),
         (
             "mentor_of",
@@ -1139,6 +1147,43 @@ impl Store {
             "UPDATE sessions SET dreamed_checkpoint_id = NULL
               WHERE id = ?1 AND dreamed_checkpoint_id = ?2",
             params![id, generation],
+        )?;
+        Ok(())
+    }
+
+    /// When a heartbeat asked this session to hand off, if one did.
+    pub fn keepalive_handoff_at(&self, id: i64) -> anyhow::Result<Option<i64>> {
+        let at = self
+            .lock()
+            .query_row(
+                "SELECT keepalive_handoff_at FROM sessions WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(at)
+    }
+
+    /// Mutes the heartbeat until a client sends this session a new user prompt.
+    ///
+    /// # Invariant
+    ///
+    /// Written before the handoff notice is delivered, so the turn it starts
+    /// cannot re-arm the chain it just ended. See `docs/notes/server-dream.md`.
+    pub fn mark_keepalive_handoff(&self, id: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET keepalive_handoff_at = ?2 WHERE id = ?1",
+            params![id, now_millis()],
+        )?;
+        Ok(())
+    }
+
+    /// Clears the mute for a genuine user prompt. A tool's handoff note does not.
+    pub fn clear_keepalive_handoff(&self, id: i64) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET keepalive_handoff_at = NULL WHERE id = ?1",
+            params![id],
         )?;
         Ok(())
     }

@@ -464,8 +464,9 @@ too. `rows` and `last_seq` come back so the command can say how much moved.
 A `Some(Dream)` parameter makes the copy a disposable dream: `cache_keepalive` off,
 the `live_compact` opt-in explicitly off, mode `work`, and `dream_of` /
 `dreamed_checkpoint_id` written on the copy. A plain clone (`None`) copies
-`cache_keepalive` and `mode` verbatim and leaves the dream columns NULL.
-`server-dream.md` has the rest.
+`cache_keepalive` and `mode` verbatim and leaves the dream columns NULL. Neither
+kind copies `keepalive_handoff_at`: the mute belongs to a transcript lineage, not
+to a name, so every clone starts unmuted. `server-dream.md` has the rest.
 
 ## Store::set_usage_for_generation
 

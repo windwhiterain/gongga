@@ -203,15 +203,21 @@ for the first user message to a empty session, find all meta references recursiv
 - the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
 
 ## Dreaming
-rides on keep_alive: the first fire of each checkpoint generation clones the session
-into `<session>/dream/<generation>`, tells the clone to organize documents only, and
-discards the clone when its turn truly ends.
+rides on keep_alive, one checkpoint generation at a time: the first fire clones the
+session into `<session>/dream/<generation>`, tells the clone to organize documents only,
+and discards the clone when its turn truly ends. The second fire of that same generation
+asks the session to hand off instead; every later fire is mute until a new user prompt.
 - the clone copies the transcript verbatim and re-renders nothing, so its first request
   carries the session's whole prefix: the dream keeps the cache warm in place of the
   empty time notice.
 - the clone's keep_alive is off and it opens no checkpoint; a dream never dreams. one
-  dream per generation, at most one live dream per session; a fire that does not dream
-  sends the time notice as before.
+  dream per generation, at most one live dream per session. A fire that cannot dream
+  because another one is still live, or because the clone failed, keeps the time notice;
+  a fire after the generation is marked dreamed asks for handoff.
+- the mute is written before the handoff notice is sent, so its own turn cannot re-arm
+  the chain; the notice is an ordinary message asking the agent to run `handoff`. The
+  skill's own note arrives from a tool and does not unmute; only `send_message` from a
+  client -- a new user prompt -- does.
 - a true end is Done, Failed, or an interrupt; a cancel that restart will resume is not
   an end -- the dream resumes with the session and is discarded only when it finishes.
 - the dream writes workspace documents and nothing else; the session is disposable, the

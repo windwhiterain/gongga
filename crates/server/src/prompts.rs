@@ -118,6 +118,14 @@ pub const LOST_NOTICES: &str = "lost_notices";
 /// What asks a session to fold its context: the live compaction interval.
 pub const LIVE_COMPACT_NOTICE: &str = "live_compact_notice";
 
+/// What a second keep_alive fire of one checkpoint asks a session to do.
+///
+/// # Invariant
+///
+/// Deliberately not in [`REQUIRED`]: a home whose content predates this name
+/// still sends the fallback notice rather than refusing to start over prose.
+pub const KEEPALIVE_HANDOFF_NOTICE: &str = "keepalive_handoff_notice";
+
 /// What an archive is told when its request gets big: the measurement, no request.
 ///
 /// # Invariant

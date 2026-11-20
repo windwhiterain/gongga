@@ -15,6 +15,13 @@ clone is discarded when its turn truly ends. The files it writes are the memory.
   interrupted by cancel/restart rides the existing recovery semantics and is
   discarded only when its turn truly ends. The earlier "restart discards
   unfinished dreams" clause is WITHDRAWN.
+- 2026-11-20: the heartbeat was observed never to fire. Fixes: read tuning in
+  the turn epilogue, use the session's model for the TTL, arm on
+  `set_session --keep_alive true`, and re-arm idle sessions at startup.
+- 2026-11-20: **same generation, two stages**. First fire dreams; second fire
+  asks for `handoff`; after that mute every heartbeat until a new user prompt.
+  The handoff's own note arrives from a tool and does not unmute -- only a
+  client-origin `send_message` does.
 - 2026-11-15: this session plans and reviews; subagents probe and implement.
 - 2026-11-15: "批准" — SPEC.md amendment (T5) and the L3 script (T4) are both
   approved. SPEC text finalized by the planner, sent to impl verbatim.

@@ -680,28 +680,28 @@ argv, so `--session '#monitor'` had to be quoted or written `--session=#monitor`
 
 ## a session's own heartbeat
 
-`spawn_turn` reads `Tuning::cache_keepalive` before `run_turn` starts. A session
-that never asked for it starts no timer. One that did gets, at the end of every
-turn, a timer of `window * (100 - margin_pct) / 100`, where `window` is its own
-tier's declared lifetime. When the timer fires it delivers
+A session whose `Tuning::cache_keepalive` is on gets a timer of
+`window * (100 - margin_pct) / 100`, where `window` comes from that session's own
+model and tier. The epilogue reads tuning *after* the turn, so enabling
+`--keep_alive` mid-turn takes effect at that turn's end; `set_session` arms an
+already-idle session at once. A timer that fires without dreaming delivers
 `(time notice: 2026-11-04 09:57 UTC)` -- `clock::now()`, the same spelling the
-prompt carries -- through the ordinary `deliver` / `begin_turn` path. The notice
-is a real message at the tail of the transcript, where a new item does not
-disturb the prefix.
+prompt carries -- through the ordinary `deliver` / `begin_turn` path.
 
 Every turn ends by scheduling the next notice, including a turn that was itself
-a notice, so the chain has no last one. Two guards keep the timers from piling
-up: the timer checks `last_usage_at` against the turn's end, so a request during
-the wait has already refreshed the prefix and the older timer retires; and it
-checks the session's busy flag, so a running turn owns the next timer. A session
-set to `cache_keepalive false` stops the chain at its next turn end.
+a notice, so the chain has no last one. The timer retires itself when a request
+during the wait refreshed the prefix (`last_usage_at`), when the session became
+busy, when the tuning turned the heartbeat off, when the checkpoint generation
+changed, or when the mute state changed. A busy session is never armed directly:
+its own epilogue owns the next timer. A session set to `cache_keepalive false`
+stops the chain without waiting for a turn to end.
 
-The timer is a task, not a process. A server that shuts down takes it with it;
-nothing survives the turn to be discovered later.
+The timer is a task, not a process, so a stop takes it with it. The switch is a
+row, though: the next start calls `arm_idle_keepalives` and gives idle sessions
+with the switch still on a fresh timer.
 
-A fire may dream instead of notifying: the first fire of a checkpoint generation
-clones the session into a disposable dream that organizes documents, and the chain
-is re-armed by the fire itself. `server-dream.md` has the whole mechanism.
+A fire may dream instead of notifying, and the second fire of one generation asks
+for handoff; both are in `server-dream.md`.
 
 ## How an argument is spelled, and what a `path` means
 
