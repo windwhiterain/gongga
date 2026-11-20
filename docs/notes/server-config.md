@@ -349,13 +349,15 @@ at 50) sets where in the tier's window the next heartbeat fires:
 `window * (100 - pct) / 100`.
 
 Whether a session has a heartbeat at all is the session's own state, not a
-machine setting: `set_session <name> --cache_keepalive true` turns on a periodic
-`(time notice: ...)` message; `false` (the default) turns it off. The tier is
-likewise the session's: `set_session <name> --cache_tier <name>` fixes the tier
-every request sends, and omitting it takes the shortest tier the model declares.
-Both live in the `sessions` row, so a restart restores them. With no declared
-tiers the window is zero and the heartbeat is inert. See
-`docs/notes/server-commands.md`.
+machine setting: `set_session <name> --cache_keepalive true` turns it on; `false`
+(the default) turns it off. A fire of a new checkpoint first dreams, the second
+fire of that checkpoint asks for handoff, and no more arrive until a new user
+prompt; a fire with no generation stage to advance sends `(time notice: ...)`.
+The tier is likewise the session's: `set_session <name> --cache_tier <name>` fixes
+the tier every request sends, and omitting it takes the shortest tier the model
+declares. Both live in the `sessions` row, so a restart restores them and re-arms
+idle sessions. With no declared tiers the window is zero and the heartbeat is
+inert. See `docs/notes/server-commands.md` and `server-dream.md`.
 
 ## What is followed, and what placed the process
 

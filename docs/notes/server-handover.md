@@ -60,6 +60,11 @@ note's references with `meta::roots` and puts them in the index. The continuatio
 request is an empty session's first request, which is the case SPEC's `.agents`
 optimization is written for.
 
+The command's origin is still a tool, not a client. That is what keeps a
+heartbeat-prompted handoff mute: the note is a message, but it is not a new user
+prompt, so `send_message` leaves `keepalive_handoff_at` alone. See
+`server-dream.md`.
+
 `handoff` sends it rather than inserting the row itself, and the reason is ordering: it
 runs *inside* the call it must keep, so a row inserted here would sit between that
 call and its result, which is a transcript no provider accepts. `send_message` from a

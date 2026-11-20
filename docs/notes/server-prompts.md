@@ -189,7 +189,7 @@ protocol bump, not a prose change -- and a template nobody renders costs nothing
 
 ## the notices the server injects
 
-Everything the server says to a session without being asked is one of these seventeen
+Everything the server says to a session without being asked is one of these
 templates, and none of them is a sentence in the binary:
 
 - exploring, from `explore.rs`: `explore_notice`, `work_notice` (the two shapes of one
@@ -202,6 +202,9 @@ templates, and none of them is a sentence in the binary:
   store could no longer hand over.
 - `live_compact_notice`, the interval asking for a fold, and `thinking_mark`, the row that
   is the turn boundary a provider demanded.
+- `keepalive_handoff_notice`, the second heartbeat of a checkpoint asking for handoff.
+  Like `DREAM_NOTICE`, it has a fallback in `commands.rs`; unlike the required notices,
+  it is outside `REQUIRED`, so content that predates the name still starts.
 
 Two composition rules, and the second is the one that is easy to get wrong. A sentence
 with two shapes is two templates, never a conditional inside one -- `substitute` has no

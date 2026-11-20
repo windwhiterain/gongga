@@ -532,6 +532,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if resumed > 0 {
         tracing::info!(resumed, "resuming turns left pending by the last run");
     }
+    // Timers are tasks: the last run took them. Idle sessions that still asked
+    // for keep_alive need an arm from this one.
+    let armed = commands::arm_idle_keepalives(&dispatch);
+    if armed > 0 {
+        tracing::info!(
+            armed,
+            "idle sessions with keep_alive re-armed after the start"
+        );
+    }
     // Failures the last run left behind, before a client can ask about them.
     monitor::sweep(&dispatch, &cfg.home).await;
     clock.step("sweep");

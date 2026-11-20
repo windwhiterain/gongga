@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::Agent;
 use crate::bus::EventBus;
-use crate::session::{SessionHandle, SessionManager, Tuning};
+use crate::session::{SessionHandle, SessionManager};
 use crate::store::{Dream, Kind, MessageRow, PendingTask, Store, Transcript};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
@@ -51,6 +51,20 @@ const OWN_CLOCK: &[&str] = &["input_channel", "run_skill", "cancel"];
 /// The heartbeat's whole content: a clock reading, so a warm prefix is all it buys.
 fn time_notice() -> String {
     format!("(time notice: {})", crate::clock::now())
+}
+
+/// What a second heartbeat of one generation asks for, when the shipped prose is absent.
+const HANDOFF_NOTICE_FALLBACK: &str = "(handoff notice: this checkpoint's first heartbeat \
+already spawned a dream. Hand off now: put the current objective, state, failed attempts and next \
+action in the handoff note, tidy anything the continuation needs, then run the `handoff` skill. \
+Do not start new work. No further heartbeat will arrive until a new user prompt.)";
+
+/// The handoff notice: a template in the content, with a fallback for older homes.
+fn handoff_notice() -> String {
+    crate::prompts::shared()
+        .text(crate::prompts::KEEPALIVE_HANDOFF_NOTICE)
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| HANDOFF_NOTICE_FALLBACK.to_string())
 }
 
 /// A dream's whole instruction: documents only, and the turn ends when they are
@@ -182,11 +196,9 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
     let agent = d.agent.clone();
     let sessions = d.sessions.clone();
     let bus = d.bus.clone();
-    // Read before the turn starts: its first step consumes the mark.
+    // The epilogue reads the session's current tuning: a turn may change it.
     let keepalive_d = Arc::new(d.clone());
     let keepalive_session = work.session.clone();
-    let keepalive_model = d.agent.config.now().model.model();
-    let keepalive_tuning = work.session.tuning();
     tokio::spawn(async move {
         let session = work.session.clone();
         let (outcome, interrupted) = agent
@@ -228,28 +240,58 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
             return;
         }
         // Each turn schedules the next notice, so the chain has no last one.
-        arm_keepalive(
-            keepalive_d,
-            keepalive_session,
-            keepalive_tuning,
-            keepalive_model,
-        );
+        arm_keepalive(keepalive_d, keepalive_session);
     });
 }
 
-/// Arms the next heartbeat: a sleeper that sends the time notice, or dreams in
-/// its place.
-fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle, tuning: Tuning, model: String) {
-    if !tuning.cache_keepalive {
-        return;
+/// The generation a heartbeat's fire belongs to; `None` is generation 0.
+fn keepalive_generation(d: &Dispatch, session: &SessionHandle) -> i64 {
+    d.store
+        .latest_checkpoint_id(session.id())
+        .ok()
+        .flatten()
+        .unwrap_or(0)
+}
+
+/// Whether that generation's first fire has already dreamed.
+fn generation_dreamed(d: &Dispatch, session: &SessionHandle, generation: i64) -> bool {
+    d.store
+        .get_session(session.name())
+        .ok()
+        .flatten()
+        .and_then(|row| row.dreamed_checkpoint_id)
+        == Some(generation)
+}
+
+/// Arms the next heartbeat from the session's current tuning.
+///
+/// # Invariant
+///
+/// A busy session is owed a timer by its own turn epilogue, and a muted one is
+/// owed none until a client prompt. Returns whether a sleeper was started. See
+/// `docs/notes/server-dream.md`.
+pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
+    let tuning = session.tuning();
+    let muted = d
+        .store
+        .keepalive_handoff_at(session.id())
+        .unwrap_or(None)
+        .is_some();
+    if !tuning.cache_keepalive || muted || session.busy() || session.dream_of().is_some() {
+        return false;
     }
+    // The session's model, not the server's default: the TTL is the model's.
+    let default_model = d.agent.config.now().model.model();
+    let model = tuning.model.as_deref().unwrap_or(&default_model);
     let wait_ms = d
         .agent
-        .cache_fire_after_ms(&model, tuning.cache_tier.as_deref());
+        .cache_fire_after_ms(model, tuning.cache_tier.as_deref());
     if wait_ms == 0 {
-        return;
+        return false;
     }
     let ended_at = crate::store::now_millis();
+    let armed_generation = keepalive_generation(&d, &session);
+    let armed_mute = d.store.keepalive_handoff_at(session.id()).unwrap_or(None);
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(wait_ms)).await;
         // Any request during the wait already refreshed the prefix.
@@ -259,33 +301,56 @@ fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle, tuning: Tuning, model
             .ok()
             .flatten()
             .is_some_and(|at| at > ended_at);
-        if refreshed || session.busy() {
+        if refreshed || session.busy() || !session.tuning().cache_keepalive {
             return;
         }
+        // A new prompt, a handoff, or a new checkpoint retires this older timer.
+        if d.store.keepalive_handoff_at(session.id()).unwrap_or(None) != armed_mute
+            || keepalive_generation(&d, &session) != armed_generation
+        {
+            return;
+        }
+        let generation = armed_generation;
         // SPEC's Dreaming: the first fire of a generation dreams in the notice's place.
-        if !d.shutting_down.load(Ordering::SeqCst) && spawn_dream(&d, &session).await {
+        if !d.shutting_down.load(Ordering::SeqCst) && spawn_dream(&d, &session, generation).await {
             // The source stayed idle, so no turn re-arms the chain: this fire does.
-            let tuning = session.tuning();
-            let model = d.agent.config.now().model.model();
-            arm_keepalive(d, session, tuning, model);
+            arm_keepalive(d, session);
+            return;
+        }
+        if generation_dreamed(&d, &session, generation) {
+            // The second fire asks for a handoff and mutes every later one.
+            spawn_handoff(&d, &session, generation).await;
             return;
         }
         let _ = deliver(d.as_ref(), session.name(), time_notice()).await;
     });
+    true
+}
+
+/// Asks a source to hand off on the second fire of a generation.
+async fn spawn_handoff(d: &Dispatch, source: &SessionHandle, generation: i64) {
+    // Marked before the notice: its turn's epilogue must not re-arm the chain.
+    if let Err(e) = d.store.mark_keepalive_handoff(source.id()) {
+        tracing::warn!(session = %source.name(), error = %e, "could not mute the heartbeat after its handoff");
+        return;
+    }
+    d.agent.log_event(
+        Some(source.id()),
+        "keepalive_handoff",
+        &json!({"generation": generation}),
+    );
+    let said = deliver(d, source.name(), handoff_notice()).await;
+    if !said.ok {
+        tracing::warn!(session = %source.name(), answer = %said.message, "the handoff notice was not delivered");
+    }
 }
 
 /// Clones the source for a generation not yet dreamed, and hands the clone its
 /// notice. Returns whether this fire dreamed.
-async fn spawn_dream(d: &Dispatch, source: &SessionHandle) -> bool {
+async fn spawn_dream(d: &Dispatch, source: &SessionHandle, generation: i64) -> bool {
     let Ok(Some(row)) = d.store.get_session(source.name()) else {
         return false;
     };
-    let generation = d
-        .store
-        .latest_checkpoint_id(source.id())
-        .ok()
-        .flatten()
-        .unwrap_or(0);
     if row.dreamed_checkpoint_id == Some(generation) {
         return false;
     }
@@ -1428,7 +1493,7 @@ async fn run_now(d: &Dispatch, name: &str, args: &Args, origin: &Origin) -> Outc
         return declared_command(d, &route, args, origin.session()).await;
     }
     match name {
-        "send_message" => send_message(d, args, origin.session()).await,
+        "send_message" => send_message(d, args, origin).await,
         "set_session" => set_session(d, args).await,
         // SPEC `new_session` is `set_session` that refuses a name already taken.
         "new_session" => {
@@ -1641,16 +1706,26 @@ fn caller_session(name: &str, args: &Args, caller: Option<&str>) -> Result<Strin
     }
 }
 
-async fn send_message(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
+async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
     let Some(message) = args.word("message").map(str::to_string) else {
         return Outcome::err("send_message requires a message");
     };
-    let Some(name) = session_of(args, caller) else {
+    let Some(name) = session_of(args, origin.session()) else {
         return Outcome::err(
             "send_message runs for a session: name one, or run it from a session's shell",
         );
     };
-    deliver(d, &name, message).await
+    let said = deliver(d, &name, message).await;
+    // Only a client's message is a new user prompt. The handoff's note is from a
+    // tool and leaves the heartbeat muted.
+    if said.ok && matches!(origin, Origin::Client { .. }) {
+        if let Ok(Some(row)) = d.store.get_session(&name)
+            && let Err(e) = d.store.clear_keepalive_handoff(row.id)
+        {
+            tracing::warn!(session = %name, error = %e, "could not unmute the heartbeat");
+        }
+    }
+    said
 }
 
 /// Resolves a message's `@image(...)` and `@skill(...)` references before it is stored.
@@ -2178,6 +2253,11 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
     }
     publish_sessions(d);
+    // An idle session has no later turn to arm it, so start the chain here. A
+    // busy turn owns the arm at its epilogue.
+    if tuning.cache_keepalive {
+        let _ = arm_keepalive(Arc::new(d.clone()), session.clone());
+    }
 
     let cwd = session.cwd();
     // Confirms the write and stops: what the session runs on is its pane's title.
@@ -4274,6 +4354,31 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         }
     }
     resumed
+}
+
+/// Re-arms idle sessions whose keep_alive survived a restart.
+///
+/// # Invariant
+///
+/// Run after pending turns are claimed: a turn about to run owns its own arm.
+pub fn arm_idle_keepalives(d: &Dispatch) -> usize {
+    let Ok(rows) = d.store.list_sessions() else {
+        return 0;
+    };
+    let shared = Arc::new(d.clone());
+    let mut armed = 0;
+    for row in rows {
+        if !row.cache_keepalive || row.dream_of.is_some() {
+            continue;
+        }
+        let Ok(session) = d.sessions.get(&row.name) else {
+            continue;
+        };
+        if arm_keepalive(shared.clone(), session) {
+            armed += 1;
+        }
+    }
+    armed
 }
 
 /// Fills the published picture from the database, announcing nothing.

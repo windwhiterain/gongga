@@ -1,18 +1,29 @@
 # Dreaming on keep_alive
 
 SPEC's `## Dreaming`: the first keep_alive fire of each checkpoint generation clones
-the session into a disposable dream that organizes documents only; the clone is
-discarded when its turn truly ends. The files it writes are the memory. This note is
-the mechanism; the plan and the probe that shaped it are
-`.agents/notes/dream-keep-alive-plan.md` and `.agents/notes/dream-probe-report.md`.
+the session into a disposable dream that organizes documents only; the second fire of
+that generation asks the session to hand off. The clone is discarded when its turn
+truly ends, and no later heartbeat reaches the source until a new user prompt. The
+files the dream writes are the memory. This note is the mechanism; the plan and the
+probe that shaped it are `.agents/notes/dream-keep-alive-plan.md` and
+`.agents/notes/dream-probe-report.md`.
 
 ## The fire branch
 
 `arm_keepalive` (commands.rs) owns the heartbeat chain: every turn end arms one
-sleeper, and a sleeper that fires either dreams or delivers the time notice. The
-guards are the heartbeat's own -- a request during the wait (`last_usage_at`) or a
-busy session retires the sleeper, because the turn that refreshed the prefix arms
-the next one.
+sleeper, and a sleeper that fires dreams, asks for handoff, or delivers the time
+notice. The guards are the heartbeat's own -- a request during the wait
+(`last_usage_at`), a busy session, a tuning that turned the heartbeat off, a change
+of generation, or a change of mute state retires the sleeper: the turn that
+refreshed the prefix arms the next one.
+
+The arm reads tuning at arm time, not before the turn. A turn may enable
+`cache_keepalive` or change the model; the epilogue reads the session's current
+`tuning` and uses that session's model for the provider's TTL, not the server's
+default. `set_session --keep_alive true` arms an idle session immediately, because
+no later turn is owed, and startup arms idle sessions with the switch still on
+(`arm_idle_keepalives`, after pending turns are claimed). A busy session is left to
+its own epilogue.
 
 A fire dreams when all of these hold:
 
@@ -30,7 +41,26 @@ must not dream twice -- publishes the session list, and delivers `DREAM_NOTICE`.
 The dreaming fire sends the source no time notice: the dream keeps the cache warm
 in its place, carrying the source's whole prefix. Because the source stayed idle,
 no turn epilogue re-arms the chain, so the fire branch re-arms it itself. A fire
-that does not dream delivers the time notice exactly as before.
+that cannot dream because the clone failed, or because a live dream is still
+running while the generation is unmarked, keeps the time notice as before.
+
+## The second fire: handoff
+
+The marker is the source's `dreamed_checkpoint_id`. Once it equals the current
+generation, the first stage is spent: the next fire does not dream and does not
+send a time notice. `spawn_handoff` writes
+`sessions.keepalive_handoff_at`, logs a `keepalive_handoff` event, and delivers
+`keepalive_handoff_notice` -- prose from `[prompts]`, with a fallback for content
+that predates the template. The mark is written first, so the notice's own turn
+finds the chain muted and its epilogue arms nothing.
+
+Mute is durable. A restart re-arms only unmarked sessions; a handoff's own note
+arrives through `send_message` from a tool and does not clear the mark. Only a
+client-origin `send_message` -- a new user prompt -- calls
+`Store::clear_keepalive_handoff`. A tool's message, a monitor's report and a
+mentor's answer are all messages too, and none of them is a user prompt. A new
+checkpoint also retires an older sleeper: a generation change is a new fire
+chain.
 
 ## The clone
 
@@ -114,15 +144,21 @@ already point at the gone row -- accepted deliberately (finding F5).
 `sessions.dream_of INTEGER` -- the source's id, no foreign key: cleanup goes
 through the command machinery, not a cascade. `sessions.dreamed_checkpoint_id
 INTEGER` -- on a source, the generation last dreamed; on a dream, the generation it
-was spawned for. Both are added by `migrate` for an existing home.
+was spawned for. `sessions.keepalive_handoff_at INTEGER` -- when a heartbeat last
+asked this session to hand off; non-NULL is the mute. All three are added by
+`migrate` for an existing home. A clone starts unmuted: the mark belongs to a
+lineage, not to a session name.
 
-The events table carries `dream_spawn` and `dream_discard` (both on the source:
-the dream's own events are deleted with its row) and `dream_sweep` (session-less),
-so a reader with the database can follow a dream without matching prose.
+The events table carries `dream_spawn`, `dream_discard` and `keepalive_handoff`
+(all on the source: the dream's own events are deleted with its row) and
+`dream_sweep` (session-less), so a reader with the database can follow a dream
+and the escalation without matching prose.
 
 ## Verification
 
-`scripts/dream_selftest.sh` runs the four scenarios on real processes: a fire
-dreams and the dream is discarded with the source unharmed; a second fire of the
-same generation sends the time notice; a cancel mid-dream resumes after restart
-and discards only at the true end; deleting the source discards its dream.
+`scripts/dream_selftest.sh` runs the scenarios on real processes: a fire dreams
+and the dream is discarded with the source unharmed; a second fire of the same
+generation asks for handoff and then stays mute until a client message; a cancel
+mid-dream resumes after restart and discards only at the true end; deleting the
+source discards its dream; and a startup sweep discards an orphan whose discard
+was lost to a process exit.

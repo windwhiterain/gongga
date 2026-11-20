@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPEC's Dreaming, on real processes: a keep_alive fire clones the session into a
-# disposable dream, the dream's true end discards it, a cancel that restart will
-# resume does not, and a source's delete takes its dreams. The fifth check is the
+# disposable dream, a second fire of the generation asks for handoff and then stays
+# mute until a client prompt, the dream's true end discards it, a cancel that restart
+# will resume does not, and a source's delete takes its dreams. The last check is the
 # startup sweep for a dream whose discard was lost to a process exit.
 #
 # One home, one fake endpoint; the cancel/restart and sweep scenarios restart the
@@ -222,13 +223,33 @@ ok "(a) the source marks generation 0 as dreamed" $?
 [[ -n "$(q "select kind from events where kind = 'dream_discard'")" ]]
 ok "(a) the discard is an event row" $?
 
-# --- (c) the second fire of the same generation sends the time notice ---
-poll "select m.content from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%(time notice:%'" "(time notice:"
-ok "(c) the second fire of the same generation sends the time notice" $?
+# --- (c) the second fire of the same generation asks for handoff, then mutes ---
+poll "select m.content from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'" "Handoff notice"
+ok "(c) the second fire of a generation asks for handoff" $?
+[[ -z "$(q "select m.content from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%(time notice:%'")" ]]
+ok "(c) and sends no time notice for a generation already dreamed" $?
+[[ "$(q "select count(*) from events where kind = 'keepalive_handoff' and session_id = (select id from sessions where name = 'dream/a')")" -ge 1 ]]
+ok "(c) the handoff prompt is an event row" $?
+[[ -n "$(q "select keepalive_handoff_at from sessions where name = 'dream/a' and keepalive_handoff_at is not null")" ]]
+ok "(c) the source is muted after the prompt" $?
 [[ -z "$(q "select name from sessions where name like 'dream/a/dream/%'")" ]]
 ok "(c) and dreams no second dream" $?
 [[ "$(q "select count(*) from events where kind = 'dream_spawn' and session_id = (select id from sessions where name = 'dream/a')")" == "1" ]]
 ok "(c) one dream per generation" $?
+# Two more windows with no prompt: a muted session must stay quiet.
+handoffs=$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")
+sleep 4
+[[ "$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")" == "$handoffs" ]]
+ok "(c) no later heartbeat arrives while muted" $?
+cli '{"name":"send_message","args":{"session":"dream/a","message":"a new user prompt"}}' >/dev/null
+now=$handoffs
+for _ in $(seq 1 150); do
+  now=$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")
+  [[ "$now" -gt "$handoffs" ]] && break
+  sleep 0.2
+done
+[[ "$now" -gt "$handoffs" ]]
+ok "(c) a new client prompt unmutes the heartbeat" $?
 
 # --- (d) deleting the source discards its dream ---
 cli '{"name":"set_session","args":{"id":"dream/d","keep_alive":true,"model":"fake/flash-fake","cache_tier":"2s"}}' >/dev/null
