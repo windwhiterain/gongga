@@ -15,7 +15,7 @@ above it decides colours.
 
 As of 2026-11-08 the `submission and filled` and `submission` sections, and the
 `follow` part of `sync, follow and settle`, describe code that now lives in
-`crates/client/src/window_input.rs`; `RECONNECT_MIN` and `dial_now` live in
+`crates/client/src/window_input.rs`; `POLL_INTERVAL` and `dial_now` live in
 `crates/client/src/runtime.rs`; `declare` and the `answer_*` functions live in
 `crates/client/src/window_refill.rs`; `sync` and `settle` live in
 `crates/client/src/window_sync.rs`; `give_back` lives in
@@ -24,15 +24,15 @@ in `client::runtime::run`; this file keeps `TuiSink`, the interface impls and
 the factory wrapper. The sections stay for their invariants. See
 `client-window-input.md`, `client-runtime.md` and `client-frontend.md`.
 
-## RECONNECT_MIN
+## POLL_INTERVAL
 
-How long the interactive client waits before redialling, doubling up to the cap.
-The first retry is fast enough to be invisible across a `dev.sh restart`, and the
-cap keeps a server that is down for an hour from spinning.
+How long the interactive client waits between dials: 250 ms, every time. There is
+no doubling and no cap, so a server that starts late is found on the next poll
+instead of being lost behind a saturated wait.
 
 This is a *redial* cadence, not a budget on anything the agent does: the operator
 keeps the window, the history, the input line and its scroll position throughout,
-and Ctrl+Q still works while it backs off.
+and Ctrl+Q still works while it polls.
 
 ## submission and filled
 
