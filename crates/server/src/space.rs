@@ -108,7 +108,7 @@ impl Space {
         let name = name.trim();
         if name.is_empty()
             || name.eq_ignore_ascii_case("none")
-            || name.eq_ignore_ascii_case(crate::protocol::local_machine())
+            || name.eq_ignore_ascii_case(protocol::local_machine())
         {
             return crate::space::Space::local();
         }
