@@ -123,7 +123,26 @@ for _ in $(seq 1 240); do grep -q 'turn end session=p' "$log" 2>/dev/null && bre
 # refused and would prove nothing about a reference.
 png=$(python -c 'import base64
 print(base64.b64encode(bytes.fromhex("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082")).decode())')
-raw=$("${cli[@]}" '{"name":"exec","args":{"session":"p","bin":"bash","id":"bash/one","args":["-lc","mkdir -p \"$HOME/'"$tag"'/.agents/skills/peer-only\" && printf \"# peer rules\\n\" > \"$HOME/'"$tag"'/notes.md\" && printf \"peer-skill-body\\n\" > \"$HOME/'"$tag"'/.agents/skills/peer-only/SKILL.md\" && printf %s \"'"$png"'\" | base64 -d > \"$HOME/'"$tag"'/shot.png\" && cygpath -w \"$HOME/'"$tag"'\""],"wait":30000}}' 2>&1)
+# What the peer side makes: a picture, a text file, and a project skill of its own. Built
+# here so the request below is one `json.dumps`, not a quoted nest.
+mk=$(python - "$tag" "$png" <<'INNER'
+import sys
+tag, png = sys.argv[1], sys.argv[2]
+home = "$HOME/" + tag
+print(
+    f'mkdir -p "{home}/.agents/skills/peer-only" && '
+    f'printf "# peer rules\\n" > "{home}/notes.md" && '
+    f'printf "peer-skill-body\\n" > "{home}/.agents/skills/peer-only/SKILL.md" && '
+    f'printf %s "{png}" | base64 -d > "{home}/shot.png" && '
+    f'cygpath -w "{home}"'
+)
+INNER
+)
+scratch_request() {
+  python -c 'import json,sys
+print(json.dumps({"name":"exec","args":{"session":"p","bin":"bash","id":"bash/one","args":["-lc",sys.argv[1]],"wait":30000}}))' "$mk"
+}
+raw=$("${cli[@]}" "$(scratch_request)" 2>&1)
 printf '%s\n' "$raw" > "$work/exec.json"
 read_scratch() {
   python -c 'import json,sys
@@ -139,11 +158,12 @@ for line in open(sys.argv[1], encoding="utf-8"):
         if out: print(out.splitlines()[0]); break' "$work/exec.json" | tr -d '\r'
 }
 scratch=$(read_scratch)
-# The first call answers what the channel said so far; a start whose output had not
-# arrived yet is read once more by name, which costs one round trip and no new program.
+# The first call answers what the channel said so far. A start that never made one is
+# asked for again, whole: a read by name answers "no channel" and leaves the run without
+# a peer, which then reads as four red checks about the peer's files.
 if [[ -z "$scratch" ]]; then
   sleep 2
-  "${cli[@]}" '{"name":"exec","args":{"session":"p","id":"bash/one","wait":30000}}' > "$work/exec.json" 2>&1
+  "${cli[@]}" "$(scratch_request)" > "$work/exec.json" 2>&1
   scratch=$(read_scratch)
 fi
 ok "the peer's scratch is made ($scratch)" $([[ -n "$scratch" ]] && echo 0 || echo 1)
