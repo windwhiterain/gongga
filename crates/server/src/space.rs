@@ -48,6 +48,15 @@ impl Run {
 #[derive(Clone)]
 pub struct Space {
     endpoint: Endpoint,
+    /// The name this machine's operator gave the peer, when these paths are a peer's.
+    ///
+    /// # Invariant
+    ///
+    /// Kept here because it is the one thing a path this space holds is spelled with
+    /// (`remote://<name>/…`), and no caller of a read can supply it: the space that read
+    /// the file is the only thing that knows which machine's file it was. See
+    /// `docs/notes/server-space.md`.
+    name: Option<String>,
     /// The kept connection, when there is one; dropped and re-dialled when it dies.
     link: std::sync::Arc<Mutex<Option<Runner>>>,
 }
@@ -65,16 +74,35 @@ impl Space {
     pub fn local() -> Self {
         Self {
             endpoint: Endpoint::local(std::path::PathBuf::new()),
+            name: None,
             link: std::sync::Arc::new(Mutex::new(None)),
         }
     }
 
-    /// The space of one endpoint: its own machine when it is this one, else the peer.
-    pub fn of(endpoint: Endpoint) -> Self {
+    /// The space of one endpoint: its own machine when it is this one, else the peer
+    /// the operator calls `name`.
+    pub fn of(endpoint: Endpoint, name: Option<&str>) -> Self {
+        let name = name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .filter(|_| endpoint.is_remote())
+            .map(str::to_string);
         Self {
             endpoint,
+            name,
             link: std::sync::Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// The operator's name for this machine, and `None` when it is this one.
+    ///
+    /// # Invariant
+    ///
+    /// This machine is `None` and never a name, so `remote://local/` is the one spelling
+    /// of a path here: a space that took the operator's word for this machine would make
+    /// the same file two references. See `docs/notes/server-space.md`.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Whether the paths here are this machine's.
@@ -122,7 +150,7 @@ impl Space {
         if let Some(space) = peers.get(name) {
             return space.clone();
         }
-        let space = crate::space::Space::of(configured.endpoint.clone());
+        let space = crate::space::Space::of(configured.endpoint.clone(), Some(name));
         peers.insert(name.to_string(), space.clone());
         space
     }

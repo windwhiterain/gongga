@@ -168,7 +168,13 @@ this named" decides whether it is in there at all:
 | --- | --- | --- |
 | the session's first user message | in the index; the mention stays as written | in the index; the mention becomes `@skill(<name>) (<path>)` |
 | a message already queued when that row was written | the queue is read too, so it is in the index as well | same |
-| any later message | nothing: the mention stays a literal path with no entry behind it | expanded to `@skill(<name>) (<its SKILL.md>)`; the body is not in the index, so the reader opens the file itself |
+| any later message | inlined by the message itself -- the mention, its path for the machine that holds it, and the file's text -- because the index is stamped once and never grows | expanded to `@skill(<name>) (<its SKILL.md>)`; the body is not in the index, so the reader opens the file itself |
+
+`expand_message` reads `rooted` off the stored row and hands it to `meta::expand`: a
+`@file` spelling the row carries stays as written, and one it does not is carried by the
+message that names it. Before that row exists -- the session's first message -- every
+spelling is treated as about to be in it, which is what keeps the first message's
+references literal and indexed rather than carried twice.
 
 One more row, because skills name each other: a root's own mentions are walked, so a
 first message naming `@skill(chain)` whose body says `@skill(leaf)` carries both bodies.
@@ -186,11 +192,13 @@ Until 2026-11-03 this section said the index was rebuilt on every request, and t
 later message joined it on the next rebuild. That was `index_of`'s rule before the head
 was stamped, and the stamped head is the answer to a measured bill: a 24k-character
 index edited by one line cost one session 292,992 cached tokens (`server-agent.md`).
+The head still never moves; what a later message names is carried by that message, so
+the two things a session can do -- name it early (indexed, cacheable) or name it late
+(in the message, at the end of the prefix) -- both reach the model.
 
-What a reader should take from this is a writing rule, not a limitation: name what the
-work needs in the first message. `ship/skills/prefix-cache` holds that rule, the
-spelling table, and the examples -- for a reader who is about to write a brief or a
-lesson.
+What a reader should still take from this is a writing rule: name what the work needs in
+the first message. `ship/skills/prefix-cache` holds that rule, the spelling table, and
+the examples -- for a reader who is about to write a brief or a lesson.
 
 ## the parentheses are the delimitation
 

@@ -249,16 +249,12 @@ pub struct Found {
 /// so on a peer it is the peer's own `.agents/skills` read through that peer's space;
 /// the home's and the machine's layers are this server's, wherever the session works.
 /// See `docs/notes/server-tools-skill.md`.
-pub async fn installed_in(
-    space: &crate::space::Space,
-    cwd: &Path,
-    machine: Option<&str>,
-) -> Vec<Found> {
+pub async fn installed_in(space: &crate::space::Space, cwd: &Path) -> Vec<Found> {
     let mut out = Vec::new();
     // The project layer first: the most specific, and the session's own checkout,
     // which may be a peer's.
     let project = space.spell(cwd, ".agents/skills");
-    out.extend(read_layer(space, &project, skill::Bucket::Project.as_str(), machine).await);
+    out.extend(read_layer(space, &project, skill::Bucket::Project.as_str()).await);
     // Read here, whatever machine the session works on.
     let here = crate::space::Space::local();
     let roots = crate::ship::roots();
@@ -267,19 +263,14 @@ pub async fn installed_in(
         (roots.machine.join("skills"), skill::Bucket::General),
     ] {
         let spelled = dir.to_string_lossy().into_owned();
-        out.extend(read_layer(&here, &spelled, bucket.as_str(), None).await);
+        out.extend(read_layer(&here, &spelled, bucket.as_str()).await);
     }
     out
 }
 
 /// The skills whose `SKILL.md` one directory holds, sorted by directory.
 ///
-async fn read_layer(
-    space: &crate::space::Space,
-    dir: &str,
-    bucket: &str,
-    machine: Option<&str>,
-) -> Vec<Found> {
+async fn read_layer(space: &crate::space::Space, dir: &str, bucket: &str) -> Vec<Found> {
     let Some(entries) = space.list(dir).await else {
         return Vec::new();
     };
@@ -303,8 +294,8 @@ async fn read_layer(
         out.push(Found {
             name: declared.0,
             description: declared.1,
-            path: spelled(machine, &skill_file),
-            dir: spelled(machine, &one),
+            path: spelled(space.name(), &skill_file),
+            dir: spelled(space.name(), &one),
             bucket: bucket.to_string(),
         });
     }
@@ -317,13 +308,8 @@ async fn read_layer(
 ///
 /// The precedence is `Bucket::ALL`: a project's own skill beats this home's, which
 /// beats the machine's, and a name in two layers is the first one read.
-pub async fn find(
-    space: &crate::space::Space,
-    cwd: &Path,
-    name: &str,
-    machine: Option<&str>,
-) -> Option<Found> {
-    installed_in(space, cwd, machine)
+pub async fn find(space: &crate::space::Space, cwd: &Path, name: &str) -> Option<Found> {
+    installed_in(space, cwd)
         .await
         .into_iter()
         .find(|skill| skill.name == name)

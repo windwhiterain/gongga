@@ -94,6 +94,12 @@ session on a peer gets that checkout's own skills, exactly as a local session ge
 own. The other two layers are this server's, so they are read here whatever machine the
 session works on.
 
+Each row's `path` is spelled with the machine that holds it -- `remote://<peer>/…` for a
+project skill on a peer, `remote://local/…` for one read here -- and the space's own name
+is what spells it (`Space::name`). No caller passes a machine into the walk: the file it
+read is the evidence, and a path handed to a reader carries the machine that must read it
+back.
+
 A name in two roots is two rows with one name, and `run_skill` runs the nearer one --
 the row `@skill(...)` already read. There is no second spelling for "the other one":
 where a row came from is its `bucket`, and a call never says it.
