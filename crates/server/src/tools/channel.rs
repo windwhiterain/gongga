@@ -946,7 +946,12 @@ impl Channels {
             //
             // The peer reads race the stop, the clock and a message: a peer that never
             // answers must not hold the call past its wait, an interrupt, or a message.
-            // The check cannot sit after the read -- a wedged read never reaches it.
+            //
+            // The clock is read here, not slept on. A `sleep` made in the select below
+            // is dropped whenever the read wins, and a timer dropped before its first
+            // tick never ends the wait -- so an `exec` with nothing to say outlived its
+            // own deadline by as long as its program kept quiet. A wedged read is still
+            // reached by the clock: the read's own timeout is the same deadline.
             let read = async {
                 let fresh = if wait.is_zero() {
                     place.read_from("out", upto).await?
@@ -978,9 +983,6 @@ impl Channels {
                     _ = cancel_fired(cancel) => {
                         return self.answer(row, String::new(), false, upto, None, None, since);
                     }
-                    _ = tokio::time::sleep(deadline.saturating_duration_since(Instant::now())) => {
-                        return self.answer(row, String::new(), false, upto, None, None, since);
-                    }
                     _ = inbox_arrived(inbox) => {
                         return self.answer(row, String::new(), false, upto, None, None, since);
                     }
@@ -997,6 +999,11 @@ impl Channels {
                     ended,
                     since,
                 );
+            }
+            // What is left is the clock: the read found nothing and the program is
+            // running, so a wait that has run out answers now rather than reading again.
+            if Instant::now() >= deadline {
+                return self.answer(row, String::new(), false, upto, None, None, since);
             }
             tokio::time::sleep(LOOK).await;
         }
