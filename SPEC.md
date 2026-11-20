@@ -209,7 +209,8 @@ and discards the clone when its turn truly ends. The second fire of that same ge
 asks the session to hand off instead; every later fire is mute until a new user prompt.
 - the clone copies the transcript verbatim and re-renders nothing, so its first request
   carries the session's whole prefix: the dream keeps the cache warm in place of the
-  empty time notice.
+  empty time notice. The source's next countdown starts at the dream's true end, not
+  its spawn; the source owes no heartbeat while a dream is live.
 - the clone's keep_alive is off and it opens no checkpoint; a dream never dreams. one
   dream per generation, at most one live dream per session. A fire that cannot dream
   because another one is still live, or because the clone failed, keeps the time notice;

@@ -224,12 +224,20 @@ ok "(a) the source marks generation 0 as dreamed" $?
 ok "(a) the discard is an event row" $?
 
 # --- (c) the second fire of the same generation asks for handoff, then mutes ---
-poll "select m.content from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'" "Handoff notice"
+# The prose is a `[prompts]` template when the content ships it and a fallback
+# otherwise, so match the notice itself, not either spelling of its first word.
+poll "select m.content from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%handoff notice%'" "handoff notice"
 ok "(c) the second fire of a generation asks for handoff" $?
 [[ -z "$(q "select m.content from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%(time notice:%'")" ]]
 ok "(c) and sends no time notice for a generation already dreamed" $?
 [[ "$(q "select count(*) from events where kind = 'keepalive_handoff' and session_id = (select id from sessions where name = 'dream/a')")" -ge 1 ]]
 ok "(c) the handoff prompt is an event row" $?
+# The dream carries the source's whole prefix, so it keeps the cache warm until
+# it ends. The second countdown starts at that end, never at the dream's spawn:
+# the fake turn runs ~2.4s (three pieces at 0.8s) and the window is ~1.9s, so a
+# handoff armed at spawn would land before the discard. Compare the two event rows.
+row=$(q "select (select created_at from events where kind = 'dream_discard' and session_id = (select id from sessions where name = 'dream/a') limit 1) < (select created_at from events where kind = 'keepalive_handoff' and session_id = (select id from sessions where name = 'dream/a') limit 1)")
+[[ "$row" == "1" ]]; ok "(c) the handoff countdown starts at the dream's end, not its spawn" $?
 [[ -n "$(q "select keepalive_handoff_at from sessions where name = 'dream/a' and keepalive_handoff_at is not null")" ]]
 ok "(c) the source is muted after the prompt" $?
 [[ -z "$(q "select name from sessions where name like 'dream/a/dream/%'")" ]]

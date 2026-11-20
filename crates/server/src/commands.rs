@@ -233,11 +233,14 @@ fn spawn_turn(d: &Dispatch, work: TurnWork) {
             }
         }
         // SPEC's Dreaming: a dream is disposable, and its true end discards it.
-        if keepalive_session.dream_of().is_some()
-            && (outcome != TurnOutcome::Cancelled || interrupted)
-        {
-            discard_dream(&keepalive_d, &keepalive_session).await;
-            return;
+        if let Some(source_id) = keepalive_session.dream_of() {
+            if outcome != TurnOutcome::Cancelled || interrupted {
+                discard_dream(&keepalive_d, &keepalive_session).await;
+                // The dream kept the source's cache warm; its end starts the
+                // second countdown. A live dream owns the source's next fire.
+                arm_source_after_dream(&keepalive_d, source_id);
+                return;
+            }
         }
         // Each turn schedules the next notice, so the chain has no last one.
         arm_keepalive(keepalive_d, keepalive_session);
@@ -263,13 +266,32 @@ fn generation_dreamed(d: &Dispatch, session: &SessionHandle, generation: i64) ->
         == Some(generation)
 }
 
+/// Starts the source's second countdown, from the dream's true end.
+///
+/// # Invariant
+///
+/// The dream held the source's whole prefix, so the cache stayed warm for the
+/// dream's whole life; the next window begins here, not at the dream's spawn.
+/// Resolves by id because the dream may have been renamed while it ran. See
+/// `docs/notes/server-dream.md`.
+fn arm_source_after_dream(d: &Arc<Dispatch>, source_id: i64) {
+    let Ok(Some(name)) = d.store.name_of_session(source_id) else {
+        return;
+    };
+    let Ok(source) = d.sessions.get(&name) else {
+        return;
+    };
+    arm_keepalive(d.clone(), source);
+}
+
 /// Arms the next heartbeat from the session's current tuning.
 ///
 /// # Invariant
 ///
-/// A busy session is owed a timer by its own turn epilogue, and a muted one is
-/// owed none until a client prompt. Returns whether a sleeper was started. See
-/// `docs/notes/server-dream.md`.
+/// A busy session is owed a timer by its own turn epilogue, a muted one is owed
+/// none until a client prompt, and a source with a live dream is owed none until
+/// that dream ends: the dream carries its whole prefix and keeps the cache warm.
+/// Returns whether a sleeper was started. See `docs/notes/server-dream.md`.
 pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
     let tuning = session.tuning();
     let muted = d
@@ -278,6 +300,13 @@ pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
         .unwrap_or(None)
         .is_some();
     if !tuning.cache_keepalive || muted || session.busy() || session.dream_of().is_some() {
+        return false;
+    }
+    // A live dream owns the source's next countdown. Its true end arms it.
+    if d.store
+        .dreams_of(session.id())
+        .is_ok_and(|dreams| !dreams.is_empty())
+    {
         return false;
     }
     // The session's model, not the server's default: the TTL is the model's.
@@ -304,6 +333,13 @@ pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
         if refreshed || session.busy() || !session.tuning().cache_keepalive {
             return;
         }
+        // Invariant: a live dream owns the countdown; see `server-dream.md`.
+        if d.store
+            .dreams_of(session.id())
+            .is_ok_and(|dreams| !dreams.is_empty())
+        {
+            return;
+        }
         // A new prompt, a handoff, or a new checkpoint retires this older timer.
         if d.store.keepalive_handoff_at(session.id()).unwrap_or(None) != armed_mute
             || keepalive_generation(&d, &session) != armed_generation
@@ -313,8 +349,8 @@ pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
         let generation = armed_generation;
         // SPEC's Dreaming: the first fire of a generation dreams in the notice's place.
         if !d.shutting_down.load(Ordering::SeqCst) && spawn_dream(&d, &session, generation).await {
-            // The source stayed idle, so no turn re-arms the chain: this fire does.
-            arm_keepalive(d, session);
+            // Invariant: the dream's true end arms the next fire; see
+            // `docs/notes/server-dream.md`.
             return;
         }
         if generation_dreamed(&d, &session, generation) {

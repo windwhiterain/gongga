@@ -15,6 +15,12 @@ clone is discarded when its turn truly ends. The files it writes are the memory.
   interrupted by cancel/restart rides the existing recovery semantics and is
   discarded only when its turn truly ends. The earlier "restart discards
   unfinished dreams" clause is WITHDRAWN.
+- 2026-11-21: **the second countdown starts at the dream's end, not its spawn**.
+  The user's verdict: during a dream the cache stays hot, because the dream carries
+  the source's whole prefix. Arming the second fire when the dream spawned handed
+  off while the cache was still warm. The source now owes no heartbeat while a
+  dream is live; the dream's true-end epilogue arms the second countdown after the
+  discard. This changes the earlier fire-branch re-arm in `arm_keepalive`.
 - 2026-11-20: the heartbeat was observed never to fire. Fixes: read tuning in
   the turn epilogue, use the session's model for the TTL, arm on
   `set_session --keep_alive true`, and re-arm idle sessions at startup.

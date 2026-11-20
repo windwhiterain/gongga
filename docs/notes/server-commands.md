@@ -701,7 +701,9 @@ row, though: the next start calls `arm_idle_keepalives` and gives idle sessions
 with the switch still on a fresh timer.
 
 A fire may dream instead of notifying, and the second fire of one generation asks
-for handoff; both are in `server-dream.md`.
+for handoff; both are in `server-dream.md`. While a dream is live the source owes no
+timer at all: the dream holds its warm prefix, and the countdown to the second fire
+begins at the dream's true end.
 
 ## How an argument is spelled, and what a `path` means
 
