@@ -3588,10 +3588,11 @@ fn unreadable_greeting(raw: &[u8], error: &serde_json::Error) -> String {
                 .map(str::to_owned)
         });
     match server {
+        // A pair is one protocol (SPEC): a build is the diagnosis, never the rule.
         Some(build) if build != protocol::BUILD => format!(
-            "the server runs build {build}, this window is build {}: they cannot read each \
-             other's messages. Start the window from the same build, or put the server on \
-             this one.",
+            "the server runs build {build}, this window is build {}, and its greeting could \
+             not be read: {error}. Compare the protocol both report (`gongga-cli --version`): \
+             a window and a server on different protocols cannot read each other.",
             protocol::BUILD
         ),
         Some(build) => format!(
