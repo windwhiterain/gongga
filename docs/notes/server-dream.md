@@ -39,16 +39,33 @@ A fire dreams when all of these hold:
 (`Store::set_dreamed_checkpoint`) *before* delivering the notice -- a racing fire
 must not dream twice -- publishes the session list, and delivers `DREAM_NOTICE`.
 The dreaming fire sends the source no time notice: the dream keeps the cache warm
-in its place, carrying the source's whole prefix. Because the source stayed idle,
-no turn epilogue re-arms the chain, so the fire branch re-arms it itself. A fire
+in its place, carrying the source's whole prefix. The fire arms no timer. A fire
 that cannot dream because the clone failed, or because a live dream is still
 running while the generation is unmarked, keeps the time notice as before.
+
+## The countdown starts at the dream's end
+
+The dream holds the source's whole warm prefix for its entire turn, so the cache
+cannot expire while it runs. Starting the second window at the dream's spawn
+would hand off while the cache is still hot. The source therefore owes no timer
+while a dream is live: `arm_keepalive` refuses a source with a live dream, and a
+second sleeper armed before the dream spawned retires itself at fire time.
+
+The dream's true-end epilogue calls `arm_source_after_dream` after
+`discard_dream`. It resolves the source by id -- a dream may have been renamed
+while it ran -- and arms from that moment. The window measured at that arm is
+the first one after the cache actually went cold. A cancelled dream that restart
+will resume is not an end, so it discards nothing and arms nothing; the resumed
+turn's own true end does both. Startup and `set_session` cannot arm a source
+whose dream is still live: `arm_idle_keepalives` and the `set_session` arm use
+the same guard.
 
 ## The second fire: handoff
 
 The marker is the source's `dreamed_checkpoint_id`. Once it equals the current
-generation, the first stage is spent: the next fire does not dream and does not
-send a time notice. `spawn_handoff` writes
+generation, the first stage is spent: the next fire -- armed at the dream's true
+end, not its spawn -- does not dream and does not send a time notice.
+`spawn_handoff` writes
 `sessions.keepalive_handoff_at`, logs a `keepalive_handoff` event, and delivers
 `keepalive_handoff_notice` -- prose from `[prompts]`, with a fallback for content
 that predates the template. The mark is written first, so the notice's own turn
@@ -97,8 +114,8 @@ flag, captured inside `run_turn` right after `turn_inner` returns. The gate is f
 at that point, so a concurrent `deliver` may start the next turn and `new_turn`
 clears the flags -- an epilogue read would race it.
 
-The discard sits in the `spawn_turn` epilogue, after `apply_queued_move` and before
-the keepalive arming:
+The discard sits in the `spawn_turn` epilogue, after `apply_queued_move`; arming
+the source's next countdown follows it:
 
 ```text
 discard iff  session.dream_of().is_some()
@@ -161,4 +178,6 @@ and the dream is discarded with the source unharmed; a second fire of the same
 generation asks for handoff and then stays mute until a client message; a cancel
 mid-dream resumes after restart and discards only at the true end; deleting the
 source discards its dream; and a startup sweep discards an orphan whose discard
-was lost to a process exit.
+was lost to a process exit. The handoff case compares event timestamps: the
+`keepalive_handoff` row must be later than the `dream_discard` row, so a countdown
+that started at the dream's spawn -- before the cache went cold -- fails it.
