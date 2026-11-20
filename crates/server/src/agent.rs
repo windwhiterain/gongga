@@ -740,10 +740,20 @@ impl Agent {
     /// firing at the last instant would let lazy eviction win the race. A session
     /// that named its own tier times against that tier's own window.
     pub(crate) fn cache_fire_after_ms(&self, model: &str, tier: Option<&str>) -> u64 {
+        let pct = 100_u64.saturating_sub(self.config.now().model.cache_margin_pct as u64);
+        self.cache_window_ms(model, tier).saturating_mul(pct) / 100
+    }
+
+    /// The tier's whole window: the upper edge of the heartbeat's band.
+    ///
+    /// # Invariant
+    ///
+    /// The same roster lookup that places the fire point also places the
+    /// expiry; one model, one tier, one window for both edges of the band.
+    pub(crate) fn cache_window_ms(&self, model: &str, tier: Option<&str>) -> u64 {
         let entry = self.providers.place(model);
         let config = self.config.now();
-        let window = tier
-            .and_then(|name| entry.as_ref().and_then(|e| e.cache_ttl_tiers.get(name)))
+        tier.and_then(|name| entry.as_ref().and_then(|e| e.cache_ttl_tiers.get(name)))
             .map(|secs| secs.saturating_mul(1_000))
             .or(cache_ttl_ms(&config))
             .or_else(|| {
@@ -751,9 +761,8 @@ impl Agent {
                     .as_ref()
                     .and_then(|e| e.cache_ttl_secs)
                     .map(|secs| secs.saturating_mul(1_000))
-            });
-        let pct = 100_u64.saturating_sub(config.model.cache_margin_pct as u64);
-        window.unwrap_or(0).saturating_mul(pct) / 100
+            })
+            .unwrap_or(0)
     }
 
     /// What a plan for `model` is priced at.

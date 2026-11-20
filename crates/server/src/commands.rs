@@ -288,10 +288,12 @@ fn arm_source_after_dream(d: &Arc<Dispatch>, source_id: i64) {
 ///
 /// # Invariant
 ///
-/// A busy session is owed a timer by its own turn epilogue, a muted one is owed
-/// none until a client prompt, and a source with a live dream is owed none until
-/// that dream ends: the dream carries its whole prefix and keeps the cache warm.
-/// Returns whether a sleeper was started. See `docs/notes/server-dream.md`.
+/// The timer is the cache timeline: it is armed when the cache was last
+/// warmed, sleeps to the lower edge, and fires only if it is still inside
+/// `[lower, upper)`. No usage row is read -- a second timer, a late wake, or
+/// an old request never moves this band. A source with a live dream reads
+/// none of it: the dreamer owns the countdown, so the source owes no fire.
+/// See `docs/notes/server-dream.md`.
 pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
     let tuning = session.tuning();
     let muted = d
@@ -311,33 +313,46 @@ pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
     }
     // The session's model, not the server's default: the TTL is the model's.
     let default_model = d.agent.config.now().model.model();
-    let model = tuning.model.as_deref().unwrap_or(&default_model);
-    let wait_ms = d
-        .agent
-        .cache_fire_after_ms(model, tuning.cache_tier.as_deref());
-    if wait_ms == 0 {
+    let model = tuning.model.clone().unwrap_or(default_model);
+    let tier = tuning.cache_tier.clone();
+    let lower_ms = d.agent.cache_fire_after_ms(&model, tier.as_deref());
+    let upper_ms = d.agent.cache_window_ms(&model, tier.as_deref());
+    if lower_ms == 0 || upper_ms <= lower_ms {
         return false;
     }
-    let ended_at = crate::store::now_millis();
     let armed_generation = keepalive_generation(&d, &session);
     let armed_mute = d.store.keepalive_handoff_at(session.id()).unwrap_or(None);
+    // The timer itself is the timeline: it starts here, when the cache was
+    // last warmed, and no usage row is read to move it later or earlier.
+    let armed_at = crate::store::now_millis();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(wait_ms)).await;
-        // Any request during the wait already refreshed the prefix.
-        let refreshed = d
-            .store
-            .last_usage_at(session.id())
-            .ok()
-            .flatten()
-            .is_some_and(|at| at > ended_at);
-        if refreshed || session.busy() || !session.tuning().cache_keepalive {
-            return;
-        }
-        // Invariant: a live dream owns the countdown; see `server-dream.md`.
+        // A live dream owns the countdown: its every request keeps the shared
+        // prefix hot, so the source reads no timeline and fires nothing. This
+        // is the first thing checked, before the band and before any cache
+        // state. See `server-dream.md`.
         if d.store
             .dreams_of(session.id())
             .is_ok_and(|dreams| !dreams.is_empty())
         {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(lower_ms)).await;
+        // A dream may have started during the wait. The source owes no timer
+        // while one lives, so it reads no band at all -- not even at wake.
+        if d.store
+            .dreams_of(session.id())
+            .is_ok_and(|dreams| !dreams.is_empty())
+        {
+            return;
+        }
+        // Fire only inside the band: too early is a still-warm cache, too late
+        // is a cold one. Both retire the timer. No anchor is fetched -- the
+        // elapsed time is measured from this timer's own arm.
+        let elapsed = crate::store::now_millis().saturating_sub(armed_at).max(0) as u64;
+        if elapsed < lower_ms || elapsed >= upper_ms {
+            return;
+        }
+        if session.busy() || !session.tuning().cache_keepalive {
             return;
         }
         // A new prompt, a handoff, or a new checkpoint retires this older timer.
@@ -2301,11 +2316,9 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
     }
     publish_sessions(d);
-    // An idle session has no later turn to arm it, so start the chain here. A
-    // busy turn owns the arm at its epilogue.
-    if tuning.cache_keepalive {
-        let _ = arm_keepalive(Arc::new(d.clone()), session.clone());
-    }
+    // No arm here: a heartbeat is owed only at a turn's end, when the cache was
+    // last warmed. Turning the flag on is a config write, not a turn; a busy
+    // turn owns its arm at the epilogue, and an idle one waits for its next turn.
 
     let cwd = session.cwd();
     // Confirms the write and stops: what the session runs on is its pane's title.
@@ -4390,31 +4403,6 @@ pub async fn resume_pending(d: &Dispatch) -> usize {
         }
     }
     resumed
-}
-
-/// Re-arms idle sessions whose keep_alive survived a restart.
-///
-/// # Invariant
-///
-/// Run after pending turns are claimed: a turn about to run owns its own arm.
-pub fn arm_idle_keepalives(d: &Dispatch) -> usize {
-    let Ok(rows) = d.store.list_sessions() else {
-        return 0;
-    };
-    let shared = Arc::new(d.clone());
-    let mut armed = 0;
-    for row in rows {
-        if !row.cache_keepalive || row.dream_of.is_some() {
-            continue;
-        }
-        let Ok(session) = d.sessions.get(&row.name) else {
-            continue;
-        };
-        if arm_keepalive(shared.clone(), session) {
-            armed += 1;
-        }
-    }
-    armed
 }
 
 /// Fills the published picture from the database, announcing nothing.
