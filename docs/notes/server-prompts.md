@@ -329,8 +329,9 @@ things follow from that, and they are why this is not the deleted read returning
 - **It is compared, ordered and stored with the other roots.** The index plans the order
   (`prefix_cache::plan`), the row keeps the bytes, and a change appends a row instead of
   quietly altering what was sent.
-- **A message that names it stays literal**, because it is also a spelling in the index --
-  one file is never carried twice.
+- **A first message that names it stays literal**, because it is also a spelling in the
+  index. A message sent later is inlined like every other late reference, so the rules are
+  carried twice only when someone names them again.
 
 The older argument still holds where it applies: prose in every request whether or not
 the turn needed it is what a skill exists to avoid. It is why the machine's rules stayed

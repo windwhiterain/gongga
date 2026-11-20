@@ -69,8 +69,12 @@ them -- and nothing else about the file. So `rooted` does not carry `@file(AGENT
 anymore, which is also what the warm-prefix walk needs: it must see the chain that really
 went out, and that chain starts at the first root the plan ordered.
 
-A message that writes `@file(AGENTS.md)` still stays literal, so one file is never carried
-twice. The file is read when the prompt row is stamped, like every root, so an edit reaches
+Where a message names it decides what its mention becomes, the same as for any other file: in
+the first message it stays literal -- the index carries the text under that spelling, and a
+literal mention points at it -- while a message sent later, whose index is already stamped,
+is inlined by the message that names it (`which message's references reach the index`). So
+the rules travel twice only when someone names them again, which is the price of every late
+reference and not a reason to keep a second copy anywhere else. The file is read when the prompt row is stamped, like every root, so an edit reaches
 the next row rather than a request already sent: `scripts/append_only_selftest.sh` pins
 that an edit to it moves no head.
 
