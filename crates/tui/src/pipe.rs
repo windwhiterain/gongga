@@ -75,10 +75,16 @@ pub async fn run(args: &client::Args) -> anyhow::Result<()> {
             }
             event = tui.next_event() => {
                 let Some(event) = event else { break Ok(()); };
-                if let UiEvent::Intent(intent) = event
-                    && send(&mut input, &intent).await.is_err()
-                {
-                    break Ok(());
+                if let UiEvent::Intent(intent) = event {
+                    let quit = matches!(&intent, UiIntent::Quit);
+                    if send(&mut input, &intent).await.is_err() {
+                        break Ok(());
+                    }
+                    // The window's own intent ends the window. Waiting for the
+                    // child's stdout would make a slow exit look like a stuck key.
+                    if quit {
+                        break Ok(());
+                    }
                 }
             }
             frame = rx.recv() => {
