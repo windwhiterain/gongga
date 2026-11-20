@@ -133,7 +133,9 @@ fn base(spec: &str) -> Result<Vec<&'static str>, String> {
         "float" | "number" => vec!["number"],
         "bool" | "boolean" => vec!["boolean"],
         "dict" | "dict[str, any]" | "object" | "Cmd" | "Event" | "SessionConfig" => vec!["object"],
-        "Model" | "ModelConfig" | "Workspace" | "LiveCompact" => vec!["object"],
+        "Model" | "ModelConfig" | "Workspace" | "LiveCompact" | "ClientSessionConfig" => {
+            vec!["object"]
+        }
         other if other.starts_with("list[") || other == "array" => vec!["array"],
         other if other.starts_with("dict[") => vec!["object"],
         other => {

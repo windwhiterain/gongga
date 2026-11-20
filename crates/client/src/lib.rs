@@ -651,9 +651,10 @@ pub trait Sink {
     ///
     /// # Invariant
     ///
-    /// Told once per turn that ended, and never for a turn that is still
-    /// running: a front-end that shows it and one that ignores it hear the same
-    /// fact. See `docs/notes/client-lib.md`.
+    /// Told once per turn that ended in this client's own session, never for a
+    /// turn still running and never for one in a session another client owns: a
+    /// front-end that shows it and one that ignores it hear the same fact. See
+    /// `docs/notes/client-lib.md` and `docs/notes/tui-notice.md`.
     fn stopped(&mut self, _session: &str, _failed: bool) {}
 }
 
@@ -857,6 +858,14 @@ pub struct Client {
     /// A view the front-end dictates: this layer keeps the names so the layout can
     /// answer with them, and never sets one itself. Client state is the window's.
     shown: Vec<String>,
+    /// Which sessions belong to this client, so only their turn end is announced.
+    ///
+    /// # Invariant
+    ///
+    /// The window's answer, pushed on every sync: this layer never decides whose
+    /// turn end is news. A session nobody marked is not in here, and its stop is
+    /// kept from the front-ends so it raises no toast. See `docs/notes/tui-notice.md`.
+    client_sessions: Vec<String>,
     /// Calls that streamed their arguments, by id: their structure fills that block.
     calls: HashSet<String>,
     /// The next block name this client will mint, per window.
@@ -1273,6 +1282,16 @@ impl Client {
         self.shown = names;
     }
 
+    /// The sessions this client owns, as the window last said.
+    ///
+    /// # Invariant
+    ///
+    /// A view the front-end dictates, as [`Self::set_shown`] is: only these
+    /// sessions' turn ends reach a front-end as a toast. See `docs/notes/tui-notice.md`.
+    pub fn set_client_sessions(&mut self, names: Vec<String>) {
+        self.client_sessions = names;
+    }
+
     /// What the front-end's own entries mean to a completion.
     ///
     /// # Invariant
@@ -1399,6 +1418,7 @@ impl Client {
             catalog,
             home,
             shown: Vec::new(),
+            client_sessions: Vec::new(),
             results: HashMap::new(),
             unconfirmed: Vec::new(),
             calls: HashSet::new(),
@@ -1824,8 +1844,12 @@ impl Client {
                     LineKind::System,
                     &format!("{prefix}{label}{suffix}"),
                 );
-                // A turn somebody stopped is not a stop to announce: see TurnOutcome.
-                if status != SessionStatus::Running && outcome != Some(TurnOutcome::Cancelled) {
+                // Not a stop to announce: TurnOutcome, or another client's session.
+                // See `docs/notes/tui-notice.md`.
+                if status != SessionStatus::Running
+                    && outcome != Some(TurnOutcome::Cancelled)
+                    && self.client_sessions.contains(&session)
+                {
                     sink.stopped(&session, status == SessionStatus::Error);
                 }
                 self.refresh(sink);

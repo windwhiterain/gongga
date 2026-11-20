@@ -41,6 +41,7 @@ pub fn sync(
     view.show_state(state);
     client.set_sticky_vocabulary(&state.sticky().names(), state.sticky().get("session"));
     client.set_shown(state.shown_names());
+    client.set_client_sessions(state.client_names());
     window.refresh(client, state);
     view.refresh_completion();
     view.refresh_lines(client);

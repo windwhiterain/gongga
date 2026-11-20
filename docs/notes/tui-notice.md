@@ -8,6 +8,20 @@ desktop, where the operator is looking when they are not reading the window. The
 same need the DSH plugin `dsh-turn-notify` answers on the machine it runs on --
 the mechanism is borrowed from it, the wording is this harness's.
 
+## Whose turn end it is
+
+A toast is a client's, so only a session that belongs to this client raises one.
+A subagent, a dream or any other session the window only heard about from the
+server has no business interrupting the operator; its caller learns of the turn
+end through its own subscription. The client decides this once, where the
+`Event::Status` is handled: a session not in the window's client set never
+reaches a front-end's `stopped`, so no front-end can raise a toast for it.
+
+The client set is the window's state (`client.toml`), pushed into the client on
+every sync. A session the operator named here -- typed to, shown, or hidden
+afterwards -- is one of its own; an explicit `set_client_session` can add one the
+window never drew or take one away. See `docs/notes/tui-state.md`.
+
 ## Why PowerShell
 
 Windows has no toast a program can raise without one of three things: a

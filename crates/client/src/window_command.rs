@@ -59,6 +59,7 @@ pub fn run(
             Done::Local
         }
         "set_render" => render(client, state, args, sink),
+        "set_client_session" => client_session(client, state, args, sink),
         "set_render_session" => render_session(client, state, args, sink),
         "set_sticky" => {
             let kind = args.word("type").unwrap_or_default().to_string();
@@ -210,6 +211,91 @@ fn render(client: &crate::Client, state: &mut State, args: &Args, sink: &mut dyn
         sink,
     );
     Done::Local
+}
+
+/// `set_client_session`: whether one session belongs to this client, and is drawn.
+///
+/// # Invariant
+///
+/// One config, one answer: both flags come from one JSON object and one line
+/// reports what they are now, so membership and window cannot disagree. `show`
+/// follows [`set_render_session`] -- showing makes the session sticky, hiding
+/// clears it when it was sticky.
+fn client_session(
+    client: &crate::Client,
+    state: &mut State,
+    args: &Args,
+    sink: &mut dyn Sink,
+) -> Done {
+    let name = args.word("session").unwrap_or_default().to_string();
+    let (client_mark, show) = match args.value("config") {
+        None => (None, None),
+        Some(value) => match parse_client_config(value) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                client.say(LineKind::Error, &e, sink);
+                return Done::Local;
+            }
+        },
+    };
+    if let Some(mark) = client_mark {
+        if let Err(e) = state.set_client(&name, mark) {
+            client.say(LineKind::Error, &format!("could not save: {e}"), sink);
+            return Done::Local;
+        }
+    }
+    if let Some(visible) = show {
+        if let Err(e) = state.set_shown(&name, visible) {
+            client.say(LineKind::Error, &format!("could not save: {e}"), sink);
+            return Done::Local;
+        }
+        let saved = if visible {
+            state.set_sticky("session", &name)
+        } else if state.sticky().get("session") == Some(&name) {
+            state.del_sticky("session").map(|_| ())
+        } else {
+            Ok(())
+        };
+        if let Err(e) = saved {
+            client.say(LineKind::Error, &format!("could not save: {e}"), sink);
+            return Done::Local;
+        }
+    }
+    let body = format!(
+        "client {name} = {}; render {name} = {}",
+        state.is_client(&name),
+        state.is_shown(&name)
+    );
+    client.say(LineKind::Result, &body, sink);
+    Done::Local
+}
+
+/// The two flags of `ClientSessionConfig`, as an update: only what was written.
+fn parse_client_config(value: &serde_json::Value) -> Result<(Option<bool>, Option<bool>), String> {
+    let object = value.as_object().ok_or_else(|| {
+        format!(
+            "config is a JSON object; it takes {}",
+            crate::commands::signature(spec("set_client_session").as_ref())
+        )
+    })?;
+    let mut client = None;
+    let mut show = None;
+    for (key, value) in object {
+        let flag = match value.as_bool() {
+            Some(flag) => flag,
+            None => return Err(format!("config.{key} is {value}, not true or false")),
+        };
+        match key.as_str() {
+            "client" => client = Some(flag),
+            "show" => show = Some(flag),
+            other => {
+                return Err(format!(
+                    "no config field {other:?}; it takes client and show"
+                ));
+            }
+        }
+    }
+    Ok((client, show))
 }
 
 /// `set_render_session`: whether one session is drawn beside the list.

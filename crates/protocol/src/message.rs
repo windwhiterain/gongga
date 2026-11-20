@@ -1158,6 +1158,24 @@ pub enum CommandTarget {
     Client,
 }
 
+/// The JSON Schema of `set_client_session --config`, SPEC's `ClientSessionConfig`.
+fn client_session_config_schema() -> serde_json::Value {
+    let field = |description: &str| {
+        serde_json::json!({
+            "type": "boolean",
+            "description": description,
+        })
+    };
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "client": field("Whether this session belongs to this client. Only a session that does announces its turn end."),
+            "show": field("Whether this session is drawn beside the list."),
+        },
+        "additionalProperties": false,
+    })
+}
+
 /// The commands a client runs against its own state, published like any other.
 ///
 /// # Invariant
@@ -1231,6 +1249,33 @@ pub fn client_commands() -> Vec<CommandSpec> {
                     None,
                     Some("columns"),
                     CompletionSource::Static(BOX_EDGES.iter().map(|m| m.to_string()).collect()),
+                ),
+            ],
+        ),
+        (
+            "set_client_session",
+            "Whether one session belongs to this client, and whether it is shown beside the list. Only a session that belongs to this client announces its turn end.",
+            vec![
+                spec_arg(
+                    "config",
+                    "The session's client settings as SPEC's ClientSessionConfig, one JSON object: client (whether this session belongs to this client) and show (whether it is drawn beside the list). Both default to true for a session created in the client and false otherwise; fields left out keep what they are.",
+                    false,
+                    false,
+                    Some("config"),
+                    Some("json"),
+                    CompletionSource::None,
+                )
+                .with_schema(client_session_config_schema())
+                .updating()
+                .typed_as("ClientSessionConfig"),
+                spec_arg(
+                    "session",
+                    "The session whose client settings this changes.",
+                    true,
+                    false,
+                    Some("session"),
+                    Some("name"),
+                    CompletionSource::Sessions,
                 ),
             ],
         ),
@@ -1448,6 +1493,18 @@ impl ArgSpec {
     /// Names the structured (JSON object) shape this argument's value takes.
     pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
         self.schema = Some(schema);
+        self
+    }
+
+    /// Marks this argument as SPEC's `T{..}`: a delta, not a whole value.
+    pub fn updating(mut self) -> Self {
+        self.update = true;
+        self
+    }
+
+    /// Spells the SPEC type this argument holds, for a line's text-to-value read.
+    pub fn typed_as(mut self, type_of: &str) -> Self {
+        self.type_of = type_of.to_string();
         self
     }
 

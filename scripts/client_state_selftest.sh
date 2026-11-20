@@ -122,7 +122,7 @@ ok "get_messages with no --session is refused" $?
 ok "set_session leaves client.toml byte for byte as the window wrote it" $?
 
 # 4. The commands that carry that state are not published to a one-shot process.
-for name in set_sticky del_sticky set_render set_render_session connect_server; do
+for name in set_sticky del_sticky set_render set_client_session set_render_session connect_server; do
   out=$("${cli[@]}" "{\"name\":\"$name\"}" 2>&1); code=$?
   [[ $code -ne 0 && "$out" == *"unknown command"* ]]
   ok "$name is not a command this program has" $?

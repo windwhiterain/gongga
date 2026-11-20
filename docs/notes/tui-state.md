@@ -133,6 +133,19 @@ Showing a session makes it the sticky one; hiding the sticky one clears the entr
 That is the same rule the click uses, so a session the operator named and a session
 a command named end up on screen the same way.
 
+## Client membership
+
+`client_session[{name, value}]`: `true` for a session that belongs to this client,
+and so is the only kind whose turn end raises a toast. SPEC's `ClientSessionConfig`
+has two flags set by one command, `set_client_session --config '{...}' --session`;
+one JSON object carries `client` and `show`, and field left out keeps what it was.
+
+A session with no explicit entry follows the names this client has addressed:
+every name the `render_session` section holds, shown or since hidden. A session
+the window only heard about from the server is in neither section, so a subagent
+or a dream ends its turn without interrupting the operator. See
+`docs/notes/tui-notice.md`.
+
 ## BlockSize and BoxEdge
 
 Two numbers, each with one default constant, because the file may say anything:

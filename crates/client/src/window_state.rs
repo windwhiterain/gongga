@@ -2,7 +2,7 @@
 //!
 //! See `docs/notes/tui-state.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -188,6 +188,22 @@ impl Shown {
         self.show.get(name).copied().unwrap_or(false)
     }
 
+    /// Whether this client has ever named the session, drawn or since hidden.
+    ///
+    /// # Invariant
+    ///
+    /// The answer to "was it created in this client": a name stays in the map
+    /// when it is hidden, so a window the operator closed is still one of theirs.
+    /// Hiding a pane never revokes the session's turn-end toast.
+    pub fn addressed(&self, name: &str) -> bool {
+        self.show.contains_key(name)
+    }
+
+    /// Every name this client has ever addressed, shown or since hidden.
+    pub fn addressed_names(&self) -> Vec<String> {
+        self.show.keys().cloned().collect()
+    }
+
     /// Every name that is shown, in the order the file keeps them.
     pub fn names(&self) -> Vec<String> {
         self.show
@@ -200,6 +216,18 @@ impl Shown {
     pub fn set(&mut self, name: &str, show: bool) -> anyhow::Result<()> {
         self.show.insert(name.to_string(), show);
         self.save()
+    }
+
+    /// Writes this section into the file the caller already has open.
+    fn apply(&self, file: &mut File) {
+        file.render_session = self
+            .show
+            .iter()
+            .map(|(name, show)| Entry {
+                name: name.clone(),
+                value: show.to_string(),
+            })
+            .collect();
     }
 
     /// Shows one session and hides the rest, in one write, counting what closed.
@@ -227,15 +255,67 @@ impl Shown {
 
     fn save(&self) -> anyhow::Result<()> {
         let mut file = read_file(&self.path);
-        file.render_session = self
-            .show
+        self.apply(&mut file);
+        write_file(&self.path, &file)
+    }
+}
+
+/// Which sessions belong to this client: `set_client_session --config`.
+///
+/// # Invariant
+///
+/// Only a session that belongs to this client announces its turn end. An
+/// explicit answer is kept here; one never set follows [`Shown::addressed`],
+/// because a session the operator named in this client was created in it and a
+/// window closed since is still theirs. A session the window only heard about
+/// from the server is not. See `docs/notes/tui-notice.md`.
+pub struct ClientMark {
+    path: PathBuf,
+    client: BTreeMap<String, bool>,
+}
+
+impl ClientMark {
+    /// Loads `client_home/client.toml`; a session without an entry is unmarked.
+    pub fn load(client_home: &Path) -> Self {
+        let path = client_home.join("client.toml");
+        let client = read_file(&path)
+            .client_session
+            .into_iter()
+            .filter_map(|e| stored_show(&e.value).map(|mark| (e.name, mark)))
+            .collect();
+        Self { path, client }
+    }
+
+    /// The explicit answer for this session, before the default is applied.
+    fn marked(&self, name: &str) -> Option<bool> {
+        self.client.get(name).copied()
+    }
+
+    pub fn is_client(&self, name: &str, shown: &Shown) -> bool {
+        self.marked(name).unwrap_or_else(|| shown.addressed(name))
+    }
+
+    /// Every explicit answer, so the caller can resolve the default too.
+    fn entries(&self) -> &BTreeMap<String, bool> {
+        &self.client
+    }
+
+    fn set(&mut self, name: &str, client: bool) -> anyhow::Result<()> {
+        self.client.insert(name.to_string(), client);
+        let mut file = read_file(&self.path);
+        self.apply(&mut file);
+        write_file(&self.path, &file)
+    }
+
+    fn apply(&self, file: &mut File) {
+        file.client_session = self
+            .client
             .iter()
-            .map(|(name, show)| Entry {
+            .map(|(name, client)| Entry {
                 name: name.clone(),
-                value: show.to_string(),
+                value: client.to_string(),
             })
             .collect();
-        write_file(&self.path, &file)
     }
 }
 
@@ -280,6 +360,9 @@ struct File {
     /// `set_render_session`: the mode each named session is drawn in.
     #[serde(default)]
     render_session: Vec<Entry>,
+    /// `set_client_session`: which named sessions belong to this client.
+    #[serde(default)]
+    client_session: Vec<Entry>,
     /// Where `connect_server` last pointed this client.
     #[serde(default)]
     connection: Option<Stored>,
@@ -614,6 +697,7 @@ pub struct State {
     client_home: PathBuf,
     sticky: Sticky,
     shown: Shown,
+    client: ClientMark,
     block_size: BlockSize,
     box_edge: BoxEdge,
     keep_rows: KeepRows,
@@ -632,6 +716,7 @@ impl State {
             client_home: client_home.to_path_buf(),
             sticky: Sticky::load(client_home),
             shown: Shown::load(client_home),
+            client: ClientMark::load(client_home),
             block_size: BlockSize::load(client_home),
             box_edge: BoxEdge::load(client_home),
             keep_rows: KeepRows::load(client_home),
@@ -649,6 +734,35 @@ impl State {
 
     pub fn is_shown(&self, name: &str) -> bool {
         self.shown.is_shown(name)
+    }
+
+    /// Whether this session belongs to this client, and so announces its turn end.
+    pub fn is_client(&self, name: &str) -> bool {
+        self.client.is_client(name, &self.shown)
+    }
+
+    /// Every session that belongs to this client, for the toast gate.
+    ///
+    /// # Invariant
+    ///
+    /// The same resolution [`Self::is_client`] gives: a session ever named here
+    /// is one of its own, hidden or not, unless marked otherwise; an explicit
+    /// mark adds or removes one. The gate and the answer cannot disagree.
+    pub fn client_names(&self) -> Vec<String> {
+        let mut names: BTreeSet<String> = self.shown.addressed_names().into_iter().collect();
+        for (name, mark) in self.client.entries() {
+            if *mark {
+                names.insert(name.clone());
+            } else {
+                names.remove(name);
+            }
+        }
+        names.into_iter().collect()
+    }
+
+    /// Sets one session's client flag without touching any other section.
+    pub fn set_client(&mut self, name: &str, client: bool) -> anyhow::Result<()> {
+        self.client.set(name, client)
     }
 
     pub fn block_size(&self) -> BlockSize {
