@@ -99,6 +99,44 @@ WHY
   fi
 fi
 
+# Raising VERSION makes every older home's start depend on a migrator being
+# fetchable: bring_forward() stops the server when a step cannot be found. Code
+# that reads the new version before the step is published leaves a window where
+# a new build and an old home cannot start together. The step lives in ship/, so
+# the commit that raises VERSION must see it already committed on the content's
+# HEAD. This reads the local checkout: a commit never depends on the network.
+version_of() { sed -n 's/^pub const VERSION: u32 = \([0-9][0-9]*\);$/\1/p' | head -1; }
+if git diff --cached --name-only | grep -qxE 'crates/server/src/migrate\.rs'; then
+  old=$(git show HEAD:crates/server/src/migrate.rs 2>/dev/null | version_of || true)
+  new=$(git show :crates/server/src/migrate.rs 2>/dev/null | version_of || true)
+  if [[ -n $old && -n $new ]] && (( 10#$new > 10#$old )); then
+    missing=""
+    for ((step = 10#$old; step < 10#$new; step++)); do
+      path="migrate/${step}-to-$((step + 1)).py"
+      if ! env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
+        -u GIT_PREFIX git -C ship cat-file -e "HEAD:$path" 2>/dev/null; then
+        missing+="      $path"$'\n'
+      fi
+    done
+    if [[ -n $missing ]]; then
+      printf 'pre-commit: VERSION rose to %s, but the content HEAD has no:\n%s' "$new" "$missing" >&2
+      cat >&2 <<'WHY'
+
+  bring_forward() runs before the database is opened and refuses to start the
+  server if a step cannot be fetched. Publishing the build first leaves a window
+  where a machine with this build and an old home cannot start at all.
+
+  Publish the step before committing the bump:
+
+      scripts/ship.sh -m "migrate: move the head into fixed slots"
+
+  A content change that does not move VERSION needs none of this.
+WHY
+      exit 1
+    fi
+  fi
+fi
+
 # Nothing about the content's protocol is being committed: no round trip, no opinion.
 if ! git diff --cached --name-only | grep -qxE 'ship|crates/server/ship\.toml'; then
 	exit 0
