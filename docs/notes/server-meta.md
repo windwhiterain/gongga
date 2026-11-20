@@ -152,7 +152,9 @@ as written, on the promise that the row about to be written will index them. Tha
 promise is only true if the row reads the inbox too, so `agent::index_of` takes
 `store.user_texts` (the transcript) *and* `store.queued_texts` (the messages still
 waiting there). Without the second, a file queued during the first turn would be named
-by a message and carried by no entry.
+by a message and carried by no entry. The handoff note is marked `first_prompt` when
+it enters the queue, so it lands as a `text` row and `user_texts` sees it too; a
+harness `inject` row would keep the mention literal and carry no entry for it.
 
 ## the index's prose is the config's
 

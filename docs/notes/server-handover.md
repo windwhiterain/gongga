@@ -60,17 +60,28 @@ note's references with `meta::roots` and puts them in the index. The continuatio
 request is an empty session's first request, which is the case SPEC's `.agents`
 optimization is written for.
 
+The note has to be the *first prompt*, not a harness injection. A tool message to a
+session with no prompt row is marked `first_prompt`; when the turn is busy and the
+message waits in the inbox, `deliver_pending` lands it as a `text` row -- the same
+row `begin_turn` writes for a new session's first message. Landing it as `inject`
+would hide it from `store.user_texts`, so `index_of` would write the prompt row
+without ever planning the note's references: the mention would stay literal and
+the file body would be missing from the index. With the `text` row in place,
+`prefix_cache::plan` runs on the note exactly as it runs after `new_session` and
+one `send_message`.
+
 The command's origin is still a tool, not a client. That is what keeps a
-heartbeat-prompted handoff mute: the note is a message, but it is not a new user
-prompt, so `send_message` leaves `keepalive_handoff_at` alone. See
+heartbeat-prompted handoff mute: the note is a first prompt, but it is not a new
+client prompt, so `send_message` leaves `keepalive_handoff_at` alone. See
 `server-dream.md`.
 
 `handoff` sends it rather than inserting the row itself, and the reason is ordering: it
 runs *inside* the call it must keep, so a row inserted here would sit between that
 call and its result, which is a transcript no provider accepts. `send_message` from a
-shell whose turn is busy is queued as an `inject` row and delivered by
+shell whose turn is busy is queued as an `inject` task and delivered by
 `Store::deliver_pending` at the boundary where the row is allowed -- and it is
-`deliver_pending`'s own rule, not a second one.
+`deliver_pending`'s own rule, not a second one. The task kind stays `inject`;
+the marker decides the row kind it becomes.
 
 If the send fails the note is printed instead, and the command exits non-zero: the
 transcript is already empty, so that result is the only copy left. Losing it silently

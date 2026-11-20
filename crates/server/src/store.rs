@@ -2871,11 +2871,10 @@ impl Store {
     ///
     /// # Invariant
     ///
-    /// Heir empties a transcript from under a still-running turn, keeping only
-    /// the in-flight call and its result, and its lesson lands as an injection --
-    /// so an emptied transcript holds rows and no `text` one, which is what the
-    /// reset keys on. A fresh session holds no rows, so the checkpoint opened
-    /// before its first message survives. The reset lives here, not on `begin_turn`.
+    /// The reset keys on "rows but no `text` row": handoff leaves only the
+    /// in-flight pair, then its note becomes that `text` row. A fresh session
+    /// has no rows, so its checkpoint stands. The reset lives here, not on
+    /// `begin_turn`.
     fn append_user_conn(
         &self,
         tx: &rusqlite::Transaction<'_>,
@@ -3118,10 +3117,20 @@ impl Store {
 
             let expanded = crate::meta::Expanded::from_json(&payload)
                 .ok_or_else(|| anyhow::anyhow!("pending inject {id} has no message"))?;
-            written.seq = self.append_user_conn(&tx, session_id, &expanded, Kind::Inject)?;
+            // A first prompt lands as the `text` row the prompt plan reads.
+            let first_prompt = payload
+                .get("first_prompt")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            let kind = if first_prompt {
+                Kind::Text
+            } else {
+                Kind::Inject
+            };
+            written.seq = self.append_user_conn(&tx, session_id, &expanded, kind)?;
             written.lines.push(OperatorLine {
                 text: expanded.text.clone(),
-                injected: true,
+                injected: !first_prompt,
             });
             if let Some(next) = next_interval {
                 tx.execute(

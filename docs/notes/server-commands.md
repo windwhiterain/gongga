@@ -199,6 +199,14 @@ boundary. Starting a turn would have meant queueing behind the gate -- the
 operator's line unread until the agent had finished everything else and stopped,
 which is exactly when it is too late to steer.
 
+A tool-origin message to a session with no prompt row is the first prompt of an
+emptied session, not a harness block. It is marked `first_prompt` in the inbox
+task and lands as a `text` row at the boundary, the same row `begin_turn` writes
+for a fresh session's first message. That is what puts its `@` references in
+`store.user_texts` for `agent::index_of` to plan; without the mark the note would
+be an `inject` row, invisible to the plan, and its files would never enter the
+index. See `server-handover.md`.
+
 One read of `busy`, and it decides both things: what contract the row has and
 whether this call starts a turn. Two reads were a race with a nasty shape -- the
 first said "busy" (so the row was written as "inject", promising the message is

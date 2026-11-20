@@ -373,7 +373,7 @@ pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
             spawn_handoff(&d, &session, generation).await;
             return;
         }
-        let _ = deliver(d.as_ref(), session.name(), time_notice()).await;
+        let _ = deliver(d.as_ref(), session.name(), time_notice(), false).await;
     });
     true
 }
@@ -390,7 +390,7 @@ async fn spawn_handoff(d: &Dispatch, source: &SessionHandle, generation: i64) {
         "keepalive_handoff",
         &json!({"generation": generation}),
     );
-    let said = deliver(d, source.name(), handoff_notice()).await;
+    let said = deliver(d, source.name(), handoff_notice(), false).await;
     if !said.ok {
         tracing::warn!(session = %source.name(), answer = %said.message, "the handoff notice was not delivered");
     }
@@ -435,7 +435,7 @@ async fn spawn_dream(d: &Dispatch, source: &SessionHandle, generation: i64) -> b
         &json!({"dream": name, "generation": generation, "rows": report.rows}),
     );
     publish_sessions(d);
-    let said = deliver(d, &name, DREAM_NOTICE.to_string()).await;
+    let said = deliver(d, &name, DREAM_NOTICE.to_string(), false).await;
     if !said.ok {
         // A dream with no notice is row-less work: the next start's sweep discards it.
         tracing::warn!(session = %name, answer = %said.message, "the dream notice was not delivered");
@@ -1766,7 +1766,15 @@ async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
             "send_message runs for a session: name one, or run it from a session's shell",
         );
     };
-    let said = deliver(d, &name, message).await;
+    // No prompt row means this tool message is the session's first prompt.
+    // See `docs/notes/server-handover.md`.
+    let first_prompt = matches!(origin, Origin::Tool { .. })
+        && d.sessions
+            .get(&name)
+            .ok()
+            .and_then(|session| d.store.prompt(session.id()).ok().flatten())
+            .is_none();
+    let said = deliver(d, &name, message, first_prompt).await;
     // Only a client's message is a new user prompt. The handoff's note is from a
     // tool and leaves the heartbeat muted.
     if said.ok && matches!(origin, Origin::Client { .. }) {
@@ -1813,13 +1821,20 @@ async fn expand_message(
     .await)
 }
 
-/// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.
+/// Delivers `message`: a turn when free, an inbox row when busy.
+///
+/// `first_prompt`: see `docs/notes/server-handover.md`.
 ///
 /// # Invariant
 ///
 /// The gate is claimed before the durable write, so a second sender can only
 /// inject, never spawn a competing turn.
-pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcome {
+pub(crate) async fn deliver(
+    d: &Dispatch,
+    name: &str,
+    message: String,
+    first_prompt: bool,
+) -> Outcome {
     let session = match d.sessions.get(name) {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
@@ -1835,6 +1850,9 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
     if d.shutting_down.load(Ordering::SeqCst) || d.shutdown.is_cancelled() {
         let mut payload = message.to_json();
         payload["session"] = json!(name);
+        if first_prompt {
+            payload["first_prompt"] = json!(true);
+        }
         return match d.store.add_pending_task(&name, "inject", &payload) {
             Ok(_) => {
                 tracing::info!(
@@ -1884,6 +1902,9 @@ pub(crate) async fn deliver(d: &Dispatch, name: &str, message: String) -> Outcom
         match d.store.add_pending_task(name, "inject", &{
             let mut payload = message.to_json();
             payload["session"] = json!(name);
+            if first_prompt {
+                payload["first_prompt"] = json!(true);
+            }
             payload
         }) {
             Ok(_) => {
