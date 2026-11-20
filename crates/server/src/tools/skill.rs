@@ -208,6 +208,8 @@ pub struct Found {
     /// The directory holding `SKILL.md`, spelled the same way.
     pub dir: String,
     pub bucket: String,
+    /// Whether this machine holds it: every layer but a project's own is read here.
+    pub local: bool,
 }
 
 /// Every skill a session standing on `space`'s machine in `cwd` can open.
@@ -224,7 +226,7 @@ pub async fn installed_in(space: &crate::space::Space, cwd: &Path) -> Vec<Found>
     // The project layer first: the most specific, and the session's own checkout,
     // which may be a peer's.
     let project = space.spell(cwd, ".agents/skills");
-    out.extend(read_layer(space, &project, skill::Bucket::Project.as_str()).await);
+    out.extend(read_layer(space, &project, skill::Bucket::Project.as_str(), false).await);
     // Read here, whatever machine the session works on.
     let here = crate::space::Space::local();
     let roots = crate::ship::roots();
@@ -233,14 +235,19 @@ pub async fn installed_in(space: &crate::space::Space, cwd: &Path) -> Vec<Found>
         (roots.machine.join("skills"), skill::Bucket::General),
     ] {
         let spelled = dir.to_string_lossy().into_owned();
-        out.extend(read_layer(&here, &spelled, bucket.as_str()).await);
+        out.extend(read_layer(&here, &spelled, bucket.as_str(), true).await);
     }
     out
 }
 
 /// The skills whose `SKILL.md` one directory holds, sorted by directory.
 ///
-async fn read_layer(space: &crate::space::Space, dir: &str, bucket: &str) -> Vec<Found> {
+async fn read_layer(
+    space: &crate::space::Space,
+    dir: &str,
+    bucket: &str,
+    local: bool,
+) -> Vec<Found> {
     let Some(entries) = space.list(dir).await else {
         return Vec::new();
     };
@@ -267,6 +274,7 @@ async fn read_layer(space: &crate::space::Space, dir: &str, bucket: &str) -> Vec
             path: skill_file,
             dir: one,
             bucket: bucket.to_string(),
+            local,
         });
     }
     out

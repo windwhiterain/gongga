@@ -330,6 +330,9 @@ async fn content(
 /// read through that peer's own space, so a project's skill there is a skill here.
 async fn skill_body(space: &crate::space::Space, home: &Path, name: &str) -> Option<String> {
     let found = crate::tools::skill::find(space, home, name).await?;
+    // The machine that holds it reads it: a home's skill is here, a project's is the peer's.
+    let here = crate::space::Space::local();
+    let space = if found.local { &here } else { space };
     let path = found.path.clone();
     let mut body = String::from_utf8(space.read_bytes(&path).await?).ok()?;
     let prompts = crate::prompts::shared();

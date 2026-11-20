@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-use protocol::{ArgSpec, CommandSpec, CommandTarget, CompletionSource};
+use protocol::{ArgSpec, CommandSpec, CommandTarget};
 
 use crate::tools::ToolRegistry;
 use crate::tools::skill::Skills;
