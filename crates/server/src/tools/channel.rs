@@ -935,11 +935,6 @@ impl Channels {
                 _ => None,
             },
         };
-        // The flag says a caller waits here, for what. It outlives this call only if
-        // the call gives up first.
-        self.store
-            .set_channel_wait(session, id, marker.as_deref().unwrap_or(""))
-            .map_err(quiet)?;
         let upto = row.upto;
         loop {
             // # Invariant
@@ -1003,6 +998,14 @@ impl Channels {
             // What is left is the clock: the read found nothing and the program is
             // running, so a wait that has run out answers now rather than reading again.
             if Instant::now() >= deadline {
+                // SPEC: only a call that *ran out* leaves the flag, and a flag with no
+                // marker still counts as a wait -- so `wait: 0`, an interrupt and a call
+                // its own answer satisfied leave none, and an end that follows is queued
+                // for the next turn rather than waking a session that stopped listening
+                // (`docs/notes/server-channel.md`).
+                self.store
+                    .set_channel_wait(session, id, marker.as_deref().unwrap_or(""))
+                    .map_err(quiet)?;
                 return self.answer(row, String::new(), false, upto, None, None, since);
             }
             tokio::time::sleep(LOOK).await;
@@ -1502,11 +1505,17 @@ impl Channels {
         };
         // A notice is a read: it carries the window, so the cursor moves with it.
         let _ = self.store.set_channel_upto(row.id, read_to);
-        if waited && claimed {
-            // A notice is a call's `wait` run out: say so, and leave SPEC's `Result` alone.
-            let output = format!(
-                "{output}\n\n[a call's wait ran out before this arrived; this is the rest of that call's answer]"
-            );
+        if claimed {
+            // SPEC: only a call that ran out of waiting is owed the end as the rest of
+            // its answer; any other end is *queued* -- the next turn that runs reads it,
+            // and none is started for it (`docs/notes/server-channel.md`).
+            let output = if waited {
+                format!(
+                    "{output}\n\n[a call's wait ran out before this arrived; this is the rest of that call's answer]"
+                )
+            } else {
+                output
+            };
             (self.notify)(ChannelEnd {
                 session: row.session.clone(),
                 id: row.path.clone(),
