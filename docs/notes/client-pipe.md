@@ -5,7 +5,7 @@
 `gongga-client` is the child process a UI starts. It has one stdin pipe carrying
 `UiIntent` JSON Lines, one stdout pipe carrying `RenderMessage` JSON Lines, and
 the SPEC reliable-UDP link to a server. It links its own library's
-`runtime::run`; the loop, the reconnect ladder and the command layer are not
+`runtime::run`; the loop, the poll cadence and the command layer are not
 reimplemented here.
 
 This is step ⑤ of `DESIGN.md` §1. Steps ⑥ (TUI spawns this binary) and ⑦ (bundle

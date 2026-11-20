@@ -2,7 +2,7 @@
 
 The connection lifecycle, the front-end interface and the whole interactive
 loop, lifted out of `crates/tui/src/run.rs`. These are the parts that know
-nothing about terminals: the reconnect ladder, whether this window starts a
+nothing about terminals: the poll cadence, whether this window starts a
 server at all, one dial attempt, whose server answered, the `Server` enum,
 `Frontend` / `FrontendEvent` / `give_back`, and `run` itself. See
 `client-frontend.md` for the interface.
@@ -34,12 +34,14 @@ refuse the lock and the window would end up with no server at all. Porting this
 branch from `tui/run.rs` was the only semantic work in merging main into the
 client split; the rest of that file had already moved here.
 
-## The reconnect ladder, and where its wait lives
+## Polling, and where its wait lives
 
-`RECONNECT_MIN` is the first delay and the only constant: each failed dial doubles it and
-nothing caps it (`docs/notes/protocol-retry.md`). A capped ladder turned "wait for the
-server to come back" into "stop trying quietly", which is the one thing a window left
-open overnight must not do.
+`POLL_INTERVAL` is the only cadence: every failed dial waits the same 250 ms and
+dials again. There is no ladder and no cap. A capped ladder turned "wait for the
+server to come back" into "stop trying quietly"; an uncapped one could saturate
+`Duration::MAX` and park the window behind a wait that never ends. Neither is a
+reason to stop polling, which is the one thing a window left open overnight must
+not do.
 
 The wait is a future kept across loop iterations, the same way `Dialing` is: re-made
 every round it would start over, and awaited inside the branch it would stop the keyboard

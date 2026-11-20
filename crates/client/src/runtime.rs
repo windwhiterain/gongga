@@ -14,13 +14,13 @@ use crate::window_state::State;
 use crate::window_sync::WindowView;
 use crate::{Connection, DialFailure, Greeting, LineKind, Link, Listed, Sink};
 
-/// First redial delay, doubled per failure with no ceiling; a cadence, not a budget.
+/// The fixed wait between dials; a cadence, not a budget.
 ///
 /// # Invariant
 ///
-/// Backing off never costs the window: history, input and scroll stay put, and
+/// Polling never costs the window: history, input and scroll stay put, and
 /// Ctrl+Q still leaves. See `docs/notes/client-runtime.md`.
-pub const RECONNECT_MIN: Duration = Duration::from_millis(250);
+pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How much of a burst is decoded before the keyboard is looked at again.
 ///
@@ -33,11 +33,6 @@ pub const RECONNECT_MIN: Duration = Duration::from_millis(250);
 pub const BURST: usize = 64;
 /// And the same bound in bytes, for a burst of a few very long messages.
 pub const BURST_BYTES: usize = 256 * 1024;
-
-/// The wait between dials while a server the UI started is coming up.
-pub const SPAWN_POLL: Duration = Duration::from_millis(50);
-/// How many of those are fast: past this it is not a start but a failure.
-pub const SPAWN_ATTEMPTS: u32 = 120;
 
 /// Whose server the window is talking to, which the header says beside the status.
 ///
@@ -113,21 +108,6 @@ pub fn whose_server(spawned: Option<u32>, greeting: &Greeting, owner_pid: u32) -
         Some(owner) if owner == owner_pid => Server::Handover { pid },
         Some(_) => Server::Another { pid },
         None => Server::Unowned { pid },
-    }
-}
-
-/// How long to wait before the next dial.
-///
-/// # Invariant
-///
-/// A server the UI started is coming up, so its first seconds are worth
-/// [`SPAWN_POLL`] rather than the reconnect ladder, which exists for a server
-/// that went away. Only our own: somebody else's is not ours to hammer.
-pub fn wait_for(spawned: Option<u32>, attempts: u32, backoff: Duration) -> Duration {
-    if spawned.is_some() && attempts <= SPAWN_ATTEMPTS {
-        SPAWN_POLL
-    } else {
-        backoff
     }
 }
 
@@ -210,7 +190,7 @@ enum Step {
     Closing,
     /// A message arrived, or `None` when the link ended.
     Wire(Option<Vec<u8>>),
-    /// The retry backoff expired: start dialling.
+    /// The poll wait expired: start dialling.
     Dial,
     /// A dial in flight finished.
     Dialed(Result<(Link, Greeting), DialFailure>),
@@ -219,7 +199,7 @@ enum Step {
 /// A dial kept alive between loop iterations, boxed so the loop never blocks.
 type Dialing = Pin<Box<dyn Future<Output = Result<(Link, Greeting), DialFailure>>>>;
 
-/// The backoff wait, kept like [`Dialing`]: awaited in the branch it would stop the keys.
+/// The poll wait, kept like [`Dialing`]: awaited in the branch it would stop the keys.
 type Waiting = Pin<Box<dyn Future<Output = ()>>>;
 
 /// The loop that outlives the link, driven through `Frontend`.
@@ -264,7 +244,6 @@ pub async fn run(
     let mut dialing: Option<Dialing> = None;
     // Nothing owed a wait yet: the first dial is the first round's.
     let mut waiting: Option<Waiting> = None;
-    let mut backoff = RECONNECT_MIN;
     let mut attempts: u32 = 0;
     // Started once, before any dial; what it spawned is its to stop, so the
     // server on the address is stopped first.
@@ -446,7 +425,6 @@ pub async fn run(
                     owed.clear();
                     link = None;
                     ui.set_server(None);
-                    backoff = RECONNECT_MIN;
                     attempts = 0;
                     waiting = None;
                     let unanswered = client.set_offline(0, ui.sink().as_mut());
@@ -474,7 +452,6 @@ pub async fn run(
                                 // line goes back like any other unanswered one.
                                 link = None;
                                 ui.set_server(None);
-                                backoff = RECONNECT_MIN;
                                 attempts = 0;
                                 waiting = None;
                                 let unanswered = client.set_offline(0, ui.sink().as_mut());
@@ -523,7 +500,6 @@ pub async fn run(
                 if client.take_hole() && link.is_some() {
                     link = None;
                     ui.set_server(None);
-                    backoff = RECONNECT_MIN;
                     attempts = 0;
                     waiting = None;
                     let unanswered = client.set_offline(0, ui.sink().as_mut());
@@ -537,7 +513,6 @@ pub async fn run(
             Step::Wire(None) => {
                 link = None;
                 ui.set_server(None);
-                backoff = RECONNECT_MIN;
                 attempts = 0;
                 waiting = None;
                 let unanswered = client.set_offline(0, ui.sink().as_mut());
@@ -562,7 +537,6 @@ pub async fn run(
                         greeting.apply(&mut client, ui.sink().as_mut());
                         crate::window_refill::declare(&mut client, &mut *ui);
                         link = Some(open);
-                        backoff = RECONNECT_MIN;
                     }
                     Err(failure) if failure.is_fatal() => break Err(failure.into_error()),
                     Err(failure) => {
@@ -582,10 +556,7 @@ pub async fn run(
                                 ),
                             );
                         }
-                        backoff = protocol::retry::doubled(backoff);
-                        waiting = Some(Box::pin(protocol::retry::sleep(wait_for(
-                            spawned, attempts, backoff,
-                        ))));
+                        waiting = Some(Box::pin(protocol::retry::sleep(POLL_INTERVAL)));
                     }
                 }
             }

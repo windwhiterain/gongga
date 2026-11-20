@@ -65,7 +65,7 @@ a `RwLock`, so the new commit is the answer for every later reader in this proce
 ## The other half: the client's poll window
 
 The server being fast is only half of "connected". `crates/client/src/runtime.rs` polls
-a server it spawned at 50 ms for `SPAWN_ATTEMPTS` (120) tries -- 6 s -- and then falls
-into the reconnect ladder (250 ms doubling to 5 s). A cold start used to take 10 s, so
-the window ran out *before* the server was ready and the first successful dial landed
-~4 s late, in the ladder. Any start that outlives 6 s pays that again.
+at `POLL_INTERVAL` (250 ms) from the first dial and never grows the wait. A cold start
+used to take 10 s, and a client that fell into an uncapped ladder could saturate
+`Duration::MAX` before the server was ready and stop dialling for good. A fixed cadence
+connects on the first poll after the server listens, however long that takes.

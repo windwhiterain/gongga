@@ -4,8 +4,9 @@
 
 `after(base, attempt)` is the delay before the `attempt`-th try: `base` doubled once
 per attempt already spent. `doubled(delay)` is the same step taken from a value a loop
-already carries, which is how the client's reconnect ladder, the bridge's redial ladder
-and the watchdog's restart ladder grow theirs.
+already carries, which is how the bridge's redial ladder and the watchdog's restart
+ladder grow theirs. The client polls at a fixed interval instead
+(`docs/notes/client-runtime.md`).
 
 Every one of them used to stop at a ceiling -- `[model] retry_ceiling_ms`,
 `RECONNECT_MAX`, `REDIAL_MAX`, the watchdog's `MAX_BACKOFF` -- and the user's rule is
