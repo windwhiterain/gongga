@@ -1209,7 +1209,7 @@ impl SessionManager {
         {
             return Ok(space.clone());
         }
-        let space = crate::space::Space::of(endpoint);
+        let space = crate::space::Space::of(endpoint, (!name.is_empty()).then_some(name.as_str()));
         self.spaces
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1564,7 +1564,10 @@ impl SessionManager {
     pub fn space_on(&self, remote: Option<&str>) -> anyhow::Result<crate::space::Space> {
         match remote {
             None => Ok(crate::space::Space::local()),
-            Some(remote) => Ok(crate::space::Space::of(self.endpoint_for(Some(remote))?)),
+            Some(remote) => Ok(crate::space::Space::of(
+                self.endpoint_for(Some(remote))?,
+                Some(remote),
+            )),
         }
     }
 

@@ -329,12 +329,13 @@ async fn content(
 /// package again. `SKILL.md` states no second copy of them. A skill found on a peer is
 /// read through that peer's own space, so a project's skill there is a skill here.
 async fn skill_body(space: &crate::space::Space, home: &Path, name: &str) -> Option<String> {
-    let found = crate::tools::skill::find(space, home, name, None).await?;
-    // The path says which machine holds it; that machine reads it.
+    let found = crate::tools::skill::find(space, home, name).await?;
+    // The path says which machine holds it; its prefix is the spelling, not the path.
     let here = crate::space::Space::local();
     let (path, space) = match crate::tools::skill::machine_of(&found.path) {
         Some((None, plain)) => (plain.to_string(), &here),
-        _ => (found.path.clone(), space),
+        Some((Some(_), plain)) => (plain.to_string(), space),
+        None => (found.path.clone(), space),
     };
     let mut body = String::from_utf8(space.read_bytes(&path).await?).ok()?;
     let prompts = crate::prompts::shared();
@@ -473,6 +474,7 @@ pub async fn expand(
     home: &Path,
     text: &str,
     llm: Option<&LlmClient>,
+    rooted: Option<&[String]>,
 ) -> Expanded {
     let mut out = Expanded::default();
     let mut cursor = 0;
@@ -481,12 +483,37 @@ pub async fn expand(
             continue;
         }
         let (replacement, image) = match mention.kind {
-            Reference::File => continue,
+            // A file the index carries stays as written; one it does not, this message carries.
+            Reference::File => {
+                if rooted.is_none_or(|keys| keys.iter().any(|key| *key == spelling(&mention))) {
+                    continue;
+                }
+                let space = machines.in_space(mention.remote.as_deref());
+                let Some(body) = content(
+                    machines,
+                    home,
+                    &spelling(&mention),
+                    mention.remote.as_deref(),
+                    &mention.value,
+                )
+                .await
+                else {
+                    continue;
+                };
+                (
+                    format!(
+                        "@{}({}) ({})\n{body}",
+                        Reference::File.name(),
+                        spelled(mention.remote.as_deref(), &mention.value),
+                        space.spell(home, &mention.value)
+                    ),
+                    None,
+                )
+            }
             Reference::Skill => match crate::tools::skill::find(
                 &machines.in_space(mention.remote.as_deref()),
                 home,
                 &mention.value,
-                mention.remote.as_deref(),
             )
             .await
             {

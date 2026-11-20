@@ -1764,13 +1764,16 @@ async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
     said
 }
 
-/// Resolves a message's `@image(...)` and `@skill(...)` references before it is stored.
+/// Resolves a message's `@image(...)`, `@skill(...)` and `@file(...)` references before it
+/// is stored.
 ///
 /// # Invariant
 ///
 /// A message is expanded once, so a stored row never carries a reference a later
 /// retry would resolve differently. A session whose provider cannot be resolved still
-/// takes its message: only the skills are expanded then.
+/// takes its message: only the skills are expanded then. A `@file` the prompt row's
+/// index carries stays as written; one it does not, this message carries.
+/// See `docs/notes/server-meta.md`.
 async fn expand_message(
     d: &Dispatch,
     session: &crate::session::SessionHandle,
@@ -1783,7 +1786,16 @@ async fn expand_message(
     let llm = d.agent.route(session.name(), &session.tuning()).ok();
     let llm = llm.as_ref().map(|(client, _, _)| client.as_ref());
     let home = session.cwd();
-    Ok(crate::meta::expand(&d.store, &machines, &home, &message, llm).await)
+    let prompt = d.store.prompt(session.id()).map_err(|e| e.to_string())?;
+    Ok(crate::meta::expand(
+        &d.store,
+        &machines,
+        &home,
+        &message,
+        llm,
+        prompt.as_ref().map(|row| row.rooted.as_slice()),
+    )
+    .await)
 }
 
 /// Puts `message` into `name`'s hands: a turn when it is free, an inbox row when not.
@@ -3040,25 +3052,23 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
 
 /// Every skill a session's roots hold: the one walk that `ls_skill` reads too.
 async fn list_skills(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let (named, machine, space, cwd) = match session_of(args, caller) {
+    let (named, space, cwd) = match session_of(args, caller) {
         Some(session) => match d.sessions.get(&session) {
-            Ok(handle) => (session, handle.remote_name(), handle.space(), handle.cwd()),
+            Ok(handle) => (session, handle.space(), handle.cwd()),
             Err(e) => return Outcome::err(e.to_string()),
         },
         // No session named: the server's own directory, as such a line reads it.
         None => (
             String::new(),
-            None,
             crate::space::Space::local(),
             std::env::current_dir().unwrap_or_default(),
         ),
     };
-    let rows: Vec<serde_json::Value> =
-        crate::tools::skill::installed_in(&space, &cwd, machine.as_deref())
-            .await
-            .iter()
-            .map(crate::tools::skill::found_row)
-            .collect();
+    let rows: Vec<serde_json::Value> = crate::tools::skill::installed_in(&space, &cwd)
+        .await
+        .iter()
+        .map(crate::tools::skill::found_row)
+        .collect();
     Outcome::ok_with(
         format!(
             "{}: {} skill(s)",
@@ -3093,12 +3103,7 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let installed = crate::tools::skill::installed_in(
-        &handle.space(),
-        &handle.cwd(),
-        handle.remote_name().as_deref(),
-    )
-    .await;
+    let installed = crate::tools::skill::installed_in(&handle.space(), &handle.cwd()).await;
     let listed: Vec<serde_json::Value> = installed
         .iter()
         .filter(|skill| under(&skill.name, &path) || under(&skill.bucket, &path))
@@ -3129,12 +3134,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let roots = crate::tools::skill::installed_in(
-        &handle.space(),
-        &handle.cwd(),
-        handle.remote_name().as_deref(),
-    )
-    .await;
+    let roots = crate::tools::skill::installed_in(&handle.space(), &handle.cwd()).await;
     // One resolver, and the walk behind it is `ls_skill`'s.
     let Some(found) = roots.iter().find(|skill| skill.name == id) else {
         let known: Vec<String> = roots.iter().map(|skill| skill.name.clone()).collect();

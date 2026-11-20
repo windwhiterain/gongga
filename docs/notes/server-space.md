@@ -13,8 +13,15 @@ bytes and the exit status.
 
 ```
 Space::local()            this machine, no protocol
-Space::of(endpoint)       the endpoint's own machine, always through its runner
+Space::of(endpoint, name) the endpoint's own machine, always through its runner
 ```
+
+A space built for a peer also holds the operator's name for it, and `Space::name()` is
+that name or `None` for this machine. It is kept here because a path is spelled with the
+machine that holds it -- `remote://<name>/…` -- and the space that read the file is the
+only thing that knows which machine's file it was: a caller of a read has a path, never a
+machine. `None` is this machine and never one of its names, so `remote://local/` stays
+the one spelling of a path here.
 
 `run` was the whole surface at first, because the file tools already have a driver: a
 request goes to a Python interpreter the *space* starts, and the answer is what that
