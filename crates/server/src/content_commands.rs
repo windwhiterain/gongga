@@ -431,10 +431,17 @@ fn spec_of(manifest: &Manifest, row: Option<&ToolSpec>) -> CommandSpec {
                     .unwrap_or_default(),
                 required: argument.required,
                 positional: said.and_then(|said| said.positional).is_some(),
-                value_hint: said.and_then(|said| said.hint.clone()),
-                completions: said
-                    .map(|said| said.completion.source())
-                    .unwrap_or(CompletionSource::None),
+                value_hint: said.and_then(|said| said.hint.clone()).or_else(|| {
+                    crate::tools::spec::worded(&argument.name)
+                        .1
+                        .map(str::to_string)
+                }),
+                completions: match said.map(|said| said.completion).unwrap_or_default() {
+                    crate::tools::spec::Completion::None => {
+                        crate::tools::spec::worded(&argument.name).0.source()
+                    }
+                    stated => stated.source(),
+                },
                 kind: None,
                 accepts: None,
                 sticky_to: None,

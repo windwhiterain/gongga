@@ -165,6 +165,25 @@ pub struct ToolSpec {
     pub offered: bool,
 }
 
+/// What an argument is completed against and shown as, by what it is called.
+///
+/// # Invariant
+///
+/// By name, because a Python signature cannot state a completion and the same word means
+/// the same thing in every skill: `path` and `cwd` are directories, `remote` a machine this
+/// host knows, `session` one of this server's. A row that states its own wins.
+pub fn worded(name: &str) -> (Completion, Option<&'static str>) {
+    match name {
+        "path" => (Completion::Paths, Some("path")),
+        "cwd" | "dir" | "directory" | "worktree" => (Completion::Paths, Some("path")),
+        "remote" => (Completion::Remotes, Some("name")),
+        "session" | "mentor" => (Completion::Sessions, Some("name")),
+        "model" | "provider" => (Completion::Models, Some("name")),
+        "skill" => (Completion::Skills, Some("name")),
+        _ => (Completion::None, None),
+    }
+}
+
 impl ToolSpec {
     /// The row as the declared function it forwards to re-states it.
     ///
@@ -195,8 +214,13 @@ impl ToolSpec {
                     items: given.items.clone(),
                     required: given.required,
                     positional: said.and_then(|said| said.positional),
-                    hint: said.and_then(|said| said.hint.clone()),
-                    completion: said.map(|said| said.completion).unwrap_or_default(),
+                    hint: said
+                        .and_then(|said| said.hint.clone())
+                        .or_else(|| worded(&given.name).1.map(str::to_string)),
+                    completion: match said.map(|said| said.completion).unwrap_or_default() {
+                        Completion::None => worded(&given.name).0,
+                        stated => stated,
+                    },
                     sentence: said.and_then(|said| said.sentence.clone()),
                 }
             })
