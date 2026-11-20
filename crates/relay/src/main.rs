@@ -66,7 +66,12 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("gongga-relay: {e:#}");
-            ExitCode::FAILURE
+            // A pair of two builds is what an install answers: the asking server writes
+            // its own copy and asks once more.
+            match e.downcast_ref::<gongga_relay::relay::OutOfDate>() {
+                Some(_) => ExitCode::from(REFUSED),
+                None => ExitCode::FAILURE,
+            }
         }
     }
 }

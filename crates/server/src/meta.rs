@@ -329,11 +329,13 @@ async fn content(
 /// package again. `SKILL.md` states no second copy of them. A skill found on a peer is
 /// read through that peer's own space, so a project's skill there is a skill here.
 async fn skill_body(space: &crate::space::Space, home: &Path, name: &str) -> Option<String> {
-    let found = crate::tools::skill::find(space, home, name).await?;
-    // The machine that holds it reads it: a home's skill is here, a project's is the peer's.
+    let found = crate::tools::skill::find(space, home, name, None).await?;
+    // The path says which machine holds it; that machine reads it.
     let here = crate::space::Space::local();
-    let space = if found.local { &here } else { space };
-    let path = found.path.clone();
+    let (path, space) = match crate::tools::skill::machine_of(&found.path) {
+        Some((None, plain)) => (plain.to_string(), &here),
+        _ => (found.path.clone(), space),
+    };
     let mut body = String::from_utf8(space.read_bytes(&path).await?).ok()?;
     let prompts = crate::prompts::shared();
     if let Some(template) = prompts.text(crate::prompts::SKILL_ARGUMENTS) {
@@ -484,6 +486,7 @@ pub async fn expand(
                 &machines.in_space(mention.remote.as_deref()),
                 home,
                 &mention.value,
+                mention.remote.as_deref(),
             )
             .await
             {

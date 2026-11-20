@@ -200,6 +200,36 @@ fn call_of(cmd: Option<&Value>) -> Result<Call, String> {
 ///
 /// `path` is spelled for the machine the skill is on, and is the string a body is read
 /// by and a row reports: a project's skill on a peer is a peer path, not this machine's.
+/// A path as the machine that holds it spells it.
+///
+/// # Invariant
+///
+/// One spelling for every door: `remote://<name>/<path>` for a peer, `remote://local/<path>`
+/// for this machine. A path handed to a caller carries the machine that holds it, so the
+/// call that reads it back needs no second argument. See `docs/notes/server-meta.md`.
+pub fn spelled(machine: Option<&str>, path: &str) -> String {
+    match machine {
+        Some(name) => format!("remote://{name}/{path}"),
+        None => format!("remote://local/{path}"),
+    }
+}
+
+/// What a path says about the machine it is on, and the path that machine spells.
+///
+/// # Invariant
+///
+/// `None` is a path that names no machine (the caller's own answer stands); `Some(None)` is
+/// `remote://local/` or `remote://none/`; `Some(Some(name))` is a peer. The one reader of
+/// the spelling [`spelled`] writes.
+pub fn machine_of(path: &str) -> Option<(Option<&str>, &str)> {
+    let rest = path.strip_prefix("remote://")?;
+    let (name, tail) = rest.split_once('/')?;
+    match name {
+        "" | "local" | "none" => Some((None, tail)),
+        other => Some((Some(other), tail)),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
     pub name: String,
@@ -208,8 +238,6 @@ pub struct Found {
     /// The directory holding `SKILL.md`, spelled the same way.
     pub dir: String,
     pub bucket: String,
-    /// Whether this machine holds it: every layer but a project's own is read here.
-    pub local: bool,
 }
 
 /// Every skill a session standing on `space`'s machine in `cwd` can open.
@@ -221,12 +249,16 @@ pub struct Found {
 /// so on a peer it is the peer's own `.agents/skills` read through that peer's space;
 /// the home's and the machine's layers are this server's, wherever the session works.
 /// See `docs/notes/server-tools-skill.md`.
-pub async fn installed_in(space: &crate::space::Space, cwd: &Path) -> Vec<Found> {
+pub async fn installed_in(
+    space: &crate::space::Space,
+    cwd: &Path,
+    machine: Option<&str>,
+) -> Vec<Found> {
     let mut out = Vec::new();
     // The project layer first: the most specific, and the session's own checkout,
     // which may be a peer's.
     let project = space.spell(cwd, ".agents/skills");
-    out.extend(read_layer(space, &project, skill::Bucket::Project.as_str(), false).await);
+    out.extend(read_layer(space, &project, skill::Bucket::Project.as_str(), machine).await);
     // Read here, whatever machine the session works on.
     let here = crate::space::Space::local();
     let roots = crate::ship::roots();
@@ -235,7 +267,7 @@ pub async fn installed_in(space: &crate::space::Space, cwd: &Path) -> Vec<Found>
         (roots.machine.join("skills"), skill::Bucket::General),
     ] {
         let spelled = dir.to_string_lossy().into_owned();
-        out.extend(read_layer(&here, &spelled, bucket.as_str(), true).await);
+        out.extend(read_layer(&here, &spelled, bucket.as_str(), None).await);
     }
     out
 }
@@ -246,7 +278,7 @@ async fn read_layer(
     space: &crate::space::Space,
     dir: &str,
     bucket: &str,
-    local: bool,
+    machine: Option<&str>,
 ) -> Vec<Found> {
     let Some(entries) = space.list(dir).await else {
         return Vec::new();
@@ -271,10 +303,9 @@ async fn read_layer(
         out.push(Found {
             name: declared.0,
             description: declared.1,
-            path: skill_file,
-            dir: one,
+            path: spelled(machine, &skill_file),
+            dir: spelled(machine, &one),
             bucket: bucket.to_string(),
-            local,
         });
     }
     out
@@ -286,8 +317,13 @@ async fn read_layer(
 ///
 /// The precedence is `Bucket::ALL`: a project's own skill beats this home's, which
 /// beats the machine's, and a name in two layers is the first one read.
-pub async fn find(space: &crate::space::Space, cwd: &Path, name: &str) -> Option<Found> {
-    installed_in(space, cwd)
+pub async fn find(
+    space: &crate::space::Space,
+    cwd: &Path,
+    name: &str,
+    machine: Option<&str>,
+) -> Option<Found> {
+    installed_in(space, cwd, machine)
         .await
         .into_iter()
         .find(|skill| skill.name == name)

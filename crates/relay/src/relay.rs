@@ -25,6 +25,24 @@ pub const PROTOCOL: u32 = 1;
 /// The code a refusal uses: not a program that failed, a pair that cannot work.
 pub const REFUSED: u8 = 3;
 
+/// A pair that is not one build: the refusal a start can answer by installing again.
+///
+/// # Invariant
+///
+/// Exit [`REFUSED`], because the caller has a repair -- [`crate::shell_command`'s
+/// `refresh_relay`] writes this build's copy and asks once more. A build mismatch that
+/// exited like any other failure would end a channel nobody could start again.
+#[derive(Debug)]
+pub struct OutOfDate(pub String);
+
+impl std::fmt::Display for OutOfDate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for OutOfDate {}
+
 /// The words the program was started with, read once.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Words {
@@ -82,11 +100,11 @@ pub fn run(dir: &Path) -> anyhow::Result<()> {
     // field a default can paper over -- a misread `program` starts the wrong thing, and
     // the failure names a channel instead of a mismatch (docs/notes/bindir.md).
     if !words.build.is_empty() && words.build != protocol::version_line() {
-        anyhow::bail!(
+        return Err(anyhow::Error::new(OutOfDate(format!(
             "this relay is build {} and the file was written by {}: the pair is not one build",
             protocol::version_line(),
             words.build
-        );
+        ))));
     }
     let mut command = Command::new(program_of(&words.program));
     command

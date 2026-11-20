@@ -185,8 +185,21 @@ pub(crate) fn refresh_relay(home: &Path) -> Option<PathBuf> {
         return None;
     }
     std::fs::create_dir_all(&bin).ok()?;
-    place(&bin, RELAY, &source)?;
-    bindir::holds(&bin, RELAY, bindir::Source::File(&source)).then_some(installed)
+    match bindir::install(&bin, RELAY, bindir::Source::File(&source)) {
+        // A running copy holds the plain name: this build's goes beside it, and the ask
+        // that follows a refusal starts that one, so the pair is one build again.
+        Ok(bindir::Outcome::Pinned { why, .. }) => {
+            tracing::warn!(
+                why,
+                "the relay's name is held; this build's copy goes beside it"
+            );
+            bindir::install_aside(&bin, RELAY, bindir::Source::File(&source)).ok()
+        }
+        Ok(outcome) => outcome
+            .is_this_build()
+            .then(|| outcome.path().to_path_buf()),
+        Err(_) => None,
+    }
 }
 
 /// Whether two paths name one file.

@@ -2924,23 +2924,25 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
 
 /// Every skill a session's roots hold: the one walk that `ls_skill` reads too.
 async fn list_skills(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let (named, space, cwd) = match session_of(args, caller) {
+    let (named, machine, space, cwd) = match session_of(args, caller) {
         Some(session) => match d.sessions.get(&session) {
-            Ok(handle) => (session, handle.space(), handle.cwd()),
+            Ok(handle) => (session, handle.remote_name(), handle.space(), handle.cwd()),
             Err(e) => return Outcome::err(e.to_string()),
         },
         // No session named: the server's own directory, as such a line reads it.
         None => (
             String::new(),
+            None,
             crate::space::Space::local(),
             std::env::current_dir().unwrap_or_default(),
         ),
     };
-    let rows: Vec<serde_json::Value> = crate::tools::skill::installed_in(&space, &cwd)
-        .await
-        .iter()
-        .map(crate::tools::skill::found_row)
-        .collect();
+    let rows: Vec<serde_json::Value> =
+        crate::tools::skill::installed_in(&space, &cwd, machine.as_deref())
+            .await
+            .iter()
+            .map(crate::tools::skill::found_row)
+            .collect();
     Outcome::ok_with(
         format!(
             "{}: {} skill(s)",
@@ -2975,7 +2977,12 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let installed = crate::tools::skill::installed_in(&handle.space(), &handle.cwd()).await;
+    let installed = crate::tools::skill::installed_in(
+        &handle.space(),
+        &handle.cwd(),
+        handle.remote_name().as_deref(),
+    )
+    .await;
     let listed: Vec<serde_json::Value> = installed
         .iter()
         .filter(|skill| under(&skill.name, &path) || under(&skill.bucket, &path))
@@ -3006,7 +3013,12 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    let roots = crate::tools::skill::installed_in(&handle.space(), &handle.cwd()).await;
+    let roots = crate::tools::skill::installed_in(
+        &handle.space(),
+        &handle.cwd(),
+        handle.remote_name().as_deref(),
+    )
+    .await;
     // One resolver, and the walk behind it is `ls_skill`'s.
     let Some(found) = roots.iter().find(|skill| skill.name == id) else {
         let known: Vec<String> = roots.iter().map(|skill| skill.name.clone()).collect();
@@ -3023,7 +3035,12 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
     let skill = ::skill::Skill {
         name: found.name.clone(),
         description: found.description.clone(),
-        path: std::path::PathBuf::from(&found.path),
+        // The machine is the path's own word: the program runs here, on the plain path.
+        path: std::path::PathBuf::from(
+            crate::tools::skill::machine_of(&found.path)
+                .map(|(_, plain)| plain)
+                .unwrap_or(&found.path),
+        ),
         bucket: match found.bucket.as_str() {
             "project" => ::skill::Bucket::Project,
             "harness" => ::skill::Bucket::Harness,
