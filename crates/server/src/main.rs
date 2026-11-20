@@ -35,7 +35,10 @@ struct Command {
     /// Stop when this process ends: the window that started this server.
     #[arg(long, value_name = "PID")]
     parent: Option<u32>,
-    /// The build of that window, so one this build cannot serve is not followed.
+    /// The window's protocol; a mismatch is not followed. Absent means follow.
+    #[arg(long, value_name = "PROTOCOL")]
+    parent_protocol: Option<u32>,
+    /// A handover's old argv: a build hash, not a protocol, so not compared.
     #[arg(long, value_name = "BUILD")]
     parent_build: Option<String>,
     /// Stop whatever holds `--bind`; without it a taken port is an error.
@@ -65,6 +68,7 @@ impl From<Command> for Args {
             log: c.log,
             log_format: c.log_format,
             parent: c.parent,
+            parent_protocol: c.parent_protocol,
             parent_build: c.parent_build,
             force: c.force,
             check_config: c.check_config,

@@ -88,7 +88,9 @@ pub struct Args {
     pub log_format: LogFormat,
     /// The process that started this server, when its death should stop it.
     pub parent: Option<u32>,
-    /// That process's build, when the one that started this named it.
+    /// The window's wire protocol; a mismatch cannot read this server.
+    pub parent_protocol: Option<u32>,
+    /// A handover's old argv: a build hash, not a protocol, so not compared.
     pub parent_build: Option<String>,
     /// Stop whatever holds `--bind` and listen anyway. Without it a taken port
     /// is an error: see `net::bind_address`.
@@ -115,6 +117,7 @@ impl Default for Args {
             log: "info".to_string(),
             log_format: LogFormat::Text,
             parent: None,
+            parent_protocol: None,
             parent_build: None,
             force: false,
             check_config: false,
@@ -676,11 +679,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
 
     // A signal, or a dead window: a stop request, on the path `cancel` takes.
     let signalled = dispatch.clone();
-    signal::watch(
-        args.parent,
-        args.parent_build.as_deref(),
-        move || async move { commands::stop(&signalled).await },
-    );
+    signal::watch(args.parent, args.parent_protocol, move || async move {
+        commands::stop(&signalled).await
+    });
 
     let served = net::serve(cfg, socket, dispatch, bus).await;
     // Nothing new may fire once the socket stopped; turns were interrupted already.

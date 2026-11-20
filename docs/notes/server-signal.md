@@ -86,23 +86,31 @@ that reads it. Two callers deliberately pass no parent: `cli serve` execs the se
 in its own console and watches it, and `ensure` starts one for a command that exits
 in milliseconds -- both have to outlive the process that started them.
 
-## The window that cannot read this build
+## The window that cannot read this protocol
 
 A handover keeps the old argv, `--parent` included. That is right while the window
 can still reach the successor, and wrong the moment it cannot: the two builds keep
 the same `PROTOCOL_VERSION` while the messages they speak have diverged, so the
 window sits in `reconnecting` or dies decoding the greeting, and the successor
-sits waiting to die with a window that will never serve it. Closing that window
-would then stop a server nobody had used -- the handover's work, thrown away by
-the window it was meant to keep alive.
+sits waiting to die with a window that will never serve it.
 
-So the window names itself: `--parent-build <build>` is `protocol::BUILD` of the
-tui that spawned the server, and a successor of another build leaves that pid
-unfollowed (`signal::follow_pid`). The name is the whole test -- no probing, no
-timeout, no guessing what the window can read. A window that says nothing is the
-old behaviour, which is what a build older than this flag gets. `server.owner` in
-the greeting answers `None` for such a server, so the window it does serve can
-say the server will outlive it.
+The flag that decides this is the **protocol version**, not the build. SPEC knows
+one refusal -- a peer whose protocol does not match -- and no build comparison.
+The build changes on every compile, so comparing it made a freshly rebuilt window
+unfollow the server it had just started: closing that window left a process holding
+the port and the home lock with nobody to stop it. A window that speaks another
+protocol is left unfollowed; a window of the same protocol follows, whatever its
+build.
+
+So the window names its protocol: `--parent-protocol <version>` is the
+`protocol::PROTOCOL_VERSION` of the tui that spawned the server, and a successor
+speaking another version leaves that pid unfollowed (`signal::follow_pid`). The
+number is the whole test -- no probing, no timeout, no guessing what the window
+can read. A window that says nothing is followed, which is what a build older
+than this flag gets; the old `--parent-build` spelling is still parsed from a
+handover's carried argv, but a build hash names no protocol and is not compared.
+`server.owner` in the greeting answers `None` only for a window left unfollowed,
+so a window that can stop its server says so.
 
 The refusal is stated in words too: a client that cannot decode a greeting names
 both builds (`client::unreadable_greeting`), because "decoding server greeting"

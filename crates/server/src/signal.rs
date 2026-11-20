@@ -47,7 +47,7 @@ pub fn owner() -> Option<u32> {
 /// The handler never stops anything itself: it only nudges. The stop runs on the
 /// runtime, on the path `cancel` already takes -- every running turn is
 /// interrupted, and a signal's stop ends what it started rather than letting it go.
-pub fn watch<F, Fut>(parent: Option<u32>, parent_build: Option<&str>, stop: F)
+pub fn watch<F, Fut>(parent: Option<u32>, parent_protocol: Option<u32>, stop: F)
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -60,7 +60,7 @@ where
         tracing::warn!("no signal handler: a Ctrl-C will not interrupt the turns");
     }
     if let Some(pid) = parent {
-        follow_pid(pid, parent_build);
+        follow_pid(pid, parent_protocol);
     }
     waiter(wake, stop);
 }
@@ -91,19 +91,20 @@ fn nudge(reason: &str, wake: &Notify) {
 ///
 /// # Invariant
 ///
-/// `--parent` is ownership, decided before any connection: a dial reads and never
-/// owns, so a server started by hand outlives the windows that read it, and a
-/// handover carries the flag over. A window of another build is not followed --
-/// it cannot read this one, and its death must not take the successor with it.
+/// `--parent` is ownership, before any connection: a dial never owns, so a
+/// server started by hand outlives its readers, and a handover carries it over.
+/// Only a window of another protocol is unfollowed -- it cannot read this
+/// server, so its death must not take the successor. A build changes every
+/// compile; same protocol must stop what it started.
 /// See `docs/notes/server-signal.md`.
-fn follow_pid(pid: u32, build: Option<&str>) {
-    if let Some(window) = build {
-        if window != protocol::BUILD {
+fn follow_pid(pid: u32, window_protocol: Option<u32>) {
+    if let Some(window) = window_protocol {
+        if window != protocol::PROTOCOL_VERSION {
             tracing::info!(
                 pid,
-                window = window,
-                this = protocol::BUILD,
-                "the window this server was started for runs another build; not following it"
+                window,
+                this = protocol::PROTOCOL_VERSION,
+                "the window this server was started for speaks another protocol; not following it"
             );
             return;
         }
