@@ -55,34 +55,222 @@ The stick **boots**: grub's menu appears, the kernel starts, the installer start
 with
 
 ```
-an error appened, press enter to open a shell
-xxx finished
+An error occurred. Press enter to start a shell
 ```
 
-That text was read off the screen by the user; the `xxx` is a truncated program name, not a
-transcription error to interpret. **We do not yet have the installer log**, so the cause is not
-established. The user was offered three ways forward and has not yet answered: (A) read the logs
-at the shell, (B) fall back to a manual install, (C) guess the most likely seed fault and rebuild.
+The cause is settled and is a defect in the seed, not in the stick: the `apt:` block's entries
+carry no `arches` key, and curtin's `get_arch_mirrorconfig` iterates `None`. See
+"The cause, settled" below for the reproduction and the fixed block.
 
-### Unconfirmed suspects, in the order I would test them
+The user was offered three ways forward and has now been shown the error screen itself: they are
+at the installer shell, so **reading the log is one command away** and rebuilding is not needed
+to learn anything more.
 
-1. **`hostname: whiting_main`** in the seed — an underscore is not legal in a hostname. This
-   value was inherited verbatim from the old handoff and never questioned until now. Most likely
-   single cause. Fix would be `whiting-main`.
-2. **`packages: [openssh-server]`** with `apt:` pointing at a mirror — this needs the network,
-   and this route was chosen precisely so no network is required. If the live environment has no
-   route, apt fails. Fix would be to drop `packages:` and install `openssh-server` afterwards.
-3. **`storage.layout.match.path: /dev/nvme0n1`** — support for a `path` key under `match` varies
-   between subiquity versions.
+### The cause, settled
+
+The user photographed the screen, and the photo closes this: subiquity did **not** reject the
+seed. It crashed inside its Mirror controller.
+
+```
+finish: subiquity/Mirror/apply_autoinstall_config: argument of type 'NoneType' is not iterable
+finish: subiquity/apply_autoinstall_config: argument of type 'NoneType' is not iterable
+```
+
+`argument of type 'NoneType' is not iterable` is Python's TypeError for `x in None`. The seed
+carries the legacy mirror form, with no `arches` on either entry:
+
+```yaml
+  apt:
+    geoip: false
+    primary:
+      - uri: http://mirrors.ustc.edu.cn/ubuntu/
+    security:
+      - uri: http://mirrors.ustc.edu.cn/ubuntu/
+```
+
+subiquity wraps that list in one `LegacyPrimaryEntry` and reads its `uri` through curtin's
+`get_arch_mirrorconfig` (`curtin/commands/apt_config.py:841`), which does
+
+```python
+for mirror_cfg_elem in mirror_cfg_list:
+    arches = mirror_cfg_elem.get("arches")   # None: the seed wrote no arches
+    if arch in arches:                       # -> TypeError
+```
+
+Reproduced twice, at two different depths. First by copying that loop into a script and feeding it
+the seed's own list: the message is byte-for-byte `argument of type 'NoneType' is not iterable`.
+Then against the real thing — subiquity `24.04.5`'s own `subiquity/models/mirror.py`, imported
+from the tag with curtin stubbed at the four names it imports, and driven as the installer drives
+it:
+
+```
+user-data.orig : TypeError: argument of type 'NoneType' is not iterable
+user-data.fixed: OK  legacy=True uris=['http://mirrors.ustc.edu.cn/ubuntu/']
+```
+
+It surfaces at `apply_autoinstall_config` rather than at load because `geoip: false` short-circuits
+`wants_geoip` (the other reader of `uri`), and `find_and_elect_candidate_mirror` reads
+`candidate.uri` only after `has_network` is true — which the wired NIC's DHCP makes it.
+
+Version pinned: the prompt in the photo is `/var/snap/subiquity/7424`, and revision 7424 on the
+`24.04` track is subiquity **24.04.5** (`api.snapcraft.io` channel-map). The code quoted is the
+`24.04.5` tag.
+
+This clears the three old suspects: `hostname: whiting_main` is never validated by subiquity
+(`IdentityController` checks only the username), and `storage.layout.match.path` is a supported
+`MatchDirective` key in 24.04.5. `packages: [openssh-server]` is not the cause either, though it
+is a second thing that needs the archive to answer.
+
+### The fix
+
+```yaml
+  apt:
+    geoip: false
+    primary:
+      - arches: [default]
+        uri: http://mirrors.ustc.edu.cn/ubuntu/
+    security:
+      - arches: [default]
+        uri: http://mirrors.ustc.edu.cn/ubuntu/
+```
+
+Also drop `packages: [openssh-server]`: `ssh.install-server: true` in the same seed already
+installs it. And `hostname: whiting_main` → `whiting-main` (in `meta-data`'s `local-hostname`
+too) — not the cause, but the underscore is not a legal host name. Keep
+`storage.layout.match.path`: `path` is a supported 
+`MatchDirective` key in 24.04.5.
+
+### The corrected seed, byte for byte
+
+The corrected `user-data` is **798 bytes**, sha256
+`6885c84ab6bf36278bfb580827a07a0dbcb1756bd5657e6539179a8f62107764`. Two independent builds agree
+byte for byte: one typed from scratch, one derived from the original 779-byte text recovered from
+the transcript (LF endings; the stored copy is 815 bytes because it was captured through CRLF).
+The corrected `meta-data` is **59 bytes**, sha256
+`19996dc824c72997f19b218a5137c6ca8d6a461f623cae87d65c8fadac018dd4`:
+
+```yaml
+instance-id: whiting-main-001
+local-hostname: whiting-main
+```
+
+Both sit in `.dev/seed/` in this checkout as `user-data.fixed` and `meta-data.fixed` (untracked,
+local), with `check.py` to re-verify them; the original is `user-data.orig` (815 bytes as stored,
+779 with LF) for diffing. The same corrected `user-data` is reproduced in full in the patch block
+below, so the note stands on its own.
+
+The seed text itself was recovered from the transcript, not retyped from memory: it is row 207 of
+`linux/mentor` (`get_messages`, the `seed-read` tool answer), and the same file appeared again at
+rows 495 and 523.
 
 The seed that was embedded is at
 `C:\Users\Admin\Documents\deepseek-harness\default-workspace\pxe\seed\user-data` on the
-workstation (readable only while that machine runs Windows) and at `/root/usbwork/cidata/` and
-`/root/usbwork/iso/` inside the laptop's WSL.
+workstation (readable only while that machine runs Windows). The copies that exist **now** are on
+the stick itself — `USER_DAT` is ISO9660 partition 779 in the volume root, `META_DAT` is 59 — which
+the installer can still read from its own shell.
+
+### Getting the corrected seed read: three routes, in order of cost
+
+The seed lives in the **ISO9660** root of the stick (`/cdrom/user-data`), and Linux mounts iso9660
+read-only. So editing it in place normally cannot work — check with `mount | grep cdrom` at the
+installer shell before assuming it can.
+
+**Route 1 — a second stick labelled `CIDATA`, and one GRUB line edited by hand.** Cheapest, needs
+no ISO tooling and no laptop WSL.
+
+1. Any FAT-formatted stick (the broken 251 GB one can stay as it is) gets `user-data` and
+   `meta-data` at its root, with the corrected bytes below, and the volume label set to `CIDATA`.
+2. Boot the existing stick. At the GRUB menu press `e` on the entry and change the kernel line:
+   `autoinstall ds=nocloud;s=/cdrom/` → `autoinstall` alone. With no `ds=` seedfrom, cloud-init
+   scans for `LABEL=CIDATA` (`DataSourceNoCloud`, `find_devs_with("LABEL=cidata")`) and finds the
+   second stick. `Ctrl-X` boots it.
+3. The installer then reads the corrected seed and the crash cannot happen.
+
+Cost: one FAT stick and two GRUB keystrokes. Risk: the `ds=` edit is at the bootloader, so a typo
+leaves the machine booting without a seed — recoverable by power-cycling to the menu again.
+
+**Route 2 — patch `/cdrom` if it happens to be writable.** At the shell: `touch /cdrom/x`. If that
+succeeds, write the two files there, `sync`, and reboot the stick. Expected to fail on iso9660;
+the measurement decides.
+
+**Route 3 — remaster.** Needs WSL and xorriso re-installed on the laptop (both are gone) and about
+10 GB of scratch on a `C:` with 23 GB free, which is why it is last.
+
+### The corrected bytes, as files to write
+
+Route 1 writes these onto the `CIDATA` stick's root; Route 2 writes them into `/cdrom`; Route 3
+puts them in the extracted ISO tree. `wc -c` must print **798** and **59**.
+
+```sh
+cat > meta-data <<'EOF'
+instance-id: whiting-main-001
+local-hostname: whiting-main
+EOF
+cat > user-data <<'EOF'
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+  identity:
+    hostname: whiting-main
+    username: whting
+    realname: whting
+    password: "$6$ac9e11b85376b0e4$WOkDJJOFtc8Cih1M/5Ejqm9lgPyd1x2vNUfVBKzSa4bIk3Y.CHWpVfNi08Z9/M0g02dEKoveIXk5nwzZpSn2X0"
+  ssh:
+    install-server: true
+    allow-pw: true
+  network:
+    version: 2
+    ethernets:
+      wired_en:
+        match: {name: "en*"}
+        dhcp4: true
+      wired_eth:
+        match: {name: "eth*"}
+        dhcp4: true
+  storage:
+    layout:
+      name: direct
+      match:
+        path: /dev/nvme0n1
+  apt:
+    geoip: false
+    primary:
+      - arches: [default]
+        uri: http://mirrors.ustc.edu.cn/ubuntu/
+    security:
+      - arches: [default]
+        uri: http://mirrors.ustc.edu.cn/ubuntu/
+EOF
+wc -c user-data meta-data   # 798 and 59
+```
+
+On the FAT `CIDATA` stick the label is what matters, not the paths:
+`fatlabel /dev/sdY1 CIDATA` (or Windows `label X: CIDATA`), then copy the two files to its root.
+
+`--check` of the corrected pair, for the next agent: `python .dev/seed/check.py <user-data>` prints
+`OK` (exit 0) or `FAIL` with each problem (exit 1). It replays curtin's own
+`get_arch_mirrorconfig`, so it fails on the original seed with the installer's exact message:
+
+```
+$ python .dev/seed/check.py .dev/seed/user-data.orig   # FAIL, exit 1, four problems
+$ python .dev/seed/check.py .dev/seed/user-data.fixed  # OK, exit 0
+```
+
+## What this laptop can and cannot do any more
+
+The rebuild recipe below assumed the laptop's WSL. **WSL is gone from it**: `wsl -l -q` prints no
+distro, `HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss` does not exist, there is no
+`ext4.vhdx` on the volume, `HyperVisorPresent` is `False`, and `xorriso`/`genisoimage`/`mkisofs`
+are not installed. A remaster therefore cannot be made here without first re-installing WSL and
+its toolchain, and the staged `/root/usbwork` tree described below no longer exists. Prefer the
+routes above it: they need no ISO tooling and no second 4 GB stage on a `C:` with 23 GB free.
 
 ## Rebuild recipe that works (each step cost a failure to learn)
 
-Inside WSL `ubuntu` as root:
+Inside WSL `ubuntu` as root (WSL must be installed first; see above):
 
 ```
 W=/root/usbwork                      # extracted ISO tree lives at $W/iso
