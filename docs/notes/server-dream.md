@@ -72,12 +72,17 @@ that predates the template. The mark is written first, so the notice's own turn
 finds the chain muted and its epilogue arms nothing.
 
 Mute is durable. A restart re-arms only unmarked sessions; a handoff's own note
-arrives through `send_message` from a tool and does not clear the mark. Only a
-client-origin `send_message` -- a new user prompt -- calls
-`Store::clear_keepalive_handoff`. A tool's message, a monitor's report and a
-mentor's answer are all messages too, and none of them is a user prompt. A new
-checkpoint also retires an older sleeper: a generation change is a new fire
-chain.
+arrives through `send_message` and does not clear the mark. Only a message from
+a **client window** -- a new user prompt -- calls
+`Store::clear_keepalive_handoff`. The greeting's `ClientInfo.client` says which
+side is which: `[client]` (the window binary) is `true`, and the `[cli]` layer is
+`false` (SPEC makes CLI an `rpc` layer). This matters because the `handoff` skill
+sends its note back to its own session through `gongga-cli`, i.e. as an
+`Origin::Client` from the wire; without the flag that self-send looks exactly
+like a new user prompt and the session loops through handoffs forever. A tool's
+message, a monitor's report, a mentor's answer and every CLI message are all
+messages too, and none is a user prompt. A new checkpoint also retires an older
+sleeper: a generation change is a new fire chain.
 
 ## The clone
 

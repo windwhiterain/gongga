@@ -332,6 +332,16 @@ every server somebody started by hand die with the first window that connected.
 `ServerInfo::owner` remains: it is the server *telling* a reader whose lifetime it
 shares (`--parent`), which is a fact, not a claim.
 
+## ClientInfo — client
+
+`client` says whether the greeting is a person at a window (`[client]`, the binary)
+or the `rpc` layer (`[cli]`, the command line): SPEC makes CLI an RPC layer. It is
+what decides whether a `send_message` is a new user prompt -- only a window's is,
+so a skill's note sent back through `gongga-cli` cannot unmute a handoff. The
+window sets it `true`, the CLI sets it `false` (and may declare itself a client
+for a test with `GONGGA_CLIENT=1`), and it is `#[serde(default = true)]` so a
+greeting from before the field behaves as it did. See `server-dream.md`.
+
 ## ClientInfo — session
 
 `session` is the session this process was started from, read off `$GONGGA_SESSION` by

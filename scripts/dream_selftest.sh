@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # SPEC's Dreaming, on real processes: a keep_alive fire clones the session into a
 # disposable dream, a second fire of the generation asks for handoff and then stays
-# mute until a client prompt, the dream's true end discards it, a cancel that restart
-# will resume does not, and a source's delete takes its dreams. The last check is the
-# startup sweep for a dream whose discard was lost to a process exit.
+# mute until a client window's prompt (a CLI `rpc` message does not unmute), the
+# dream's true end discards it, a cancel that restart will resume does not, and a
+# source's delete takes its dreams. The last check is the startup sweep for a dream
+# whose discard was lost to a process exit.
 #
 # One home, one fake endpoint; the cancel/restart and sweep scenarios restart the
 # server on the same home, which is what they are about. One line of verdict at
@@ -176,6 +177,10 @@ fake_pid=$(cat "$work/dream-fake.pid" 2>/dev/null)
 wait_tcp "$fake_port" || { echo "the fake endpoint never answered on 127.0.0.1:$fake_port" >&2; exit 1; }
 
 cli() { bash "$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" --key "$key" "$1"; }
+# A window's greeting says `client: true`; the one-shot CLI is the `rpc` layer
+# (`client: false`). Only the former's message unmutes a heartbeat. The test
+# drives a real client over the same wire with the CLI's explicit client flag.
+client_cli() { GONGGA_CLIENT=1 cli "$1"; }
 
 # Ready means the greeting answers, not that the lock exists: the lock is claimed
 # before the home is migrated and the content fetched.
@@ -249,7 +254,14 @@ handoffs=$(q "select count(*) from messages m join sessions s on m.session_id = 
 sleep 4
 [[ "$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")" == "$handoffs" ]]
 ok "(c) no later heartbeat arrives while muted" $?
-cli '{"name":"send_message","args":{"session":"dream/a","message":"a new user prompt"}}' >/dev/null
+# A CLI message is the `rpc` layer, not a window: it starts a turn but must not
+# unmute. This is the exact path a handoff skill's self-sent note takes, and the
+# bug that looped a real session through 27 handoffs.
+cli '{"name":"send_message","args":{"session":"dream/a","message":"a cli note, not a user prompt"}}' >/dev/null
+sleep 4
+[[ "$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")" == "$handoffs" ]]
+ok "(c) a CLI/rpc message does not unmute the heartbeat" $?
+client_cli '{"name":"send_message","args":{"session":"dream/a","message":"a new user prompt"}}' >/dev/null
 now=$handoffs
 for _ in $(seq 1 150); do
   now=$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")

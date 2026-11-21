@@ -658,6 +658,8 @@ async fn dial(
             version: env!("CARGO_PKG_VERSION").to_string(),
             build: protocol::BUILD.to_string(),
             label: format!("bridge/pid-{}", std::process::id()),
+            // A bridge relays; it is not the window whose prompt a message is.
+            client: false,
             // Not a session's: it speaks for whoever wrote to it.
             session: None,
             // And not a shell's: a bridge is started by a window, which says so

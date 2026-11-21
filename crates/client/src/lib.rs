@@ -3711,6 +3711,8 @@ fn client_info() -> ClientInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         build: protocol::BUILD.to_string(),
         label: client_label(),
+        // The window: its messages are new user prompts. See `server-dream.md`.
+        client: true,
         // Only this process knows whose shell it is: `subscribe` needs it.
         session: calling_session(),
         // And only the operating system knows what started it: a `cancel` needs it.
