@@ -137,7 +137,11 @@ fn ls_session(path: path)
 fn del_session(path: path)
   # also delete all channel/subscription under the session.
 fn sync_session(id: Session,  trajectory: Range)
-fn send_message(session: Session, message: str)
+fn send_message(
+  session: Session,
+  message: str,
+  client: bool = is_client()
+)
   # inject message when step end.
   # interrupt if tool waiting.
 fn interrupt_session(id: Session):
