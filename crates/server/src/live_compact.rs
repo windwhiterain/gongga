@@ -27,6 +27,8 @@ pub struct Committed {
     pub checkpoint_id: i64,
     pub result_seq: i64,
     pub generation: u64,
+    /// Whether the turn goes on after this step; a `continue=false` call ends it there.
+    pub continue_turn: bool,
 }
 
 /// What a `live_compact` call did: committed a checkpoint, or explained why not.

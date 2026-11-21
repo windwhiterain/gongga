@@ -1028,6 +1028,8 @@ impl Agent {
         // When each draft was last written, so a fast stream is not one write per chunk.
         let mut drafted: std::collections::HashMap<String, std::time::Instant> = Default::default();
         let mut ran_tools = false;
+        // An uncontinued call ends the turn, but only after every call has run.
+        let mut ends_turn = false;
         let mut failure: Option<String> = None;
         let mut saw_completion = false;
 
@@ -1215,14 +1217,16 @@ impl Agent {
                     let _ = self
                         .store
                         .start_tool_call(id, &call_id, &tool, &arguments, started_at);
-                    if self
+                    match self
                         .run_one_call(
                             session, id, name, turn, step, cancel, llm, call_id, tool, arguments,
                             started_at,
                         )
                         .await
                     {
-                        return Ok(StepResult::Stopped);
+                        CallEnd::Stopped => return Ok(StepResult::Stopped),
+                        CallEnd::EndsTurn => ends_turn = true,
+                        CallEnd::Ran => {}
                     }
                     ran_tools = true;
                 }
@@ -1430,6 +1434,10 @@ impl Agent {
         if !ran_tools {
             return Ok(StepResult::Finished);
         }
+        if ends_turn {
+            // `live_compact(continue = false)`: context written, no request after it.
+            return Ok(StepResult::Finished);
+        }
         tracing::debug!(session = %name, step, "step ran its calls as they arrived");
         Ok(StepResult::RanTools)
     }
@@ -1495,7 +1503,7 @@ impl Agent {
         out
     }
 
-    /// Runs the one call the model just asked for. Returns true if the turn was cancelled.
+    /// Runs the one call the model just asked for, and says what the step does next.
     async fn run_one_call(
         &self,
         session: &SessionHandle,
@@ -1509,13 +1517,13 @@ impl Agent {
         tool: String,
         arguments_given: String,
         started_at: i64,
-    ) -> bool {
+    ) -> CallEnd {
         let started = std::time::Instant::now();
         if cancel.is_cancelled() {
             // Its row exists and a provider wants it answered; a row the body would
             // otherwise invent is written once instead.
             self.answer_interrupted(id, name, &call_id, &tool, turn, step);
-            return true;
+            return CallEnd::Stopped;
         }
         let arguments: serde_json::Value =
             serde_json::from_str(&arguments_given).unwrap_or_else(|_| json!({}));
@@ -1601,6 +1609,8 @@ impl Agent {
                     "turn": turn, "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
         let mut checkpointed = false;
         let mut checkpoint_error = None;
+        // Set only once the call's own rows are written.
+        let mut ends_turn = false;
         // Nothing to fold: an answer, not an error (an error invites a retry loop).
         // See `docs/notes/server-live-compact.md`.
         let mut nothing = None;
@@ -1611,6 +1621,7 @@ impl Agent {
             {
                 Ok(crate::live_compact::Commit::Checkpointed(committed)) => {
                     checkpointed = true;
+                    ends_turn = !committed.continue_turn;
                     self.announce_row(name, Ok(committed.result_seq));
                     self.log_event(
                         Some(id),
@@ -1619,6 +1630,7 @@ impl Agent {
                             "checkpoint": committed.checkpoint_id,
                             "result_seq": committed.result_seq,
                             "generation": committed.generation,
+                            "continue": committed.continue_turn,
                         }),
                     );
                 }
@@ -1695,7 +1707,11 @@ impl Agent {
                 "status": status,
             }),
         );
-        false
+        if ends_turn {
+            CallEnd::EndsTurn
+        } else {
+            CallEnd::Ran
+        }
     }
 
     /// Answers a call that will never run, so no stored call is left unanswered.
@@ -1995,6 +2011,16 @@ enum StepResult {
     /// The model asked for tools, and this step ran each one as it arrived.
     RanTools,
     /// Cancellation or an aborted stream.
+    Stopped,
+}
+
+/// What one call leaves the step to do.
+enum CallEnd {
+    /// Nothing special: the step goes on to its next call, or to its next request.
+    Ran,
+    /// The turn is over once every call of this step has been answered.
+    EndsTurn,
+    /// Cancellation: the step stops at once.
     Stopped,
 }
 

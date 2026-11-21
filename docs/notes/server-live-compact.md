@@ -58,6 +58,38 @@ without opening it again. It is the agent's call, and the notice and the tool's
 parameter description say what it costs rather than whether to use it: an
 embedded file travels in every later request, and a summary is never a cache hit.
 
+## `next` is a user turn, and `continue` says whether the turn goes on
+
+Both halves are one decision: the checkpoint is context, and who answers it is what
+decides whether the model reads it as a continuation or as a restart.
+
+`next` used to be stored as assistant text after the tool result. That made it the
+model's own words at the end of the transcript, which is exactly a half step a
+request cannot answer, so the next step's `fill_resume_mark` appended the home's
+`resume_mark` (`<harness>resume</harness>`) and the model re-oriented as if it had
+just been restarted. Measured in one session: 155 of 155 `live_compact` calls
+carried a non-empty `next`, and 111 of its 118 resume marks sat directly behind a
+row that call wrote. The step that wrote one had `output_chars=0`,
+`output_deltas=0`, `tool_items=1` -- the trigger was never "the step had tools",
+it was "`next` was stored in the model's voice".
+
+So `next` is `Kind::Inject` with `role: user` now. `answerable_tail` reads the wire
+item (a non-assistant role is something the model answers), no mark is filled, and
+the request after the checkpoint carries `next` on the user side.
+
+`continue` is the other half, and it mirrors `send_message(continue = false)`:
+the default writes the checkpoint and lets the next request read it; `false` ends
+the turn there, so the checkpoint is context only and the next message answers
+`next`. The call reports the flag on its `Committed`, the step returns
+`StepResult::Finished` for it -- but only after every call of that step has been
+answered, because a call left unanswered is a provider `400` (see the section on
+cuts above; the same rule, the other direction).
+
+Verified on real processes (`.dev/verify/live-compact-continue`): with the flag
+omitted the turn sends three requests and the checkpoint's `next` rides the third;
+with `continue = false` it sends exactly two, the turn ending `Done` at the
+checkpoint, and neither transcript carries a resume mark.
+
 ## The schema is stored, not offered per request
 
 See `docs/notes/server-tools.md`: the tool list is a stored row written once, so

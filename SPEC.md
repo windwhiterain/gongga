@@ -160,7 +160,11 @@ cancel(keep_alive: bool = false):
   # for running sessions that are waiting, set waiting flag to them, restart will continue their waiting for the lefting time.
   # interrupt every running session, then quit, by default kill all channel, if keep_alive, make every channel detached, retart will adopt them.
   # killing channel/failed to adopting channel will produce channel end notice.
-live_compact(settled: str, next: str, session: Session = caller())
+live_compact(settled: str, next: str, continue: bool = true, session: Session = caller())
+  # `next` is stored as a user turn, so the request after the checkpoint answers it
+  # rather than the model's own words.
+  # continue=false only builds context: the turn ends after this step, and the next
+  # message answers `next`.
 ```
 ## Python Cmd
 provided by a shipped uv python package.

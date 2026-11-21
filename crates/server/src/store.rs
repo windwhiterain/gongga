@@ -2673,25 +2673,32 @@ impl Store {
             )?;
         }
 
-        // `next` is cut at the next round; only `settled` accumulates. See `docs/notes/server-live-compact.md`.
-        let next = call
+        // `next` is cut at the next round; only `settled` accumulates.
+        // See `docs/notes/server-live-compact.md`.
+        let arguments = call
             .get("arguments")
             .and_then(serde_json::Value::as_str)
-            .and_then(|arguments| serde_json::from_str::<serde_json::Value>(arguments).ok())
-            .and_then(|arguments| {
-                arguments
-                    .get("next")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or_default();
-        let next = next.trim().to_string();
+            .and_then(|arguments| serde_json::from_str::<serde_json::Value>(arguments).ok());
+        let next = arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("next"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let continue_turn = arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("continue"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        // `next` is a user turn: in the model's voice it would be a half step.
+        // See `docs/notes/server-live-compact.md`.
         if !next.is_empty() {
             Self::append_message_conn(
                 &tx,
                 session_id,
-                Kind::Text,
-                &serde_json::json!({"role": "assistant", "text": next}),
+                Kind::Inject,
+                &serde_json::json!({"role": "user", "text": next}),
             )?;
         }
 
@@ -2717,6 +2724,7 @@ impl Store {
                 checkpoint_id,
                 result_seq,
                 generation: (current_generation.max(0) as u64).saturating_add(1),
+                continue_turn,
             },
         ))
     }
