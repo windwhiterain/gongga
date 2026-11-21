@@ -2957,6 +2957,36 @@ impl Store {
         ))
     }
 
+    /// Writes a user row into a session's context without opening a turn.
+    ///
+    /// # Invariant
+    ///
+    /// `continue=false` is context only: the row lands where a user message
+    /// would, and the caller decides what runs next. No turn row is written.
+    pub fn append_context(
+        &self,
+        session_id: i64,
+        expanded: &crate::meta::Expanded,
+        first_prompt: bool,
+    ) -> anyhow::Result<OperatorRows> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let kind = if first_prompt {
+            Kind::Text
+        } else {
+            Kind::Inject
+        };
+        let seq = self.append_user_conn(&tx, session_id, expanded, kind)?;
+        tx.commit()?;
+        Ok(OperatorRows {
+            lines: vec![OperatorLine {
+                text: expanded.text.clone(),
+                injected: !first_prompt,
+            }],
+            seq,
+        })
+    }
+
     /// The newest copy this home holds for `path`, and the type it was read as.
     ///
     /// # Invariant

@@ -137,13 +137,12 @@ fn ls_session(path: path)
 fn del_session(path: path)
   # also delete all channel/subscription under the session.
 fn sync_session(id: Session,  trajectory: Range)
-fn send_message(
-  session: Session,
-  message: str,
-  client: bool = is_client()
-)
+fn send_message(session: Session, message: str, continue: bool = true)
   # inject message when step end.
   # interrupt if tool waiting.
+  # continue=false only builds context: no agent loop is started.
+fn mute_keepalive(session: Session = caller(), mute: bool = true)
+  # mute the keepalive timer until a message arrives; mute=false clears it.
 fn interrupt_session(id: Session):
   # for waiting channel, make it early return.
   # stop llm streaming and loop
@@ -207,11 +206,9 @@ for the first client user message to a empty session, find all meta references r
 - the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
 
 ## Keep Alive
-when a session turn end, a timer start to count, when step into the dangerous zone that cache is nearing cold, fork a dreamer session asked to organize documentation.
+when a session turn end, a timer start to count, when step into the dangerous zone that cache is nearing cold, send the session a keepalive notice and let the agent decide: spawn a dreamer with `@skill(dreamer)`, hand off with `@skill(handoff)`, or mute the timer with `@skill(dreamer)`'s `mute_keep_alive` when no heartbeat is needed. The server neither forks a dreamer nor hands off on its own.
 
-when the dreamer turn end, delete the dreamer, if the original session hasn't receive new message since the creation of dreamer, start a new timer to count, when step into the dangerous zone, ask the original session to handoff.
-
-handoffed session's turn end won't start a timer until first client user message
+a dreamer is an ordinary clone made by `@skill(dreamer)`: it mutes its source's keepalive, and any `send_message` to the source clears that mute and restarts the timer at the source's next turn end. The dreamer deletes itself when its documentation work is done.
 
 ## Mentor
 an archive of a session: its transcript, copied row for row by the `handoff` skill, so a

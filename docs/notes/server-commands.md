@@ -193,6 +193,17 @@ No implicit current session: the name is either here or the command is wrong. A
 default is the client's business (a sticky `session`), not the server's hidden
 state.
 
+`continue=false` writes the expanded message into the session's context without
+opening a turn. An idle session takes the row directly; a busy one takes it as an
+inbox inject, where the running turn reads it at its next step. Either way no new
+agent loop is started, and the message still clears a keepalive mute.
+
+## mute_keepalive
+
+Writes `keepalive_handoff_at` for the named (or caller's) session, or clears it
+with `mute=false`. This is the command `@skill(dreamer)` uses; the server never
+writes the mark on its own.
+
 A message that arrives while this session is working does not start a second
 turn: it goes into the inbox and the running turn folds it in at its next step
 boundary. Starting a turn would have meant queueing behind the gate -- the

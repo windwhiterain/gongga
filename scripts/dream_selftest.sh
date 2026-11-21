@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-# SPEC's Dreaming, on real processes: a keep_alive fire clones the session into a
-# disposable dream, a second fire of the generation asks for handoff and then stays
-# mute until a client window's prompt (a CLI `rpc` message does not unmute), the
-# dream's true end discards it, a cancel that restart will resume does not, and a
-# source's delete takes its dreams. The last check is the startup sweep for a dream
-# whose discard was lost to a process exit.
+# SPEC's Keep Alive, on real processes: a cache window sends one notice naming the
+# dreamer and handoff skills, nothing is forked by the server, an explicit mute is
+# quiet until any message clears it, `continue=false` writes context without a
+# turn, and legacy dream_of rows left by older builds are still swept at startup.
 #
 # One home, one fake endpoint; the cancel/restart and sweep scenarios restart the
 # server on the same home, which is what they are about. One line of verdict at
@@ -177,10 +175,6 @@ fake_pid=$(cat "$work/dream-fake.pid" 2>/dev/null)
 wait_tcp "$fake_port" || { echo "the fake endpoint never answered on 127.0.0.1:$fake_port" >&2; exit 1; }
 
 cli() { bash "$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port" --key "$key" "$1"; }
-# A window's greeting says `client: true`; the one-shot CLI is the `rpc` layer
-# (`client: false`). Only the former's message unmutes a heartbeat. The test
-# drives a real client over the same wire with the CLI's explicit client flag.
-client_cli() { GONGGA_CLIENT=1 cli "$1"; }
 
 # Ready means the greeting answers, not that the lock exists: the lock is claimed
 # before the home is migrated and the content fetched.
@@ -207,106 +201,45 @@ stop_server() {
 start_server || exit 1
 say "server=$server_pid fake=$fake_pid port=$port"
 
-# --- (a) a fire of a new generation dreams; the dream's true end discards it ---
+# --- (a) a fire asks, and asks only ---
 cli '{"name":"set_session","args":{"id":"dream/a","keep_alive":true,"model":"fake/flash-fake","cache_tier":"2s"}}' >/dev/null
 cli '{"name":"send_message","args":{"session":"dream/a","message":"the source says hello"}}' >/dev/null
-poll "select name from sessions where name = 'dream/a/dream/0'" "dream/a/dream/0"
-ok "(a) the first fire of a generation clones the dream" $?
-row=$(q "select cache_keepalive, live_compact, mode from sessions where name = 'dream/a/dream/0'")
-[[ "$row" == "0|0|work" ]]; ok "(a) the dream: keep_alive off, live compact off, work mode" $?
-row=$(q "select dream_of = (select id from sessions where name = 'dream/a') from sessions where name = 'dream/a/dream/0'")
-[[ "$row" == "1" ]]; ok "(a) the dream names its source" $?
-grep -q "dream notice" "$dump"; ok "(a) the dream's first request carries the dream notice" $?
-grep "dream notice" "$dump" | grep -q "the source says hello"
-ok "(a) and the source's whole prefix, copied verbatim" $?
-poll_gone "select name from sessions where name like 'dream/a/dream/%'"
-ok "(a) the dream is discarded when its turn truly ends" $?
-[[ -n "$(q "select name from sessions where name = 'dream/a'")" ]]
-ok "(a) the source is unharmed" $?
-[[ "$(q "select dreamed_checkpoint_id from sessions where name = 'dream/a'")" == "0" ]]
-ok "(a) the source marks generation 0 as dreamed" $?
-[[ -n "$(q "select kind from events where kind = 'dream_discard'")" ]]
-ok "(a) the discard is an event row" $?
-
-# --- (c) the second fire of the same generation asks for handoff, then mutes ---
-# The prose is a `[prompts]` template when the content ships it and a fallback
-# otherwise, so match the notice itself, not either spelling of its first word.
-poll "select m.content from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%handoff notice%'" "handoff notice"
-ok "(c) the second fire of a generation asks for handoff" $?
-[[ -z "$(q "select m.content from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%(time notice:%'")" ]]
-ok "(c) and sends no time notice for a generation already dreamed" $?
-[[ "$(q "select count(*) from events where kind = 'keepalive_handoff' and session_id = (select id from sessions where name = 'dream/a')")" -ge 1 ]]
-ok "(c) the handoff prompt is an event row" $?
-# The dream carries the source's whole prefix, so it keeps the cache warm until
-# it ends. The second countdown starts at that end, never at the dream's spawn:
-# the fake turn runs ~2.4s (three pieces at 0.8s) and the window is ~1.9s, so a
-# handoff armed at spawn would land before the discard. Compare the two event rows.
-row=$(q "select (select created_at from events where kind = 'dream_discard' and session_id = (select id from sessions where name = 'dream/a') limit 1) < (select created_at from events where kind = 'keepalive_handoff' and session_id = (select id from sessions where name = 'dream/a') limit 1)")
-[[ "$row" == "1" ]]; ok "(c) the handoff countdown starts at the dream's end, not its spawn" $?
-[[ -n "$(q "select keepalive_handoff_at from sessions where name = 'dream/a' and keepalive_handoff_at is not null")" ]]
-ok "(c) the source is muted after the prompt" $?
+notice="select m.content from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%keepalive notice%'"
+poll "$notice" "keepalive notice"
+ok "(a) the cache window asks the session" $?
 [[ -z "$(q "select name from sessions where name like 'dream/a/dream/%'")" ]]
-ok "(c) and dreams no second dream" $?
-[[ "$(q "select count(*) from events where kind = 'dream_spawn' and session_id = (select id from sessions where name = 'dream/a')")" == "1" ]]
-ok "(c) one dream per generation" $?
-# Two more windows with no prompt: a muted session must stay quiet.
-handoffs=$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")
+ok "(a) no dreamer is forked by the server" $?
+[[ "$(q "$notice" | head -1)" == *"@skill(dreamer)"* ]]
+ok "(a) the notice points at the dreamer skill" $?
+[[ "$(q "$notice" | head -1)" == *"@skill(handoff)"* ]]
+ok "(a) and at the handoff skill" $?
+[[ "$(q "select count(*) from events where kind = 'keepalive_notice' and session_id = (select id from sessions where name = 'dream/a')")" -ge 1 ]]
+ok "(a) the notice is an event row" $?
+
+# --- (b) mute is explicit, and any message clears it ---
+cli '{"name":"mute_keepalive","args":{"session":"dream/a","mute":true}}' >/dev/null
+before=$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%keepalive notice%'")
 sleep 4
-[[ "$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")" == "$handoffs" ]]
-ok "(c) no later heartbeat arrives while muted" $?
-# A CLI message is the `rpc` layer, not a window: it starts a turn but must not
-# unmute. This is the exact path a handoff skill's self-sent note takes, and the
-# bug that looped a real session through 27 handoffs.
-cli '{"name":"send_message","args":{"session":"dream/a","message":"a cli note, not a user prompt"}}' >/dev/null
-sleep 4
-[[ "$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")" == "$handoffs" ]]
-ok "(c) a CLI/rpc message does not unmute the heartbeat" $?
-client_cli '{"name":"send_message","args":{"session":"dream/a","message":"a new user prompt"}}' >/dev/null
-now=$handoffs
+[[ "$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%keepalive notice%'")" == "$before" ]]
+ok "(b) a muted session is quiet" $?
+rows_before=$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%context only%'")
+tasks_before=$(q "select count(*) from pending_tasks where session = 'dream/a' and kind = 'turn'")
+cli '{"name":"send_message","args":{"session":"dream/a","message":"context only","continue":false}}' >/dev/null
+rows_after=$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%context only%'")
+tasks_after=$(q "select count(*) from pending_tasks where session = 'dream/a' and kind = 'turn'")
+[[ "$rows_after" -gt "$rows_before" && "$tasks_after" == "$tasks_before" ]]
+ok "(b) continue=false writes context without opening a turn" $?
+[[ -z "$(q "select keepalive_handoff_at from sessions where name = 'dream/a' and keepalive_handoff_at is not null")" ]]
+ok "(b) the message cleared the mute" $?
+cli '{"name":"send_message","args":{"session":"dream/a","message":"a new prompt"}}' >/dev/null
+now=$before
 for _ in $(seq 1 150); do
-  now=$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%Handoff notice%'")
-  [[ "$now" -gt "$handoffs" ]] && break
+  now=$(q "select count(*) from messages m join sessions s on m.session_id = s.id where s.name = 'dream/a' and m.content like '%keepalive notice%'")
+  [[ "$now" -gt "$before" ]] && break
   sleep 0.2
 done
-[[ "$now" -gt "$handoffs" ]]
-ok "(c) a new client prompt unmutes the heartbeat" $?
-
-# --- (d) deleting the source discards its dream ---
-cli '{"name":"set_session","args":{"id":"dream/d","keep_alive":true,"model":"fake/flash-fake","cache_tier":"2s"}}' >/dev/null
-cli '{"name":"send_message","args":{"session":"dream/d","message":"source d"}}' >/dev/null
-poll "select name from sessions where name = 'dream/d/dream/0'" "dream/d/dream/0"
-ok "(d) source d's fire dreams" $?
-said=$(cli '{"name":"del_session","args":{"path":"dream/d"}}')
-say "delete said: $said"
-[[ "$said" == *"dream/d/dream/0"* ]]; ok "(d) the delete takes the dream with the source" $?
-poll_gone "select name from sessions where name like 'dream/d%'"
-ok "(d) both rows are gone" $?
-
-# --- (b) a cancel mid-dream is not an end: restart resumes, then discards ---
-cli '{"name":"set_session","args":{"id":"dream/b","keep_alive":true,"model":"fake/flash-fake","cache_tier":"2s"}}' >/dev/null
-cli '{"name":"send_message","args":{"session":"dream/b","message":"source b"}}' >/dev/null
-# The request is the mid-turn marker: the row exists before it, and the stream
-# runs for pieces * pause after it, which is the window the cancel lands in.
-poll_dump "dream notice" '"content":"source b"'
-ok "(b) the dream is mid-turn: its request reached the endpoint" $?
-[[ -n "$(q "select name from sessions where name = 'dream/b/dream/0'")" ]]
-ok "(b) source b's fire dreams" $?
-cli '{"name":"cancel","args":{}}' >/dev/null
-for _ in $(seq 1 100); do alive "$server_pid" || break; sleep 0.2; done
-alive "$server_pid"; [[ $? != 0 ]]; ok "(b) cancel stops the server" $?
-[[ "$(q "select canceled from sessions where name = 'dream/b/dream/0'")" == "1" ]]
-ok "(b) the cancelled dream keeps its row and its canceled flag" $?
-[[ "$(q "select count(*) from pending_tasks where session = 'dream/b/dream/0' and kind = 'turn'")" -ge 1 ]]
-ok "(b) the dream's turn is owed to the next start" $?
-start_server || exit 1
-grep -E "replaying work left pending|continuing the turn a stop interrupted" "$log" | grep -q "dream/b/dream/0"
-ok "(b) the restart resumes the dream" $?
-poll_gone "select name from sessions where name like 'dream/b/dream/%'"
-ok "(b) the resumed dream is discarded only when it truly ends" $?
-[[ -n "$(q "select name from sessions where name = 'dream/b'")" ]]
-ok "(b) the source survives the restart" $?
-[[ "$(q "select count(*) from events where kind = 'dream_sweep'")" == "0" ]]
-ok "(b) a dream with an owed row is resumed, never swept" $?
+[[ "$now" -gt "$before" ]]
+ok "(b) the next turn end arms a fresh timer" $?
 
 # --- (e) the startup sweep discards an orphan whose discard was lost to exit ---
 stop_server || exit 1

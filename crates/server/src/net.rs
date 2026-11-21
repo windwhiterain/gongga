@@ -441,7 +441,6 @@ fn origin_of(client: &ClientInfo, peer: SocketAddr) -> Origin {
         peer,
         session: client.session.clone(),
         parent: client.parent.clone(),
-        is_client: client.client,
     }
 }
 

@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::Agent;
 use crate::bus::EventBus;
 use crate::session::{SessionHandle, SessionManager};
-use crate::store::{Dream, Kind, MessageRow, PendingTask, Store, Transcript};
+use crate::store::{Kind, MessageRow, PendingTask, Store, Transcript};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
 /// still reaches whoever asked for it.
@@ -48,32 +48,20 @@ const COMMAND_TIMEOUT: Duration = Duration::from_millis(crate::config::CALL_TIME
 /// allowed.
 const OWN_CLOCK: &[&str] = &["input_channel", "run_skill", "cancel"];
 
-/// The heartbeat's whole content: a clock reading, so a warm prefix is all it buys.
-fn time_notice() -> String {
-    format!("(time notice: {})", crate::clock::now())
-}
+/// What a heartbeat asks, when the content has no template for it.
+const KEEPALIVE_NOTICE_FALLBACK: &str = "(keepalive notice: this session's cached context is \
+nearing cold. Decide now: call @skill(dreamer) to spawn a disposable copy that tidies the \
+workspace documents, or call @skill(handoff) if the work itself needs a fresh context. Calling \
+@skill(dreamer)'s mute_keep_alive says no heartbeat is needed. Do not start new work before you \
+choose. A new message to this session restarts the timer.)";
 
-/// What a second heartbeat of one generation asks for, when the shipped prose is absent.
-const HANDOFF_NOTICE_FALLBACK: &str = "(handoff notice: this checkpoint's first heartbeat \
-already spawned a dream. Hand off now: put the current objective, state, failed attempts and next \
-action in the handoff note, tidy anything the continuation needs, then run @skill(handoff). \
-Do not start new work. No further heartbeat will arrive until a new user prompt.)";
-
-/// The handoff notice: a template in the content, with a fallback for older homes.
-fn handoff_notice() -> String {
+/// The heartbeat notice: a template in the content, with a fallback for older homes.
+fn keepalive_notice() -> String {
     crate::prompts::shared()
-        .text(crate::prompts::KEEPALIVE_HANDOFF_NOTICE)
+        .text(crate::prompts::KEEPALIVE_NOTICE)
         .filter(|text| !text.trim().is_empty())
-        .unwrap_or_else(|| HANDOFF_NOTICE_FALLBACK.to_string())
+        .unwrap_or_else(|| KEEPALIVE_NOTICE_FALLBACK.to_string())
 }
-
-/// A dream's whole instruction: documents only, and the turn ends when they are
-/// in order.
-const DREAM_NOTICE: &str = "(dream notice: you are a dream, a disposable copy of the session that spawned you. \
-Your only work is to organize the workspace's documents: consolidate, deduplicate and retire stale notes \
-under .agents/notes/ and docs/notes/. Write no code, write no tests, and make no git writes. \
-The files you leave are the memory; this session is discarded when your turn ends. \
-End the turn when the documents are in order.)";
 
 #[derive(Clone)]
 pub struct Dispatch {
@@ -125,8 +113,6 @@ pub enum Origin {
         /// What started the client, as `name/pid`: the one fact a `cancel` row needs
         /// and the client's own pid cannot give.
         parent: Option<String>,
-        /// Window (client) or `rpc` CLI: only the former's message is a prompt.
-        is_client: bool,
     },
     /// No client asked: a signal reached this process, or the process it follows ended.
     Signal { reason: String },
@@ -139,17 +125,6 @@ pub enum Origin {
 }
 
 impl Origin {
-    /// A window's prompt, not an `rpc` line: only these unmute a handoff.
-    pub fn is_client_prompt(&self) -> bool {
-        matches!(
-            self,
-            Origin::Client {
-                is_client: true,
-                ..
-            }
-        )
-    }
-
     /// The session the command was run from, when a shell ran it.
     pub fn session(&self) -> Option<&str> {
         match self {
@@ -270,16 +245,6 @@ fn keepalive_generation(d: &Dispatch, session: &SessionHandle) -> i64 {
         .unwrap_or(0)
 }
 
-/// Whether that generation's first fire has already dreamed.
-fn generation_dreamed(d: &Dispatch, session: &SessionHandle, generation: i64) -> bool {
-    d.store
-        .get_session(session.name())
-        .ok()
-        .flatten()
-        .and_then(|row| row.dreamed_checkpoint_id)
-        == Some(generation)
-}
-
 /// Starts the source's second countdown, from the dream's true end.
 ///
 /// # Invariant
@@ -375,86 +340,13 @@ pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
         {
             return;
         }
-        let generation = armed_generation;
-        // SPEC's Dreaming: the first fire of a generation dreams in the notice's place.
-        if !d.shutting_down.load(Ordering::SeqCst) && spawn_dream(&d, &session, generation).await {
-            // Invariant: the dream's true end arms the next fire; see
-            // `docs/notes/server-dream.md`.
-            return;
-        }
-        if generation_dreamed(&d, &session, generation) {
-            // The second fire asks for a handoff and mutes every later one.
-            spawn_handoff(&d, &session, generation).await;
-            return;
-        }
-        let _ = deliver(d.as_ref(), session.name(), time_notice(), false).await;
+        d.agent.log_event(
+            Some(session.id()),
+            "keepalive_notice",
+            &json!({"generation": armed_generation}),
+        );
+        let _ = deliver(d.as_ref(), session.name(), keepalive_notice(), false, true).await;
     });
-    true
-}
-
-/// Asks a source to hand off on the second fire of a generation.
-async fn spawn_handoff(d: &Dispatch, source: &SessionHandle, generation: i64) {
-    // Marked before the notice: its turn's epilogue must not re-arm the chain.
-    if let Err(e) = d.store.mark_keepalive_handoff(source.id()) {
-        tracing::warn!(session = %source.name(), error = %e, "could not mute the heartbeat after its handoff");
-        return;
-    }
-    d.agent.log_event(
-        Some(source.id()),
-        "keepalive_handoff",
-        &json!({"generation": generation}),
-    );
-    let said = deliver(d, source.name(), handoff_notice(), false).await;
-    if !said.ok {
-        tracing::warn!(session = %source.name(), answer = %said.message, "the handoff notice was not delivered");
-    }
-}
-
-/// Clones the source for a generation not yet dreamed, and hands the clone its
-/// notice. Returns whether this fire dreamed.
-async fn spawn_dream(d: &Dispatch, source: &SessionHandle, generation: i64) -> bool {
-    let Ok(Some(row)) = d.store.get_session(source.name()) else {
-        return false;
-    };
-    if row.dreamed_checkpoint_id == Some(generation) {
-        return false;
-    }
-    // At most one live dream per session: a running one finishes its generation first.
-    if !d
-        .store
-        .dreams_of(source.id())
-        .is_ok_and(|dreams| dreams.is_empty())
-    {
-        return false;
-    }
-    let name = format!("{}/dream/{}", source.name(), generation);
-    let dream = Dream {
-        source: source.id(),
-        generation,
-    };
-    let report = match d.store.clone_session(source.name(), &name, Some(dream)) {
-        Ok(report) => report,
-        Err(e) => {
-            tracing::warn!(session = %source.name(), error = %e, "the dream was not cloned");
-            return false;
-        }
-    };
-    // Marked before the notice: a fire that races this one must not dream twice.
-    if let Err(e) = d.store.set_dreamed_checkpoint(source.id(), generation) {
-        tracing::warn!(session = %source.name(), error = %e, "could not mark the dreamed generation");
-    }
-    d.agent.log_event(
-        Some(source.id()),
-        "dream_spawn",
-        &json!({"dream": name, "generation": generation, "rows": report.rows}),
-    );
-    publish_sessions(d);
-    let said = deliver(d, &name, DREAM_NOTICE.to_string(), false).await;
-    if !said.ok {
-        // A dream with no notice is row-less work: the next start's sweep discards it.
-        tracing::warn!(session = %name, answer = %said.message, "the dream notice was not delivered");
-    }
-    tracing::info!(session = %name, source = %source.name(), generation, rows = report.rows, "dream spawned");
     true
 }
 
@@ -589,7 +481,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "send_message".into(),
-            description: "Send a message to a session and run a turn.".into(),
+            description: "Send a message to a session; `continue=false` writes context only.".into(),
             args: vec![
                 arg(
                     "message",
@@ -606,6 +498,37 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     "session",
                     Some("name"),
                     CompletionSource::Sessions,
+                ),
+                kind_arg(
+                    "continue",
+                    "False writes the row into the session's context without starting a turn.",
+                    false,
+                    "bool",
+                    Some("true|false"),
+                    CompletionSource::Static(vec!["true".into(), "false".into()]),
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "mute_keepalive".into(),
+            description: "Mute this session's keepalive timer until a message arrives.".into(),
+            args: vec![
+                kind_arg(
+                    "session",
+                    "The session whose timer is muted. Omitted means the caller's session.",
+                    false,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+                kind_arg(
+                    "mute",
+                    "False clears the mute; omitted or true mutes the timer.",
+                    false,
+                    "bool",
+                    Some("true|false"),
+                    CompletionSource::Static(vec!["true".into(), "false".into()]),
                 ),
             ],
         },
@@ -1559,6 +1482,7 @@ async fn run_now(d: &Dispatch, name: &str, args: &Args, origin: &Origin) -> Outc
     }
     match name {
         "send_message" => send_message(d, args, origin).await,
+        "mute_keepalive" => mute_keepalive(d, args, origin).await,
         "set_session" => set_session(d, args).await,
         // SPEC `new_session` is `set_session` that refuses a name already taken.
         "new_session" => {
@@ -1771,9 +1695,41 @@ fn caller_session(name: &str, args: &Args, caller: Option<&str>) -> Result<Strin
     }
 }
 
+/// Mutes a session's heartbeat, or clears the mute when `mute=false`.
+async fn mute_keepalive(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
+    let mute = match flag_of(args, "mute") {
+        Ok(value) => value.unwrap_or(true),
+        Err(e) => return Outcome::err(format!("--mute: {e}")),
+    };
+    let Some(name) = session_of(args, origin.session()) else {
+        return Outcome::err(
+            "mute_keepalive runs for a session: name one, or run it from a session's shell",
+        );
+    };
+    let Ok(Some(row)) = d.store.get_session(&name) else {
+        return Outcome::err(format!("no session named {name}"));
+    };
+    let result = if mute {
+        d.store.mark_keepalive_handoff(row.id)
+    } else {
+        d.store.clear_keepalive_handoff(row.id)
+    };
+    match result {
+        Ok(()) => Outcome::ok(format!(
+            "keepalive {} for {name}",
+            if mute { "muted" } else { "unmuted" }
+        )),
+        Err(e) => Outcome::err(format!("could not change the keepalive mute: {e}")),
+    }
+}
+
 async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
     let Some(message) = args.word("message").map(str::to_string) else {
         return Outcome::err("send_message requires a message");
+    };
+    let continue_turn = match flag_of(args, "continue") {
+        Ok(value) => value.unwrap_or(true),
+        Err(e) => return Outcome::err(format!("--continue: {e}")),
     };
     let Some(name) = session_of(args, origin.session()) else {
         return Outcome::err(
@@ -1788,9 +1744,10 @@ async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
             .ok()
             .and_then(|session| d.store.prompt(session.id()).ok().flatten())
             .is_none();
-    let said = deliver(d, &name, message, first_prompt).await;
-    // A window's prompt unmutes; a CLI/tool message does not. See `server-dream.md`.
-    if said.ok && origin.is_client_prompt() {
+    let said = deliver(d, &name, message, first_prompt, continue_turn).await;
+    // Any message to the session is a new prompt: the dreamer's mute is spent.
+    // See `server-dream.md`.
+    if said.ok {
         if let Ok(Some(row)) = d.store.get_session(&name)
             && let Err(e) = d.store.clear_keepalive_handoff(row.id)
         {
@@ -1836,7 +1793,7 @@ async fn expand_message(
 
 /// Delivers `message`: a turn when free, an inbox row when busy.
 ///
-/// `first_prompt`: see `docs/notes/server-handover.md`.
+/// `continue_turn=false` writes context, not a turn.
 ///
 /// # Invariant
 ///
@@ -1847,6 +1804,7 @@ pub(crate) async fn deliver(
     name: &str,
     message: String,
     first_prompt: bool,
+    continue_turn: bool,
 ) -> Outcome {
     let session = match d.sessions.get(name) {
         Ok(s) => s,
@@ -1886,6 +1844,35 @@ pub(crate) async fn deliver(
         && let Err(e) = d.store.start_live_compact(session.id())
     {
         tracing::warn!(session = %name, error = %e, "could not open the live compact checkpoint");
+    }
+    if !continue_turn {
+        let guard = session.try_claim();
+        if guard.is_none() {
+            return match d.store.add_pending_task(name, "inject", &{
+                let mut payload = message.to_json();
+                payload["session"] = json!(name);
+                if first_prompt {
+                    payload["first_prompt"] = json!(true);
+                }
+                payload
+            }) {
+                Ok(_) => {
+                    session.note_message();
+                    Outcome::ok(format!(
+                        "context queued for {name}; the running turn reads it at its next step"
+                    ))
+                }
+                Err(e) => Outcome::err(format!("could not record the pending context: {e}")),
+            };
+        }
+        return match d.store.append_context(session.id(), &message, first_prompt) {
+            Ok(rows) => {
+                d.agent.announce_operator_rows(name, rows);
+                tracing::info!(session = %name, "context written: no turn was started");
+                Outcome::ok(format!("context written for {name}; no turn was started"))
+            }
+            Err(e) => Outcome::err(format!("could not write the context: {e}")),
+        };
     }
     let epoch = session.cancel_epoch();
     if let Some(gate) = session.try_claim() {

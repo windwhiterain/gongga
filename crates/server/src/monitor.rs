@@ -294,7 +294,7 @@ where
         Ok(text) => crate::prompts::harness_wrap(text),
         Err(e) => return Handed::Failed(format!("cannot write the report: {e}")),
     };
-    match crate::commands::deliver(d, kind.session, report, false).await {
+    match crate::commands::deliver(d, kind.session, report, false, true).await {
         outcome if outcome.ok => Handed::Accepted,
         outcome => Handed::Refused(outcome.message),
     }

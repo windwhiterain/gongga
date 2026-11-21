@@ -71,11 +71,9 @@ the file body would be missing from the index. With the `text` row in place,
 one `send_message`.
 
 The note goes back to the session through `gongga-cli`, so on the wire it is a
-`Client` origin, not a tool's -- but the CLI greets with `client: false` (it is
-the `rpc` layer). That is what keeps a heartbeat-prompted handoff mute: the note
-is a first prompt, but not a client window's prompt, so `send_message` leaves
-`keepalive_handoff_at` alone. Only a window's greeting (`client: true`) unmutes.
-See `server-dream.md`.
+`Client` origin, not a tool's. A handoff no longer writes `keepalive_handoff_at`:
+mute belongs to `@skill(dreamer)`, and every `send_message` clears it. There is no
+window/RPC distinction on the greeting; see `server-dream.md`.
 
 `handoff` sends it rather than inserting the row itself, and the reason is ordering: it
 runs *inside* the call it must keep, so a row inserted here would sit between that

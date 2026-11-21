@@ -196,11 +196,6 @@ pub enum ClientMessage {
     Bye,
 }
 
-/// Old greetings stay clients; the CLI opts out. See [`ClientInfo::client`].
-fn default_is_client() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientInfo {
     pub version: String,
@@ -215,10 +210,6 @@ pub struct ClientInfo {
     /// that a log row keeps for a `cancel`, and it names a window differently from
     /// a one-shot command and from the bundle's own `gongga`.
     pub label: String,
-    /// Window binary true, `rpc` CLI false: only a window's message is a
-    /// user prompt. See `server-dream.md`.
-    #[serde(default = "default_is_client")]
-    pub client: bool,
     /// The session whose shell started this client, when one did.
     ///
     /// # Invariant
