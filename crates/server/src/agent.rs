@@ -631,12 +631,12 @@ impl Agent {
             .filter(|text| !text.is_empty());
         // Where the conversation's references stand now, planned once, for the one
         // request that carries it.
-        let (index, rooted) = match self
+        let (index, rooted, index_explicit, index_cached) = match self
             .index_of(id, name, model, &here, &home, machines, remote)
             .await
         {
-            Some((index, rooted)) => (Some(index), rooted),
-            None => (None, Vec::new()),
+            Some(parts) => (Some(parts.0), parts.1, parts.2, parts.3),
+            None => (None, Vec::new(), Vec::new(), Vec::new()),
         };
         let prompt = crate::store::Prompt {
             instructions,
@@ -644,6 +644,8 @@ impl Agent {
             tail,
             parameters,
             rooted,
+            index_explicit,
+            index_cached,
             cwd: here,
             remote: remote.map(str::to_string),
             model: Some(model.to_string()),
@@ -812,7 +814,7 @@ impl Agent {
         home: &std::path::Path,
         machines: &crate::meta::Machines<'_>,
         remote: Option<&str>,
-    ) -> Option<(String, Vec<String>)> {
+    ) -> Option<(String, Vec<String>, Vec<String>, Vec<String>)> {
         // The queue as well as the transcript: an early message left its `@file(...)`
         // mentions for this row to index.
         let mut texts = self.store.user_texts(id).ok()?;
@@ -824,6 +826,12 @@ impl Agent {
             return None;
         }
         let rates = self.rates(model);
+        // What a message asked for outright. The rules count too: they are named
+        // without a mention, but nothing dragged them in for the cache's sake.
+        let mut explicit: Vec<String> = roots.iter().map(|root| root.spelling.clone()).collect();
+        if rules.is_some() {
+            explicit.push(crate::meta::rules_spelling());
+        }
         let wanted: Vec<crate::prefix_cache::Wanted> = roots
             .iter()
             .map(|root| crate::prefix_cache::Wanted {
@@ -840,6 +848,15 @@ impl Agent {
             rates,
             self.index_tolerance(),
         );
+        // A plan may carry a chain's ancestors that nobody named: they ride in so
+        // the cached prefix stays whole. The two lists partition `rooted`, letting a
+        // reader tell an ask from a rider. Kept as a record, never sent to the model.
+        let rooted: Vec<String> = planned.entries.iter().map(|(key, _)| key.clone()).collect();
+        let cached: Vec<String> = rooted
+            .iter()
+            .filter(|key| !explicit.contains(key))
+            .cloned()
+            .collect();
         let body = planned
             .entries
             .iter()
@@ -880,8 +897,7 @@ impl Agent {
             index.push_str("\n\n");
             index.push_str(&prompts.render(crate::prompts::REVISION, &[("revisions", &changes)]));
         }
-        let rooted: Vec<String> = planned.entries.into_iter().map(|(key, _)| key).collect();
-        Some((index, rooted))
+        Some((index, rooted, explicit, cached))
     }
 
     /// Records the whole step around the narrower request and tool measurements.
@@ -2222,6 +2238,8 @@ mod tests {
             tail: Some("Session `s`, 2026-11-01 14:00 UTC".to_string()),
             parameters: Some("every call may carry `description`".to_string()),
             rooted: Vec::new(),
+            index_explicit: Vec::new(),
+            index_cached: Vec::new(),
             cwd: ".".to_string(),
             remote: None,
             model: Some("m".to_string()),
@@ -2231,6 +2249,32 @@ mod tests {
         let read = store.prompt(id).expect("a readable row").expect("one row");
         assert_eq!(read.tail, first.tail);
         assert_eq!(read.instructions, "prose", "and nothing rewrote the prose");
+    }
+
+    #[test]
+    fn a_prompt_row_shows_the_full_text_and_why_each_reference_is_there() {
+        let display = serde_json::json!({
+            "instructions": "the standing prose",
+            "index": "the expanded index body",
+            "index_explicit": ["@file(a.md)", "AGENTS.md"],
+            "index_cached": ["@skill(old)"],
+            "tail": "the start card",
+            "parameters": "shared args",
+            "cwd": "/home/session",
+            "model": "m",
+            "remote": null,
+        })
+        .to_string();
+        let row = crate::store::MessageRow::parse(1, "system", &display);
+        // Full text of every field, not a character count.
+        assert!(row.text.contains("the standing prose"));
+        assert!(row.text.contains("the expanded index body"));
+        assert!(row.text.contains("the start card"));
+        assert!(row.text.contains("shared args"));
+        // An ask and a rider are told apart.
+        assert!(row.text.contains("asked    @file(a.md)"));
+        assert!(row.text.contains("asked    AGENTS.md"));
+        assert!(row.text.contains("cached   @skill(old)"));
     }
 
     fn notice_prompts() -> crate::prompts::Prompts {

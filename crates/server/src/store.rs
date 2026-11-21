@@ -38,6 +38,15 @@ pub struct Prompt {
     /// The spellings `index` carries, so a mention of one stays literal.
     #[serde(default)]
     pub rooted: Vec<String>,
+    /// Which of `rooted` a message asked for outright -- a `@file`/`@skill`
+    /// mention or the standing rules -- as opposed to riding in because the
+    /// prefix cache needed its ancestor. A record for the reader, never sent.
+    #[serde(default)]
+    pub index_explicit: Vec<String>,
+    /// Which of `rooted` came in only as a cached chain's ancestor, not asked
+    /// for by any message. A record for the reader, never sent.
+    #[serde(default)]
+    pub index_cached: Vec<String>,
     /// The directory this row's index was read from; the cache owner names it.
     #[serde(default)]
     pub cwd: String,
@@ -4121,13 +4130,55 @@ impl MessageRow {
             Some(Kind::Notice | Kind::ThinkingMark | Kind::Inject | Kind::Error) => {
                 row.text = str_of("text").unwrap_or_default()
             }
-            // The reader sees which prompt was in force, not 10k characters of it.
+            // What the model was told, in full. The front-end folds a row to one line
+            // until opened, so length costs nothing until a reader asks for it.
             Some(Kind::System) => {
+                let list = |key: &str| {
+                    value
+                        .get(key)
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(str::to_string)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                };
+                let join = |key: &str, label: &str, out: &mut String| {
+                    let text = str_of(key).unwrap_or_default();
+                    if !text.is_empty() {
+                        out.push_str(&format!("{label}:\n{text}\n\n"));
+                    }
+                };
+                let mut out = String::from("[prompt in force]\n\n");
+                join("instructions", "instructions", &mut out);
+                join("index", "index", &mut out);
+                let asks = list("index_explicit");
+                let riders = list("index_cached");
+                if !asks.is_empty() || !riders.is_empty() {
+                    out.push_str("index references:\n");
+                    for name in &asks {
+                        out.push_str(&format!("  asked    {name}\n"));
+                    }
+                    for name in &riders {
+                        out.push_str(&format!("  cached   {name}\n"));
+                    }
+                    out.push('\n');
+                }
+                join("tail", "tail", &mut out);
+                join("parameters", "parameters", &mut out);
                 let cwd = str_of("cwd").unwrap_or_default();
-                let chars = str_of("instructions").unwrap_or_default().chars().count();
-                row.text = format!(
-                    "[prompt in force] {chars} characters of instructions, read from {cwd}"
-                );
+                let model = str_of("model").unwrap_or_default();
+                let remote = str_of("remote").unwrap_or_default();
+                out.push_str(&format!("read from {cwd}"));
+                if !model.is_empty() {
+                    out.push_str(&format!(", model {model}"));
+                }
+                if !remote.is_empty() {
+                    out.push_str(&format!(", via {remote}"));
+                }
+                row.text = out;
             }
             // The set in force: how big it is, not the schema the model reads.
             Some(Kind::Tools) => {
