@@ -40,9 +40,7 @@ The entry point as a function: `gongga-server`'s `main.rs` parses its flags into
 `Args` and calls this, and it owns the runtime for the life of the server.
 
 The runtime is built here rather than by `#[tokio::main]` so that the drop
-happens at a point where `run` has already closed every shell. The drop still
-waits, with no deadline -- but it now waits for something that ends, which is the
-difference between waiting and hanging.
+happens at a point where `run` has already closed every shell.
 
 The bug this replaces: every blocking task had to drain before the process could
 go, one of them was the reaper for a persistent shell, and a persistent shell
@@ -50,6 +48,14 @@ never exits on its own. After a session had used `bash`, the process sat there
 having already logged `server stopped`. Putting a 2s deadline on the drain hid
 that instead of fixing it; what fixes it is ending the shells in `run`, after
 which there is nothing left for the drain to wait on.
+
+A drop can still hang inside Tokio's own teardown, with no work of ours left to
+end: `main: dropping runtime` is logged and `main: runtime dropped` never is.
+The port and the home lock are already gone at that point, so waiting forever
+only leaves a process the window that started it can no longer stop. A guard
+thread gives the drop a deadline and leaves with the code the stop already
+earned -- 0 for a stop that worked, 2 for one that did -- so the watchdog does
+not restart a server whose `run` finished.
 
 ## run (flag overrides)
 

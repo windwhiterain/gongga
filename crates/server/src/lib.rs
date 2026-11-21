@@ -149,6 +149,9 @@ fn config_from(args: &Args) -> anyhow::Result<Config> {
     Config::load_with_home(args.config.as_deref(), args.home.as_deref())
 }
 
+/// How long a runtime has to finish its own teardown after `run` returned.
+const RUNTIME_DROP_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub fn main(args: Args) -> anyhow::Result<()> {
     adopt_home(&args);
     // Built here, not by `#[tokio::main]`, so the drop runs after `run` closed
@@ -157,8 +160,26 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     let result = runtime.block_on(run(args));
+    let code = if result.is_ok() {
+        0
+    } else {
+        supervise::REFUSED
+    };
+    let (done, wait) = std::sync::mpsc::channel();
+    // A runtime that cannot join its workers must not outlive a stop. The
+    // code below is one the watchdog leaves on.
+    std::thread::spawn(move || {
+        if wait.recv_timeout(RUNTIME_DROP_GRACE).is_err() {
+            tracing::error!(
+                grace_ms = RUNTIME_DROP_GRACE.as_millis(),
+                "runtime teardown did not finish; leaving"
+            );
+            std::process::exit(code);
+        }
+    });
     tracing::info!("main: dropping runtime");
     drop(runtime);
+    let _ = done.send(());
     tracing::info!("main: runtime dropped");
     result
 }
