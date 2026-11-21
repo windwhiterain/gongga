@@ -246,22 +246,23 @@ a provider changes.
 Undeclared means unsent. Offering a tool a provider does not recognise is a
 plain 400 on every request of every turn, so the default has to be silence.
 
-### A built-in tool with a long index
+### A long index on the wire
 
-On one endpoint a request that offers a provider-side tool is measured against a
-small input ceiling even though the model's own window is far larger. A single
-`user` turn carrying the whole index is refused with `... exceeds max 32768`;
-the same bytes split into several `user` turns, each bridged by an `assistant`
-turn, are accepted. The check reads one turn, not the request total, so the
-accepted request still reports an `input` above the same number.
+On one endpoint a long `user` turn is measured against a small input ceiling even
+though the model's own window is far larger. A single `user` turn carrying the
+whole index is refused with `... exceeds max 32768`; the same bytes split into
+several `user` turns, each bridged by an `assistant` turn, are accepted. The check
+reads one turn, not the request total, so the accepted request still reports an
+`input` above the same number.
 
-`build_head` applies that shape only when `builtin_tools` is non-empty: the index
-is cut every `INDEX_CHUNK_CHARS` characters on a UTF-8 boundary, an `assistant`
-`output_text` bridge is placed between turns, and the last turn stays `user` --
-the endpoint refuses an `assistant` last turn before it reaches the length check.
-No text is dropped or reordered; only the message boundaries change, so the
-stable prefix is still a prefix. Requests without a built-in tool keep the single
-`user` turn and its cache boundary.
+`build_head` always applies that shape: the index is cut every
+`INDEX_CHUNK_CHARS` characters on a UTF-8 boundary, an `assistant` `output_text`
+bridge is placed between turns, and the last turn stays `user` -- the endpoint
+refuses an `assistant` last turn before it reaches the length check. No text is
+dropped or reordered; only the message boundaries change. The cut depends only on
+the index bytes, never on the model, tools or provider, so swapping any of those
+leaves this prefix untouched. A short index still fits in one `user` turn and gets
+no bridge.
 
 ## LlmClient::build_head — one `tools` array
 
