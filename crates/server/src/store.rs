@@ -1691,8 +1691,8 @@ impl Store {
                  (session_id, seq, kind, content, display, call_id, turn, step, created_at)
              VALUES (
                 ?1,
-                -- Slots 1 and 2 are reserved for the head; the first transcript row is 3.
-                (SELECT MAX(COALESCE(MAX(seq), 2), 2) + 1 FROM messages WHERE session_id = ?1),
+                -- Slots 1 through 5 are reserved for the head; the first transcript row is 6.
+                (SELECT MAX(COALESCE(MAX(seq), 5), 5) + 1 FROM messages WHERE session_id = ?1),
                 ?2,
                 ?3,
                 ?4,
@@ -1942,14 +1942,51 @@ impl Store {
     /// no walk is needed and storage order is send order.
     pub fn prompt(&self, session_id: i64) -> anyhow::Result<Option<Prompt>> {
         let conn = self.lock();
-        let display = conn
-            .query_row(
-                "SELECT display FROM messages WHERE session_id = ?1 AND seq = 1 AND kind = 'system'",
-                params![session_id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?;
-        Ok(display.and_then(|d| serde_json::from_str::<Prompt>(&d).ok()))
+        // Version 7 keeps the head in five rows (instructions/1, tools/2,
+        // agents.md/3, index/4, info/5). Read by slot, never by a walk. A version
+        // 5-to-6 session still has the whole prompt in one `system` row at 1.
+        let cell = |seq: i64, kind: &str| -> anyhow::Result<Option<serde_json::Value>> {
+            let display = conn
+                .query_row(
+                    "SELECT display FROM messages WHERE session_id = ?1 AND seq = ?2 AND kind = ?3",
+                    params![session_id, seq, kind],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            Ok(display.and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok()))
+        };
+        let instructions = match cell(1, "instructions")? {
+            Some(row) => Some(row),
+            None => cell(1, "system")?,
+        };
+        let Some(instructions) = instructions else {
+            return Ok(None);
+        };
+        let get = |row: &serde_json::Value, key: &str| -> serde_json::Value {
+            row.get(key).cloned().unwrap_or(serde_json::Value::Null)
+        };
+        let agents = cell(3, "agents_md")?;
+        let index = cell(4, "index")?;
+        let info = cell(5, "info")?;
+        // The one-row `system` spelling already holds the whole prompt.
+        if get(&instructions, "instructions").is_string()
+            && agents.is_none()
+            && index.is_none()
+            && info.is_none()
+            && instructions.get("tail").is_some()
+        {
+            return Ok(serde_json::from_value(instructions).ok());
+        }
+        let mut merged = serde_json::Map::new();
+        for (key, value) in instructions.as_object().unwrap_or(&serde_json::Map::new()) {
+            merged.insert(key.clone(), value.clone());
+        }
+        for row in [agents, index, info].into_iter().flatten() {
+            for (key, value) in row.as_object().unwrap_or(&serde_json::Map::new()) {
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+        Ok(serde_json::from_value(serde_json::Value::Object(merged)).ok())
     }
 
     /// Appends a row at an explicit slot. The head uses slots 1 and 2, written
@@ -1977,11 +2014,31 @@ impl Store {
         Ok(())
     }
 
-    /// Stores the prompt in slot 1, the first byte of the context.
+    /// Stores the prompt as four head rows: instructions at 1, agents.md at 3,
+    /// the index at 4 and the rest at 5 (the tool set owns slot 2). One row per
+    /// thing the reader wants to see, so the UI renders them as five lines and
+    /// `prompt` rebuilds the same wire head from the same rows it reads from.
     pub fn append_prompt(&self, session_id: i64, prompt: &Prompt) -> anyhow::Result<i64> {
-        let payload = serde_json::to_value(prompt)?;
         let conn = self.lock();
-        Self::append_head_conn(&conn, session_id, 1, Kind::System, &payload)?;
+        let instructions = serde_json::json!({ "instructions": prompt.instructions });
+        Self::append_head_conn(&conn, session_id, 1, Kind::Instructions, &instructions)?;
+        let agents = serde_json::json!({ "agents_md": prompt.agents_md });
+        Self::append_head_conn(&conn, session_id, 3, Kind::AgentsMd, &agents)?;
+        let index = serde_json::json!({
+            "index": prompt.index,
+            "rooted": prompt.rooted,
+            "index_explicit": prompt.index_explicit,
+            "index_cached": prompt.index_cached,
+        });
+        Self::append_head_conn(&conn, session_id, 4, Kind::IndexRow, &index)?;
+        let info = serde_json::json!({
+            "tail": prompt.tail,
+            "parameters": prompt.parameters,
+            "cwd": prompt.cwd,
+            "model": prompt.model,
+            "remote": prompt.remote,
+        });
+        Self::append_head_conn(&conn, session_id, 5, Kind::Info, &info)?;
         Ok(1)
     }
 
@@ -4049,6 +4106,12 @@ pub(crate) enum Kind {
     Error,
     System,
     Tools,
+    // The five head rows, one per slot. `System` and `Tools` are kept for rows a
+    // version 5-to-6 session still has; a version 7 session writes these instead.
+    Instructions,
+    AgentsMd,
+    IndexRow,
+    Info,
     BuiltinCall,
     LiveCompactRequest,
 }
@@ -4066,6 +4129,10 @@ impl Kind {
             Kind::Error => "error",
             Kind::System => "system",
             Kind::Tools => "tools",
+            Kind::Instructions => "instructions",
+            Kind::AgentsMd => "agents_md",
+            Kind::IndexRow => "index",
+            Kind::Info => "info",
             Kind::BuiltinCall => "builtin_call",
             Kind::LiveCompactRequest => crate::live_compact::REQUEST_KIND,
         }
@@ -4084,6 +4151,10 @@ impl Kind {
             "error" => Some(Kind::Error),
             "system" => Some(Kind::System),
             "tools" => Some(Kind::Tools),
+            "instructions" => Some(Kind::Instructions),
+            "agents_md" => Some(Kind::AgentsMd),
+            "index" => Some(Kind::IndexRow),
+            "info" => Some(Kind::Info),
             "builtin_call" => Some(Kind::BuiltinCall),
             other if other == crate::live_compact::REQUEST_KIND => Some(Kind::LiveCompactRequest),
             _ => None,
@@ -4134,9 +4205,9 @@ impl MessageRow {
             Some(Kind::Notice | Kind::ThinkingMark | Kind::Inject | Kind::Error) => {
                 row.text = str_of("text").unwrap_or_default()
             }
-            // The prompt in force, as five labelled lines: the four below live on
-            // this row, `tools` lives on the tools row. Each label starts a line; the
-            // front-end folds a row to one line until opened, so length costs nothing.
+            // Version 5-to-6 kept the whole prompt in one row. Render it as the
+            // five labelled lines the new rows carry, so an old session reads the
+            // same way. The front-end folds a row to one line until opened.
             Some(Kind::System) => {
                 let list = |key: &str| {
                     value
@@ -4179,6 +4250,50 @@ impl MessageRow {
                     "info: cwd={cwd}, model={model}, remote={remote}, tail={tail}, parameters={parameters}"
                 ));
                 row.text = out;
+            }
+            // The head in force, one row per line. Each of these is a real stored
+            // row a version 7 session wrote, so the UI shows five lines and the
+            // sender rebuilds the same wire head from these same rows.
+            Some(Kind::Instructions) => {
+                row.text = format!(
+                    "instructions: {}",
+                    str_of("instructions").unwrap_or_default()
+                );
+            }
+            Some(Kind::AgentsMd) => {
+                row.text = format!("agents.md: {}", str_of("agents_md").unwrap_or_default());
+            }
+            Some(Kind::IndexRow) => {
+                let list = |key: &str| {
+                    value
+                        .get(key)
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(str::to_string)
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                };
+                let mut text = format!("index: {}", str_of("index").unwrap_or_default());
+                let asks = list("index_explicit");
+                let riders = list("index_cached");
+                if !asks.is_empty() || !riders.is_empty() {
+                    text.push_str(&format!("\n  asked: {}", asks.join(", ")));
+                    text.push_str(&format!("\n  cached: {}", riders.join(", ")));
+                }
+                row.text = text;
+            }
+            Some(Kind::Info) => {
+                let cwd = str_of("cwd").unwrap_or_default();
+                let model = str_of("model").unwrap_or_default();
+                let remote = str_of("remote").unwrap_or_default();
+                let tail = str_of("tail").unwrap_or_default();
+                let parameters = str_of("parameters").unwrap_or_default();
+                row.text = format!(
+                    "info: cwd={cwd}, model={model}, remote={remote}, tail={tail}, parameters={parameters}"
+                );
             }
             // The fifth line: the set in force, as the names the model sees.
             Some(Kind::Tools) => {
@@ -4282,9 +4397,15 @@ fn wire_item(kind: Kind, value: &serde_json::Value) -> Option<serde_json::Value>
     };
     // Pictures stay in `display` and resolve per request.
     match kind {
-        // Records a request reads, not messages it sends: the prompt and the tool
-        // set in force keep their payload in `display`.
-        Kind::System | Kind::Tools => None,
+        // Records a request reads, not messages it sends: the five head rows keep
+        // their payload in `display`, and `prompt`/`tool_set` rebuild the wire head.
+        // `System` is the version 5-to-6 spelling of the same record.
+        Kind::System
+        | Kind::Tools
+        | Kind::Instructions
+        | Kind::AgentsMd
+        | Kind::IndexRow
+        | Kind::Info => None,
         // An injection is a user turn to the model: the kind names the reader's block.
         Kind::Text | Kind::Inject => {
             let role = text_of("role");

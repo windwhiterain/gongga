@@ -3655,7 +3655,11 @@ fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
             | Kind::Notice
             | Kind::LiveCompactRequest
             | Kind::System
-            | Kind::Tools,
+            | Kind::Tools
+            | Kind::Instructions
+            | Kind::AgentsMd
+            | Kind::IndexRow
+            | Kind::Info,
         ) => said(ResponsePart::Inject, None),
         None => said(ResponsePart::Inject, None),
     })

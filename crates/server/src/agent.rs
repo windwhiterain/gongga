@@ -2254,10 +2254,45 @@ mod tests {
             model: Some("m".to_string()),
         };
         store.append_prompt(id, &first).expect("one row");
-        // A minute later: the stored card is what a request carries, not the clock.
+        // The head is five rows now: instructions/1, tools/2, agents.md/3,
+        // index/4, info/5. The prompt is rebuilt from them, field for field.
         let read = store.prompt(id).expect("a readable row").expect("one row");
-        assert_eq!(read.tail, first.tail);
-        assert_eq!(read.instructions, "prose", "and nothing rewrote the prose");
+        assert_eq!(read, first, "the five rows rebuild the same prompt");
+        // The first transcript row follows the five head slots.
+        let seq = store
+            .append_message(
+                id,
+                crate::store::Kind::Text,
+                &serde_json::json!({"role":"user","text":"hello"}),
+            )
+            .expect("a message");
+        assert_eq!(seq, 6, "ordinary messages start after the five head rows");
+    }
+
+    #[test]
+    fn a_five_row_head_rebuilds_every_wire_field() {
+        let store =
+            crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
+        let id = store
+            .create_session_on("s", "m", ".", None, None)
+            .expect("a session");
+        let prompt = crate::store::Prompt {
+            instructions: "the system prose".to_string(),
+            index: Some("the expanded index".to_string()),
+            agents_md: Some("the standing rules".to_string()),
+            tail: Some("the card".to_string()),
+            parameters: Some("the shared args".to_string()),
+            rooted: vec!["@file(a.md)".to_string()],
+            index_explicit: vec!["@file(a.md)".to_string()],
+            index_cached: vec!["@skill(b)".to_string()],
+            cwd: "/here".to_string(),
+            remote: Some("peer".to_string()),
+            model: Some("m".to_string()),
+        };
+        store.append_prompt(id, &prompt).expect("five rows");
+        let read = store.prompt(id).expect("readable").expect("one prompt");
+        // Every field the wire head is built from survives the round trip.
+        assert_eq!(read, prompt);
     }
 
     #[test]
@@ -2292,6 +2327,51 @@ mod tests {
         // An ask and a rider are told apart, under the index label.
         assert!(row.text.contains("asked: @file(a.md), AGENTS.md"));
         assert!(row.text.contains("cached: @skill(old)"));
+    }
+
+    #[test]
+    fn the_five_head_rows_each_render_as_one_line() {
+        let store =
+            crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
+        let id = store
+            .create_session_on("s", "m", ".", None, None)
+            .expect("a session");
+        let prompt = crate::store::Prompt {
+            instructions: "the standing prose".to_string(),
+            index: Some("the expanded index".to_string()),
+            agents_md: Some("the standing rules".to_string()),
+            tail: Some("the card".to_string()),
+            parameters: Some("shared args".to_string()),
+            rooted: vec![],
+            index_explicit: vec!["@file(a.md)".to_string()],
+            index_cached: vec!["@skill(old)".to_string()],
+            cwd: "/home/session".to_string(),
+            remote: None,
+            model: Some("m".to_string()),
+        };
+        store.append_prompt(id, &prompt).expect("five rows");
+        store
+            .write_head_once(
+                id,
+                &crate::store::ToolSet {
+                    tools: serde_json::json!([{"type":"function","name":"read_file"}]),
+                    model: None,
+                    remote: None,
+                    build: String::new(),
+                    event: String::new(),
+                },
+            )
+            .expect("the tool row");
+        let window = store.messages_between(id, 1, 5).expect("the head window");
+        let texts: Vec<&str> = window.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts.len(), 5, "five stored head rows render as five lines");
+        assert!(texts[0].starts_with("instructions: the standing prose"));
+        assert!(texts[1].starts_with("tools: 1 tool(s) [read_file]"));
+        assert!(texts[2].starts_with("agents.md: the standing rules"));
+        assert!(texts[3].starts_with("index: the expanded index"));
+        assert!(texts[3].contains("asked: @file(a.md)"));
+        assert!(texts[3].contains("cached: @skill(old)"));
+        assert!(texts[4].starts_with("info: cwd=/home/session"));
     }
 
     #[test]

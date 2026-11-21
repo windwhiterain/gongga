@@ -194,6 +194,10 @@ impl Transcript {
                 | Kind::ThinkingMark
                 | Kind::System
                 | Kind::Tools
+                | Kind::Instructions
+                | Kind::AgentsMd
+                | Kind::IndexRow
+                | Kind::Info
                 | Kind::ToolCall
                 | Kind::BuiltinCall
                 | Kind::LiveCompactRequest,

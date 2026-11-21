@@ -14,24 +14,24 @@ if that stops being true the fix is `spawn_blocking`, not a redesign.
 
 ## Prompt -- written once, never compared
 
-The head of a request is `instructions`, `index` and `tail`, and it is stamped once and
-read from the store after that. The prompt lives in slot 1 and the tool schema in slot 2;
-the first transcript row is slot 3, so storage order is send order and neither read nor
-send searches for a row -- each takes the fixed slot. There is no comparison, because
-there is nothing to compare it against: a second rendering would be a second set of
-bytes for a prefix the provider has already cached, and everything behind it would be
-billed again. A version 5 session, whose head sat after its opening line, is moved into
-these slots by the 5-to-6 migrator before the store opens it; the read never walks.
+The head of a request is stamped once and read from the store after that. Since version
+7 it is five rows, one per thing the reader wants to see: instructions at slot 1, the
+tool schema at 2, agents.md at 3, the index at 4 and the rest (card, parameters, cwd,
+model, remote) at 5; ordinary messages start at slot 6. So there is one stored row per
+rendered line, and `prompt`/`tool_set` rebuild the exact same wire head from those same
+rows -- storage order is send order, and neither read nor send searches for a row. There
+is no comparison: a second rendering would be a second set of bytes for a prefix the
+provider has already cached. A version 5 session had the whole prompt in one row and its
+head behind the opening line; 5-to-6 moved it into fixed slots, and 6-to-7 split that row
+into the five, shifting ordinary messages and their stored seq references by three.
 
-The head is stored whole so the reader can see what the model was told. `MessageRow::parse`
-renders it as five labelled lines: the prompt row (slot 1) carries `instructions:`,
-`agents.md:`, `index:` and `info:`; the tools row (slot 2) carries `tools:`. The front-end
-folds a row to one line until opened, so a line may hold the full text. `agents_md` keeps
-the standing rules on their own line, `info` folds cwd/model/remote/tail/parameters onto
-one, and under `index:` the prompt records why each reference is there -- `index_explicit`
-names what a message asked for outright (a mention or the standing rules), `index_cached`
-what rode in only as a cached chain's ancestor. Every one of these is a reader's record
-and is never sent; older rows read them as empty.
+`MessageRow::parse` renders each head row as its own line: `instructions:` (slot 1),
+`tools:` (2, the tool names), `agents.md:` (3, the standing rules), `index:` (4) and
+`info:` (5, cwd/model/remote/card/parameters folded onto one). Under `index:` the record
+says why each reference is there -- `index_explicit` names what a message asked for
+outright, `index_cached` what rode in only as a cached chain's ancestor. All five are
+records the reader sees: `content` is NULL so the transcript walk does not send them as
+messages; the sender rebuilds the head from their `display`. Older rows read as before.
 
 This replaced `Prompt::rewritten_by`, which compared the three wire texts at every step
 and appended a row whenever they differed. The rule was right about `cwd` -- a shell
