@@ -669,14 +669,40 @@ impl LlmClient {
             head.push(',');
         }
         if let Some(index) = index {
-            head.push_str(
-                &json!({
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": index}],
-                })
-                .to_string(),
-            );
-            head.push(',');
+            // With a provider-side tool in the request, this endpoint measures one long
+            // user turn against a ceiling far below the model's window. Bridging the
+            // index with assistant turns keeps every turn short while sending the same
+            // bytes in the same order, and the API requires the last turn to be a user.
+            // Only a request that offers a built-in tool takes this path.
+            let bridge: &str = if framing.separator.is_empty() {
+                "."
+            } else {
+                &framing.separator
+            };
+            let turns = if self.builtin_tools.is_empty() {
+                vec![IndexTurn::User(index)]
+            } else {
+                split_index(index, bridge, INDEX_CHUNK_CHARS)
+            };
+            for turn in turns {
+                match turn {
+                    IndexTurn::User(text) => head.push_str(
+                        &json!({
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": text}],
+                        })
+                        .to_string(),
+                    ),
+                    IndexTurn::Assistant(text) => head.push_str(
+                        &json!({
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": text}],
+                        })
+                        .to_string(),
+                    ),
+                }
+                head.push(',');
+            }
         }
         // Before the card: the same words for every session, the card being what differs.
         if let Some(parameters) = parameters.filter(|parameters| !parameters.is_empty()) {
@@ -701,6 +727,49 @@ impl LlmClient {
         }
         head.into_bytes()
     }
+}
+
+/// Largest index turn, in characters, sent while a built-in tool is offered.
+///
+/// # Invariant
+///
+/// The offending endpoint mis-reads one long `user` turn against a small ceiling
+/// when the request also offers a provider-side tool. Chunks stay far below that
+/// ceiling even for dense CJK text (~2 tokens/char), and the bytes stay in order:
+/// only the message boundaries change, never the transcript's content. See the
+/// split experiment in `docs/notes/server-llm.md`.
+const INDEX_CHUNK_CHARS: usize = 12_000;
+
+/// One turn of a split index, written into the request body verbatim.
+enum IndexTurn<'a> {
+    User(&'a str),
+    Assistant(&'a str),
+}
+
+/// Splits one index into short `user` turns bridged by `assistant` turns.
+///
+/// # Invariant
+///
+/// The concatenation of every `User` slice equals `index` byte for byte: no text
+/// is dropped, reordered or rewritten, and cuts land on UTF-8 character boundaries.
+/// A short index stays one `user` turn with no bridge. The last turn is always a
+/// `user`, which the endpoint requires; an `assistant` last turn is refused before
+/// the length check is ever reached.
+fn split_index<'a>(index: &'a str, bridge: &'a str, limit: usize) -> Vec<IndexTurn<'a>> {
+    let mut turns = Vec::new();
+    let mut start = 0;
+    let mut count = 0;
+    for (byte, _) in index.char_indices() {
+        count += 1;
+        if count > limit {
+            turns.push(IndexTurn::User(&index[start..byte]));
+            turns.push(IndexTurn::Assistant(bridge));
+            start = byte;
+            count = 1;
+        }
+    }
+    turns.push(IndexTurn::User(&index[start..]));
+    turns
 }
 
 /// The part of a connection that files are uploaded to, and deleted from.
@@ -2324,5 +2393,76 @@ fn shorten_body(body: &str) -> String {
             .map(str::to_string)
             .unwrap_or_else(|| body.chars().take(400).collect()),
         Err(_) => body.chars().take(400).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{INDEX_CHUNK_CHARS, IndexTurn, split_index};
+
+    #[test]
+    fn short_index_stays_one_user_turn() {
+        let turns = split_index("hello world", "---", INDEX_CHUNK_CHARS);
+        assert_eq!(turns.len(), 1);
+        assert!(matches!(&turns[0], IndexTurn::User(s) if *s == "hello world"));
+    }
+
+    #[test]
+    fn split_is_lossless_and_ends_on_user() {
+        let index = "x".repeat(INDEX_CHUNK_CHARS * 3 + 7);
+        let turns = split_index(&index, "---", INDEX_CHUNK_CHARS);
+        let rebuilt: String = turns
+            .iter()
+            .filter_map(|t| match t {
+                IndexTurn::User(s) => Some(*s),
+                IndexTurn::Assistant(_) => None,
+            })
+            .collect();
+        assert_eq!(rebuilt, index, "user turns must rebuild the index verbatim");
+        assert!(matches!(turns.last(), Some(IndexTurn::User(_))));
+        // N+1 user turns separated by N assistant bridges for N+1 chunks.
+        let chunks = 4; // 3 full + 1 remainder
+        assert_eq!(turns.len(), chunks * 2 - 1);
+    }
+
+    #[test]
+    fn split_never_breaks_utf8_and_keeps_each_chunk_small() {
+        // Multibyte CJK: cutting by char count must not slice a codepoint.
+        let index = "上下文索引".repeat(INDEX_CHUNK_CHARS / 5);
+        let bridge = "——";
+        let turns = split_index(&index, bridge, INDEX_CHUNK_CHARS);
+        let rebuilt: String = turns
+            .iter()
+            .filter_map(|t| match t {
+                IndexTurn::User(s) => Some(*s),
+                IndexTurn::Assistant(_) => None,
+            })
+            .collect();
+        assert_eq!(rebuilt, index);
+        for turn in &turns {
+            match turn {
+                IndexTurn::User(s) => assert!(s.chars().count() <= INDEX_CHUNK_CHARS),
+                IndexTurn::Assistant(s) => assert_eq!(*s, bridge),
+            }
+        }
+        assert!(matches!(turns.last(), Some(IndexTurn::User(_))));
+    }
+
+    #[test]
+    fn exactly_at_limit_is_one_turn() {
+        let index = "a".repeat(INDEX_CHUNK_CHARS);
+        let turns = split_index(&index, "---", INDEX_CHUNK_CHARS);
+        assert_eq!(turns.len(), 1);
+        assert!(matches!(&turns[0], IndexTurn::User(s) if s.len() == INDEX_CHUNK_CHARS));
+    }
+
+    #[test]
+    fn one_over_limit_is_two_turns_with_a_bridge() {
+        let index = "a".repeat(INDEX_CHUNK_CHARS + 1);
+        let turns = split_index(&index, "---", INDEX_CHUNK_CHARS);
+        assert_eq!(turns.len(), 3);
+        assert!(matches!(&turns[0], IndexTurn::User(s) if s.chars().count() == INDEX_CHUNK_CHARS));
+        assert!(matches!(&turns[1], IndexTurn::Assistant(_)));
+        assert!(matches!(&turns[2], IndexTurn::User(s) if s.chars().count() == 1));
     }
 }
