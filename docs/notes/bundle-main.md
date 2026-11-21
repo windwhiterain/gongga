@@ -161,14 +161,11 @@ being served used to retire the *served* home's build: it asked that server to
 `cancel`, and the turn it was running went with it. Two such stops cost a session
 its work. A client therefore retires nothing.
 
-`--force` is passed *on* rather than consumed here: it goes into the `cancel` this
-file asks with (`gongga-cli --force ... cancel`), because the command line is this
-home's and may be a build other than the one asking -- what it can do about a server
-that will not stop is its own business, and a pid this file guessed is a pid it may
-kill twice. Only a refusal sends this file to `kill` and `wait_until_gone` itself,
-before `take_over` starts the new build. `--client_only` still wins: a window that
-needs no port does not get one freed for it. See the section below for what this
-costs.
+`--force` is accepted by the command line and carried no further: this build
+never kills a process to free a port. `retire` asks the running server to
+`cancel` and waits for its answer; a server that does not leave keeps both its
+directory and its port. `--client_only` still wins: a window that needs no port
+does not get one freed for it. See the section below for what this costs.
 
 ## What this is not
 
@@ -183,7 +180,7 @@ to the first is an overlay, not a bigger binary.
 ./gongga --version        # the build, as the window reports it
 ./gongga server --port 9700
 ./gongga tui              # the window
-./gongga tui --force      # the window, replacing a build whose cancel is stuck
+./gongga tui --force      # the window; the flag is accepted, no process is killed
 ```
 
 Every run places all payloads in `$GONGGA_HOME/payload/<stamp>/` first (all of
@@ -225,33 +222,26 @@ graph a second time into a second target directory -- 35 s cold, 1.8 GB. That is
 a cost the inner loop pays hundreds of times a day and the installer pays once,
 so it is opt-in and one alias away.
 
-## --force: a build whose cancel cannot finish
+## --force: a flag this build accepts and does not act on
 
     ./gongga tui --force
 
 A server on an old build can still hold a turn forever: its `cancel` only raises a
 boundary flag, and a turn stuck in a shell write or a model stream never reaches
-that boundary. The port stays taken and the command line asking for the cancel
-waits with no timeout, so a new build has placed its payload but never opens a
-window. The current build interrupts every turn's token and leaves, so this is a
-way out of a stuck *old* server, not of this build.
+that boundary. The current build interrupts every turn's token and leaves, so the
+way out of a stuck old server is to let it answer `cancel`, not to kill it.
 
-`--force` is the operator's way out of that loop. The head reads the flag before
-it calls `retire`; the program parses argv only afterwards, so write the flag
-*after* the program word (`gongga tui --force`, not `gongga --force tui`). It is a
-global flag in `client::Args`, so the command line accepts it too, and
-`check_flag_order` still requires it before a command name -- where it means the
-same thing one step down: a `cancel` the server refuses is followed by the pid the
-greeting named, watchdog first (`client::server::force_stop`). That is why `retire`
-passes the flag on rather than killing here itself: the same sentence, one hop
-further, and only a wrap that cannot speak the protocol at all falls back to the
-kill this file does.
+`--force` is a global flag in `client::Args`, so the head still accepts it and
+`check_flag_order` still places it before a command name -- after the program word
+for a window (`gongga tui --force`, not `gongga --force tui`). It no longer reaches
+`retire`, and no pid is killed at either hop. A server that never answers keeps
+its port and its directory, and the new build reports the refusal instead of
+opening a second server on the same home.
 
-What it costs: `taskkill /T` on Windows takes the server's whole process tree
-with it, including every background job the server was holding, where a `cancel`
-would have let those jobs go. Messages already in the database are not lost; the
-turns simply stop. Use it when the old build is known to be stuck, not as the
-everyday upgrade path.
+What this buys: a kill landing while a server is already inside `Runtime::drop`
+leaves a process that neither serves nor exits, with its watchdog still waiting on
+it. No background job is taken down with a tree that was never killed, and a turn
+that asked to stop is left to finish its stop.
 
 What it cannot reach: `retire` walks `<home>/payload/<stamp>` directories other
 than this build's and stops only processes whose executable lives in one of them.

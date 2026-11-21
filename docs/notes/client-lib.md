@@ -888,23 +888,17 @@ its own idle timeout, which ends this wait with an error of its own.
 
 A stop is a protocol command, so a server can say no to it: an argument its table
 has no entry for, a build whose command list predates `cancel`, a turn that will
-not end. `--force` is the caller's answer to that no, and it is deliberately
-narrow: only a `cancel` is forced, because a flag that changed what `send_message`
-means would be a flag nothing could reason about.
+not end. `--force` is still accepted on old command lines, but this build never
+kills a process for it. A `cancel` answers with what the server did; a refusal is
+an error the caller can read.
 
-What it stops is the pid the *greeting* named -- not a name looked up in a process
-table, which on this platform is a different answer for the same server (a
-watchdog's pid and a server's pid are two processes). The watchdog goes first for
-the reason `stop` does it: a server killed under a live one is started again, and
-the port the stop was for is taken again a moment later. Nothing is sent: the
-point is a server that did not take the command.
+That matters at shutdown: a process already inside `Runtime::drop` must be left
+alone. Killing it there interrupts Windows' own teardown and leaves a process
+that neither serves nor exits, with its watchdog waiting on it. No pid is read
+from the greeting for a kill, so `connect` needs no answering record at all.
 
-`connect_answering` exists for this and nothing else -- `apply` consumes the
-greeting, so the two pids are copied out before the resync. A front-end that never
-passes `--force` pays one copy.
-
-A dead address is still an error: with no greeting there is no pid, and "stopped
-it" would be a claim this process cannot make.
+A dead address is still an error: with no greeting there is no server to stop,
+and "stopped it" would be a claim this process cannot make.
 
 ## run_once — the event is the output
 

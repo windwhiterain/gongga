@@ -104,7 +104,7 @@ pub fn spawn(
     start(home, addr, owner, key)
 }
 
-/// How long a server is given to honour `cancel` before it is killed instead.
+/// How long a server is given to honour `cancel` before this call gives up.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// How often the process is asked whether it is gone.
 const GONE_POLL: Duration = Duration::from_millis(100);
@@ -113,7 +113,8 @@ const GONE_POLL: Duration = Duration::from_millis(100);
 ///
 /// # Invariant
 ///
-/// Asked first, killed only if it will not answer; returns the pid that was serving.
+/// Asks, and never kills: a process that will not take `cancel` is reported,
+/// not terminated. Returns the pid that was serving.
 ///
 /// # Invariant
 ///
@@ -134,49 +135,9 @@ pub async fn stop(conn: &Connection, home: &Path, addr: SocketAddr) -> anyhow::R
     if waits_out(pid, CANCEL_GRACE).await {
         return Ok(Some(pid));
     }
-    // The watchdog first: a server killed under a live one is started again.
-    let supervisor = greeting.supervisor();
-    if let Some(supervisor) = supervisor {
-        kill(supervisor);
-    }
-    kill(pid);
-    if waits_out(pid, CANCEL_GRACE).await {
-        return Ok(Some(pid));
-    }
-    // A server that survives this still holds `server.lock`, so a new one refuses.
-    anyhow::bail!(
-        "the server on {addr} is still there after cancel and kill (pid {pid}); \
-         it holds this home's lock, so a new server would refuse to start"
-    )
-}
-
-/// Ends the server that answered, by pid, when its own `cancel` was not enough.
-///
-/// # Invariant
-///
-/// The watchdog first, for the reason `stop` does it: a server killed under a live
-/// watchdog is started again, and the pid just ended comes back as a new one. The
-/// server follows, and the answer is whether it is gone -- not whether the kill was
-/// accepted, because a pid that was already reaped answers yes to `taskkill` and no
-/// to `alive`.
-///
-/// # Invariant
-///
-/// Nothing is sent. This is what `--force` means: a server that did not take a
-/// `cancel` -- a build whose command list has none, one that answered with an error,
-/// one whose turn would not end -- is stopped rather than left holding the port.
-pub(crate) async fn force_stop(pid: u32, supervisor: Option<u32>) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    if !alive(pid) {
-        return true;
-    }
-    if let Some(supervisor) = supervisor {
-        kill(supervisor);
-    }
-    kill(pid);
-    waits_out(pid, CANCEL_GRACE).await
+    // A server that will not stop still holds this home's lock; it is reported,
+    // not killed.
+    anyhow::bail!("the server on {addr} did not take cancel (pid {pid})")
 }
 
 /// Whether `pid` is gone before `grace` runs out.
@@ -199,7 +160,7 @@ async fn waits_out(pid: u32, grace: Duration) -> bool {
 ///
 /// A pid is not a process: one that has been reused answers yes and would keep a
 /// stale server's place forever. Asking the machine is the only honest answer, so
-/// a failure to ask counts as alive -- the kill below is what resolves it.
+/// a failure to ask counts as alive.
 #[cfg(windows)]
 pub fn alive(pid: u32) -> bool {
     #[link(name = "kernel32")]
@@ -227,28 +188,6 @@ pub fn alive(pid: u32) -> bool {
         .args(["-0", &pid.to_string()])
         .status()
         .is_ok_and(|status| status.success())
-}
-
-/// Ends `pid` and everything it started.
-///
-/// # Invariant
-///
-/// The tree, not the process: a server's shells are its children, and one left
-/// behind holds the console it came from.
-#[cfg(windows)]
-fn kill(pid: u32) -> bool {
-    let mut kill = std::process::Command::new("taskkill");
-    kill.args(["/PID", &pid.to_string(), "/T", "/F"]);
-    console::apply(&mut kill, 0);
-    kill.output().is_ok_and(|out| out.status.success())
-}
-
-#[cfg(not(windows))]
-fn kill(pid: u32) -> bool {
-    std::process::Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .output()
-        .is_ok_and(|out| out.status.success())
 }
 
 /// Whether a server on `addr` is this machine's to start.

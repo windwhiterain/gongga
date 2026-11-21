@@ -93,13 +93,11 @@ pub struct Args {
     /// binary another is a flag the reader cannot type.
     #[arg(long = "client_only", alias = "client-only", global = true)]
     pub client_only: bool,
-    /// Stop a server that will not take a `cancel`, by the pid its greeting named.
+    /// Accepted for older callers: this build never kills a process to stop it.
     ///
     /// # Invariant
     ///
-    /// Only a `cancel` is forced: the flag says what to do when *that* stop is
-    /// refused, not what every command means. The watchdog goes first, because a
-    /// server killed under a live one is started again. See `docs/notes/client-lib.md`.
+    /// A stop is a protocol command; a refusal is reported, not overridden.
     #[arg(long, global = true)]
     pub force: bool,
     /// The UI's pid, passed by the UI when it starts this client as a child.
@@ -3286,31 +3284,12 @@ pub fn server_address(ip: Option<&str>, port: &str) -> anyhow::Result<SocketAddr
 ///
 /// See `docs/notes/client-lib.md`.
 pub async fn run(args: &Args, command: &[String]) -> anyhow::Result<()> {
-    let (mut client, mut link, answering) = connect_answering(args).await?;
+    let (mut client, mut link) = connect(args).await?;
     let result = run_once(&mut client, &mut link, command).await;
     // A best-effort goodbye lets the server tear the connection down now
     // instead of waiting out the idle timeout.
     link.goodbye().await;
-    // `--force`: only a stop is forced, and a refusal is not the answer -- the pid the
-    // greeting named is.
-    if args.force && stops_a_server(command) {
-        if crate::server::force_stop(answering.server, answering.supervisor).await {
-            return Ok(());
-        }
-    }
     result
-}
-
-/// Whether `command` is the one that ends a server, so `--force` applies to it.
-///
-/// # Invariant
-///
-/// The command the operator typed, not a table of aliases: `cancel` is SPEC's word
-/// and the one `--force` is documented against. Anything else runs as asked, force
-/// or no force -- a flag that changed the meaning of `send_message` would be a flag
-/// nothing could reason about.
-fn stops_a_server(command: &[String]) -> bool {
-    command.first().map(String::as_str) == Some("cancel")
 }
 
 async fn run_once(client: &mut Client, link: &mut Link, command: &[String]) -> anyhow::Result<()> {
@@ -3659,26 +3638,6 @@ pub fn build_client(args: &Args) -> Client {
 /// Connects and returns a client that already knows the server's catalog.
 /// One-shot only: it never reconnects.
 async fn connect(args: &Args) -> anyhow::Result<(Client, Link)> {
-    let (client, link, _) = connect_answering(args).await?;
-    Ok((client, link))
-}
-
-/// Who answered a dial, as the pids a `--force` stop needs.
-#[derive(Clone, Copy, Debug)]
-struct Answering {
-    /// The server itself: the process whose `cancel` this dial asked for.
-    server: u32,
-    /// Its watchdog, when one started it. Left running, it starts the server again.
-    supervisor: Option<u32>,
-}
-
-/// As `connect`, and keeps the pids the greeting named.
-///
-/// # Invariant
-///
-/// Read before `apply`, which consumes the greeting. A front-end that never asks
-/// for them pays nothing: the pair is a copy, and the greeting is the handshake's.
-async fn connect_answering(args: &Args) -> anyhow::Result<(Client, Link, Answering)> {
     // One-shot mode's caller is a script: add the usual cause to the words.
     let (link, greeting) = match dial(endpoint(&args.conn)?).await {
         Ok(pair) => pair,
@@ -3691,13 +3650,9 @@ async fn connect_answering(args: &Args) -> anyhow::Result<(Client, Link, Answeri
             ));
         }
     };
-    let answering = Answering {
-        server: greeting.pid(),
-        supervisor: greeting.supervisor(),
-    };
     let mut client = build_client(args);
     greeting.apply(&mut client, &mut NullSink::default());
-    Ok((client, link, answering))
+    Ok((client, link))
 }
 
 /// Identifies this client to the server.

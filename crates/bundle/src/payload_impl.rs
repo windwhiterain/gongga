@@ -97,9 +97,8 @@ pub fn file_name(name: &str) -> String {
 /// Asked, not killed: a server that receives `cancel` keeps its turn as pending
 /// work, so a build whose clients are still up keeps its directory until they
 /// exit. `ours` is the payload of the build asking; `keeps_servers` leaves the
-/// port alone; `force` rides into the ask, and only a stop the server refused is
-/// stopped by pid. See `bundle-main.md`.
-pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool, force: bool) {
+/// port alone. A server that will not stop keeps its directory. See `bundle-main.md`.
+pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -113,7 +112,7 @@ pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool, force: b
         if !old.join(MARKER).is_file() {
             continue;
         }
-        if !stop_programs_in(&old, ours, keeps_servers, force) {
+        if !stop_programs_in(&old, ours, keeps_servers) {
             continue;
         }
         let _ = std::fs::remove_dir_all(&old);
@@ -126,9 +125,8 @@ pub fn retire(dir: &Path, keep: &str, ours: &Path, keeps_servers: bool, force: b
 ///
 /// `keeps_servers` says the program about to run starts no server of its own:
 /// the one that is running keeps the port, and the directory stays with it.
-/// `force` stops only the pid `running_in(dir)` named, never a process found by
-/// its image name. See `bundle-main.md`.
-fn stop_programs_in(dir: &Path, ours: &Path, keeps_servers: bool, force: bool) -> bool {
+/// A stop that is not answered leaves the directory in place. See `bundle-main.md`.
+fn stop_programs_in(dir: &Path, ours: &Path, keeps_servers: bool) -> bool {
     let running = running_in(dir);
     let Some(server) = running.iter().find(|process| !outlives_its_build(process)) else {
         // Only clients: nothing holds a port, and their directory is theirs.
@@ -139,12 +137,11 @@ fn stop_programs_in(dir: &Path, ours: &Path, keeps_servers: bool, force: bool) -
         // window that was told to use it.
         return false;
     }
-    // `force` rides into the ask: only a stop the server refused is a stop to kill.
-    if !ask_to_cancel(ours, dir, server, force) {
-        kill(server.pid);
-        wait_until_gone(server.pid);
+    // No pid is killed here: a stop that was refused keeps its build and its port.
+    if !ask_to_cancel(ours, dir, server) {
+        return false;
     }
-    // The port is free either way; the directory waits for a client still running.
+    // The port is free; the directory waits for a client still running.
     !alive(server.pid) && running.len() == 1
 }
 
@@ -163,11 +160,9 @@ fn outlives_its_build(process: &Process) -> bool {
 ///
 /// # Invariant
 ///
-/// `force` is passed on, not consumed here: the command line is this home's, it may
-/// be a build other than this one, and what it can do about a server that will not
-/// stop is its own business. This file only falls back to a kill when the answer is
-/// no.
-fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process, force: bool) -> bool {
+/// The command line is this home's, which may be a build other than this one.
+/// Nothing is killed here: a refusal is the answer, and the build keeps its port.
+fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process) -> bool {
     // The key is the home's, two levels up from a build in `payload/<stamp>`.
     let home = dir.parent().and_then(|payload| payload.parent());
     let key = home
@@ -189,9 +184,6 @@ fn ask_to_cancel(ours: &Path, dir: &Path, server: &Process, force: bool) -> bool
     let Some(port) = server.port else {
         return false;
     };
-    if force {
-        cancel.arg("--force");
-    }
     cancel
         .arg("--server")
         .arg(format!("127.0.0.1:{port}"))
@@ -330,24 +322,6 @@ fn alive(pid: u32) -> bool {
         .args(["-0", &pid.to_string()])
         .status()
         .is_ok_and(|status| status.success())
-}
-
-/// Ends `pid` and what it started.
-fn kill(pid: u32) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .output();
-    }
 }
 
 /// Every process on this machine: pid, the executable, and its command line.
