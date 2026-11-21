@@ -16,10 +16,12 @@ User instruction: "仿照handoff， live_compact也接受一个continue参数".
 - `docs/notes/server-live-compact.md` carries the measurement and the reasoning.
 - Content published: `scripts/ship.sh` pushed `e8a5a48..e2875ff` to
   `gongga-ship` main; `--check` exit 0 ("in agreement, and published").
-- Measured evidence: `.dev/verify/be1ef60d-live-compact-continue.json` (the rebased
-  head; it supersedes `74bc821c-…`, measured before the rebase), driver at
-  `.dev/verify/live-compact-continue/drive.sh` (with `fake_seq.py`, a scripted
-  endpoint that asks `exec`, then `live_compact`, then answers).
+- Measured evidence: `.dev/verify/84ada112-live-compact-continue.json`, keyed by
+  the merged commit. It supersedes `be1ef60d-…` and `74bc821c-…`, which were
+  measured on the branch and lived in the feature worktree that has since been
+  removed. The driver was `.dev/verify/live-compact-continue/drive.sh` (with
+  `fake_seq.py`, a scripted endpoint that asks `exec`, then `live_compact`, then
+  answers) and went with that worktree; recreate it from SPEC if the code changes.
 
 ## Verified (real processes, both modes, twice: pre- and post-rebase)
 
@@ -28,7 +30,7 @@ User instruction: "仿照handoff， live_compact也接受一个continue参数".
 | omitted | 1 | done | 3 (the 3rd carries `next`) | 0 |
 | `continue=false` | 1 | done | 2 (none after the checkpoint) | 0 |
 
-Gates, re-run on the rebased head `be1ef60d` (main `cc1071b9`): `mbx build` 0,
+Gates, re-run on the rebased head `cbe36cfd` (main `e078312b`): `mbx build` 0,
 `mbx fmt --check` 0, `mbx test -p gongga-server --lib` 40 passed / 0 failed,
 `test-layout-check` 0 violations, `skill_contract.sh` PASS, `ship.sh --check
 --local` 0 from `C:/resource/gongga` (content HEAD `03d44c18`, protocol 14 = 14 --
@@ -37,18 +39,16 @@ the check verifies nothing from a worktree whose `ship` is not a checkout), and
 single pre-existing "the preamble" violation on main, `live_compact.rs` clean.
 Both e2e scenarios re-ran green on this head; no test process was left behind.
 
-## Open
+## Landed
 
-- **Merge into main is blocked, deliberately.** `C:/resource/gongga` carries one
-  uncommitted file, ` M SPEC.md` (2 lines changed in `## Keep Alive`, mtime
-  2026-11-21 11:56 UTC; blob `21bd0f48`, which matches no commit in this repo's
-  history -- so it is genuine new work, not a stale copy). It belongs to session
-  `merge`, which is idle after asking the user a question, so it will not commit
-  on its own. Git refuses a merge that must write a file with local
-  modifications, and stashing another session's WIP is not mine to do. The parent
-  merges `feature/live-compact-continue` once that WIP is committed.
-- No overlap: my SPEC.md edit is the `live_compact` line (around line 163), theirs
-  rewrites `## Keep Alive` (around line 208), so the merge will not conflict.
-- The branch is now `be1ef60d`, rebased onto `cc1071b9`, 3 ahead / 0 behind. That
-  rebase mattered: `cc1071b9` rewrote `store.rs`'s head rows, the same file my
-  change lives in, which is why the e2e was re-run instead of cited.
+- Merged into `main` as `84ada112`, a single squashed commit, and the branch
+  `feature/live-compact-continue` and its worktree are deleted. The trees match:
+  `git rev-parse cbe36cfd^{tree}` and `84ada112^{tree}` are both `5a1825b3`, which
+  is the proof that the squash carries the branch's whole tree (git's own
+  "fully merged" test cannot see it, so `-d` refuses and `-D` is correct here).
+- The blocker recorded here earlier -- someone else's ` M SPEC.md` in
+  `C:/resource/gongga` -- cleared on its own: that session committed its work as
+  `3eb8d7df`, which is in `main` now. Nothing of theirs was touched.
+- Still untracked and not mine:
+  `.agents/notes/2026-11-21-the-wire-between-the-two-machines.md` (session
+  `merge`).
