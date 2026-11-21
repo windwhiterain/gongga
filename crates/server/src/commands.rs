@@ -56,7 +56,7 @@ fn time_notice() -> String {
 /// What a second heartbeat of one generation asks for, when the shipped prose is absent.
 const HANDOFF_NOTICE_FALLBACK: &str = "(handoff notice: this checkpoint's first heartbeat \
 already spawned a dream. Hand off now: put the current objective, state, failed attempts and next \
-action in the handoff note, tidy anything the continuation needs, then run the `handoff` skill. \
+action in the handoff note, tidy anything the continuation needs, then run @skill(handoff). \
 Do not start new work. No further heartbeat will arrive until a new user prompt.)";
 
 /// The handoff notice: a template in the content, with a fallback for older homes.
