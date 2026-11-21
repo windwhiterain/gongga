@@ -23,12 +23,15 @@ bytes for a prefix the provider has already cached, and everything behind it wou
 billed again. A version 5 session, whose head sat after its opening line, is moved into
 these slots by the 5-to-6 migrator before the store opens it; the read never walks.
 
-The head is stored whole so the reader can see what the model was told: `MessageRow::parse`
-renders every field in full (the front-end folds a row to one line until opened). The
-prompt also records why each index reference is there -- `index_explicit` names what a
-message asked for outright (a mention or the standing rules), `index_cached` what rode
-in only as a cached chain's ancestor. Both are a reader's record and are never sent;
-older rows read them as empty.
+The head is stored whole so the reader can see what the model was told. `MessageRow::parse`
+renders it as five labelled lines: the prompt row (slot 1) carries `instructions:`,
+`agents.md:`, `index:` and `info:`; the tools row (slot 2) carries `tools:`. The front-end
+folds a row to one line until opened, so a line may hold the full text. `agents_md` keeps
+the standing rules on their own line, `info` folds cwd/model/remote/tail/parameters onto
+one, and under `index:` the prompt records why each reference is there -- `index_explicit`
+names what a message asked for outright (a mention or the standing rules), `index_cached`
+what rode in only as a cached chain's ancestor. Every one of these is a reader's record
+and is never sent; older rows read them as empty.
 
 This replaced `Prompt::rewritten_by`, which compared the three wire texts at every step
 and appended a row whenever they differed. The rule was right about `cwd` -- a shell

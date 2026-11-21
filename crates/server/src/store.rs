@@ -23,6 +23,10 @@ pub struct Prompt {
     /// The text of the references the first message named, in the order it is sent.
     #[serde(default)]
     pub index: Option<String>,
+    /// The directory's standing rules, kept apart so the reader can see them on
+    /// their own line. A record for the reader: they are still sent inside `index`.
+    #[serde(default)]
+    pub agents_md: Option<String>,
     /// The start card: name, build, the first turn's time and cwd. Stamped once.
     #[serde(default)]
     pub tail: Option<String>,
@@ -4130,8 +4134,9 @@ impl MessageRow {
             Some(Kind::Notice | Kind::ThinkingMark | Kind::Inject | Kind::Error) => {
                 row.text = str_of("text").unwrap_or_default()
             }
-            // What the model was told, in full. The front-end folds a row to one line
-            // until opened, so length costs nothing until a reader asks for it.
+            // The prompt in force, as five labelled lines: the four below live on
+            // this row, `tools` lives on the tools row. Each label starts a line; the
+            // front-end folds a row to one line until opened, so length costs nothing.
             Some(Kind::System) => {
                 let list = |key: &str| {
                     value
@@ -4145,49 +4150,53 @@ impl MessageRow {
                         })
                         .unwrap_or_default()
                 };
-                let join = |key: &str, label: &str, out: &mut String| {
-                    let text = str_of(key).unwrap_or_default();
-                    if !text.is_empty() {
-                        out.push_str(&format!("{label}:\n{text}\n\n"));
-                    }
-                };
-                let mut out = String::from("[prompt in force]\n\n");
-                join("instructions", "instructions", &mut out);
-                join("index", "index", &mut out);
+                let mut out = String::new();
+                // instructions
+                out.push_str(&format!(
+                    "instructions: {}\n",
+                    str_of("instructions").unwrap_or_default()
+                ));
+                // agents.md -- the standing rules, kept on their own line.
+                out.push_str(&format!(
+                    "agents.md: {}\n",
+                    str_of("agents_md").unwrap_or_default()
+                ));
+                // index, with the asked/cached split as a note under the same label.
+                out.push_str(&format!("index: {}\n", str_of("index").unwrap_or_default()));
                 let asks = list("index_explicit");
                 let riders = list("index_cached");
                 if !asks.is_empty() || !riders.is_empty() {
-                    out.push_str("index references:\n");
-                    for name in &asks {
-                        out.push_str(&format!("  asked    {name}\n"));
-                    }
-                    for name in &riders {
-                        out.push_str(&format!("  cached   {name}\n"));
-                    }
-                    out.push('\n');
+                    out.push_str(&format!("  asked: {}\n", asks.join(", ")));
+                    out.push_str(&format!("  cached: {}\n", riders.join(", ")));
                 }
-                join("tail", "tail", &mut out);
-                join("parameters", "parameters", &mut out);
+                // info -- the rest of the stamp, on one line.
                 let cwd = str_of("cwd").unwrap_or_default();
                 let model = str_of("model").unwrap_or_default();
                 let remote = str_of("remote").unwrap_or_default();
-                out.push_str(&format!("read from {cwd}"));
-                if !model.is_empty() {
-                    out.push_str(&format!(", model {model}"));
-                }
-                if !remote.is_empty() {
-                    out.push_str(&format!(", via {remote}"));
-                }
+                let tail = str_of("tail").unwrap_or_default();
+                let parameters = str_of("parameters").unwrap_or_default();
+                out.push_str(&format!(
+                    "info: cwd={cwd}, model={model}, remote={remote}, tail={tail}, parameters={parameters}"
+                ));
                 row.text = out;
             }
-            // The set in force: how big it is, not the schema the model reads.
+            // The fifth line: the set in force, as the names the model sees.
             Some(Kind::Tools) => {
-                let count = value
-                    .get("tools")
-                    .and_then(|v| v.as_array())
-                    .map(|list| list.len())
-                    .unwrap_or(0);
-                row.text = format!("tool set in force: {count} tool(s)");
+                let tools = value.get("tools").and_then(|v| v.as_array());
+                let count = tools.map(|list| list.len()).unwrap_or(0);
+                let names = tools
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|item| {
+                                item.get("name")
+                                    .and_then(|v| v.as_str())
+                                    .or_else(|| item.get("type").and_then(|v| v.as_str()))
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                row.text = format!("tools: {count} tool(s) [{names}]");
             }
             Some(Kind::LiveCompactRequest) => row.text = "live compact requested".to_string(),
             // Something that ran at the provider, not here: it has no output to

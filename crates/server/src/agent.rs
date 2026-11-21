@@ -631,16 +631,17 @@ impl Agent {
             .filter(|text| !text.is_empty());
         // Where the conversation's references stand now, planned once, for the one
         // request that carries it.
-        let (index, rooted, index_explicit, index_cached) = match self
+        let (index, rooted, index_explicit, index_cached, agents_md) = match self
             .index_of(id, name, model, &here, &home, machines, remote)
             .await
         {
-            Some(parts) => (Some(parts.0), parts.1, parts.2, parts.3),
-            None => (None, Vec::new(), Vec::new(), Vec::new()),
+            Some(parts) => (Some(parts.0), parts.1, parts.2, parts.3, parts.4),
+            None => (None, Vec::new(), Vec::new(), Vec::new(), None),
         };
         let prompt = crate::store::Prompt {
             instructions,
             index,
+            agents_md,
             tail,
             parameters,
             rooted,
@@ -814,7 +815,13 @@ impl Agent {
         home: &std::path::Path,
         machines: &crate::meta::Machines<'_>,
         remote: Option<&str>,
-    ) -> Option<(String, Vec<String>, Vec<String>, Vec<String>)> {
+    ) -> Option<(
+        String,
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        Option<String>,
+    )> {
         // The queue as well as the transcript: an early message left its `@file(...)`
         // mentions for this row to index.
         let mut texts = self.store.user_texts(id).ok()?;
@@ -870,7 +877,8 @@ impl Agent {
             .collect::<Vec<_>>()
             .join("\n\n");
         // The rules first and out of the plan's reach: no price moves them, no patch hides them.
-        let body = match rules {
+        // Matched by reference so the raw text can be kept as a record for the reader.
+        let body = match &rules {
             Some(text) => {
                 let spelling = crate::meta::rules_spelling();
                 let rules = format!(
@@ -897,7 +905,7 @@ impl Agent {
             index.push_str("\n\n");
             index.push_str(&prompts.render(crate::prompts::REVISION, &[("revisions", &changes)]));
         }
-        Some((index, rooted, explicit, cached))
+        Some((index, rooted, explicit, cached, rules))
     }
 
     /// Records the whole step around the narrower request and tool measurements.
@@ -2235,6 +2243,7 @@ mod tests {
         let first = crate::store::Prompt {
             instructions: "prose".to_string(),
             index: None,
+            agents_md: None,
             tail: Some("Session `s`, 2026-11-01 14:00 UTC".to_string()),
             parameters: Some("every call may carry `description`".to_string()),
             rooted: Vec::new(),
@@ -2252,10 +2261,11 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_row_shows_the_full_text_and_why_each_reference_is_there() {
+    fn a_prompt_row_shows_the_five_labelled_lines() {
         let display = serde_json::json!({
             "instructions": "the standing prose",
             "index": "the expanded index body",
+            "agents_md": "the standing rules",
             "index_explicit": ["@file(a.md)", "AGENTS.md"],
             "index_cached": ["@skill(old)"],
             "tail": "the start card",
@@ -2266,15 +2276,38 @@ mod tests {
         })
         .to_string();
         let row = crate::store::MessageRow::parse(1, "system", &display);
+        // Four labelled lines on the prompt row, each on its own line.
+        let lines: Vec<&str> = row.text.lines().collect();
+        assert!(lines.iter().any(|l| l.starts_with("instructions: ")));
+        assert!(lines.iter().any(|l| l.starts_with("agents.md: ")));
+        assert!(lines.iter().any(|l| l.starts_with("index: ")));
+        assert!(lines.iter().any(|l| l.starts_with("info: ")));
         // Full text of every field, not a character count.
-        assert!(row.text.contains("the standing prose"));
-        assert!(row.text.contains("the expanded index body"));
-        assert!(row.text.contains("the start card"));
-        assert!(row.text.contains("shared args"));
-        // An ask and a rider are told apart.
-        assert!(row.text.contains("asked    @file(a.md)"));
-        assert!(row.text.contains("asked    AGENTS.md"));
-        assert!(row.text.contains("cached   @skill(old)"));
+        assert!(row.text.contains("instructions: the standing prose"));
+        assert!(row.text.contains("agents.md: the standing rules"));
+        assert!(row.text.contains("index: the expanded index body"));
+        assert!(row.text.contains("info: cwd=/home/session"));
+        assert!(row.text.contains("tail=the start card"));
+        assert!(row.text.contains("parameters=shared args"));
+        // An ask and a rider are told apart, under the index label.
+        assert!(row.text.contains("asked: @file(a.md), AGENTS.md"));
+        assert!(row.text.contains("cached: @skill(old)"));
+    }
+
+    #[test]
+    fn a_tools_row_shows_the_tool_names() {
+        let display = serde_json::json!({
+            "tools": [
+                {"type": "function", "name": "read_file"},
+                {"type": "deepseek_web_search"}
+            ]
+        })
+        .to_string();
+        let row = crate::store::MessageRow::parse(2, "tools", &display);
+        assert_eq!(
+            row.text,
+            "tools: 2 tool(s) [read_file, deepseek_web_search]"
+        );
     }
 
     fn notice_prompts() -> crate::prompts::Prompts {
