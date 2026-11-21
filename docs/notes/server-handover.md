@@ -70,10 +70,12 @@ the file body would be missing from the index. With the `text` row in place,
 `prefix_cache::plan` runs on the note exactly as it runs after `new_session` and
 one `send_message`.
 
-The command's origin is still a tool, not a client. That is what keeps a
-heartbeat-prompted handoff mute: the note is a first prompt, but it is not a new
-client prompt, so `send_message` leaves `keepalive_handoff_at` alone. See
-`server-dream.md`.
+The note goes back to the session through `gongga-cli`, so on the wire it is a
+`Client` origin, not a tool's -- but the CLI greets with `client: false` (it is
+the `rpc` layer). That is what keeps a heartbeat-prompted handoff mute: the note
+is a first prompt, but not a client window's prompt, so `send_message` leaves
+`keepalive_handoff_at` alone. Only a window's greeting (`client: true`) unmutes.
+See `server-dream.md`.
 
 `handoff` sends it rather than inserting the row itself, and the reason is ordering: it
 runs *inside* the call it must keep, so a row inserted here would sit between that

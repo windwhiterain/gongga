@@ -125,6 +125,8 @@ pub enum Origin {
         /// What started the client, as `name/pid`: the one fact a `cancel` row needs
         /// and the client's own pid cannot give.
         parent: Option<String>,
+        /// Window (client) or `rpc` CLI: only the former's message is a prompt.
+        is_client: bool,
     },
     /// No client asked: a signal reached this process, or the process it follows ended.
     Signal { reason: String },
@@ -137,6 +139,17 @@ pub enum Origin {
 }
 
 impl Origin {
+    /// A window's prompt, not an `rpc` line: only these unmute a handoff.
+    pub fn is_client_prompt(&self) -> bool {
+        matches!(
+            self,
+            Origin::Client {
+                is_client: true,
+                ..
+            }
+        )
+    }
+
     /// The session the command was run from, when a shell ran it.
     pub fn session(&self) -> Option<&str> {
         match self {
@@ -154,6 +167,7 @@ impl Origin {
                 peer,
                 session,
                 parent,
+                ..
             } => {
                 let started = match parent.as_deref().map(str::trim) {
                     Some(parent) if !parent.is_empty() => format!(" (started by {parent})"),
@@ -1775,9 +1789,8 @@ async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
             .and_then(|session| d.store.prompt(session.id()).ok().flatten())
             .is_none();
     let said = deliver(d, &name, message, first_prompt).await;
-    // Only a client's message is a new user prompt. The handoff's note is from a
-    // tool and leaves the heartbeat muted.
-    if said.ok && matches!(origin, Origin::Client { .. }) {
+    // A window's prompt unmutes; a CLI/tool message does not. See `server-dream.md`.
+    if said.ok && origin.is_client_prompt() {
         if let Ok(Some(row)) = d.store.get_session(&name)
             && let Err(e) = d.store.clear_keepalive_handoff(row.id)
         {
