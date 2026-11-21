@@ -126,11 +126,6 @@ A window that leaves normally has already cancelled over the protocol, so the
 parent watcher's ask finds `shutting_down` set and returns: one stop, whichever
 source reaches it first.
 
-A stop whose `run` has returned is not allowed to hang in the runtime's own
-teardown (`server-lib.md`). If it does, the process leaves with the code that
-stop already earned, so the watchdog does not mistake a dead teardown for a
-crash and start a second server behind the window it just lost.
-
 ## A second process, and the same pids
 
 The server normally runs under a supervisor (`server-supervise.md`), and this path
