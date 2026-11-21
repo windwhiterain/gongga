@@ -206,9 +206,9 @@ for the first client user message to a empty session, find all meta references r
 - the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
 
 ## Keep Alive
-when a session turn end, a timer start to count, when step into the dangerous zone that cache is nearing cold, send the session a keepalive notice and let the agent decide: spawn a dreamer with `@skill(dreamer)`, hand off with `@skill(handoff)`, or mute the timer with `@skill(dreamer)`'s `mute_keep_alive` when no heartbeat is needed. The server neither forks a dreamer nor hands off on its own.
+when a session turn end, a timer start to count, when step into the dangerous zone that cache is nearing cold, ask the session to decide whether fork a dreamer(organize documentation) or handoff without continue.
 
-a dreamer is an ordinary clone made by `@skill(dreamer)`: it mutes its source's keepalive, and any `send_message` to the source clears that mute and restarts the timer at the source's next turn end. The dreamer deletes itself when its documentation work is done.
+when the dreamer turn end, delete the dreamer, if the original session hasn't receive new message since the creation of dreamer, start a new timer to count, when step into the dangerous zone, ask the original session to handoff.
 
 ## Mentor
 an archive of a session: its transcript, copied row for row by the `handoff` skill, so a
