@@ -1670,11 +1670,9 @@ async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
 pub(crate) fn session_of(args: &Args, caller: Option<&str>) -> Option<String> {
     let named = args
         .word("session")
-        .map(str::trim)
+        .map(path_of)
         .filter(|name| !name.is_empty());
-    named
-        .or_else(|| caller.map(str::trim).filter(|name| !name.is_empty()))
-        .map(str::to_string)
+    named.or_else(|| caller.map(path_of).filter(|name| !name.is_empty()))
 }
 
 /// The session a command acts on, or the sentence a call that has none gets.
@@ -1951,7 +1949,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
     }
     let args = &owned;
-    let name = args.word("id").unwrap_or_default().to_string();
+    let name = path_of(args.word("id").unwrap_or_default());
     // Whether the name is a name at all: the list draws one row per prefix.
     if let Some(refusal) = crate::session::checked_name(&name) {
         return Outcome::err(refusal);
@@ -2574,6 +2572,18 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
     Ok(SeqWindow { first, last })
 }
 
+/// A path in a namespace, spelled however the caller spelled it: `/a/b` is `a/b`.
+///
+/// # Invariant
+///
+/// A stored name carries no leading slash, so every path a command reads is brought
+/// to that shape before it is compared or saved. SPEC spells the default channel
+/// `/{bin}/default`, and Git Bash rewrites a leading `/` into one of this machine's.
+/// This is the same reading `exec` gives its `id`.
+fn path_of(raw: &str) -> String {
+    raw.trim().trim_matches('/').to_string()
+}
+
 /// Whether `name` is `path` itself or below it.
 ///
 /// # Invariant
@@ -2581,11 +2591,11 @@ fn parse_seq_slice(raw: &str, last_seq: i64) -> Result<SeqWindow, String> {
 /// A path is a component, not a string prefix: `a/b` is under `a`, and `ab` is not.
 /// Empty is every path, which is what "list them all" and "delete them all" mean.
 fn under(name: &str, path: &str) -> bool {
-    let path = path.trim_end_matches('/');
+    let path = path_of(path);
     path.is_empty()
         || name == path
         || name
-            .strip_prefix(path)
+            .strip_prefix(path.as_str())
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
@@ -2594,7 +2604,7 @@ async fn ls_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome 
         Ok(session) => session,
         Err(refusal) => return refusal,
     };
-    let prefix = args.word("path").map(str::to_string).unwrap_or_default();
+    let prefix = path_of(args.word("path").unwrap_or_default());
     match d.agent.channels.list(&session).await {
         Ok(rows) => {
             let listed: Vec<serde_json::Value> = rows
@@ -2615,7 +2625,7 @@ async fn del_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
         Ok(session) => session,
         Err(refusal) => return refusal,
     };
-    let id = args.word("id").unwrap_or_default().to_string();
+    let id = path_of(args.word("id").unwrap_or_default());
     // SPEC: a path takes what is under it, so a name in the middle of one ends
     // every channel below it as well.
     let doomed: Vec<String> = match d.agent.channels.list(&session).await {
@@ -2665,8 +2675,8 @@ async fn rename_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outc
         Ok(session) => session,
         Err(refusal) => return refusal,
     };
-    let path = args.word("id").unwrap_or_default().to_string();
-    let new_path = args.word("new_id").unwrap_or_default().to_string();
+    let path = path_of(args.word("id").unwrap_or_default());
+    let new_path = path_of(args.word("new_id").unwrap_or_default());
     match d.agent.channels.rename(&session, &path, &new_path) {
         Ok(()) => Outcome::ok(format!("{path:?} is now {new_path:?}")),
         Err(why) => Outcome::err(why),
@@ -2678,7 +2688,7 @@ async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
         Ok(session) => session,
         Err(refusal) => return refusal,
     };
-    let id = args.word("id").unwrap_or_default().to_string();
+    let id = path_of(args.word("id").unwrap_or_default());
     let name = args.word("name").unwrap_or_default().to_string();
     let handle = match d.sessions.get(&session) {
         Ok(handle) => handle,
@@ -2731,7 +2741,7 @@ async fn new_channel_id(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outc
     };
     let namespace = args
         .word("prefix")
-        .map(|prefix| prefix.trim().trim_end_matches('/').to_string())
+        .map(path_of)
         .filter(|prefix| !prefix.is_empty())
         .unwrap_or_else(|| CHANNEL_NAMESPACE.to_string());
     let rows = match d.agent.channels.list(&session).await {
@@ -2758,7 +2768,7 @@ async fn input_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outco
         Ok(session) => session,
         Err(refusal) => return refusal,
     };
-    let id = args.word("id").unwrap_or_default().to_string();
+    let id = path_of(args.word("id").unwrap_or_default());
     let input = args.word("input").unwrap_or_default().to_string();
     let wait = match count_of(args, "wait") {
         Ok(None) => std::time::Duration::from_millis(30_000),
@@ -2789,7 +2799,7 @@ async fn input_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outco
 }
 
 async fn ls_session(d: &Dispatch, args: &Args) -> Outcome {
-    let prefix = args.word("path").map(str::to_string).unwrap_or_default();
+    let prefix = path_of(args.word("path").unwrap_or_default());
     let rows = match d.store.list_sessions() {
         Ok(rows) => rows,
         Err(e) => return Outcome::err(format!("could not read the sessions: {e}")),
@@ -2986,8 +2996,8 @@ fn replay_transcript(
 /// first, then the same rows as the events they streamed as.
 /// See `docs/notes/server-commands.md`.
 async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
-    let source = args.word("id").unwrap_or_default().to_string();
-    let name = args.word("new_id").unwrap_or_default().to_string();
+    let source = path_of(args.word("id").unwrap_or_default());
+    let name = path_of(args.word("new_id").unwrap_or_default());
     let report = match d.store.clone_session(&source, &name, None) {
         Ok(report) => report,
         Err(e) => return Outcome::err(e.to_string()),
@@ -3034,7 +3044,7 @@ async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
 /// undo. The transcript stamp goes last, and a stamp that moved backwards is a cut: a
 /// window forgets what it drew and refills. See `docs/notes/server-commands.md`.
 async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args.word("id").unwrap_or_default().to_string();
+    let name = path_of(args.word("id").unwrap_or_default());
     let session = match d.sessions.get(&name) {
         Ok(s) => s,
         Err(e) => return Outcome::err(e.to_string()),
@@ -3132,7 +3142,7 @@ async fn ls_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(session) => session,
         Err(refusal) => return refusal,
     };
-    let path = args.word("path").unwrap_or("").trim().to_string();
+    let path = path_of(args.word("path").unwrap_or(""));
     let handle = match d.sessions.get(&session) {
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
@@ -3162,7 +3172,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         Ok(session) => session,
         Err(refusal) => return refusal,
     };
-    let id = args.word("id").unwrap_or_default().trim().to_string();
+    let id = path_of(args.word("id").unwrap_or_default());
     let cmd = args.value("cmd");
     let handle = match d.sessions.get(&session) {
         Ok(handle) => handle,
@@ -3294,11 +3304,7 @@ async fn subscribe(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
             ));
         }
     };
-    let named = args
-        .word("id")
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string);
+    let named = args.word("id").map(path_of).filter(|name| !name.is_empty());
     let name = match named {
         Some(name) => name,
         None => match free_subscription_name(d, &session) {
@@ -3431,7 +3437,7 @@ fn free_subscription_name(d: &Dispatch, session: &str) -> Result<String, String>
 
 /// Drops a subscription, or every one under a path; the caller drops its own.
 async fn del_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
-    let path = args.word("path").unwrap_or("").trim();
+    let path = path_of(args.word("path").unwrap_or(""));
     let given = session_of(args, caller);
     let Some(caller) = given.filter(|name| !name.trim().is_empty()) else {
         return Outcome::err(
@@ -3444,7 +3450,7 @@ async fn del_subscription(d: &Dispatch, args: &Args, caller: Option<&str>) -> Ou
     let doomed: Vec<String> = match d.store.subscriptions() {
         Ok(rows) => rows
             .into_iter()
-            .filter(|row| row.session == caller && under(&row.name, path))
+            .filter(|row| row.session == caller && under(&row.name, &path))
             .map(|row| row.name)
             .collect(),
         Err(e) => return Outcome::err(format!("could not read the subscriptions: {e}")),
@@ -3840,7 +3846,7 @@ async fn finish_delete(
 }
 
 async fn del_session(d: &Dispatch, args: &Args) -> Outcome {
-    let path = args.word("path").unwrap_or_default().to_string();
+    let path = path_of(args.word("path").unwrap_or_default());
     let rows = match d.store.list_sessions() {
         Ok(rows) => rows,
         Err(e) => return Outcome::err(format!("could not read the sessions: {e}")),
@@ -3973,7 +3979,7 @@ fn interrupt(d: &Dispatch, name: &str, why: Stop) -> (bool, usize) {
 }
 
 async fn interrupt_session(d: &Dispatch, args: &Args) -> Outcome {
-    let name = args.word("id").unwrap_or_default().to_string();
+    let name = path_of(args.word("id").unwrap_or_default());
     // `peek`, not `get`: materialising would start shells just to stop nothing.
     if d.sessions.peek(&name).is_none() {
         return match d.store.get_session(&name) {

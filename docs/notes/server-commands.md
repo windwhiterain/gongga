@@ -760,6 +760,18 @@ and `hook/two` and leaves `other`. The deletes themselves stay per entity: each
 session's delete ends its own shells, jobs and channels, so the subtree is walked
 one at a time rather than batched.
 
+A path is spelled however the caller spells it: `/a/b` and `a/b` are the same place,
+as are a trailing slash and none. `commands::path_of` is the one rule for that, and
+every path a command reads passes through it before being compared or saved, because
+a stored name carries no leading slash. Two things make the tolerant reading
+necessary rather than cosmetic: SPEC writes the default channel `/{bin}/default`, so
+the documented spelling is the one that did not match; and Git Bash rewrites a leading
+`/` into one of this machine's before the program runs. `exec` already read its `id`
+this way; the command layer compared the raw word, so `ls_session /probe` answered
+"no session matches" about a session that was there, which is the shape of the
+mistake that had one session reported as deleted when only its spelling was. The
+check is `scripts/path_selftest.sh`, which asks a live server both spellings.
+
 ## ls_skill
 
 SPEC's `## Python Cmd` gives skills a namespace, so a skill has a path -- and the path is
