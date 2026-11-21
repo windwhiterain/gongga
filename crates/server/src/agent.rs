@@ -133,8 +133,7 @@ impl Agent {
         gate: tokio::sync::OwnedMutexGuard<()>,
     ) -> (TurnOutcome, bool) {
         let started = std::time::Instant::now();
-        // Dropped last, after the ending exists: `turn_interrupted`, the durable turn and
-        // the status are the rest of this turn, and nothing may start the next one first.
+        // Dropped last, after the ending exists: nothing may start the next turn first.
         let _gate = gate;
         let outcome = AssertUnwindSafe(self.turn_inner(session, epoch))
             .catch_unwind()
