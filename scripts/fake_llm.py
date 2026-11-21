@@ -452,8 +452,11 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"fake llm on http://127.0.0.1:{port}", flush=True)
+    # The loopback address is enough for a server on this machine; a harness in a
+    # container reaches this one through the host gateway, which needs the wildcard.
+    host = os.environ.get("FAKE_LLM_HOST", "127.0.0.1")
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"fake llm on http://{host}:{port}", flush=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         threading.Event().wait()

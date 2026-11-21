@@ -386,7 +386,9 @@ real provider"). `FAKE_LLM_CACHE_*` sets the block size, the minimum cacheable
 prefix and one of the three lifetime semantics -- `renewing`, `deadline`,
 `evicted` -- and `FAKE_LLM_CACHE_TIERS` keyed by `prompt_cache_options.ttl`
 gives each tier its own numbers. `FAKE_LLM_CACHE_MODEL=units` restores the old
-unit-by-unit model for a comparison. The fake reports `cache_write_tokens` as
+unit-by-unit model for a comparison. `FAKE_LLM_HOST` names the address it binds,
+`127.0.0.1` unless stated, so a harness in a container can reach it through the
+host gateway. The fake reports `cache_write_tokens` as
 the tokens it wrote, which is a simulation: a real Responses endpoint reports
 zero there, and `uncached_tokens()` below is what a bill is priced on. The point
 is that a tier policy can be exercised without sending a single paid request.

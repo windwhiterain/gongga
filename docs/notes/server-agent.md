@@ -698,6 +698,20 @@ it sends no tier at all, which neither the server's own nor the roster's shortes
 answers for. Nothing re-decides the tier between requests. The `usage` row records what
 was actually sent, so the observation layer sees the tier that was in force.
 
+## the_next_turn_waits_for_the_ending (2026-11-21)
+
+`SPEC` orders an interrupted turn: the call a cancel ended returns its result, the
+loop stops and everything received is saved, and only then is the interrupted flag
+set. The ending -- `keep_streamed`'s rows, the `turn_interrupted` row, the status and
+the durable turn -- is written by `run_turn` after the loop returns.
+
+So `run_turn` keeps the gate until that ending exists. Released when the loop
+returned, the gate was free for the notice about the call the interrupt ended, which
+wakes the session at once: the next turn could start inside the window and its row
+was saved before the text the cancel preserved. The order was kept in intent and
+broken in sequence. The gate is now bound in `run_turn` and dropped last, after
+`finish_turn` and the status.
+
 ## one start for the row, the event and the timing (2026-11-19)
 
 `started_at` is read once, where the call is announced, and handed to everything that

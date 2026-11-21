@@ -120,9 +120,11 @@ impl Agent {
     ///
     /// # Invariant
     ///
-    /// The outcome and the interrupted flag are captured here and returned: the
-    /// gate is free once `turn_inner` returns, so a next turn may reset the flags
-    /// before the caller's epilogue reads them. See `docs/notes/server-dream.md`.
+    /// The gate stays held until the ending is written: an interrupt ends a call wait,
+    /// and the notice about that call wakes the session at once. A gate free when
+    /// `turn_inner` returned let that wake start the next turn inside the window, so
+    /// its row was saved before the text the cancel preserved. See
+    /// `docs/notes/server-agent.md`.
     pub async fn run_turn(
         &self,
         session: &SessionHandle,
@@ -131,7 +133,10 @@ impl Agent {
         gate: tokio::sync::OwnedMutexGuard<()>,
     ) -> (TurnOutcome, bool) {
         let started = std::time::Instant::now();
-        let outcome = AssertUnwindSafe(self.turn_inner(session, epoch, gate))
+        // Dropped last, after the ending exists: `turn_interrupted`, the durable turn and
+        // the status are the rest of this turn, and nothing may start the next one first.
+        let _gate = gate;
+        let outcome = AssertUnwindSafe(self.turn_inner(session, epoch))
             .catch_unwind()
             .await;
         let (outcome, steps, origin) = match outcome {
@@ -205,7 +210,6 @@ impl Agent {
         &self,
         session: &SessionHandle,
         epoch: u64,
-        _gate: tokio::sync::OwnedMutexGuard<()>,
     ) -> (TurnOutcome, u32, Option<&'static str>) {
         let name = session.name().to_string();
         let id = session.id();
