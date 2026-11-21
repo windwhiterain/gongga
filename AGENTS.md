@@ -8,8 +8,7 @@
 - setting any limit/budget is forbidden.
 - **构建一律写成 `mbx <cargo 子命令>`**：`mbx build` / `mbx run` / `mbx test` / `mbx fmt` /
   `mbx install …`。写 `cargo` 会让构建退回裸的（PATH 上的 `cargo` 常常不是 mbx），既不进缓存
-  也不进记账，还不报错。`mbx` 在 `%LOCALAPPDATA%\Programs\mbx\mbx.exe`，
-  找不到就用它的全路径（对 `mbx` 允许全路径，对 `cargo` 不允许）。见「构建缓存（mbx）」。
+  也不进记账，还不报错。直接写 `mbx`。见「构建缓存（mbx）」。
 - session turn end should kill all process it spawns so user won't use a process that tied to a session as a long running process.
 - server home for tests should be local to each worktree: a shared home makes worktrees lock each other, and someone else's home is not yours to write in -- the program you run may stop the server on it.
 - pointing at a home in use is not a read-only act: `GONGGA_HOME` on a live home makes the bundle place its payload there and retire the build it replaces, and that asks the home's server to `cancel` -- every turn it is running dies with the ask, unless the program starts no server of its own (as `--client_only` says). See `docs/notes/bundle-main.md`, "There is no read-only run".
@@ -158,11 +157,9 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
   `target/` 时并发 cargo 排队等锁，而且 Windows 锁着正在跑的 `.exe`，会直接
   `拒绝访问 (os error 5)`。mbx 给每个 checkout 一棵托管 target，正是这条要的形状；手设
   `CARGO_TARGET_DIR` 只让 mbx 跳过托管（缓存仍然生效），所以只有需要一棵独立侧树时才这么做。
-- **`.dev/` 会长到 GB 级**：`evolve.sh stage` 把构建放 `.dev/target`（为了绕开 exe 锁），
-  历次 `*-home/` 各带一份 `ship` checkout。验证脚本自带清理，或别在这里攒。
-  `.dev/` 下的树是显式 `CARGO_TARGET_DIR`，**不在 mbx 的托管与回收范围内**（缓存仍然生效）。
-- **不要并发跑 `evolve`**：它靠 `.dev/evolve-current` 单指针决定谁接管 home，两个 agent
-  同时 stage 会互相判成被 supersede。
+- **`.dev/` 会长到 GB 级**：历次 `*-home/` 各带一份 `ship` checkout。验证脚本自带清理，
+  或别在这里攒。`.dev/` 下的树是显式 `CARGO_TARGET_DIR`，**不在 mbx 的托管与回收范围内**
+  （缓存仍然生效）。
 
 ### 绝不按镜像名杀进程
 
@@ -256,19 +253,15 @@ crate 就指望跑着的 server 用上。两步都走共享缓存（下节）：
 机制是 SPEC「Bundled binary」那条：同目录的二进制互相 detect/validate/install。server
 启动时 `ensure_pair` 把自己和身旁的 relay 装进 `home/bin`，channel 用的就是**这份装好的
 副本**（`relay_for_channel`）——所以跑着的 server 始终用它启动时的那一对，构建树后来被
-重编也不影响它。要用新代码，就 `mbx build` + `mbx run` 起一个新进程（它装新的配对）；
-接管一个在用的 home 走 `evolve`（下节），不是手动换二进制。
+重编也不影响它。要用新代码，就 `mbx build` + `mbx run` 起一个新进程（它装新的配对），
+不是手动换二进制。
 
 ## 构建缓存（mbx）
 
 **命令一律写成 `mbx <cargo 子命令>`**：`mbx build`、`mbx run -p gongga-server`、`mbx test`、
 `mbx fmt --check`、`mbx install --git …`。mbx 把命令交给 cargo，并在编译器外面挂上共享缓存。
-**不要写 `cargo`**：PATH 上的那个 `cargo` 常常是裸的（下一段解释为什么），而裸构建不报错、
-只是悄悄不进缓存。
-
-`mbx` 自己在 `%LOCALAPPDATA%\Programs\mbx\mbx.exe`。`where.exe mbx` 找得到就直接写 `mbx`；
-找不到就写它的全路径——**全路径对 `mbx` 是允许的，对 `cargo` 不是**：`mbx.exe` 就是 mbx 本身，
-而 `~/.cargo/bin/cargo.exe` 是裸 cargo。
+**不要写 `cargo`**：PATH 上的那个 `cargo` 常常是裸的（原因见下「为什么不要写 `cargo`」），
+而裸构建不报错、只是悄悄不进缓存——直接写 `mbx` 即可。
 
 缓存、托管 target、shims 都在 `%LOCALAPPDATA%\mbx`。一个 checkout 的 target 第一次经 mbx 构建
 时被接管：`<checkout>/target` 变成指向 `%LOCALAPPDATA%\mbx\targets\v1\<checkout digest>` 的
@@ -312,25 +305,12 @@ up` 是正常态：第一次还没有可用的 dep-info，编译完仍会入 sto
   learned incremental 一起）。
 - **只在清一棵显式 `CARGO_TARGET_DIR` 的侧树时**才写 `env -u CARGO_TARGET_DIR cargo clean`。
   不要写 `CARGO_TARGET_DIR= cargo clean`：cargo 1.98 起把空值当错误（`exit 101`），一条都不删。
-  `evolve.sh` 的两处（`clean_build_tree` 与接管前的 `--clean`）曾经是这个写法、把失败吞掉，
-  所以它的 clean 一度从未真正执行过；`4d25db10` 起两处都是 `env -u`，实测见
-  `.dev/verify/596a8c653f0e-evolve-clean-fix.json`（旧写法 `exit 101`、target 还在；新写法
-  `exit 0`、target 消失）。
 - **不要用绝对路径调 `cargo`**（`~/.cargo/bin/cargo.exe`、`.../rustup/toolchains/.../bin/cargo.exe`）：
   那条路绕过 shim，既不进缓存也不出现在 `mbx explain --last` 里，等于偷偷退回裸构建。
 - **不要在同一 checkout 里并发跑两个构建**：Cargo 的目录锁仍在，mbx 只解决跨 checkout 的
   重复编译。
 - **别在关键构建中途让 gc 插进来**：托管 target 属于回收范围（checkout 消失、30 天未用、
   `target.max_size` 预算）。删了能重建，但会打断正在跑的构建。
-
-## 改过服务端代码之后
-
-跑着的进程还是旧二进制，新代码要接管这个 home 才算生效。整套流程在 `evolve` skill 里
-（`skill` 不带名字会给出路径），**不在这里重述**：那份散文和 `evolve.sh` 一起版本化，写第二遍
-就一定会有一份是旧的。
-
-这里只留一条不随 skill 变的：改 server 代码的人**必须**走完它，否则你自己、下一个 agent、
-以及用户手上的窗口都还连着旧 build——症状是"代码改了但命令目录还是旧的"。
 
 ## LLM 目录（`~/.agents/providers.toml`）
 
@@ -363,12 +343,6 @@ skill 是"任务相关才读"的散文 + 脚本。三个桶，**越近的越先*
 **别全读，也别 grep 目录**：调用 `skill` 工具（不带 `name`），它返回 name / description / path /
 bucket 一张表，命中才按它给的路径读正文。列表本身不写在这里——写在这里就等于每加一个
 skill 都要改一次这个文件，而读的人手上已经有那张表。
-
-**需要源码的 skill 不属于 `ship`。** `evolve` 要往上找 `Cargo.toml`、要编服务端、要读
-`.dev/`，装进 `$GONGGA_HOME` 之后它找不到仓库根，所以它住在**这个仓库**的
-`.agents/skills/evolve/`，随 checkout 走，不随内容仓走。**不要往 `$GONGGA_HOME/skills/` 里放它的
-副本**：那份副本会随源码一起变旧，而且它自己 `cd` 到 home 之后往上找不到 `Cargo.toml`，一行
-都跑不通——但 `skill` 会把两个同名 `evolve` 都列出来，读的人先撞上坏的那个。
 
 其余（`handoff` / `image` / `self-control` / `subagent` + 默认 config）在内容仓库里，是这个仓库的
 **submodule**（`ship/`）。改 skill 就是**在 `ship/` 里改然后发布**（`scripts/ship.sh -m`），

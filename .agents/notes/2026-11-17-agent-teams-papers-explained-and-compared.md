@@ -8,6 +8,33 @@ Gongga（SPEC + 已装 skill）、DSH 0.2.2-rc.3（`39163dd30f`，新文档已�
 来源：论文全文 `.dev/papers/*.txt`；DSH `docs/subsystems/{agent-team,subagent}.md`、
 `packages/team/tool-agent-team/README.md`、`docs/tool-catalog.md`、重构 notes。
 
+## 出处与操作笔记（合并存档）
+
+本笔记由 dream 合并整理，**取代并退役**同日两份重叠笔记：
+`2026-11-17-agent-teams-gongga-vs-dsh.md`（基于 DSH 0.2.1 的对比，其赌注表已被 0.2.2
+重构修正）与 `2026-11-17-agent-teams-papers-read.md`（论文综述）。两者独有的耐久内容
+已折入本节；论文详解与横向对比以本笔记为准。
+
+**约束本计划的裁决（2026-11-15，见 `harness-exp-frontier-survey.md`）：** 已实现的特性
+视为已验证，不做重复对比实验；实验只打 harness **没有的**特性，验证过的成为新特性。
+垂直域转向见 `vertical-agent-research-directions.md`。
+
+**DSH 更新出处：** `687f282e86`（0.2.1-rc.2，2026-10-17）→ `39163dd30f`（0.2.2-rc.3），
+4824 个提交、11852 个文件，SSH 快进合并约 22 分钟。这一个月的 agent-team 变化是重构：
+experimental 包删除（−7238 行），team 改为 subagent 树 + 四个任务工具 + 策略。来源 notes：
+`2026-10-15-agent-teams-as-subagents`、`2026-10-16-tree-wide-agent-communication`、
+`2026-10-19-team-task-board-inbox`、`2026-10-20-session-team-mode`、
+`2026-10-29-inbox-only-agent-wait`、`2026-11-02-subagent-catalog-names`；升级指南
+`docs/upgrade-guide/v0.2.1-rc.2/agent-team-subagents/guide.md`。
+
+**arxiv 全文的可走网络路线（实测）：** flm 白名单模式（`arxiv.org` 在列）+ curl
+`--ssl-no-revoke -x http://127.0.0.1:7897`。之前的 TLS 失败是本机 schannel 吊销检查离线
+（CRYPT_E_REVOCATION_OFFLINE），不是代理节点；直连与 7890/10793 两个代理都失败，GitHub
+SSH 通但慢。DeepSeek web-search 的 fetch 端点把正文截到约 8.5KB（摘要够、全文不够）。
+论文全文本地副本在 `agent-teams` worktree 的 `.dev/papers/`：五篇的 `.html`/`.txt` +
+转换器 `html2txt.py`。
+
+
 ---
 
 # 第一部分：五篇论文的核心点子

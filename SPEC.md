@@ -174,7 +174,7 @@ fn clone_session(source: path, dest: path)
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
 ## Prompt
-after the system prompt, before the first user message, inject two messages: one with useful information about session name, harness version (commit id), cwd, time; one introducing the parameters every tool call shares besides its own arguments. they are stamped once with the session's first prompt row and never re-rendered.
+after the system prompt, before the first client user message, inject two messages: one with useful information about session name, harness version (commit id), cwd, time; one introducing the parameters every tool call shares besides its own arguments. they are stamped once with the session's first prompt row and never re-rendered.
 
 **Invariant: context only has append/cut API**
 
@@ -193,7 +193,7 @@ replace `id` with mapped File ID before sending for request.
 ### Meta Prefix Cache Planning
 a cache tree is simulated for each model or (model, some config) that shares prefix cache.
 
-for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
+for the first client user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
 
 ## Live Compact
 - every session that starts in work mode opens the starting checkpoint before its first user message; a session created in explore opens it when the agent switches from explore to build. The checkpoint does not depend on the opt-in: the `live_compact` tool is always available.
@@ -202,27 +202,12 @@ for the first user message to a empty session, find all meta references recursiv
 - `live_compact` summary can reference meta that directly embed in the summary, creating a new checkpoint.
 - the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
 
-## Dreaming
-rides on keep_alive, one checkpoint generation at a time: the first fire clones the
-session into `<session>/dream/<generation>`, tells the clone to organize documents only,
-and discards the clone when its turn truly ends. The second fire of that same generation
-asks the session to hand off instead; every later fire is mute until a new user prompt.
-- the clone copies the transcript verbatim and re-renders nothing, so its first request
-  carries the session's whole prefix: the dream keeps the cache warm in place of the
-  empty time notice. The source's next countdown starts at the dream's true end, not
-  its spawn; the source owes no heartbeat while a dream is live.
-- the clone's keep_alive is off and it opens no checkpoint; a dream never dreams. one
-  dream per generation, at most one live dream per session. A fire that cannot dream
-  because another one is still live, or because the clone failed, keeps the time notice;
-  a fire after the generation is marked dreamed asks for handoff.
-- the mute is written before the handoff notice is sent, so its own turn cannot re-arm
-  the chain; the notice is an ordinary message asking the agent to run `handoff`. The
-  skill's own note arrives from a tool and does not unmute; only `send_message` from a
-  client -- a new user prompt -- does.
-- a true end is Done, Failed, or an interrupt; a cancel that restart will resume is not
-  an end -- the dream resumes with the session and is discarded only when it finishes.
-- the dream writes workspace documents and nothing else; the session is disposable, the
-  files are the memory. deleting the source discards its dreams.
+## Keep Alive
+when a session turn end, a timer start to count, when step into the dangerous zone that cache is nearing cold, fork a dreamer session asked to organize documentation.
+
+when the dreamer turn end, delete the dreamer, if the original session hasn't receive new message since the creation of dreamer, start a new timer to count, when step into the dangerous zone, ask the original session to handoff.
+
+handoffed session's turn end won't start a timer until first client user message
 
 ## Mentor
 an archive of a session: its transcript, copied row for row by the `handoff` skill, so a

@@ -142,17 +142,32 @@ The Python files are the content repository's `python/` tree, installed under
 | [`server-subscriptions.md`](server-subscriptions.md) | `crates/server/src/subscriptions.rs` |
 | [`server-supervise.md`](server-supervise.md) | `crates/server/src/supervise.rs` |
 | [`server-tools-mod.md`](server-tools-mod.md) | `crates/server/src/tools/mod.rs` |
-| [`server-base64.md`](server-base64.md) | `crates/server/src/base64.rs` |
+| [`server-base64.md`](server-base64.md) | `crates/relay/src/base64.rs` (the server's copy went with it) |
 | [`server-remote.md`](server-remote.md) | `crates/server/src/remote/` |
-| [`server-tools-bash.md`](server-tools-bash.md) | `crates/server/src/tools/bash.rs` |
+| [`server-tools-bash.md`](server-tools-bash.md) | `crates/server/src/tools/exec.rs` and `tools/spill.rs` (the shell and its output cap) |
 | [`server-tools-detached.md`](server-tools-detached.md) | `crates/server/src/tools/detached.rs` |
-| [`server-tools-text.md`](server-tools-text.md) | `crates/server/src/tools/text.rs` |
+| [`server-tools-text.md`](server-tools-text.md) | the retired `tool_text` table (a home's old `[tool.*] sentence`; `config.rs` keeps the field so the file still reads) |
 | [`server-tools-skill.md`](server-tools-skill.md) | `crates/server/src/tools/skill.rs` |
 | [`server-tools-words.md`](server-tools-words.md) | `crates/server/src/tools/words.rs` |
 | [`server-tools-job.md`](server-tools-job.md) | `crates/server/src/tools/job.rs` |
 | [`server-transcript.md`](server-transcript.md) | `crates/server/src/transcript.rs` |
 | [`server-worktree.md`](server-worktree.md) | `crates/server/src/worktree.rs` |
 | [`server-space.md`](server-space.md) | `crates/server/src/space.rs` |
+| [`server-anthropic.md`](server-anthropic.md) | `crates/server/src/anthropic.rs` |
+| [`server-body.md`](server-body.md) | `crates/server/src/body.rs` |
+| [`server-channel.md`](server-channel.md) | `crates/server/src/tools/channel.rs`, and `crates/relay/src/relay.rs` |
+| [`server-dream.md`](server-dream.md) | dreaming on `keep_alive` (feature prose, no one source file) |
+| [`server-fork.md`](server-fork.md) | `crates/server/src/fork.rs` |
+| [`server-handover.md`](server-handover.md) | the handover, and what the server measures of it |
+| [`server-live-compact.md`](server-live-compact.md) | live compaction as the server implements it |
+| [`server-migrate.md`](server-migrate.md) | `crates/server/src/migrate.rs` |
+| [`server-remotes.md`](server-remotes.md) | `crates/server/src/remotes.rs` |
+| [`server-script.md`](server-script.md) | `crates/server/src/script.rs` |
+| [`server-start.md`](server-start.md) | a start, and what may stand in front of the port (`main.rs`, `lib.rs`) |
+| [`server-tool-cmd.md`](server-tool-cmd.md) | `crates/server/src/tool_cmd.rs` |
+| [`server-tools.md`](server-tools.md) | the tool set as a stored row (`crates/server/src/tools/mod.rs`) |
+| [`server-tools-python.md`](server-tools-python.md) | `crates/server/src/tools/file.rs` (files are read by a Python driver) |
+| [`server-session-config.md`](server-session-config.md) | `crates/server/src/session_config.rs` |
 
 ### client
 
@@ -223,6 +238,10 @@ argv to `client::main` when invoked under that name or given a command.
 | [`tui-tree.md`](tui-tree.md) | `crates/tui/src/tree.rs` |
 | [`tui-run.md`](tui-run.md) | `crates/tui/src/run.rs` |
 | [`tui-frame_cost.md`](tui-frame_cost.md) | `crates/tui/examples/frame_cost.rs` |
+| [`tui-clipboard.md`](tui-clipboard.md) | `crates/tui/src/clipboard.rs` |
+| [`tui-closing.md`](tui-closing.md) | `crates/tui/src/closing.rs` |
+| [`tui-cover.md`](tui-cover.md) | `crates/tui/src/cover.rs` |
+| [`tui-paste.md`](tui-paste.md) | `crates/tui/src/lib.rs` -- a paste arrives whole |
 
 ### webui
 
