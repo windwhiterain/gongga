@@ -4412,18 +4412,6 @@ impl MessageRow {
             // five labelled lines the new rows carry, so an old session reads the
             // same way. The front-end folds a row to one line until opened.
             Some(Kind::System) => {
-                let list = |key: &str| {
-                    value
-                        .get(key)
-                        .and_then(|v| v.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(str::to_string)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                };
                 let mut out = String::new();
                 // instructions
                 out.push_str(&format!(
@@ -4435,14 +4423,9 @@ impl MessageRow {
                     "agents.md: {}\n",
                     str_of("agents_md").unwrap_or_default()
                 ));
-                // index, with the asked/cached split as a note under the same label.
-                out.push_str(&format!("index: {}\n", str_of("index").unwrap_or_default()));
-                let asks = list("index_explicit");
-                let riders = list("index_cached");
-                if !asks.is_empty() || !riders.is_empty() {
-                    out.push_str(&format!("  asked: {}\n", asks.join(", ")));
-                    out.push_str(&format!("  cached: {}\n", riders.join(", ")));
-                }
+                // index -- which references, never their bodies.
+                out.push_str(&index_text(&value));
+                out.push('\n');
                 // info -- the rest of the stamp, on one line.
                 let cwd = str_of("cwd").unwrap_or_default();
                 let model = str_of("model").unwrap_or_default();
@@ -4466,28 +4449,7 @@ impl MessageRow {
             Some(Kind::AgentsMd) => {
                 row.text = format!("agents.md: {}", str_of("agents_md").unwrap_or_default());
             }
-            Some(Kind::IndexRow) => {
-                let list = |key: &str| {
-                    value
-                        .get(key)
-                        .and_then(|v| v.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_str())
-                                .map(str::to_string)
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default()
-                };
-                let mut text = format!("index: {}", str_of("index").unwrap_or_default());
-                let asks = list("index_explicit");
-                let riders = list("index_cached");
-                if !asks.is_empty() || !riders.is_empty() {
-                    text.push_str(&format!("\n  asked: {}", asks.join(", ")));
-                    text.push_str(&format!("\n  cached: {}", riders.join(", ")));
-                }
-                row.text = text;
-            }
+            Some(Kind::IndexRow) => row.text = index_text(&value),
             Some(Kind::Info) => {
                 let cwd = str_of("cwd").unwrap_or_default();
                 let model = str_of("model").unwrap_or_default();
@@ -4498,24 +4460,8 @@ impl MessageRow {
                     "info: cwd={cwd}, model={model}, remote={remote}, tail={tail}, parameters={parameters}"
                 );
             }
-            // The fifth line: the set in force, as the names the model sees.
-            Some(Kind::Tools) => {
-                let tools = value.get("tools").and_then(|v| v.as_array());
-                let count = tools.map(|list| list.len()).unwrap_or(0);
-                let names = tools
-                    .map(|list| {
-                        list.iter()
-                            .filter_map(|item| {
-                                item.get("name")
-                                    .and_then(|v| v.as_str())
-                                    .or_else(|| item.get("type").and_then(|v| v.as_str()))
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .unwrap_or_default();
-                row.text = format!("tools: {count} tool(s) [{names}]");
-            }
+            // The set in force: the names on the fold, the schema below it.
+            Some(Kind::Tools) => row.text = tools_text(&value),
             Some(Kind::LiveCompactRequest) => row.text = "live compact requested".to_string(),
             // Something that ran at the provider, not here: it has no output to
             // show, so the line describes what it did instead.
@@ -4526,6 +4472,74 @@ impl MessageRow {
             None => tracing::warn!("unknown message kind {kind}"),
         }
         row
+    }
+}
+
+/// The index line: which references the head carries, never their bodies.
+///
+/// # Invariant
+///
+/// `index` is the expanded bodies, which are what the provider already holds as a
+/// cached prefix; a reader wants the citations. So this never renders `index`.
+/// `index_explicit` names what a message asked for outright and `index_cached` what
+/// rode in only as a cached chain's ancestor; a row written before those two lists
+/// existed states `rooted`, the only record it has.
+fn index_text(value: &serde_json::Value) -> String {
+    let list = |key: &str| -> Vec<String> {
+        value
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (asked, riders) = match (list("index_explicit"), list("index_cached")) {
+        (asked, riders) if asked.is_empty() && riders.is_empty() => (list("rooted"), Vec::new()),
+        (asked, riders) => (asked, riders),
+    };
+    let mut text = format!(
+        "index: {}",
+        match asked.is_empty() {
+            true => "(none)".to_string(),
+            false => asked.join(", "),
+        }
+    );
+    if !riders.is_empty() {
+        text.push_str(&format!("\n  cached: {}", riders.join(", ")));
+    }
+    text
+}
+
+/// The tool row: the names on its first line, the whole schema below them.
+///
+/// # Invariant
+///
+/// The schema is a request's bytes rather than a summary of them, so it is rendered
+/// as stored -- the block folds to the names line until a reader opens it.
+fn tools_text(value: &serde_json::Value) -> String {
+    let tools = value.get("tools").and_then(|v| v.as_array());
+    let names = tools
+        .map(|list| {
+            list.iter()
+                .filter_map(|item| {
+                    item.get("name")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| item.get("type").and_then(|v| v.as_str()))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let count = tools.map(|list| list.len()).unwrap_or(0);
+    let head = format!("tools: {count} tool(s) [{names}]");
+    match tools.map(|list| serde_json::to_string_pretty(list)) {
+        Some(Ok(schema)) if !schema.is_empty() && count > 0 => format!("{head}\n{schema}"),
+        _ => head,
     }
 }
 

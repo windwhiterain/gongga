@@ -26,12 +26,18 @@ head behind the opening line; 5-to-6 moved it into fixed slots, and 6-to-7 split
 into the five, shifting ordinary messages and their stored seq references by three.
 
 `MessageRow::parse` renders each head row as its own line: `instructions:` (slot 1),
-`tools:` (2, the tool names), `agents.md:` (3, the standing rules), `index:` (4) and
-`info:` (5, cwd/model/remote/card/parameters folded onto one). Under `index:` the record
-says why each reference is there -- `index_explicit` names what a message asked for
-outright, `index_cached` what rode in only as a cached chain's ancestor. All five are
-records the reader sees: `content` is NULL so the transcript walk does not send them as
-messages; the sender rebuilds the head from their `display`. Older rows read as before.
+`tools:` (2), `agents.md:` (3, the standing rules), `index:` (4) and `info:` (5,
+cwd/model/remote/card/parameters folded onto one). The tool row states the count and the
+names on its first line and then the whole schema below them, as stored and pretty-
+printed: the names are what a folded block shows, and the schema is the body an opened
+one draws. The index row states *which* references the head carries and nothing of what
+they say -- `index_explicit` names what a message asked for outright, `index_cached` what
+rode in only as a cached chain's ancestor, and a row written before those two lists
+existed falls back to `rooted`. The expanded bodies are deliberately not rendered: they
+are the prefix the provider already caches, and the citations are what a reader wants.
+All five are records the reader sees: `content` is NULL so the transcript walk does not
+send them as messages; the sender rebuilds the head from their `display`. Older rows read
+as before.
 
 This replaced `Prompt::rewritten_by`, which compared the three wire texts at every step
 and appended a row whenever they differed. The rule was right about `cwd` -- a shell

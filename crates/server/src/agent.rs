@@ -2516,13 +2516,13 @@ mod tests {
         // Full text of every field, not a character count.
         assert!(row.text.contains("instructions: the standing prose"));
         assert!(row.text.contains("agents.md: the standing rules"));
-        assert!(row.text.contains("index: the expanded index body"));
         assert!(row.text.contains("info: cwd=/home/session"));
         assert!(row.text.contains("tail=the start card"));
         assert!(row.text.contains("parameters=shared args"));
-        // An ask and a rider are told apart, under the index label.
-        assert!(row.text.contains("asked: @file(a.md), AGENTS.md"));
+        // The index names its references and never carries their bodies.
+        assert!(row.text.contains("index: @file(a.md), AGENTS.md"));
         assert!(row.text.contains("cached: @skill(old)"));
+        assert!(!row.text.contains("the expanded index body"));
     }
 
     #[test]
@@ -2564,14 +2564,17 @@ mod tests {
         assert!(texts[0].starts_with("instructions: the standing prose"));
         assert!(texts[1].starts_with("tools: 1 tool(s) [read_file]"));
         assert!(texts[2].starts_with("agents.md: the standing rules"));
-        assert!(texts[3].starts_with("index: the expanded index"));
-        assert!(texts[3].contains("asked: @file(a.md)"));
+        assert!(texts[3].starts_with("index: @file(a.md)"));
         assert!(texts[3].contains("cached: @skill(old)"));
+        assert!(
+            !texts[3].contains("the expanded index"),
+            "a body the provider caches is not a line the reader wants"
+        );
         assert!(texts[4].starts_with("info: cwd=/home/session"));
     }
 
     #[test]
-    fn a_tools_row_shows_the_tool_names() {
+    fn a_tools_row_shows_the_names_and_the_whole_schema() {
         let display = serde_json::json!({
             "tools": [
                 {"type": "function", "name": "read_file"},
@@ -2580,9 +2583,19 @@ mod tests {
         })
         .to_string();
         let row = crate::store::MessageRow::parse(2, "tools", &display);
+        // The names are the fold; the schema is the body an opened block draws.
         assert_eq!(
-            row.text,
-            "tools: 2 tool(s) [read_file, deepseek_web_search]"
+            row.text.lines().next(),
+            Some("tools: 2 tool(s) [read_file, deepseek_web_search]")
+        );
+        let body = &row.text[row.text.find('\n').expect("a body below the names")..];
+        let schema: serde_json::Value = serde_json::from_str(body).expect("the schema as written");
+        assert_eq!(
+            schema,
+            serde_json::json!([
+                {"type": "function", "name": "read_file"},
+                {"type": "deepseek_web_search"}
+            ])
         );
     }
 
