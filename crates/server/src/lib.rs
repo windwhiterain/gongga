@@ -262,6 +262,17 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // The one fetch this start makes, from the repository the config names.
     ship::follow(&cfg.home, cfg.ship_url.as_deref());
     clock.step("ship follow");
+    // A home behind needs a step the pin may not hold: wait for the fetch to bring it.
+    if migrate::version(&cfg.home) < migrate::VERSION {
+        match ship::await_fetch() {
+            Ok(state) => {
+                tracing::info!(?state, "content: the fetch a migration waits for answered")
+            }
+            Err(why) => {
+                tracing::warn!(error = %why, "the content fetch did not answer the migration")
+            }
+        }
+    }
     let migrated = migrate::bring_forward(&cfg.home, &cfg.db_path)?;
     if !migrated.steps.is_empty() {
         tracing::info!(

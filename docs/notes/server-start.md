@@ -14,7 +14,8 @@ home lock     one server per home, before the db is opened.
 ship start_fetch  the content fetch, on its own thread. Nobody joins it here.
 ship prepare  resolve the content commit from the checkout. Waits for that fetch
               only when the checkout declares no protocol this build can read.
-migrate       the db is brought forward before anything opens it.
+migrate       the db is brought forward before anything opens it; a home behind
+              this build waits for the fetch first, since a step may only be in it.
 ship content  the checkout on the commit this build reads; the config is its own file.
 prompts       templates from this config, over the pin.
 store         the db.

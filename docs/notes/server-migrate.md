@@ -30,6 +30,22 @@ commit first, then in the newest commit of the cache that carries the path, then
 in that checkout's history. It is written into `<home>/migrate/` so the
 next start runs the same bytes, and executed with `--home` and `--db`.
 
+## a_home_behind_waits_for_the_fetch
+
+A start resolves content without waiting for its fetch, so a column heal never
+depends on a network. A versioned step is the opposite case: it exists in the
+fetched commit and nowhere in the pin, so a home at an older version would refuse
+to start on every attempt, and the fetch it started dies with the process that
+refused. `run` therefore waits for that one answer before `bring_forward`, and only
+when the home is behind (`version < VERSION`). Every other start still reads what
+the checkout it has holds.
+
+The failure this prevents, seen live: a v6 home on a v7 build, content five commits
+behind, `6-to-7.py` only in the fetched commit -- `Error: this home is at version 6
+and needs migrate/6-to-7.py, which is neither in the shipped content (...) nor
+anywhere else this server can reach`, once per start, with the fetch killed moments
+later.
+
 ## a_column_with_no_reader_is_dropped_where_the_schema_heals
 
 `sessions.monitor_attempts` went when the model search it counted went, and it is

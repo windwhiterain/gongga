@@ -410,6 +410,19 @@ fn fetched() -> &'static Result<Sync, String> {
     })
 }
 
+/// Waits for this start's fetch, for the one caller that cannot go on without it.
+///
+/// # Invariant
+///
+/// Only a home behind this build asks: a migration step can exist in the fetched
+/// commit and nowhere in the pin, and a home that cannot start at all is owed the
+/// wait. Every other start reads what it has and lets `refresh` move the checkout
+/// behind the port. The answer is the caller's to log, never to abort on. See
+/// `docs/notes/server-migrate.md`.
+pub fn await_fetch() -> Result<Sync, String> {
+    fetched().clone()
+}
+
 /// Resolves the moved checkout again and moves the roots' readers onto it.
 ///
 /// # Invariant
