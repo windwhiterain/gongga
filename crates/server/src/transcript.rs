@@ -28,6 +28,8 @@ pub struct Transcript {
     pending: VecDeque<Row>,
     /// The step being collected: its outputs, in the order they arrived.
     held: VecDeque<Row>,
+    /// Outputs whose step is over, ready to go out before anything read after them.
+    released: VecDeque<Row>,
     /// The `(turn, step)` the held outputs belong to.
     held_step: Option<(i64, i64)>,
 }
@@ -74,6 +76,7 @@ impl Transcript {
             projection,
             pending: VecDeque::new(),
             held: VecDeque::new(),
+            released: VecDeque::new(),
             held_step: None,
         })
     }
@@ -104,11 +107,18 @@ impl Iterator for Transcript {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
+            if let Some(released) = self.released.pop_front() {
+                return Some(Ok(released.stored));
+            }
             let row = match self.pending.pop_front() {
                 Some(row) => row,
                 None => match self.read_one() {
                     Ok(Some(row)) => row,
-                    Ok(None) => return self.held.pop_front().map(|held| Ok(held.stored)),
+                    Ok(None) => {
+                        // The walk is over: whatever the last step still held goes out.
+                        self.release(None);
+                        return self.released.pop_front().map(|row| Ok(row.stored));
+                    }
                     Err(e) => return Some(Err(e)),
                 },
             };
@@ -163,11 +173,8 @@ impl Transcript {
     /// it answers, which a provider reading by position refuses.
     fn release(&mut self, row: Option<Row>) {
         self.held_step = None;
-        let mut front: Vec<Row> = self.held.drain(..).collect();
-        front.extend(row);
-        for row in front.into_iter().rev() {
-            self.pending.push_front(row);
-        }
+        self.released.extend(self.held.drain(..));
+        self.released.extend(row);
     }
 }
 
