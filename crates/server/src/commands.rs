@@ -1747,6 +1747,20 @@ async fn mute_keepalive(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
     }
 }
 
+/// Whether the next message to one session is that session's first prompt.
+///
+/// # Invariant
+///
+/// The marker is a fact about the session -- it has no prompt (head) row yet --
+/// not about who sent the message. The `handoff` skill delivers its note through
+/// the `gongga-cli` shim, and a shim on the wire greets as an `Origin::Client`,
+/// never the in-process `Origin::Tool` (see `docs/notes/server-handover.md`).
+/// Gating this on the origin left every handoff note to land as an `inject` row,
+/// so `store.user_texts` and the prefix-cache plan never saw the note's references.
+fn first_prompt_for(store: &Store, session_id: i64) -> bool {
+    store.prompt(session_id).ok().flatten().is_none()
+}
+
 async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
     let Some(message) = args.word("message").map(str::to_string) else {
         return Outcome::err("send_message requires a message");
@@ -1760,14 +1774,14 @@ async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
             "send_message runs for a session: name one, or run it from a session's shell",
         );
     };
-    // No prompt row means this tool message is the session's first prompt.
-    // See `docs/notes/server-handover.md`.
-    let first_prompt = matches!(origin, Origin::Tool { .. })
-        && d.sessions
-            .get(&name)
-            .ok()
-            .and_then(|session| d.store.prompt(session.id()).ok().flatten())
-            .is_none();
+    // A session with no prompt row takes this as its first prompt, whoever sent
+    // it: the handoff note crosses the wire as a Client origin. See
+    // `docs/notes/server-handover.md`.
+    let first_prompt = d
+        .sessions
+        .get(&name)
+        .map(|session| first_prompt_for(&d.store, session.id()))
+        .unwrap_or(false);
     let said = deliver(d, &name, message, first_prompt, continue_turn).await;
     // Any message to the session is a new prompt: the dreamer's mute is spent.
     // See `server-dream.md`.
@@ -4700,5 +4714,49 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         context_limit: tuning
             .context_limit
             .or(Some(d.agent.config.now().agent.context_limit_percent)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prompt_row() -> crate::store::Prompt {
+        crate::store::Prompt {
+            instructions: "the standing prose".to_string(),
+            index: Some("the expanded index".to_string()),
+            agents_md: Some("the directory rules".to_string()),
+            tail: Some("the start card".to_string()),
+            parameters: Some("the shared args".to_string()),
+            rooted: vec!["@file(a.md)".to_string()],
+            index_explicit: vec!["@file(a.md)".to_string()],
+            index_cached: Vec::new(),
+            cwd: ".".to_string(),
+            remote: None,
+            model: Some("m".to_string()),
+        }
+    }
+
+    /// The handoff skill empties the session down to its one in-flight call, so the
+    /// note its `gongga-cli` shim delivers next finds no prompt row. The marker must
+    /// follow that structural fact, not the caller's origin: on the wire the shim is
+    /// an `Origin::Client`, and gating on `Origin::Tool` made every note an `inject`.
+    #[test]
+    fn a_message_to_a_session_with_no_prompt_row_is_its_first_prompt() {
+        let store = Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
+        let id = store
+            .create_session_on("kv-mask", "m", ".", None, None)
+            .expect("a session");
+        // A cut, not-yet-resumed session carries the kept tool call but no head.
+        assert!(
+            first_prompt_for(&store, id),
+            "the note that restarts an emptied session is its first prompt, whoever sent it"
+        );
+        // The next request rebuilds the five-row head; later messages are not re-marked.
+        store.append_prompt(id, &prompt_row()).expect("the head");
+        assert!(
+            !first_prompt_for(&store, id),
+            "a session that has its head no longer takes a first prompt"
+        );
     }
 }

@@ -202,7 +202,7 @@ fn clone_session(source: path, dest: path, dream_of: bool = false)
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.
 
 ## Prompt
-after the system prompt, before the first client user message, inject two messages: one with useful information about session name, harness version (commit id), cwd, time; one introducing the parameters every tool call shares besides its own arguments. they are stamped once with the session's first prompt row and never re-rendered.
+after the system prompt, before the first user message, inject two messages: one with useful information about session name, harness version (commit id), cwd, time; one introducing the parameters every tool call shares besides its own arguments. they are stamped once with the session's first prompt row and never re-rendered.
 
 **Invariant: canonical context only has append/cut API; a memory mask changes only the provider view**
 
@@ -221,7 +221,7 @@ replace `id` with mapped File ID before sending for request.
 ### Meta Prefix Cache Planning
 a cache tree is simulated for each model or (model, some config) that shares prefix cache.
 
-for the first client user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
+for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
 
 ## Live Compact
 - every session that starts in work mode opens the starting checkpoint before its first user message; a session created in explore opens it when the agent switches from explore to build. The checkpoint does not depend on the opt-in: the `live_compact` tool is always available.

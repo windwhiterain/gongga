@@ -60,10 +60,13 @@ note's references with `meta::roots` and puts them in the index. The continuatio
 request is an empty session's first request, which is the case SPEC's `.agents`
 optimization is written for.
 
-The note has to be the *first prompt*, not a harness injection. A tool message to a
-session with no prompt row is marked `first_prompt`; when the turn is busy and the
-message waits in the inbox, `deliver_pending` lands it as a `text` row -- the same
-row `begin_turn` writes for a new session's first message. Landing it as `inject`
+The note has to be the *first prompt*, not a harness injection. Any message to a
+session with no prompt row is marked `first_prompt`, whatever its origin; when the
+turn is busy and the message waits in the inbox, `deliver_pending` lands it as a
+`text` row -- the same row `begin_turn` writes for a new session's first message.
+The marker is a fact about the session (it has no head row yet), not the caller:
+the note arrives over the wire as a `Client` origin (see below), so an origin test
+would never mark it and it would land as `inject`. Landing it as `inject`
 would hide it from `store.user_texts`, so `index_of` would write the prompt row
 without ever planning the note's references: the mention would stay literal and
 the file body would be missing from the index. With the `text` row in place,

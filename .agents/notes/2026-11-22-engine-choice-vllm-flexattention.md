@@ -85,6 +85,79 @@ The two numerical facts worth establishing first, in order: a dropped range enti
 the sequence end must reproduce the unmasked run bit-for-bit (the hook perturbs nothing it
 should not), and only then equivalence against the 4D-mask HF reference.
 
+## Three mechanism answers (2026-11-22, user asked; all read in source)
+
+**Power of two governs tiles, not the mask.** torch flex doc: kernel BLOCK_M/BLOCK_N
+"Must be a power of 2. Common values: 16, 32, 64, 128. Default is determined by autotuning".
+vLLM additionally requires the BlockMask's logical blocks to be powers of two and divisible by
+those tiles, because the block mask indexes tiles. The mask itself stays token-granular:
+partially-visible blocks are still evaluated element-wise (that is why 62.5% masked blocks gave
+1.72x and not 2.67x). Block size is a *performance* granularity only.
+
+**The cache block can never be a power of two on this hybrid model.** Log: "Setting attention
+block size to 576 tokens to ensure that attention page size is >= mamba page size" and
+"kv lcm block sizes 576"; `kv_cache_utils.py:858 scheduler_block_size = math.lcm(*group_block_sizes)`.
+576 = 2^6 * 3^2, so every multiple of it still carries the factor 9. The flex mask block must
+therefore be overridden separately. Consequence I had not stated: `flex_attention.py:869-870`
+sets `direct_build = False` whenever `kv_block_size != block_size`, so my 128-vs-576 override
+**silently moved us off the fast direct path** onto `create_block_mask_compiled`. It does not
+crash (the earlier worry was wrong); it degrades.
+
+**Transient activation** = per-forward temporaries that do not persist across steps (QKV and
+projection outputs, attention workspace, MLP intermediates, logits, cudagraph workspaces). But
+the 3.58 GiB in that log is not live tensors: `extensible_kv_cache.py` logs
+`max(transient_peak, torch_reserve_growth_bytes)` = max(2.41 GiB actually allocated at peak,
+3.58 GiB of caching-allocator reservation growth). Freed blocks are not returned to the driver,
+so the reservation exceeds the live peak, and the pool is budgeted against the reservation.
+The extensible path measures free memory after warmup and then caps torch's reservation
+(`kv_cache.set_torch_memory_limit`); disabling it returns a fixed split, which is the semantics
+the fixed-capacity tape wants anyway. The composition of the 2.41 GiB is unmeasured.
+
+**Dynamic mask switching: three different costs.**
+1. New Python callable -> torch.compile recompile. Measured 1548 ms.
+2. New mask contents -> the BlockMask MUST be rebuilt, because which tiles are skipped and which
+   are partial is derived from the contents. Not rebuilding is wrong, not merely slow.
+3. The earlier 0.3 ms figure is sound: p0's `stable_mask_mod_in_place_mutation` says "mutate the
+   tensor in place; rebuild BlockMask with the same callable", and sparsity moved 0% -> 62.5% ->
+   70.7%, so the rebuild really happened and really is cheap at KV_LEN=32768. Switching a mask
+   costs a rebuild, not a recompile -- provided the callable identity is stable.
+
+**The vLLM-specific trap, and it is the important one.** `FlexAttentionImpl.forward` sets
+`needs_rebuild_block_mask = True` only when `layer.logical_mask_mod is not
+attn_metadata.logical_mask_mod`, i.e. on *object identity*. The stable-closure-plus-in-place-mutation
+trick that kills recompilation therefore also stops vLLM from rebuilding, leaving a silently stale
+block structure. A dynamic mask in vLLM must force the rebuild itself on every mask generation
+change; it cannot rely on the identity check.
+
+**The hint is the other half of the design, not an optional extra.** The direct path prunes only on
+`causal or sliding_window or custom_hint or use_rswa` -- a custom `logical_mask_mod` is not a
+trigger. It passes `full_kv_num_blocks=None`, so every block is partial and every block is still
+evaluated element-wise: mask without hint is correct but saves no bandwidth. The hint prunes at
+`self.block_size` granularity, which here is the 576-token cache block.
+
+**Unmeasured hazard for the fixed-capacity tape.** On the non-direct path `build_block_mask()` uses
+`kv_len = self.total_cache_tokens`, the WHOLE pool (179,638 tokens in the working config), not the
+sequence length. So the mask build scales with pool size rather than sequence length. Code fact;
+the cost itself is not yet measured, and it is the next thing to measure alongside the forced rebuild.
+
+## FlexAttention block pruning: which path actually runs (measured)
+
+`FlexAttentionMetadata.direct_build` defaults to `supports_small_blocks` and is forced off at
+flex_attention.py:890 when `kv_block_size != block_size`. This hybrid model's cache block is
+576 while `flex_attn_kv_block_size` must be a power of two, so **direct_build is always off
+for qwen3_5 here** (confirmed by instrumentation: `direct_build: false`). Two consequences:
+
+- `block_sparsity_hint` is only read by the direct path, so it is inert in this configuration.
+- Pruning still happens: the non-direct path calls `create_block_mask_compiled`, which derives
+  block sparsity from the mask_mod itself. Measured on a 9438-token tape with 75% dropped:
+  **75 -> 20 KV blocks per decode step** (kept set 2360 tokens = 19-20 blocks of 128).
+  Adding the hint changed it only to 19.
+
+So the declared view gets its block-level bandwidth saving from the mask_mod, not from the
+hint, and the hint can be left in place harmlessly. Also measured: `kv_len` is 308736, the
+whole KV pool, so the block mask is rebuilt over 2412 blocks every forward regardless of tape
+length -- a fixed per-step cost and a candidate optimisation (bind kv_len to the used region).
+
 ## Next
 
 Prove, in order, cheapest first: FLEX_ATTENTION loads qwen3_5 on sm86; a per-request
