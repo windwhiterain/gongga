@@ -316,7 +316,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
         default: Some("none"),
         ..Default::default()
     };
-    // SPEC: `keep_alive: bool` -- no default, so an entry may fill it.
+    // SPEC: `keep_alive: bool = false`.
     let keep_alive = Field {
         description: "Whether a periodic notice keeps the prefix warm.",
         spelling: "bool",
@@ -325,6 +325,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
             "true".to_string(),
             "false".to_string(),
         ])),
+        default: Some("false"),
         ..Default::default()
     };
     let live_compact_enabled = Field {

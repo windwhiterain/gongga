@@ -43,7 +43,8 @@ so a leaf added here states its type.
 `schema` also names the sticky types in it: the argument's own `kind` is `config`
 (`SessionConfig`), the `model_config` field carries `model_config` (`ModelConfig`) and
 its `model` leaf carries `model` (`Model`). `workspace` and `keep_alive` carry none:
-SPEC marks neither, so the client neither fills them from an entry nor writes one.
+`Workspace` is not marked `# sticky`, and `keep_alive` has a default of its own, so
+neither is a type a client fills.
 
 `ArgSpec::update` separates `new_session` as a value and for `set_session` as a
 struct update: a value may be filled from a sticky entry, an update may only write
@@ -55,6 +56,5 @@ Each leaf also states its **default**, in SPEC's own spelling (`provider_default
 client reads to decide whether an entry may fill it: SPEC's `# re-default if model
 change` on `thinking`, `ctx_limit` and `cache_tier` is a promise that the type decides
 them, and a value a reader typed days ago may not pre-empt it. Only `model_config.model`
-and `keep_alive` have no default here, which is exactly the set a sticky entry may
-fill. `defaulted` is the one place a field is marked, so a default SPEC states and a
+has no default here, which is exactly the set a sticky entry may fill. `defaulted` is the one place a field is marked, so a default SPEC states and a
 default this schema forgets cannot drift apart unnoticed.
