@@ -158,8 +158,12 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
   `拒绝访问 (os error 5)`。mbx 给每个 checkout 一棵托管 target，正是这条要的形状；手设
   `CARGO_TARGET_DIR` 只让 mbx 跳过托管（缓存仍然生效），所以只有需要一棵独立侧树时才这么做。
 - **`.dev/` 会长到 GB 级**：历次 `*-home/` 各带一份 `ship` checkout。验证脚本自带清理，
-  或别在这里攒。`.dev/` 下的树是显式 `CARGO_TARGET_DIR`，**不在 mbx 的托管与回收范围内**
-  （缓存仍然生效）。
+  或别在这里攒。
+- **不允许在 `.dev/` 里构建 Rust；构建一律在自己的 worktree 里**。`.dev/` 只放临时 home、
+  日志和脚本产物。把 `CARGO_TARGET_DIR` 指到 `.dev/` 会留下一棵没人回收的树，也不在 mbx
+  的托管范围内（缓存仍然生效，但盘上的树没人清）：`paths-target` 2.2 GB、
+  `target-dream-no-burst` 777 MB 就是这么攒出来的，2026-11-22 已删。需要一棵独立的侧树时
+  也放在 worktree 内，不要放 `.dev/`。
 
 ### 绝不按镜像名杀进程
 
