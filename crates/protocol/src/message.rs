@@ -992,6 +992,38 @@ pub struct SessionInfo {
     /// without the operator repeating `--remote`: the session already says it.
     #[serde(default)]
     pub remote: Option<String>,
+    /// SPEC's `SessionConfig.keep_alive`: whether a periodic notice keeps this
+    /// session's prefix warm.
+    #[serde(default)]
+    pub keep_alive: bool,
+    /// The cache tier every request sends; `None` is the shortest the model declares.
+    #[serde(default)]
+    pub cache_tier: Option<String>,
+    /// SPEC's `Mode`: `work` may change the workspace, `explore` only reads it.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// SPEC's `LiveCompact` as this session states it; every `None` follows `[agent]`.
+    #[serde(default)]
+    pub live_compact: Option<LiveCompactState>,
+}
+
+/// SPEC's `LiveCompact` as a session states it.
+///
+/// # Invariant
+///
+/// Each field is what the session said, never what the home's `[agent]` resolves to
+/// for it: a reader cannot tell from a resolved number what a session never chose.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveCompactState {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub interval_tokens: Option<u64>,
+    /// SPEC's `mode`, `cut` or `mask`.
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub max_unmasked_blocks: Option<u64>,
 }
 
 /// What a session's own worktree holds, as the repository it was made in sees it.

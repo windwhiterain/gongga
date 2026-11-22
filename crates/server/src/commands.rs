@@ -4751,6 +4751,21 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
         context_limit: tuning
             .context_limit
             .or(Some(d.agent.config.now().agent.context_limit_percent)),
+        keep_alive: row.cache_keepalive,
+        cache_tier: row.cache_tier.clone(),
+        mode: Some(row.mode.as_str().to_string()),
+        live_compact: Some(protocol::LiveCompactState {
+            enabled: row.live_compact_enabled,
+            interval_tokens: row.live_compact_interval_tokens,
+            mode: row.live_compact_mode.map(|mode| {
+                match mode {
+                    crate::live_compact::CompactMode::Cut => "cut",
+                    crate::live_compact::CompactMode::Mask => "mask",
+                }
+                .to_string()
+            }),
+            max_unmasked_blocks: row.memory_max_unmasked_blocks,
+        }),
     }
 }
 

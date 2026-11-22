@@ -3055,6 +3055,34 @@ fn title_note(session: &protocol::SessionInfo) -> String {
             }
         ));
     }
+    parts.push(format!(
+        "keep_alive {}",
+        if session.keep_alive { "on" } else { "off" }
+    ));
+    if let Some(tier) = &session.cache_tier {
+        parts.push(format!("tier {tier}"));
+    }
+    if let Some(mode) = &session.mode {
+        parts.push(format!("mode {mode}"));
+    }
+    if let Some(live) = &session.live_compact {
+        let mut said: Vec<String> = Vec::new();
+        if let Some(enabled) = live.enabled {
+            said.push(if enabled { "on" } else { "off" }.to_string());
+        }
+        if let Some(tokens) = live.interval_tokens {
+            said.push(format!("every {tokens}"));
+        }
+        if let Some(mode) = &live.mode {
+            said.push(mode.clone());
+        }
+        if let Some(maximum) = live.max_unmasked_blocks {
+            said.push(format!("max {maximum}"));
+        }
+        if !said.is_empty() {
+            parts.push(format!("live_compact {}", said.join(" ")));
+        }
+    }
     parts.push(format!("{} messages", session.messages));
     parts.push(format!("seq {}", session.transcript));
     parts.join(" · ")
