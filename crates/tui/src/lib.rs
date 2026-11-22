@@ -48,15 +48,16 @@ pub use crate::log::Log;
 pub use crate::panes::Panes;
 pub use client::runtime::Server;
 
-/// The modifiers a terminal forwards with a mouse event, as a gesture's own.
+/// The modifiers a terminal forwards with a mouse event, as the wheel's slow
+/// gesture.
 ///
 /// # Invariant
 ///
-/// All three, because no one of them is enough: Shift is what a person reaches
-/// for and what xterm, and so VS Code's terminal, takes for text selection --
-/// that press never reaches the application -- while Alt and Ctrl are what it
-/// does forward. One predicate, so the click and the wheel cannot disagree about
-/// which modifiers exist. See `docs/notes/tui-lib.md`.
+/// Shift is what a person reaches for and what xterm, and so VS Code's
+/// terminal, takes for text selection -- that press never reaches the
+/// application -- while Ctrl is what it does forward. The list click spells its
+/// own gesture per modifier in [`Tui::handle_mouse`]; this predicate answers
+/// only whether the wheel moves one row or three. See `docs/notes/tui-lib.md`.
 fn gesture_modifiers() -> KeyModifiers {
     KeyModifiers::SHIFT | KeyModifiers::CONTROL
 }
@@ -1696,8 +1697,8 @@ impl Tui {
             self.screen.panes.pin(&hit.name);
             return;
         }
-        // SPEC's two clicks: a name shows or hides its window, a header points
-        // the reading at it.
+        // SPEC's clicks: a name selects a window, a header points the reading
+        // at it.
         match hit.part {
             Part::Header => {
                 self.clicked = Some(client::protocol::Operation::StickySession {
@@ -1712,17 +1713,28 @@ impl Tui {
                     self.screen.panes.toggle_row(&hit.name);
                     return;
                 }
-                let shown = self.screen.panes.is_shown(&hit.name);
-                // SPEC's click, the way a list selects: a plain one makes this
-                // the only window; a modifier adds or removes it alone.
-                let (show, solo) = match mouse.modifiers.intersects(gesture_modifiers()) {
-                    true => (!shown, false),
-                    false => (true, true),
+                // Shift spans a range, Ctrl toggles one, a bare click selects alone.
+                let gesture = if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                    client::protocol::SelectGesture::Range
+                } else if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+                    client::protocol::SelectGesture::Toggle
+                } else {
+                    client::protocol::SelectGesture::Plain
                 };
-                self.clicked = Some(client::protocol::Operation::RenderSession {
+                // Session rows on screen at click time; group and folded rows
+                // are out: the same rows the click could land on.
+                let visible = self
+                    .screen
+                    .panes
+                    .list_rows()
+                    .iter()
+                    .filter(|row| row.session)
+                    .map(|row| row.name.clone())
+                    .collect();
+                self.clicked = Some(client::protocol::Operation::SelectSession {
                     session: hit.name.clone(),
-                    show,
-                    solo,
+                    gesture,
+                    visible,
                 });
             }
             // A press in the events opens or closes SPEC's `abstract` there.

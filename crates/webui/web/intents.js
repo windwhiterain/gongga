@@ -17,9 +17,11 @@ export const room = (windows) => ({ intent: 'room', windows });
 
 export const columns = (windows) => ({ intent: 'columns', windows });
 
-export const renderSession = (session, show, solo) => ({
+// A list click: the client resolves gesture, anchor and range into a shown set.
+// Contract: crates/protocol/src/message.rs Operation::SelectSession.
+export const selectSession = (session, gesture, visible) => ({
   intent: 'operate',
-  operation: { op: 'render_session', session, show, solo },
+  operation: { op: 'select_session', session, gesture, visible },
 });
 
 export const stickySession = (session) => ({

@@ -72,8 +72,6 @@ export class ClientModel {
     // The session list is a view of the layout: folded groups and unseen stops.
     this.folded = new Set();
     this.unseen = new Set();
-    // The session row the last non-shift click named; a shift+click spans from it.
-    this.listAnchor = '';
     this.layout = { listed: [], shown: [], command: '', quota: [] };
     this.sessions = [];
     this.sessionsRev = 0;
@@ -663,49 +661,11 @@ export class ClientModel {
 
   // Gestures whose intent is not the input's.
 
-  clickSession(session, toggle) {
-    // Every non-shift click is the anchor the next shift+click spans from.
-    this.listAnchor = session;
-    if (toggle) {
-      const shown = this.layout.shown.includes(session);
-      this.send(intents.renderSession(session, !shown, false));
-    } else {
-      this.send(intents.renderSession(session, true, true));
-    }
-  }
-
-  // Shift+click selects every visible session row between the anchor and this
-  // one, the way a file list does. A group row names no session and a row inside
-  // a collapsed group is not on screen, so the span counts session rows only.
-  // Contract: blocks.js sessionRows, the order the list draws them.
-  clickSessionRange(session, capacity) {
-    const rows = this.sessions.filter((row) => row.session);
-    const targetAt = rows.findIndex((row) => row.name === session);
-    if (targetAt < 0) return;
-    let anchorAt = rows.findIndex((row) => row.name === this.listAnchor);
-    if (anchorAt < 0) {
-      // A first gesture that already holds Shift has no anchor: it starts here.
-      anchorAt = targetAt;
-      this.listAnchor = session;
-    }
-    const picked = rows.slice(
-      Math.min(anchorAt, targetAt),
-      Math.max(anchorAt, targetAt) + 1,
-    );
-    const opening = picked.filter((row) => !row.shown);
-    if (opening.length !== 0) {
-      this.send(intents.room(opening.map((row) => [row.name, capacity])));
-    }
-    // One solo write makes the range the whole selection; each other row then
-    // joins non-solo. The clicked row is shown last so it is the sticky one.
-    this.send(intents.renderSession(picked[0].name, true, true));
-    for (const row of picked.slice(1)) {
-      if (row.name === session) continue;
-      this.send(intents.renderSession(row.name, true, false));
-    }
-    if (picked.length > 1) {
-      this.send(intents.renderSession(session, true, false));
-    }
+  // A list click names only the gesture and the rows on screen: the client
+  // owns the anchor, the range and the shown set, so every front-end selects
+  // the same way. Contract: crates/client/src/window_select.rs.
+  clickSession(session, gesture, visible) {
+    this.send(intents.selectSession(session, gesture, visible));
   }
 
   clickPaneHeader(session) {

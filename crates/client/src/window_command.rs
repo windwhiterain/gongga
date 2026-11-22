@@ -4,10 +4,10 @@
 
 use std::net::SocketAddr;
 
-use crate::protocol::{self, Args, CommandSpec};
-use crate::{LineKind, Sink};
-
+use crate::protocol::{self, Args, CommandSpec, SelectGesture};
+use crate::window_select::Selection;
 use crate::window_state::{self as state, BlockSize, BoxEdge, State};
+use crate::{LineKind, Sink};
 
 /// What one client command did.
 pub enum Done {
@@ -325,12 +325,13 @@ fn render_session(
 /// A gesture ends where the command that says the same thing ends:
 /// `StickySession` is `set_sticky session` and `RenderSession` is
 /// `set_render_session`. `solo` is the part a typed line cannot ask for:
-/// `write_session` applies it where the shown set is written, so a gesture costs
-/// one file write and one line. `delete_session` is the command layer's.
+/// `write_session` applies it where the shown set is written, so a gesture
+/// costs one file write and one line. `delete_session` is the command layer's.
 /// See `docs/notes/tui-command.md`.
 pub fn operate(
     client: &mut crate::Client,
     state: &mut State,
+    selection: &mut Selection,
     operation: protocol::Operation,
     sink: &mut dyn Sink,
 ) -> crate::Submission {
@@ -347,8 +348,96 @@ pub fn operate(
             write_session(client, state, &session, show, solo, sink);
             crate::Submission::Local
         }
+        protocol::Operation::SelectSession {
+            session,
+            gesture,
+            visible,
+        } => {
+            write_selection(client, state, selection, &session, gesture, &visible, sink);
+            crate::Submission::Local
+        }
         operation => client.apply(operation, sink),
     }
+}
+
+/// Applies one session-list click through the shared selection model.
+///
+/// # Invariant
+///
+/// Plain and toggle are the two clicks `RenderSession` already spells, and they
+/// keep that path byte for byte: this function only adds the anchor bookkeeping
+/// beside it. Only range takes a new path, one [`State::show_set`] write for the
+/// whole span.
+fn write_selection(
+    client: &crate::Client,
+    state: &mut State,
+    selection: &mut Selection,
+    target: &str,
+    gesture: SelectGesture,
+    visible: &[String],
+    sink: &mut dyn Sink,
+) {
+    match gesture {
+        SelectGesture::Plain => {
+            selection.note(target, gesture);
+            write_session(client, state, target, true, true, sink);
+        }
+        SelectGesture::Toggle => {
+            selection.note(target, gesture);
+            let shown = state.is_shown(target);
+            write_session(client, state, target, !shown, false, sink);
+        }
+        SelectGesture::Range => {
+            let picked = selection.span(target, visible);
+            // The span reads the old anchor first; the note may start a new one
+            // when the click had none to span from.
+            selection.note(target, gesture);
+            write_range(client, state, &picked, target, sink);
+        }
+    }
+}
+
+/// Writes the range's shown set in one save, with the clicked row left sticky.
+fn write_range(
+    client: &crate::Client,
+    state: &mut State,
+    picked: &[&str],
+    target: &str,
+    sink: &mut dyn Sink,
+) {
+    if picked.is_empty() {
+        client.say(
+            LineKind::Error,
+            "no visible session row was named, so nothing was selected",
+            sink,
+        );
+        return;
+    }
+    // Only a session the window draws is a window: the list on screen is the
+    // one a linkless start kept.
+    let listed = client.listed();
+    let live: Vec<&str> = listed.iter().map(|row| row.name.as_str()).collect();
+    let closed = match state.show_set(picked, |held| live.contains(&held)) {
+        Ok(closed) => closed,
+        Err(error) => {
+            client.say(LineKind::Error, &format!("could not save: {error}"), sink);
+            return;
+        }
+    };
+    // The clicked row carries the input: the same move write_session makes when
+    // a plain click shows a session.
+    if let Err(error) = state.set_sticky("session", target) {
+        client.say(LineKind::Error, &format!("could not save: {error}"), sink);
+    }
+    let others = match closed {
+        0 => String::new(),
+        closed => format!(", {closed} other session(s) hidden"),
+    };
+    client.say(
+        LineKind::Result,
+        &format!("render {} = true{others}", picked.join(", ")),
+        sink,
+    );
 }
 
 /// Writes one sticky entry, says what it is, and forgets what followed it.

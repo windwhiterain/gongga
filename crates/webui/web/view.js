@@ -783,12 +783,20 @@ export class View {
         this.scheduleRender();
         return;
       }
-      if (event.shiftKey) {
-        this.model.clickSessionRange(row.name, this.predictedRoom());
-      } else {
-        if (!row.shown) this.send(intents.room([[row.name, this.predictedRoom()]]));
-        this.model.clickSession(row.name, event.ctrlKey || event.metaKey);
+      // The client owns the selection: name the gesture and the session rows
+      // the list currently draws, and let window_select resolve the span.
+      const gesture = event.shiftKey
+        ? 'range'
+        : event.ctrlKey || event.metaKey
+          ? 'toggle'
+          : 'plain';
+      if (gesture !== 'range' && !row.shown) {
+        this.send(intents.room([[row.name, this.predictedRoom()]]));
       }
+      const visible = this.model.sessions
+        .filter((one) => one.session)
+        .map((one) => one.name);
+      this.model.clickSession(row.name, gesture, visible);
       this.scheduleRender();
     });
   }

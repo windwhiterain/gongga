@@ -199,10 +199,16 @@ delta, for the same reason the table is whole.
 ## Operation
 
 The gestures a window offers, as API rather than as commands. `sticky_session`,
-`render_session` and `delete_session` are what a click means; a window asks for
-one of them and answers the two that are its own state itself, while the server
-answers the one that is not -- and it answers it where it answers
+`render_session`, `select_session` and `delete_session` are what a click means; a
+window asks for one of them and answers the three that are its own state itself,
+while the server answers the one that is not -- and it answers it where it answers
 `del_session`, so one deletion has one behavior however it was asked for.
+
+`select_session` is the session-list click both front-ends spell the same way: it
+carries a `plain`, `toggle` or `range` gesture and the session rows the list draws
+at click time, and the client's `window_select` keeps the anchor a range spans
+from. `render_session` stays the vocabulary of a typed `set_render_session`, with
+`solo` the one part a typed line cannot ask for.
 
 The reason it is not a command line: the window would carry the command syntax,
 and every change of that syntax would break the window. The reason it is not a

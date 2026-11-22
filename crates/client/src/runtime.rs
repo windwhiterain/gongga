@@ -222,6 +222,8 @@ pub async fn run(
     // The window's own state, in its own home: two windows share no file.
     crate::window_state::adopt_legacy(&home, &client_home);
     let mut state = State::load(&home, &client_home);
+    // The anchor a range click spans from: a view of this process, not a file.
+    let mut selection = crate::window_select::Selection::new();
     // The address in force: what the window remembers first, then the flags.
     let mut conn = args.conn.clone();
     if let Some(addr) = state.connection() {
@@ -380,8 +382,13 @@ pub async fn run(
             Step::Closing => break Ok(()),
             // A gesture of the window's own: an operation, not a line.
             Step::Input(FrontendEvent::Intent(UiIntent::Operate { operation })) => {
-                let outcome =
-                    command::operate(&mut client, &mut state, operation, ui.sink().as_mut());
+                let outcome = command::operate(
+                    &mut client,
+                    &mut state,
+                    &mut selection,
+                    operation,
+                    ui.sink().as_mut(),
+                );
                 // Whatever the gesture changed of the window's own state reaches
                 // the drawing and the completion before the next event.
                 crate::window_sync::sync(&mut client, &state, &window, &mut *ui);

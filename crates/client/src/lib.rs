@@ -21,6 +21,7 @@ pub mod window_input;
 pub mod window_journal;
 pub mod window_refill;
 pub mod window_roster;
+pub mod window_select;
 pub mod window_state;
 pub mod window_sync;
 
@@ -2957,7 +2958,8 @@ impl Client {
                 Submission::Send(ClientMessage::Operation { id, operation })
             }
             protocol::Operation::StickySession { .. }
-            | protocol::Operation::RenderSession { .. } => Submission::Local,
+            | protocol::Operation::RenderSession { .. }
+            | protocol::Operation::SelectSession { .. } => Submission::Local,
         }
     }
 

@@ -1042,13 +1042,31 @@ pub struct CmdArg {
 
 // Command catalog, published by the server and consumed by the CLI completer
 
+/// How a session-list click means to change the selection.
+///
+/// # Invariant
+///
+/// The gesture is the vocabulary every front-end shares: a front-end names what
+/// the pointer did, and the client owns the anchor, the visible span and what the
+/// shown set becomes, so two front-ends cannot select differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectGesture {
+    /// A plain click: this session alone becomes the selection.
+    Plain,
+    /// A modifier click: add or remove this one session, touching no other.
+    Toggle,
+    /// A range click: every visible session row from the anchor through this one.
+    Range,
+}
+
 /// An operation a client asks for: the gestures a window offers, beside the
 /// commands it types.
 ///
 /// # Invariant
 ///
 /// These are API, not commands: a window asks for "make this session sticky",
-/// never for a command line to spell. The client answers the two that are its
+/// never for a command line to spell. The client answers the three that are its
 /// own state, and the server answers the one that is not -- and both answer
 /// them the same way the matching command does, so there is one behavior per
 /// gesture. See `docs/notes/protocol-message.md`.
@@ -1070,6 +1088,20 @@ pub enum Operation {
         #[serde(default)]
         solo: bool,
     },
+    /// A click on a session row whose selection meaning the client resolves.
+    ///
+    /// # Invariant
+    ///
+    /// `visible` is the session rows the list draws at click time, in that order:
+    /// group rows name no session and a row inside a collapsed group is not on
+    /// screen, so neither is in it. The client keeps the anchor a range spans
+    /// from and the shown set, so the front-end carries no selection state of
+    /// its own. See `docs/notes/webui-web.md`.
+    SelectSession {
+        session: String,
+        gesture: SelectGesture,
+        visible: Vec<String>,
+    },
     /// Delete a session, its shells and its transcript.
     DeleteSession { session: String },
 }
@@ -1079,7 +1111,7 @@ impl Operation {
     ///
     /// # Invariant
     ///
-    /// `None` for the two that are the client's own state: the server cannot
+    /// `None` for the three that are the client's own state: the server cannot
     /// change a caller's window, and saying "unknown" would hide a request
     /// that is right there.
     pub fn as_command(&self) -> Option<(&'static str, Args)> {
@@ -1090,7 +1122,9 @@ impl Operation {
                 args.insert("path".to_string(), session.clone());
                 Some(("del_session", args))
             }
-            Operation::StickySession { .. } | Operation::RenderSession { .. } => None,
+            Operation::StickySession { .. }
+            | Operation::RenderSession { .. }
+            | Operation::SelectSession { .. } => None,
         }
     }
 }

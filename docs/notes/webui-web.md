@@ -75,21 +75,25 @@ Ctrl+↓ puts it.
 
 ## Session list clicks
 
-The shown set is the selection, and the three clicks are the list's whole gesture:
+The shown set is the selection, and the three clicks are the list's whole gesture.
+The page carries no selection state of its own: it names the gesture and the rows on
+screen in one `select_session` operation, and the client's `window_select` keeps the
+anchor, resolves the span and writes the shown set, so the browser and the terminal
+select the same way.
 
-- a plain click shows that session alone (`solo`), and names it the anchor the next
-  shift+click spans from;
-- Ctrl/Cmd+click adds or removes that one session without touching the others, and
-  it also moves the anchor;
-- Shift+click selects the visible session rows between the anchor and the clicked
-  row, replacing the shown set with that range. Group rows name no session and a row
-  inside a collapsed group is not on screen, so the span counts session rows only.
-  With no anchor yet, the clicked row starts one. The clicked row is shown last, so
-  it is the sticky session.
+- a plain click is `plain`: that session alone becomes the selection, and it names
+  the anchor the next range click spans from;
+- Ctrl/Cmd+click is `toggle`: add or remove that one session without touching the
+  others, moving the anchor to it;
+- Shift+click is `range`: every visible session row between the anchor and the
+  clicked row replaces the shown set in one write. Group rows name no session and a
+  row inside a collapsed group is not on screen, so `visible` carries session rows
+  only. With no anchor, or one no longer visible, the clicked row starts a fresh
+  selection. It is left sticky, so it carries the input.
 
-Each newly shown row first sends `Room` with the pane's measured capacity; the range
-sends one `Room` carrying every row it opens, then one solo `render_session` and one
-non-solo `render_session` per other row, in that order.
+The page still sends `Room` ahead of a plain or toggle click that opens a row, the
+way it did before; a range opens its rows through the same measure loop every pane
+already reports through, so the span needs no second copy of the selection logic.
 
 ## Deliberate limits
 

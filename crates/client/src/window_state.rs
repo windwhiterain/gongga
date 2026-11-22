@@ -253,6 +253,36 @@ impl Shown {
         Ok(closed)
     }
 
+    /// Replaces the shown set with `names`, in one write, counting what closed.
+    ///
+    /// # Invariant
+    ///
+    /// The range click's one save. A name outside the set stays in the map as
+    /// hidden, the way [`Self::set`] leaves one, so addressed history is kept; a
+    /// name in the set that was never addressed is inserted, the way `solo`
+    /// inserts its own. `known` is which names are sessions now: an entry a
+    /// deleted name left is not a window and is not counted.
+    pub fn show_set(
+        &mut self,
+        names: &[&str],
+        known: impl Fn(&str) -> bool,
+    ) -> anyhow::Result<usize> {
+        let wanted: BTreeSet<&str> = names.iter().copied().collect();
+        let closed = self
+            .show
+            .iter()
+            .filter(|(held, show)| **show && !wanted.contains(held.as_str()) && known(held))
+            .count();
+        for (held, show) in self.show.iter_mut() {
+            *show = wanted.contains(held.as_str());
+        }
+        for name in names {
+            self.show.insert((*name).to_string(), true);
+        }
+        self.save()?;
+        Ok(closed)
+    }
+
     fn save(&self) -> anyhow::Result<()> {
         let mut file = read_file(&self.path);
         self.apply(&mut file);
@@ -833,6 +863,16 @@ impl State {
     /// Makes one session the only one shown; answers how many windows closed.
     pub fn show_only(&mut self, name: &str, known: impl Fn(&str) -> bool) -> anyhow::Result<usize> {
         self.shown.solo(name, known)
+    }
+
+    /// Replaces the shown set with `names` in one write; answers how many
+    /// windows closed. The range click's entry point.
+    pub fn show_set(
+        &mut self,
+        names: &[&str],
+        known: impl Fn(&str) -> bool,
+    ) -> anyhow::Result<usize> {
+        self.shown.show_set(names, known)
     }
 
     pub fn set_block_size(&mut self, size: BlockSize) -> anyhow::Result<()> {
