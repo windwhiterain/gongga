@@ -26,8 +26,8 @@ pub struct Transcript {
     projection: Option<(i64, i64)>,
     /// A row read ahead of the output held in front of it.
     pending: VecDeque<Row>,
-    /// Outputs waiting for the last call of their step.
-    held: VecDeque<crate::body::Stored>,
+    /// The step being collected: its outputs, in the order they arrived.
+    held: VecDeque<Row>,
     /// The `(turn, step)` the held outputs belong to.
     held_step: Option<(i64, i64)>,
 }
@@ -108,37 +108,65 @@ impl Iterator for Transcript {
                 Some(row) => row,
                 None => match self.read_one() {
                     Ok(Some(row)) => row,
-                    Ok(None) => return self.held.pop_front().map(Ok),
+                    Ok(None) => return self.held.pop_front().map(|held| Ok(held.stored)),
                     Err(e) => return Some(Err(e)),
                 },
             };
-            // An output waits for the last call of its own step.
-            if let Some(held_step) = self.held_step {
-                let continues =
-                    row.step == Some(held_step) && matches!(row.kind, Some(Kind::ToolCall));
-                if !continues {
-                    self.held_step = None;
-                    self.pending.push_front(row);
-                    if let Some(held) = self.held.pop_front() {
-                        return Some(Ok(held));
+            let Some(step) = self.held_step else {
+                // No step is being collected: an output waits for the call its step
+                // still has to make, so the step's calls can go out together.
+                if matches!(row.kind, Some(Kind::ToolResult))
+                    && let Some(step) = row.step
+                {
+                    match self.call_after(row.seq, step) {
+                        Ok(true) => {
+                            self.held_step = Some(step);
+                            self.held.push_back(row);
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(e) => return Some(Err(e)),
                     }
-                    continue;
                 }
+                return Some(Ok(row.stored));
+            };
+            // A step is being collected: its calls go out as they arrive, and its
+            // outputs wait until the step has no call left to make.
+            if matches!(row.kind, Some(Kind::ToolCall)) && row.step == Some(step) {
+                return Some(Ok(row.stored));
             }
-            if matches!(row.kind, Some(Kind::ToolResult))
-                && let Some(step) = row.step
-            {
-                match self.call_after(row.seq, step) {
-                    Ok(true) => {
-                        self.held_step = Some(step);
-                        self.held.push_back(row.stored);
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(e) => return Some(Err(e)),
-                }
+            if !(matches!(row.kind, Some(Kind::ToolResult)) && row.step == Some(step)) {
+                self.release(Some(row));
+                continue;
             }
-            return Some(Ok(row.stored));
+            let more = match self.call_after(row.seq, step) {
+                Ok(more) => more,
+                Err(e) => return Some(Err(e)),
+            };
+            self.held.push_back(row);
+            if !more {
+                self.release(None);
+            }
+        }
+    }
+}
+
+impl Transcript {
+    /// Sends the held outputs, and `row` after them, before anything the walk reads
+    /// next: the step they answer is over.
+    ///
+    /// # Invariant
+    ///
+    /// Every output of a step goes out before any row that follows the step, so the
+    /// step's calls are all behind a reader that pairs a tool message with the call
+    /// before it. Releasing one at a time puts the next call in front of the outputs
+    /// it answers, which a provider reading by position refuses.
+    fn release(&mut self, row: Option<Row>) {
+        self.held_step = None;
+        let mut front: Vec<Row> = self.held.drain(..).collect();
+        front.extend(row);
+        for row in front.into_iter().rev() {
+            self.pending.push_front(row);
         }
     }
 }
