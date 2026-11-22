@@ -459,10 +459,22 @@ SELECT` copies its rows at their own `seq`. Nothing is read into Rust and writte
 so a copy taken while a turn appends holds every row or none, and the source cannot lose
 a row to it.
 
-`status` is the one column not copied: it says what the session is doing now, and a copy
-is doing nothing. `created_at` and `updated_at` are the copy's own. `monitor_seq` and
-`monitor_attempts` travel, because they describe rows the copy also holds -- a monitor
-turn should not be handed the same rows twice.
+A message row travels whole: the column list is read from `pragma_table_info` and only
+`id` and `session_id` are replaced, so a column a later version adds rides along without
+this file changing. That is not tidiness. The walk orders a step's outputs after its
+calls by `turn`/`step` (`server-transcript.md`); a hand-written list left those two
+behind, and the copy sent the same bytes in another order -- a provider's prefix cache
+stopped at the first parallel call, and one byte-identical dream paid for 124,962 of its
+161,058 input tokens again.
+
+A session row is a set of decisions, so its copy stays spelled out: `status` says what
+the session is doing now and the copy is doing nothing; `created_at`/`updated_at` are
+the copy's own; `waiting_until`, `canceled`, `ended_at`, the live-compact cursor,
+`worktree*`, `mentor_of`, `answer_headers_ms` and `keepalive_handoff_at` describe the
+source's own run or lineage. Every column the statement does not send is named in
+`PLACED`; a column in neither list fails the clone by name instead of arriving empty.
+`monitor_seq` travels, because it describes rows the copy also holds -- a monitor turn
+should not be handed the same rows twice.
 
 What is not the transcript does not move: `pending_tasks` (work owed to the source),
 `drafts` (a stream in flight), `subscriptions` (what the source asked to be told),

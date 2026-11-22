@@ -1034,6 +1034,18 @@ impl Store {
         Ok(id)
     }
 
+    /// The columns a table declares, in declaration order.
+    ///
+    /// # Invariant
+    ///
+    /// Asked of the schema, never of a list in this file: a column a later version
+    /// adds is exactly the column a hand-written copy forgets.
+    fn columns_of(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<Vec<String>> {
+        let mut statement = conn.prepare("SELECT name FROM pragma_table_info(?1)")?;
+        let rows = statement.query_map(params![table], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Copies a session's transcript into a new name, row for row.
     ///
     /// # Invariant
@@ -1057,6 +1069,61 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         let now = now_millis();
+        // Every column is sent or named here; neither stops the copy.
+        // See `docs/notes/server-store.md`.
+        const PLACED: &[&str] = &[
+            // Sent as they are.
+            "model",
+            "model_name",
+            "cwd",
+            "context_limit",
+            "thinking_effort",
+            "context_tokens",
+            "context_generation",
+            "cached_tokens",
+            "tps",
+            "ttft_ms",
+            "remote",
+            "monitor_seq",
+            "cache_tier",
+            // Sent, but decided here rather than copied.
+            "name",
+            "status",
+            "created_at",
+            "updated_at",
+            "cache_keepalive",
+            "mode",
+            "live_compact",
+            "dream_of",
+            "dreamed_checkpoint_id",
+            // Named, and deliberately not copied.
+            "id",
+            "target",
+            "ended_at",
+            "live_compact_origin_seq",
+            "live_compact_baseline_tokens",
+            "canceled",
+            "waiting_until",
+            "live_compact_interval_tokens",
+            "live_compact_interval_effective",
+            "worktree",
+            "worktree_merged",
+            "worktree_changed",
+            "mentor_of",
+            "answer_headers_ms",
+            "keepalive_handoff_at",
+        ];
+        let unknown: Vec<String> = Self::columns_of(&tx, "sessions")?
+            .into_iter()
+            .filter(|column| !PLACED.contains(&column.as_str()))
+            .collect();
+        if !unknown.is_empty() {
+            anyhow::bail!(
+                "sessions declares {} that clone_session does not place; \
+                 send it or name it as deliberately absent",
+                unknown.join(", ")
+            );
+        }
         // `status` says what the session is doing now; the copy is doing nothing.
         let copied = tx
             .execute(
@@ -1088,11 +1155,21 @@ impl Store {
             anyhow::bail!("no session named {source:?} to clone");
         }
         let id = tx.last_insert_rowid();
+        // A message row travels whole; only its id and owner are new.
+        let owned = ["id", "session_id"];
+        let columns: Vec<String> = Self::columns_of(&tx, "messages")?
+            .into_iter()
+            .filter(|column| !owned.contains(&column.as_str()))
+            .map(|column| format!("\"{column}\""))
+            .collect();
+        let list = columns.join(", ");
         let rows = tx.execute(
-            "INSERT INTO messages (session_id, seq, kind, content, display, call_id, created_at)
-             SELECT ?2, seq, kind, content, display, call_id, created_at
-               FROM messages WHERE session_id = (SELECT id FROM sessions WHERE name = ?1)
-               ORDER BY seq",
+            &format!(
+                "INSERT INTO messages (session_id, {list})
+                 SELECT ?2, {list}
+                   FROM messages WHERE session_id = (SELECT id FROM sessions WHERE name = ?1)
+                   ORDER BY seq"
+            ),
             params![source, id],
         )?;
         let last_seq = tx.query_row(
