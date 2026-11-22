@@ -55,12 +55,12 @@ regression scenario first), scenario 6 still red as the documented Left-open of 
 temp home — the declared `read` returns the file's lines, the refusal is gone, `ls_skill`
 spells `remote://local/C:/…`. Two sessions wrote the same fix while the other build waited on the network:
 `fix/landed-separator` (`fea7c5e8`, the separator alone) and `fix/skill-separator`
-(`4d24e01b`, the same spelling with both arms unified into one `format!`, and the
+(`faf6c88d`, the same spelling with both arms unified into one `format!`, and the
 invariant written above the function). One landed: `fix/skill-separator`, because the
 unified arm leaves no second copy of the spelling to drift. `fix/landed-separator` is
 superseded; its measurement stands and is cited here.
 
-Gates on the landed sha (`.dev/verify/4d24e01b-landed-separator.json`): `mbx build` exit 0;
+Gates on the landed sha (`.dev/verify/faf6c88d-landed-separator.json`): `mbx build` exit 0;
 `mbx fmt --check` exit 0; `test-layout-check` 0 violations; `comments-check` 10 errors, the
 same count as the `e928efaf` baseline and none in `space.rs`; `scripts/skill_contract.sh`
 PASS; `scripts/skill_call_selftest.sh` PASS 6/6, whose package call through `run_skill` is
