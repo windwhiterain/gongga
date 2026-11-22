@@ -37,7 +37,7 @@ mask-offload's `read_3` — the first caller of the new door, and it refused. On
 build every package-skill call through `run_skill` (read, write, edit, and any content
 command) refuses on this machine.
 
-## The fix (not yet applied — needs approval)
+## The fix (applied, verified; merge pending)
 
 One line: `landed`'s local arm writes the separator, making it the same shape as the
 peer arm — `format!("{PREFIX}{}/{path}", protocol::local_machine())`. Windows then spells
@@ -47,5 +47,12 @@ were never parseable (`localC:\…` is an unconfigured peer), so nothing that wo
 worse. A second, harder question to settle with the user: whether `run_skill` should also
 refuse a path that names a machine no table configures, instead of quietly using its tail.
 
-Gates for the fix: `mbx build`, `scripts/spawn_dir_selftest.sh` (its non-package refusal
-must keep passing), and a real `read` call against a temp home.
+Branch `fix/landed-separator` at `fea7c5e8`. Gates (`.dev/verify/fea7c5e8-landed-read.json`,
+worktree-local): build/fmt/layout green; comments-check 109 violations, the set identical
+to the d1d590c2 baseline; `spawn_dir_selftest.sh` — every skill scenario green (the
+regression scenario first), scenario 6 still red as the documented Left-open of 454f542c
+("a peer session with an omitted cwd now really reaches that peer"); scratch L3 on a
+temp home — the declared `read` returns the file's lines, the refusal is gone, `ls_skill`
+spells `remote://local/C:/…`. A second session (`fix-probe`, qwen) started the same fix
+in `.worktrees/fix-probe` (branch `fix/skill-separator`) while this one was building; one
+branch should land.
