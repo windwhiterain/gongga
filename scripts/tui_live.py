@@ -56,6 +56,7 @@ contain spaces. `#` starts a comment.
     click <col> <row>        SGR press and release at that cell
     alt-click <col> <row>    the same press, with Alt held
     shift-click <col> <row>  the same press, with Shift held
+    ctrl-click <col> <row>   the same press, with Ctrl held
     drag <c1> <r1> <c2> <r2> press, motion, release: what a selection is made of
     clipboard                read the clipboard now, and write it into the frame file
     sleep-until-frame [n] [ms]   wait for n more frames (default 1), giving up after ms
@@ -1517,9 +1518,11 @@ def decode_text(text):
     return "".join(out)
 
 
-# In the button field an SGR mouse report carries its modifiers: 4 shift, 8 alt.
+# In the button field an SGR mouse report carries its modifiers: 4 shift,
+# 8 alt, 16 control.
 SHIFT = 4
 ALT = 8
+CONTROL = 16
 
 
 def mouse_sequence(button, col, row, press=True):
@@ -1603,11 +1606,11 @@ class Driver:
             if len(parts) != 2:
                 raise RuntimeError("click wants <col> <row>")
             self.click(int(parts[0]), int(parts[1]))
-        elif command in ("alt-click", "shift-click"):
+        elif command in ("alt-click", "shift-click", "ctrl-click"):
             parts = argument.split()
             if len(parts) != 2:
                 raise RuntimeError("%s wants <col> <row>" % command)
-            held = ALT if command == "alt-click" else SHIFT
+            held = {"alt-click": ALT, "shift-click": SHIFT, "ctrl-click": CONTROL}[command]
             self.click(int(parts[0]), int(parts[1]), held)
         elif command == "drag":
             parts = argument.split()

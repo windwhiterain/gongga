@@ -85,10 +85,12 @@ select the same way.
   the anchor the next range click spans from;
 - Ctrl/Cmd+click is `toggle`: add or remove that one session without touching the
   others, moving the anchor to it;
-- Shift+click is `range`: every visible session row between the anchor and the
-  clicked row replaces the shown set in one write. Group rows name no session and a
-  row inside a collapsed group is not on screen, so `visible` carries session rows
-  only. With no anchor, or one no longer visible, the clicked row starts a fresh
+- Shift/Alt+click is `range`: every visible session row between the anchor and the
+  clicked row replaces the shown set in one write. A browser forwards both, so the
+  page accepts both; Alt is what reaches the TUI in the Windows Terminal and VS Code,
+  which reserve Shift+click for their own text selection. Group rows name no session
+  and a row inside a collapsed group is not on screen, so `visible` carries session
+  rows only. With no anchor, or one no longer visible, the clicked row starts a fresh
   selection. It is left sticky, so it carries the input.
 
 The page still sends `Room` ahead of a plain or toggle click that opens a row, the

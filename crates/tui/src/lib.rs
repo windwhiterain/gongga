@@ -1719,8 +1719,11 @@ impl Tui {
                     self.screen.panes.toggle_row(&hit.name);
                     return;
                 }
-                // Shift spans a range, Ctrl toggles one, a bare click selects alone.
-                let gesture = if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                // Alt carries range where Shift is kept for text selection;
+                // Ctrl toggles one, a bare click selects alone.
+                let gesture = if mouse.modifiers.contains(KeyModifiers::SHIFT)
+                    || mouse.modifiers.contains(KeyModifiers::ALT)
+                {
                     client::protocol::SelectGesture::Range
                 } else if mouse.modifiers.contains(KeyModifiers::CONTROL) {
                     client::protocol::SelectGesture::Toggle

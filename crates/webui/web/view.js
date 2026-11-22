@@ -785,7 +785,7 @@ export class View {
       }
       // The client owns the selection: name the gesture and the session rows
       // the list currently draws, and let window_select resolve the span.
-      const gesture = event.shiftKey
+      const gesture = event.shiftKey || event.altKey
         ? 'range'
         : event.ctrlKey || event.metaKey
           ? 'toggle'

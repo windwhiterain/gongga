@@ -179,15 +179,21 @@ SCENARIOS = {
             "expect render lab/x = true, 3 other session(s) hidden 8000",
             "gone [work/api] 8000",
             "gone [work/web] 8000",
-            "label a modified click takes that one window away and leaves the rest alone",
-            "alt-click 6 6",
+            "label Ctrl+click takes that one window away and leaves the rest alone",
+            "ctrl-click 6 6",
             "sleep-until-frame 2 4000",
             "expect render lab/x = false 8000",
             "gone [lab/x] 8000",
-            "label a plain click brings it back",
+            "label a plain click brings it back, alone, and names the range anchor",
             "click 6 6",
             "sleep-until-frame 2 4000",
             "expect [lab/x] 8000",
+            "label Alt+click spans every visible session row from the anchor to it",
+            "alt-click 6 3",
+            "sleep-until-frame 2 4000",
+            "expect render work/api, work/web, lab/x = true 8000",
+            "expect [work/api] 8000",
+            "expect [work/web] 8000",
             "label a deeper name: three groups, one leaf, no message sent to any model",
             "keys /set_session a/b/c",
             "enter",
@@ -204,10 +210,11 @@ SCENARIOS = {
         "options": {"tool": "exec", "fake": "stream"},
         "script": COVER + [
             "# the gestures are operations, not command lines: the window asks for"
-            "# what it means and the command layer answers it. Alt is the modifier a"
-            "# terminal forwards (VS Code keeps Shift+click for selection), and the"
-            "# delete gesture is not here: this terminal does not deliver"
-            "# Shift+Delete, so scripts/cmd_selftest.sh answers it on the wire.",
+            "# what it means and the command layer answers it. Both terminals this"
+            "# program runs in reserve Shift+click for their own text selection, so"
+            "# Alt carries the range there; the delete gesture is not here either,"
+            "# this terminal does not deliver Shift+Delete, so scripts/cmd_selftest.sh"
+            "# answers it on the wire.",
             "expect session(s) 20000",
             "label creating the session the gesture will act on",
             "keys /set_session main",
@@ -218,10 +225,18 @@ SCENARIOS = {
             "click 4 2",
             "sleep-until-frame 1 4000",
             "expect render main = true 8000",
-            "label a modified click on a session's name hides its window: an operation",
-            "alt-click 4 2",
+            "label Ctrl+click hides that one window and leaves the rest alone: a toggle",
+            "ctrl-click 4 2",
             "sleep-until-frame 1 4000",
             "expect render main = false 8000",
+            "label a plain click brings it back, alone, and names the range anchor",
+            "click 4 2",
+            "sleep-until-frame 1 4000",
+            "expect render main = true 8000",
+            "label Alt+click is a range: one row spans itself through show_set",
+            "alt-click 4 2",
+            "sleep-until-frame 1 4000",
+            "expect render main = true 8000",
         ],
     },
     "event-ui-toggles": {

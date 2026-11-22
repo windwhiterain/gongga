@@ -139,17 +139,22 @@ or `range` -- and the session rows on screen, in one `Operation::SelectSession`;
 client's `window_select` keeps the anchor, resolves the span and writes the shown set,
 so the terminal and the browser cannot select differently. A plain click shows the
 one session and closes every other window, a Ctrl+click adds it or takes it away and
-leaves the rest as they are, and a Shift+click selects every visible row from the
+leaves the rest as they are, and a range click selects every visible row from the
 anchor to the clicked one, one `Shown::show_set` write for the whole range.
 
-Which modifier reaches the application is a measured thing. Shift is what a person
-reaches for, and it is the one that never arrives in the terminal this program is
-developed in: VS Code's terminal takes a Shift+click for text selection and sends
-nothing to the application -- a probe that enables mouse reporting and prints the raw
-bytes sees the pointer move (`\x1b[<35;col;rowM`) and no press at all, while the same
-click with Ctrl (`\x1b[<16;...`) or Alt (`\x1b[<8;...`) arrives. So range works in a
-terminal that forwards Shift, while Ctrl+click is the modifier gesture that always
-arrives. On a header it sets the sticky session. Both are *operations*, not command
+Which modifier reaches the application is a measured thing, and the range click has
+two spellings on purpose. Shift is what a person reaches for, and it is the one the
+two terminals this program runs in keep for themselves: Windows Terminal reserves
+Shift+click for extending its own selection, and VS Code's terminal takes it for text
+selection too -- a probe that enables mouse reporting and prints the raw bytes sees
+the pointer move (`\x1b[<35;col;rowM`) and no press at all, while the same click with
+Ctrl (`\x1b[<16;...`) or Alt (`\x1b[<8;...`) arrives. The press never enters conpty,
+so no console mode, `ENABLE_VIRTUAL_TERMINAL_INPUT` included, can recover it. The TUI
+therefore binds range to Alt as well as Shift: Alt arrives in both terminals, Shift
+still works in a terminal that forwards it, and Ctrl+click stays the toggle that
+always arrives. The browser forwards every modifier, so the page takes Shift and Alt
+for the same range gesture. On a header it sets the sticky session. Both are
+*operations*, not command
 lines: the window says what it means -- `Operation::SelectSession`,
 `Operation::StickySession` -- and the command layer answers it, the same way it
 answers the command that does the same thing. Spelling them as lines would put the
