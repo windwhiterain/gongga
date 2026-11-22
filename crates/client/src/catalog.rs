@@ -49,20 +49,20 @@ struct Inner {
     default_model: Option<String>,
     /// Directories a remote answered with, keyed by remote and directory, and
     /// when each answer arrived.
-    remote_paths: HashMap<(String, String), (Vec<Item>, std::time::Instant)>,
+    remote_paths: HashMap<String, (Vec<Item>, std::time::Instant)>,
     /// The names a config holds, for reading `--remote` off the line. Taken from
     /// the published catalog rather than kept here.
     remotes: HashSet<String>,
-    /// The directory each remote's line last asked for and has no answer for.
+    /// The path each line last asked for and has no answer for.
     ///
     /// # Invariant
     ///
-    /// One entry per remote, never one per directory: the line is completed on
-    /// every keystroke, so a queue keyed by directory asks for a listing per letter
-    /// typed, answers them in order, and is always behind the cursor.
+    /// One entry per machine, never one per directory: the line is completed on every
+    /// keystroke, so a queue keyed by directory asks for a listing per letter typed,
+    /// answers them in order, and is always behind the cursor. The key is the whole
+    /// path, so a peer's `/home/a` and this machine's `/home/a` never share an entry.
     wanted: HashMap<String, String>,
-    /// The directory each remote is being asked for right now, so a second
-    /// question never queues behind the first.
+    /// The directory each machine is being asked for, keyed by its own prefix.
     inflight: HashMap<String, String>,
     /// Bumped whenever a listing lands, so a front-end repaints the popup.
     listings_version: u64,
@@ -172,26 +172,30 @@ impl Catalog {
         }
     }
 
-    /// The listings a completion wants, as `(remote, directory)`; taking them
-    /// is what stops a repeat ask.
-    pub fn take_wanted(&self) -> Vec<(String, String)> {
+    /// The listings a completion wants, as whole paths; taking them is what stops a
+    /// repeat ask.
+    pub fn take_wanted(&self) -> Vec<String> {
         let mut inner = self.write();
         let asked = std::mem::take(&mut inner.wanted);
         let mut sending = Vec::new();
-        for (remote, directory) in asked {
+        for (path, directory) in asked {
+            let machine = machine_of(&path);
             // Already asked: what is missing is the answer, not the question.
-            if inner.inflight.get(&remote) == Some(&directory) {
+            if inner.inflight.get(&machine) == Some(&directory) {
                 continue;
             }
-            inner.inflight.insert(remote.clone(), directory.clone());
-            sending.push((remote, directory));
+            inner.inflight.insert(machine, directory);
+            sending.push(path);
         }
         sending
     }
 
-    /// Records what a remote answered, so the next completion offers it.
-    pub fn fill_paths(&self, remote: &str, directory: &str, entries: Vec<(String, bool)>) {
-        let typed = directory.to_string();
+    /// Records what a path's machine answered, so the next completion offers it.
+    pub fn fill_paths(&self, path: &str, entries: Vec<(String, bool)>) {
+        let (typed, machine) = match typed_of(path) {
+            Some(pair) => pair,
+            None => return,
+        };
         let named: Vec<Item> = entries
             .into_iter()
             .map(|(name, is_dir)| {
@@ -204,26 +208,25 @@ impl Catalog {
             })
             .collect();
         let mut inner = self.write();
-        // This remote may be asked again, and the line says what it now wants.
-        if inner.inflight.get(remote).map(String::as_str) == Some(directory) {
-            inner.inflight.remove(remote);
+        // This machine may be asked again, and the line says what it now wants.
+        if inner.inflight.get(&machine).map(String::as_str) == Some(typed.as_str()) {
+            inner.inflight.remove(&machine);
         }
-        inner.remote_paths.insert(
-            (remote.to_string(), directory.to_string()),
-            (named, std::time::Instant::now()),
-        );
+        inner
+            .remote_paths
+            .insert(path.to_string(), (named, std::time::Instant::now()));
         inner.listings_version += 1;
     }
 
-    /// Records that a remote did not answer one listing.
+    /// Records that a path's machine did not answer one listing.
     ///
     /// # Invariant
     ///
     /// The question is no longer in flight: a refused or unanswered listing must
     /// not be remembered as one still being answered, or the same directory is
     /// never asked for again and its popup stays empty for good.
-    pub fn fail_paths(&self, remote: &str) {
-        self.write().inflight.remove(remote);
+    pub fn fail_paths(&self, path: &str) {
+        self.write().inflight.remove(&machine_of(path));
     }
 
     /// How many listings have arrived; a front-end repaints when this changes.
@@ -356,10 +359,11 @@ impl Catalog {
     ///
     /// # Invariant
     ///
-    /// Three answers, in this order: the machine `--remote` names, then the machine
-    /// the line's session runs on, then this one. The directory is the session's own
-    /// when the line has one, and the server's otherwise. See
-    /// `docs/notes/cli-catalog.md`.
+    /// Two answers, in this order: a `cwd`/`path` on the line that names a machine with
+    /// its `remote://` prefix, then the machine the line's session records. There is no
+    /// third: a path is the only thing that says which machine, so no flag competes with
+    /// it. The directory is the session's own when the line has one, and the server's
+    /// otherwise. See `docs/notes/cli-catalog.md`.
     fn place(&self, words: &[String]) -> Place {
         let inner = self.read();
         let session = session_on_line(
@@ -368,9 +372,10 @@ impl Catalog {
             &inner.sessions,
             words,
         );
-        let peer = named_machine(&inner, words).or_else(|| session.and_then(|s| s.remote.clone()));
+        let peer = named_machine(words).or_else(|| session.and_then(|s| s.remote.clone()));
         let dir = session
             .map(|s| PathBuf::from(&s.cwd))
+            // A session on a peer records its directory in that machine's spelling.
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or_else(|| inner.server_cwd.clone());
         Place {
@@ -853,35 +858,71 @@ fn positional_tokens<'a>(
     out
 }
 
-/// The machine `--remote` names, when the config holds it.
-fn named_machine(inner: &Inner, words: &[String]) -> Option<String> {
-    let asked = flag_value(words, "remote")?;
-    inner.remotes.contains(asked).then(|| asked.to_string())
-}
-
-/// Completes `--cwd` against the filesystem of the machine the line names.
+/// The machine a path on the line names, when this server configures it.
 ///
 /// # Invariant
 ///
-/// Never waits for a peer: what has arrived is offered now, and the rest is asked
-/// for, so a completion never blocks the front-end on a network.
+/// The `remote://` prefix is the one place a line names a machine: `--remote` is gone, and
+/// a completion that still looked for it would offer a peer's paths on a line that names
+/// none. A name this server does not configure is no machine here, exactly as a call
+/// resolves it. See `docs/notes/cli-catalog.md`.
+fn named_machine(words: &[String]) -> Option<String> {
+    let stated = flag_value(words, "cwd").or_else(|| flag_value(words, "path"))?;
+    let rest = stated.strip_prefix(protocol::meta_prefix())?;
+    let (name, _) = rest.split_once('/')?;
+    if name.is_empty() || name == protocol::local_machine() || name.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// The machine a whole path names, as the key a listing is queued under.
+///
+/// # Invariant
+///
+/// [`typed_of`] is the inverse and they are the only two readers: a completion that keyed
+/// a listing by anything else would file one machine's answer under another's.
+fn machine_of(path: &str) -> String {
+    let rest = match path.strip_prefix(protocol::meta_prefix()) {
+        Some(rest) => rest,
+        None => return String::new(),
+    };
+    match rest.split_once('/') {
+        Some((name, _)) => name.to_string(),
+        None => String::new(),
+    }
+}
+
+/// The prefix a path's listings hang off, and the machine it names.
+fn typed_of(path: &str) -> Option<(String, String)> {
+    if !path.starts_with(protocol::meta_prefix()) {
+        return Some((path.to_string(), String::new()));
+    }
+    let rest = path.strip_prefix(protocol::meta_prefix())?;
+    let (name, tail) = rest.split_once('/')?;
+    Some((tail.to_string(), name.to_string()))
+}
+
+/// Completes a path against the filesystem of the machine the path itself names.
+///
+/// # Invariant
+///
+/// The key is the whole path, machine prefix included: `/home/a` here and `/home/a` on a
+/// peer are two listings, and a cache keyed by the directory alone would answer one with
+/// the other. Never waits for a peer: what has arrived is offered now, and the rest is
+/// asked for, so a completion never blocks the front-end on a network.
 fn remote_paths(ctx: &Ctx, remote: &str, token: &str) -> Vec<Item> {
     let (typed_dir, prefix) = split_path_token(token);
+    let asked = format!("{}{remote}/{typed_dir}", protocol::meta_prefix());
     let (cached, arrival) = {
         let inner = ctx.catalog.read();
-        match inner
-            .remote_paths
-            .get(&(remote.to_string(), typed_dir.clone()))
-        {
+        match inner.remote_paths.get(&asked) {
             Some((entries, at)) => (Some(entries.clone()), Some(*at)),
             None => (None, None),
         }
     };
     if arrival.is_none_or(|at| at.elapsed() >= REVALIDATE) {
-        ctx.catalog
-            .write()
-            .wanted
-            .insert(remote.to_string(), typed_dir.clone());
+        ctx.catalog.write().wanted.insert(asked, typed_dir.clone());
     }
     let Some(entries) = cached else {
         return Vec::new();

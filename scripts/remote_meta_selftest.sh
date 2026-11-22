@@ -112,7 +112,7 @@ for _ in $(seq 1 60); do [[ -x "$home/bin/gongga-cli" ]] && break; sleep 0.2; do
 # GONGGA_HOME, and this shell's may name somebody else's home.
 cli=(python "$home/ship/python/gongga_cli.py" --home "$home" --server "127.0.0.1:$port")
 
-created=$("${cli[@]}" '{"name":"set_session","args":{"id":"p","model":"fake/flash-fake","remote":"'"$peer_name"'"}}' 2>&1)
+created=$("${cli[@]}" '{"name":"set_session","args":{"id":"p","model":"fake/flash-fake","cwd":"remote://'"$peer_name"'//"}}' 2>&1)
 [[ "$created" == *'"ok":true'* ]]; ok "a session is created on $peer_name" $?
 
 "${cli[@]}" '{"name":"send_message","args":{"message":"make the scratch","session":"p"}}' >/dev/null 2>&1

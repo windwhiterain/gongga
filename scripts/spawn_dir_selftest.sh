@@ -222,7 +222,7 @@ model='"model_config":{"model":{"provider":"fake","model":"flash-fake"}}'
 
 # 1. The reported bug: a session whose directory is on a peer has none here, and its
 #    skill still runs -- in this server's directory, not in a failed spawn.
-out=$(call '{"name":"new_session","args":{"id":"probe","config":{'"$model"',"workspace":{"remote":"probe-vm"}}}}')
+out=$(call '{"name":"new_session","args":{"id":"probe","config":{'"$model"',"workspace":{"cwd":"remote://probe-vm/"}}}}')
 say "new_session probe: $out"
 out=$(call '{"name":"run_skill","args":{"id":"echo","cmd":{"name":"where","args":{"words":"hi"}},"session":"probe"}}')
 say "run_skill on probe: $(printf '%s' "$out" | tail -2)"
@@ -258,7 +258,7 @@ ok "and stands in this server's directory" "$(kind "$out" "$(native "$root")")"
 
 # 5. `exec` falls back to the session's directory, so it must say which directory it
 #    could not use -- never that the program could not run.
-fake_up exec '{"bin":"bash","args":["-c","echo hi"],"remote":"none","cwd":"'"$(native "$work/nope")"'","wait":3000}'
+fake_up exec '{"bin":"bash","args":["-c","echo hi"],"cwd":"remote://local/'"$(native "$work/nope")"'","wait":3000}'
 call '{"name":"send_message","args":{"message":"a stated directory that is gone","session":"stale"}}' >/dev/null
 wait_turn stale
 answer=$(last_tool stale)
@@ -267,7 +267,7 @@ ok "a stated directory that is gone is refused by name" \
   "$(kind "$answer" "no directory \"$(native "$work/nope")\"")"
 ok "and the program is not blamed for it" "$([[ "$answer" != *'could not run'* ]] && echo 0 || echo 1)"
 
-fake_up exec '{"bin":"bash","args":["-c","echo hi"],"remote":"none","wait":3000}'
+fake_up exec '{"bin":"bash","args":["-c","echo hi"],"wait":3000}'
 call '{"name":"send_message","args":{"message":"the sessions own directory is gone","session":"stale"}}' >/dev/null
 wait_turn stale
 answer=$(last_tool stale)
@@ -277,7 +277,7 @@ ok "the session's own directory is named as the session's" \
 ok "and the program is not blamed for it either" "$([[ "$answer" != *'could not run'* ]] && echo 0 || echo 1)"
 
 # 6. A peer session with no directory at all still runs a program here.
-fake_up exec '{"bin":"bash","args":["-c","echo alive"],"remote":"none","wait":4000}'
+fake_up exec '{"bin":"bash","args":["-c","echo alive"],"wait":4000}'
 call '{"name":"send_message","args":{"message":"run something here","session":"probe"}}' >/dev/null
 wait_turn probe
 answer=$(last_tool probe)

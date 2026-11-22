@@ -225,7 +225,7 @@ in_dir=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":
 say "$in_dir"
 ok "exec --cwd starts the program there" "$([[ "$(field "$in_dir" output)" == *"$(basename "$elsewhere")"* ]] && echo 0 || echo 1)"
 rmdir "$elsewhere" 2>/dev/null
-refused=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$shell_id-nowhere"'","remote":"nowhere-named"}}' 2>&1)
+refused=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$shell_id-nowhere"'","cwd":"remote://nowhere-named//"}}' 2>&1)
 say "$refused"
 ok "a machine that cannot be reached is refused, not run here" "$([[ "$(field "$refused" id)" == "" ]] && has "$refused" 'no remote named' && echo 0 || echo 1)"
 

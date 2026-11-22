@@ -229,18 +229,24 @@ wait_listening || { echo "the server never listened on 127.0.0.1:$port" >&2; exi
 server_pid=$(child_pid)
 cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
 
-# `local` is not a remote name: naming it is refused, and the refusal says `none`.
-refused=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","remote":"local"}}' 2>&1)
-[[ "$refused" == *"no remote called \`local\`"* && "$refused" == *"none"* ]]
-ok "naming \`local\` is refused, and the answer names \`none\`" $?
+# A prefixed path must be whole: `remote://local/relative` names this machine and a path
+# that would be looked for under this process's directory, so it is refused by name.
+refused=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","cwd":"remote://local/C:/does-not-matter"}}' 2>&1)
+[[ "$refused" == *"is relative"* && "$refused" == *"whole path"* ]]
+ok "a prefixed relative path is refused, and the answer says why" $?
 
-created=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","remote":"'"$peer_name"'"}}' 2>&1)
+# `remote://local/` with a whole path is this machine, stated: the session is created.
+here=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe-local","model":"fake/flash-fake","cwd":"'"remote://local//$(native "$root")"'"}}' 2>&1)
+[[ "$here" == *'"ok":true'* ]]
+ok "`remote://local/` with a whole path is this machine" $?
+
+created=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","cwd":"remote://'"$peer_name"'//'"$peer_scratch"'"}}' 2>&1)
 [[ "$created" == *'"ok":true'* ]]
 ok "a session is created on $peer_name" $?
 
 # The boundary: a remote left in the home's `config.toml` is refused, not honoured --
 # it is the merged file, and a host name in it would be published by a pin move.
-probe=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","remote":"ghost"}}' 2>&1)
+probe=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","model":"fake/flash-fake","cwd":"remote://ghost//tmp"}}' 2>&1)
 # The answer is compact JSON, so the name's own quotes arrive escaped.
 [[ "$probe" == *'no remote named \"ghost\"'* ]]
 ok "a remote named only in config.toml does not exist" $?
@@ -281,7 +287,7 @@ fake_up "" "{}"
 wait_turn probe; say_turn probe
 
 # A session placed where the rules file already is: its first prompt carries it.
-created2=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe2","model":"fake/flash-fake","remote":"'"$peer_name"'","cwd":"'"$peer_scratch"'"}}' 2>&1)
+created2=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe2","model":"fake/flash-fake","cwd":"remote://'"$peer_name"'//'"$peer_scratch"'"}}' 2>&1)
 [[ "$created2" == *'"ok":true'* ]]
 ok "a second session is placed on the peer" $?
 "${cli[@]}" '{"name":"send_message","args":{"message":"hello","session":"probe2"}}' >/dev/null 2>&1
@@ -331,9 +337,9 @@ INNER
 ok "the peer's scratch is removed" $?
 
 # A remote session comes home by naming `none`: no shells remain on the peer at all.
-back=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","remote":"none"}}' 2>&1)
+back=$("${cli[@]}" '{"name":"set_session","args":{"id":"probe","cwd":"'"remote://local//$(native "$root")"'"}}' 2>&1)
 [[ "$back" == *'"ok":true'* ]]
-ok "a session comes home by naming \`none\`" $?
+ok "a session comes home by naming this machine in its cwd" $?
 python - "$home" <<'INNER'
 import sqlite3, sys
 c = sqlite3.connect(f"file:{sys.argv[1]}/gongga.db?mode=ro", uri=True)

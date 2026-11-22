@@ -11,6 +11,184 @@ use crate::remote::Endpoint;
 use crate::remote::protocol::{Event, Stream};
 use crate::remote::transport::{DirEntry, EndpointFile, Runner};
 
+/// A path's machine, as a caller stated it, and the path in that machine's spelling.
+///
+/// # Invariant
+///
+/// One reader of the `remote://` spelling, and one writer of it ([`landed`]): a caller
+/// that resolved a path and a caller that reports one cannot disagree about where a file
+/// is. `None` is a path that names no machine, so the caller's own answer stands;
+/// `Some(None)` is `remote://local/` -- this machine, stated; `Some(Some(name))` is a
+/// peer. See `docs/notes/server-space.md`.
+pub type Named<'a> = Option<(Option<&'a str>, &'a str)>;
+
+/// The one `remote://` prefix every door shares.
+pub const PREFIX: &str = "remote://";
+
+/// The one reader of the `remote://` spelling.
+///
+/// # Invariant
+///
+/// The prefix counts only when it is whole: `remote://`, a name, then `/`. A peer's tail
+/// must be absolute in its own spelling, because the only directory here is this machine's.
+/// See `docs/notes/server-space.md`.
+pub fn machine_of(path: &str) -> Named<'_> {
+    let rest = match path.strip_prefix(PREFIX) {
+        Some(rest) => rest,
+        None => return None,
+    };
+    let (name, tail) = match rest.split_once('/') {
+        Some(pair) => pair,
+        None => return None,
+    };
+    if name.is_empty() || is_local_name(name) {
+        return Some((None, tail));
+    }
+    Some((Some(name), tail))
+}
+
+/// Whether a stated name is this machine under another name.
+///
+/// # Invariant
+///
+/// The empty name, `local` and `none` are the three spellings SPEC gives this machine.
+/// Nothing else is: a name this machine does not configure is a refusal, never a quiet
+/// fall back to here.
+pub fn is_local_name(name: &str) -> bool {
+    let name = name.trim();
+    name.is_empty()
+        || name.eq_ignore_ascii_case(protocol::local_machine())
+        || name.eq_ignore_ascii_case("none")
+}
+
+/// A path as the machine that holds it spells it.
+///
+/// # Invariant
+///
+/// [`machine_of`] reads back exactly what this writes, and this machine is
+/// `remote://local/` -- never one of its names, or the same file would be two references.
+pub fn landed(machine: Option<&str>, path: &str) -> String {
+    match machine {
+        Some(name) => format!("{PREFIX}{name}/{path}"),
+        None => format!("{PREFIX}{}{path}", protocol::local_machine()),
+    }
+}
+
+/// A path a caller stated, once the machine it names is checked.
+///
+/// # Invariant
+///
+/// The `remote://` spelling names a machine *and* a whole path, so a prefixed path has to
+/// be absolute: a relative one would be resolved against a directory on this machine and
+/// then sent to another one. A relative path is spelled without the prefix, where the
+/// caller's own directory stands. See `docs/notes/server-space.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stated<'a> {
+    /// No prefix: the caller's own machine stands.
+    Unstated(&'a str),
+    /// `remote://local/…`: this machine, stated.
+    Here(&'a str),
+    /// `remote://<name>/…`: that peer, and the path in its spelling.
+    There(&'a str, &'a str),
+}
+
+impl<'a> Stated<'a> {
+    /// The path itself, without the machine's prefix, when one was stated.
+    pub fn tail(&self) -> &'a str {
+        match self {
+            Stated::Unstated(tail) | Stated::Here(tail) => tail,
+            Stated::There(_, tail) => tail,
+        }
+    }
+
+    /// The directory it states, or `None` when it names a machine and no directory.
+    ///
+    /// # Invariant
+    ///
+    /// An empty tail is the machine's own starting directory, reported by the machine:
+    /// the caller has no directory to hand to it, and inventing `.` would be a statement
+    /// about where that machine keeps things.
+    pub fn directory(&self) -> Option<&'a str> {
+        match self.tail() {
+            "" => None,
+            whole => Some(whole),
+        }
+    }
+
+    /// The peer it names, when it names one.
+    pub fn peer(&self) -> Option<&'a str> {
+        match self {
+            Stated::There(name, _) => Some(name),
+            _ => None,
+        }
+    }
+}
+
+/// Reads a stated path, and refuses a prefixed one that is not whole.
+///
+/// # Invariant
+///
+/// `remote://<name>/` -- the name and nothing after it -- names the machine and states no
+/// directory, which is what a session placed on a peer means before its shell reports
+/// one. It is the one prefixed spelling whose tail is allowed to be empty; every other
+/// one has to be absolute. See `docs/notes/server-space.md`.
+pub fn stated(path: &str) -> Result<Stated<'_>, String> {
+    let Some((named, tail)) = machine_of(path) else {
+        // A path that merely begins with those letters is a path that begins with them.
+        return Ok(Stated::Unstated(path));
+    };
+    if tail.is_empty() {
+        return Ok(match named {
+            Some(name) => Stated::There(name, ""),
+            None => Stated::Here(""),
+        });
+    }
+    if !is_whole(tail) {
+        return Err(match named {
+            Some(name) => format!(
+                "{tail:?} is relative, and a `remote://` path names a machine and a whole path: \
+                 `remote://{name}/{tail}` would be looked for under a directory on this machine \
+                 and then sent to {name:?}. Spell it as {name:?} spells it ({}), \
+                 or state a bare relative path to mean this session's own directory.",
+                absolute_spelling()
+            ),
+            None => format!(
+                "{tail:?} is relative, and a `remote://` path names a machine and a whole path: \
+                 `{PREFIX}{}/{tail}` would be looked for under a directory on this machine. Spell \
+                 it as this machine spells it ({}), or state a bare relative path \
+                 to mean this session's own directory.",
+                protocol::local_machine(),
+                absolute_spelling()
+            ),
+        });
+    }
+    Ok(match named {
+        Some(name) => Stated::There(name, tail),
+        None => Stated::Here(tail),
+    })
+}
+
+/// Whether a path is whole in a machine's spelling: `/` on a POSIX peer, or a drive.
+///
+/// # Invariant
+///
+/// Both spellings are accepted because a peer's platform is the peer's fact: a Windows
+/// peer's `/c:/…` and a POSIX peer's `/home/…` are the same shape here, and only the
+/// machine that holds the path can say more.
+fn is_whole(path: &str) -> bool {
+    let path = path.replace('\\', "/");
+    path.starts_with('/')
+        || path
+            .char_indices()
+            .nth(1)
+            .is_some_and(|(at, c)| at == 1 && c == ':' && path.as_bytes()[0].is_ascii_alphabetic())
+}
+
+/// What a whole path looks like, for a refusal's own words.
+fn absolute_spelling() -> &'static str {
+    "`/home/you/x`, `C:/Users/you/x`, or `//` for the root of a peer's filesystem"
+}
+
 /// What one program printed, and what it exited with, on one path space.
 ///
 /// # Invariant

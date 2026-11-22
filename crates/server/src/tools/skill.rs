@@ -200,34 +200,14 @@ fn call_of(cmd: Option<&Value>) -> Result<Call, String> {
 ///
 /// `path` is spelled for the machine the skill is on, and is the string a body is read
 /// by and a row reports: a project's skill on a peer is a peer path, not this machine's.
-/// A path as the machine that holds it spells it.
 ///
 /// # Invariant
 ///
-/// One spelling for every door: `remote://<name>/<path>` for a peer, `remote://local/<path>`
-/// for this machine. A path handed to a caller carries the machine that holds it, so the
-/// call that reads it back needs no second argument. See `docs/notes/server-meta.md`.
+/// One spelling for every door, and it is [`crate::space`]'s: this function writes it and
+/// [`crate::space::machine_of`] reads it, so no second copy can drift from the first.
+/// See `docs/notes/server-meta.md`.
 pub fn spelled(machine: Option<&str>, path: &str) -> String {
-    match machine {
-        Some(name) => format!("remote://{name}/{path}"),
-        None => format!("remote://local/{path}"),
-    }
-}
-
-/// What a path says about the machine it is on, and the path that machine spells.
-///
-/// # Invariant
-///
-/// `None` is a path that names no machine (the caller's own answer stands); `Some(None)` is
-/// `remote://local/` or `remote://none/`; `Some(Some(name))` is a peer. The one reader of
-/// the spelling [`spelled`] writes.
-pub fn machine_of(path: &str) -> Option<(Option<&str>, &str)> {
-    let rest = path.strip_prefix("remote://")?;
-    let (name, tail) = rest.split_once('/')?;
-    match name {
-        "" | "local" | "none" => Some((None, tail)),
-        other => Some((Some(other), tail)),
-    }
+    crate::space::landed(machine, path)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -66,8 +66,8 @@ pub async fn answer_completion(
     seen: &mut u64,
 ) {
     if let Some(open) = link {
-        for (target, directory) in client.take_wanted_paths() {
-            let Some(message) = client.ask_paths(&target, &directory) else {
+        for path in client.take_wanted_paths() {
+            let Some(message) = client.ask_paths(&path) else {
                 continue;
             };
             if open.send(message).await.is_err() {

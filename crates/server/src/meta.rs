@@ -332,7 +332,7 @@ async fn skill_body(space: &crate::space::Space, home: &Path, name: &str) -> Opt
     let found = crate::tools::skill::find(space, home, name).await?;
     // The path says which machine holds it; its prefix is the spelling, not the path.
     let here = crate::space::Space::local();
-    let (path, space) = match crate::tools::skill::machine_of(&found.path) {
+    let (path, space) = match crate::space::machine_of(&found.path) {
         Some((None, plain)) => (plain.to_string(), &here),
         Some((Some(_), plain)) => (plain.to_string(), space),
         None => (found.path.clone(), space),

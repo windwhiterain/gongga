@@ -555,22 +555,16 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
         CommandSpec {
             target: CommandTarget::Server,
             name: "list_paths".into(),
-            description: "List one directory on a remote, for a front-end completing `--cwd`. \
-                      Not a tool the model needs: the paths of a session's own shell are 
-                      read by running `ls` in it."
+            description: "List one directory, for a front-end completing `--cwd`. The path \
+                      names its machine, as every path does. Not a tool the model needs: the \
+                      paths of a session's own shell are read by running `ls` in it."
                 .into(),
             args: vec![
                 arg(
-                    "remote",
-                    "The remote whose filesystem to read. Omitted is this machine.",
-                    false,
-                    Some("name"),
-                    CompletionSource::Static(remotes.to_vec()),
-                ),
-                arg(
                     "path",
-                    "The directory to list, as the peer spells a path. Empty is where \
-                     the target's shell starts.",
+                    "The directory to list: `remote://<name>/<path>` for a peer, bare or \
+                     `remote://local/<path>` for this machine. Empty is where the target's \
+                     shell starts.",
                     false,
                     Some("path"),
                     // What this command answers is exactly what it would list.
@@ -839,12 +833,12 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     CompletionSource::None,
                 ),
                 arg(
-                    "remote",
-                    "The machine its program runs on. Omitted is the session's; `none` is \
-                     this one.",
+                    "cwd",
+                    "Where its program runs, and so which machine: a `remote://<name>/<path>` \
+                     there, a bare or omitted one the session's own directory.",
                     false,
-                    Some("name"),
-                    CompletionSource::Static(remotes.to_vec()),
+                    Some("path"),
+                    CompletionSource::Paths,
                 ),
                 kind_arg(
                     "session",
@@ -1219,7 +1213,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
 fn config_arg(remotes: &[String], update: bool) -> protocol::ArgSpec {
     let mut spec = arg(
         "config",
-        "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (remote, cwd, worktree), keep_alive and live_compact. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. remote and cache_tier take none to clear. worktree is read when the session is created and never after: it makes a branch and a worktree of that name in the repository the cwd sits in, and the session works in it.",
+        "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (cwd, worktree), keep_alive and live_compact. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. cache_tier takes none to clear. `workspace.cwd` says both where the session works and which machine: `remote://<name>/<absolute path>` moves it to that peer. worktree is read when the session is created and never after: it makes a branch and a worktree of that name in the repository the cwd sits in, and the session works in it.",
         false,
         Some("json"),
         CompletionSource::None,
@@ -1667,9 +1661,17 @@ fn attach_skill_schemas(all: &mut [CommandSpec]) {
 }
 
 async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
-    let remote = args.word("remote");
-    let path = args.word("path").unwrap_or("");
-    match d.sessions.list_paths(remote, path).await {
+    let stated = args.word("path").unwrap_or("").trim();
+    // The path names its machine, as every path does: a bare one is this one.
+    let (remote, path) = if stated.is_empty() {
+        (None, String::new())
+    } else {
+        match crate::space::stated(stated) {
+            Ok(stated) => (stated.peer().map(str::to_string), stated.tail().to_string()),
+            Err(why) => return Outcome::err(why),
+        }
+    };
+    match d.sessions.list_paths(remote.as_deref(), &path).await {
         Ok(entries) => {
             let rows: Vec<serde_json::Value> = entries
                 .into_iter()
@@ -1677,8 +1679,8 @@ async fn list_paths(d: &Dispatch, args: &Args) -> Outcome {
                 .collect();
             let count = rows.len();
             Outcome::ok_with(
-                format!("{count} entries in {path:?}"),
-                json!({"path": path, "remote": remote, "entries": rows}),
+                format!("{count} entries in {stated:?}"),
+                json!({"path": stated, "entries": rows}),
             )
         }
         Err(e) => Outcome::err(e.to_string()),
@@ -2104,15 +2106,19 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             entry.model
         ));
     }
-    // A session that exists is moved; one that does not is created where it says.
-    // Asking where it already is costs nothing.
-    let stated_cwd = args.word("cwd");
-    // Three answers, not two: the flag was left out, it names this machine, or it
-    // names a remote. See `session::RemoteAsk`.
-    let asked_remote = match args.word("remote") {
-        None => crate::session::RemoteAsk::Keep,
-        Some(stated) => crate::session::RemoteAsk::Machine(crate::session::remote_request(stated)),
+    // Invariant: `cwd` is a workspace's only placement field. See `server-session-config`.
+    let stated_cwd = args.word("cwd").map(str::trim).filter(|c| !c.is_empty());
+    let (asked_remote, stated_cwd) = match stated_cwd {
+        Some(text) => match crate::space::stated(text) {
+            Ok(stated) => (
+                crate::session::RemoteAsk::Machine(stated.peer().map(str::to_string)),
+                stated.directory().map(str::to_string),
+            ),
+            Err(why) => return Outcome::err(why),
+        },
+        None => (crate::session::RemoteAsk::Keep, None),
     };
+    let stated_cwd = stated_cwd.as_deref();
     let (session, moved) = match d.store.get_session(&name).ok().flatten() {
         Some(row) => {
             if let Some(asked) = asked_worktree {
@@ -2796,12 +2802,21 @@ async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    // SPEC's `optional[str]`: absent is the session's machine, and a stated `none` is this
-    // one -- the same reading `exec`'s `remote` gets, so a program can be placed where the
-    // work is even when the session's workspace is elsewhere.
-    let remote = match args.word("remote") {
-        None => handle.remote_name(),
-        Some(stated) => crate::session::remote_request(stated),
+    // The machine is the `cwd`'s: a channel runs where the call says, and a bare or
+    // omitted `cwd` is the session's own. SPEC gives a workspace one path.
+    let (remote, cwd) = match args.word("cwd").map(str::trim).filter(|c| !c.is_empty()) {
+        None => (handle.remote_name(), handle.cwd()),
+        Some(text) => match crate::space::stated(text) {
+            Ok(stated) => {
+                let peer = stated.peer().map(str::to_string);
+                match stated.directory() {
+                    Some(directory) => (peer, std::path::PathBuf::from(directory)),
+                    None if peer == handle.remote_name() => (peer, handle.cwd()),
+                    None => (peer, std::path::PathBuf::from(".")),
+                }
+            }
+            Err(why) => return Outcome::err(why),
+        },
     };
     match d
         .agent
@@ -2811,7 +2826,7 @@ async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
             &name,
             &[],
             remote.as_deref(),
-            &handle.cwd(),
+            &cwd,
             &handle.env(),
             &id,
         )
@@ -3315,7 +3330,7 @@ async fn run_skill(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome {
         description: found.description.clone(),
         // The machine is the path's own word: the program runs here, on the plain path.
         path: std::path::PathBuf::from(
-            crate::tools::skill::machine_of(&found.path)
+            crate::space::machine_of(&found.path)
                 .map(|(_, plain)| plain)
                 .unwrap_or(&found.path),
         ),

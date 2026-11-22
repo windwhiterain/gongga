@@ -1606,8 +1606,7 @@ impl Client {
                 ))
             })
             .collect();
-        self.catalog
-            .fill_paths(field("remote"), field("path"), rows);
+        self.catalog.fill_paths(field("path"), rows);
     }
 
     /// One event and its place in the stream.
@@ -2372,7 +2371,7 @@ impl Client {
     }
 
     /// The listings the completion asked for and has no answer for yet.
-    pub fn take_wanted_paths(&self) -> Vec<(String, String)> {
+    pub fn take_wanted_paths(&self) -> Vec<String> {
         self.catalog.take_wanted()
     }
 
@@ -2413,22 +2412,22 @@ impl Client {
         })
     }
 
-    /// Asks the server what one directory on a remote holds, for `--cwd`; `None`
+    /// Asks the server what one directory holds, for a path being completed; `None`
     /// when there is nothing to ask.
     ///
     /// # Invariant
     ///
-    /// Never echoes the command: it is the front-end's own question, and the
-    /// operator's last line is not replaced by it.
-    pub fn ask_paths(&mut self, remote: &str, directory: &str) -> Option<ClientMessage> {
+    /// One argument, and it names its machine: a `remote://<name>/<path>` is that peer's
+    /// directory, a bare one this machine's. Never echoes the command: it is the
+    /// front-end's own question, and the operator's last line is not replaced by it.
+    pub fn ask_paths(&mut self, path: &str) -> Option<ClientMessage> {
         if !self.connected || self.catalog.command("list_paths").is_none() {
             return None;
         }
         let id = self.next_id();
         let mut args = protocol::Args::new();
-        args.insert("remote".to_string(), remote.to_string());
-        args.insert("path".to_string(), directory.to_string());
-        self.quiet.insert(id, remote.to_string());
+        args.insert("path".to_string(), path.to_string());
+        self.quiet.insert(id, path.to_string());
         Some(ClientMessage::Command {
             id,
             name: "list_paths".to_string(),

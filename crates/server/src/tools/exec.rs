@@ -111,39 +111,39 @@ impl Cmd for ExecTool {
                 }
             };
             if running.is_none() {
-                // SPEC's `optional[str]`: absent means the session's machine, and a
-                // stated `null` is no remote at all.
-                let remote = match protocol::argtype::given(&args, "remote") {
-                    protocol::Given::Nothing => ctx.remote.clone(),
-                    protocol::Given::Null => None,
-                    protocol::Given::Value(value) => match value.as_str() {
-                        Some(name) => crate::session::remote_request(name),
-                        None => {
-                            return ToolOutcome::err(format!(
-                                "`remote` is a machine's name, and this is {value}"
-                            ));
+                // Invariant: the machine is settled at creation, from `cwd` alone.
+                // See `docs/notes/server-channel.md`.
+                let stated_cwd = match protocol::argtype::given(&args, "cwd") {
+                    protocol::Given::Value(value) => value.as_str().map(str::trim),
+                    _ => None,
+                }
+                .filter(|cwd| !cwd.is_empty());
+                let (remote, cwd, from_session) = match stated_cwd {
+                    Some(text) => match crate::space::stated(text) {
+                        Ok(stated) => {
+                            let peer = stated.peer().map(str::to_string);
+                            match stated.directory() {
+                                Some(directory) => {
+                                    (peer, std::path::PathBuf::from(directory), false)
+                                }
+                                // The machine and no directory: the machine's own, or the
+                                // session's when it is the session's machine.
+                                None if peer == ctx.remote && !ctx.cwd.as_os_str().is_empty() => {
+                                    (peer, ctx.cwd.clone(), true)
+                                }
+                                None => (peer, std::path::PathBuf::from("."), false),
+                            }
                         }
+                        Err(why) => return ToolOutcome::err(why),
                     },
-                };
-                // The call's `cwd` or the session's default: which one, for the refusals.
-                let (cwd, from_session) = match protocol::argtype::given(&args, "cwd") {
-                    protocol::Given::Value(value)
-                        if value.as_str().is_some_and(|path| !path.is_empty()) =>
-                    {
-                        (
-                            std::path::PathBuf::from(value.as_str().unwrap_or_default()),
-                            false,
-                        )
+                    // Omitted: the session's own machine and directory, when it has one.
+                    None if !ctx.cwd.as_os_str().is_empty() => {
+                        (ctx.remote.clone(), ctx.cwd.clone(), true)
                     }
-                    protocol::Given::Nothing
-                        if remote == ctx.remote && !ctx.cwd.as_os_str().is_empty() =>
-                    {
-                        (ctx.cwd.clone(), true)
-                    }
-                    _ => (std::path::PathBuf::from("."), false),
+                    None => (ctx.remote.clone(), std::path::PathBuf::from("."), false),
                 };
                 // Refused by name here: a missing directory is never the program's failure.
-                if remote.is_none() && !cwd.is_dir() {
+                if remote == ctx.remote && !cwd.is_dir() {
                     return ToolOutcome::err(if from_session {
                         format!(
                             "this session's directory {:?} is not on this machine, so this \n                             call has nowhere to start; state a `cwd` for it",

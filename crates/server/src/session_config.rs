@@ -41,11 +41,15 @@ pub struct ModelConfig {
     pub cache_tier: Option<String>,
 }
 
-/// SPEC `Workspace := {remote, cwd, worktree}`.
+/// SPEC `Workspace := {cwd, worktree}`.
+///
+/// # Invariant
+///
+/// One path says both where a session works and which machine it works on: a
+/// `remote://<name>/<path>` `cwd` is that peer, a bare one is the machine it already
+/// records. There is no second field to disagree with the first.
 #[derive(Debug, Default, Deserialize)]
 pub struct Workspace {
-    #[serde(default)]
-    pub remote: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -85,7 +89,7 @@ pub struct SessionConfig {
 /// Only a named field is written: a delta keeps every setting it does not name,
 /// at every level, because an absent key never reaches the handler. A model is
 /// spelled `<provider>/<model>` for the roster; `none` passes through for the
-/// fields that take it (`remote`, `cache_tier`).
+/// field that takes it (`cache_tier`).
 pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
     let config: SessionConfig = serde_json::from_value(raw.clone())
         .map_err(|e| format!("--config is not a SessionConfig object: {e}"))?;
@@ -128,9 +132,6 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
         }
     }
     if let Some(workspace) = config.workspace {
-        if let Some(remote) = workspace.remote {
-            args.insert("remote".to_string(), remote);
-        }
         if let Some(cwd) = workspace.cwd {
             args.insert("cwd".to_string(), cwd);
         }
@@ -243,8 +244,8 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
     use protocol::CompletionSource;
     use serde_json::Value;
 
-    let mut remote_values = vec![protocol::NONE_VALUE.to_string()];
-    remote_values.extend(remotes.iter().cloned());
+    // The machines this server reaches, offered where a path may name one.
+    let _ = remotes;
     // SPEC: `model: Model` -- no default, so an entry may fill it.
     // SPEC: `Model := {provider, model} # sticky`.
     let model = Field {
@@ -290,18 +291,10 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
         default: Some("provider_default()"),
         ..Default::default()
     };
-    // SPEC: `remote: optional[Remote] = none`.
-    let remote = Field {
-        description: "The machine this session's shells run on; none is this machine.",
-        spelling: "optional[Remote]",
-        hint: Some("name"),
-        source: Some(CompletionSource::Static(remote_values)),
-        default: Some("none"),
-        ..Default::default()
-    };
-    // SPEC: `cwd: path = "."`.
+    // SPEC: `cwd: path = "."`; its `remote://<name>/<path>` spelling moves the session.
     let cwd = Field {
-        description: "The session's directory.",
+        description: "The session's directory. A `remote://<name>/<absolute path>` puts the \
+                      session on that machine; a bare or `remote://local/<path>` one is this one.",
         spelling: "path",
         hint: Some("path"),
         source: Some(CompletionSource::Paths),
@@ -382,11 +375,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
             "Where the session works.",
             "Workspace",
             None,
-            vec![
-                ("remote", remote.build()),
-                ("cwd", cwd.build()),
-                ("worktree", worktree.build()),
-            ],
+            vec![("cwd", cwd.build()), ("worktree", worktree.build())],
         ),
     ));
     fields.push(("keep_alive", keep_alive.build()));

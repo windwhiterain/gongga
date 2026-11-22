@@ -76,7 +76,7 @@ for _ in $(seq 1 60); do [[ -x "$home/bin/gongga-cli" ]] && break; sleep 0.2; do
 cli=("$home/bin/gongga-cli" --home "$home" --server "127.0.0.1:$port")
 
 # A session on the peer, and a directory there with two files a message can name.
-created=$("${cli[@]}" '{"name":"set_session","args":{"id":"p","model":"fake/flash-fake","remote":"'"$peer_name"'"}}' 2>&1)
+created=$("${cli[@]}" '{"name":"set_session","args":{"id":"p","model":"fake/flash-fake","cwd":"remote://'"$peer_name"'//"}}' 2>&1)
 echo "  set_session said: ${created:0:300}"
 [[ "$created" == *'"ok":true'* ]]; ok "a session is created on $peer_name" $?
 

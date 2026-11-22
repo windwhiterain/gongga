@@ -259,7 +259,7 @@ sys.stdout.write(str(value))' "$1" "$2"
 #    scratch, not a directory this machine has of the same name. The start is the wait's
 #    business, so a call that arrives first says what it has and the next reads the rest.
 peer_cwd=$(native "$peer_scratch")
-once=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"${peer_name}-once"'","remote":"'"$peer_name"'","cwd":"'"$peer_cwd"'","args":["-lc","pwd"],"wait":30000}}' 2>&1)
+once=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"${peer_name}-once"'","cwd":"remote://'"$peer_name"'//'"$peer_cwd"'","args":["-lc","pwd"],"wait":30000}}' 2>&1)
 say "$once"
 ran=$(field "$once" output | tr -d '\r\n')
 if [[ -z "$ran" ]]; then
@@ -274,7 +274,7 @@ ok "exec on $peer_name runs the program there" "$([[ -n "$ran" ]] && echo 0 || e
 #    the cursor is this server's, so each call answers only what it said.
 # `--wait 0`: a shell that has been opened has said nothing yet, and waiting for a
 # window that cannot arrive is what the caller's own clock is for.
-shell=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$peer_name-shell"'","remote":"'"$peer_name"'","cwd":"'"$peer_cwd"'","wait":0}}' 2>&1)
+shell=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"'"$peer_name-shell"'","cwd":"remote://'"$peer_name"'//'"$peer_cwd"'","wait":0}}' 2>&1)
 say "$shell"
 shell_id=$(field "$shell" id)
 ok "a channel on $peer_name opens" "$([[ -n "$shell_id" ]] && echo 0 || echo 1)"
@@ -339,12 +339,12 @@ ok "the ended channel is no longer there to read" "$(has "$gone" 'no channel' &&
 #    sentence -- an error naming the machine -- never an exit status of a program that
 #    never ran.
 began_silent=$(date +%s)
-silent_call=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"silent-channel","remote":"silent","cwd":".","args":["-lc","pwd"],"wait":3000}}' 2>&1)
+silent_call=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"silent-channel","cwd":"remote://silent//","args":["-lc","pwd"],"wait":3000}}' 2>&1)
 waited=$(( $(date +%s) - began_silent ))
 say "$silent_call"
 ok "a call to a peer that never answers returns inside its wait" "$([[ $waited -le 10 ]] && echo 0 || echo 1)"
 ok "and is told the channel is still starting there" "$(has "$silent_call" 'still starting' && echo 0 || echo 1)"
-refused_call=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"refused-channel","remote":"refuser","cwd":".","args":["-lc","pwd"],"wait":20000}}' 2>&1)
+refused_call=$("${cli[@]}" '{"name":"exec","args":{"session":"main","bin":"bash","id":"refused-channel","cwd":"remote://refuser//","args":["-lc","pwd"],"wait":20000}}' 2>&1)
 say "$refused_call"
 ok "a start a peer refused answers in the network's words, naming the machine" \
   "$(has "$refused_call" 'remote refuser:' && echo 0 || echo 1)"

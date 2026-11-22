@@ -44,6 +44,15 @@ standard OpenAI Response API/Anthropic API.
 ## Session name
 path, rendered in hierarchy.
 
+## Path
+A path is the only thing that names a machine, and it does so in its own spelling:
+- `remote://<name>/<path>`: that machine's file. `<path>` must be whole in that machine's
+  spelling (`/home/x`, `C:/x`), so a peer's path is `remote://<name>/<its own absolute>`
+  and gives two slashes in a row.
+- `remote://local/<path>`: this machine, stated; the same file as the bare path.
+- a bare path: the caller's own machine, or the one an enclosing `cwd` names.
+A name this server does not configure is refused, never quietly this machine.
+
 ## Tool
 all tool call have extra parameter `discription: optional[str] = none`
 `#summary` is a recursive annotation.
@@ -58,11 +67,13 @@ fn exec(
   id: Channel = "/{bin}/default",
   wait: optional[time] = none, #summary
   until: optional[str] = channel_default(),
-  remote: optional[str] = <session's remote>,
   cwd: optional[path] = <session's cwd>) -> Result
 ):
   # create a channel running the binary at `bin` if `id` does not exists.
   # if `id` exists and `bin` arg doesn't match the channel's `bin`, report error.
+  # `cwd` says where the program runs and so which machine: it settles the channel's
+  # machine when the channel is created, and a channel keeps it. `bin` is a program on
+  # that machine, found there.
 
 fn wait(
   time: time, #summary
@@ -97,10 +108,10 @@ Cmd := {
   args: dict[str, any]
 }
 Session := path # sticky
-fn new_channel(id: optional[Channel] = none, name: str, remote: optional[str] = <session's remote>, session: Session = caller()):
+fn new_channel(id: optional[Channel] = none, name: str, cwd: optional[path] = none, session: Session = caller()):
   # a name in use is refused: `exec` speaks to that one.
-  # `remote` is the machine its program runs on: omitted is the session's, a stated `none`
-  # is this one.
+  # `cwd` is where its program runs, and so which machine: a stated one that names a
+  # machine is there, else the session's own.
 fn new_channel_id(prefix: optional[path] = none, session: Session = caller()) -> Channel
   # the first `<prefix>/<n>` no channel of this session holds; `none` is `/channel`.
   # A caller that must start a channel under a fresh name asks here, because asking
@@ -117,8 +128,7 @@ ModelConfig := { # sticky
   cache_tier = provider_default() # re-default if model change
 }
 Workspace := {
-  remote: optional[Remote] = none,
-  cwd: path = ".",
+  cwd: path = ".", # `remote://<name>/<abs path>` puts the session on that machine
   worktree: optional[str] = none, # if any, auto create workspace bound to session's lifetime
 }
 SessionConfig := { # sticky

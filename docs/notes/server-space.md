@@ -2,6 +2,24 @@
 
 One path space: the machine a session's paths live on, and how a program runs there.
 
+## The one spelling, and what its two halves mean
+
+`remote://<name>/<path>` names a machine and a path on it, and it is the only thing that
+names a machine anywhere in a call: `exec`'s and `new_channel`'s `cwd`, a session's
+`workspace.cwd`, `read`/`write`/`edit`'s `path` and `list_paths`' `path` are all read by
+`machine_of` and `stated` here. There is no argument beside a path that names one.
+
+- **The name** is a peer this machine configures, or `local` / `none` / empty for this
+  one. A name nothing configures is a refusal that lists the peers there are -- never a
+  quiet fall back to this machine.
+- **The path** has to be whole in that machine's spelling (`/home/x`, `C:/x`), because the
+  only directory this process knows is on this machine: joining the two would reach the
+  right machine with a path from the wrong one. A relative path is therefore spelled bare,
+  where the caller's own directory stands.
+- **An empty path** (`remote://<name>/`) names the machine and no directory: the machine's
+  own starting directory stands there, or the session's own when the machine is its own.
+  That is what places a session on a peer without stating where it works yet.
+
 ## The seam
 
 A tool takes a path and runs a program. Which machine that path is on used to be the

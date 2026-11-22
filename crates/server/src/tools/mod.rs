@@ -20,7 +20,6 @@ use crate::store::Store;
 pub mod channel;
 pub mod detached;
 pub mod exec;
-pub mod file;
 #[cfg(windows)]
 pub mod job;
 pub mod laws;
