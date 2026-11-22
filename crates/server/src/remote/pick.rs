@@ -105,6 +105,7 @@ async fn relays(endpoint: &Endpoint, words: &str) -> bool {
 /// because a channel on a peer runs the same relay as one here, beside the runner that
 /// asked for it.
 async fn place(endpoint: &Endpoint) -> anyhow::Result<String> {
+    ensure_platform(endpoint).await?;
     let home = peer_home(endpoint).await?;
     let suffix = if is_dos(&home) { ".exe" } else { "" };
     let protocol = crate::remote::protocol::PROTOCOL;
@@ -158,6 +159,65 @@ async fn place(endpoint: &Endpoint) -> anyhow::Result<String> {
     tracing::info!(peer = %endpoint.describe(), directory = %directory, "payload placed");
     // A payload program is one program, not a file that dispatches on its first word.
     Ok(there("runner"))
+}
+
+/// Refuses to copy this build's programs to a peer that cannot execute them.
+///
+/// # Invariant
+///
+/// A configured runner is greeted before this check and remains the way to use another
+/// platform's distribution. Automatic placement has no matching artifact to choose, so
+/// an unknown or different platform is a refusal before anything is written on the peer.
+async fn ensure_platform(endpoint: &Endpoint) -> anyhow::Result<()> {
+    let said = run(endpoint, "uname -s -m").await.ok_or_else(|| {
+        anyhow::anyhow!(
+            "the peer did not identify its platform, so this build cannot place its payload; \
+             install a distribution built for the peer and name its runner in remotes.toml"
+        )
+    })?;
+    let mut words = said.split_whitespace();
+    let (Some(kernel), Some(machine)) = (words.next(), words.next()) else {
+        anyhow::bail!(
+            "the peer gave an unreadable platform ({said:?}), so this build cannot place its \
+             payload; install a distribution built for the peer and name its runner in \
+             remotes.toml"
+        );
+    };
+    let os = peer_os(kernel);
+    let architecture = peer_architecture(machine);
+    if os == std::env::consts::OS && architecture == std::env::consts::ARCH {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "this build cannot place its {}/{} payload on a {}/{} peer; install a distribution \
+         built for the peer and name its runner in remotes.toml",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        os,
+        architecture,
+    )
+}
+
+/// The operating-system name Rust reports, from the peer's kernel name.
+fn peer_os(kernel: &str) -> String {
+    let kernel = kernel.to_ascii_lowercase();
+    if kernel.starts_with("mingw") || kernel.starts_with("msys") || kernel.starts_with("cygwin") {
+        "windows".to_string()
+    } else if kernel == "darwin" {
+        "macos".to_string()
+    } else {
+        kernel
+    }
+}
+
+/// The architecture name Rust reports, from the peer's machine name.
+fn peer_architecture(machine: &str) -> String {
+    match machine.to_ascii_lowercase().as_str() {
+        "amd64" => "x86_64".to_string(),
+        "arm64" => "aarch64".to_string(),
+        "i386" | "i486" | "i586" | "i686" => "x86".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// This build's own three programs: the runner, the server, and the relay a

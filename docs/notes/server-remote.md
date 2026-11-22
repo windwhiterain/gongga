@@ -189,10 +189,16 @@ nothing reads a directory whose number this build does not speak.
 `ssh` starts the peer's own program, so the runner must be a binary the peer can
 execute. Nothing here cross-compiles for you: a macOS server talking to a Linux
 peer needs the Linux distribution on the peer, which means building the bundle on
-(or for) Linux. `runner` is configurable precisely so a peer that already has a
-copy somewhere else can be named instead of re-installed -- and a mismatched pair
-is refused at the greeting rather than half-working, because the protocol version
-is checked before any shell is opened.
+(or for) Linux. Automatic placement asks `uname` for the peer's kernel and machine
+before it writes anything and refuses unless both match this build's OS and
+architecture; an unidentified platform is refused too. The refusal names the two
+platforms and the remedy rather than leaving an unrunnable payload behind.
+
+`runner` is configurable precisely so a peer that already has a copy somewhere
+else can be named instead of re-installed. That configured runner is greeted before
+the automatic-placement platform check, so a working cross-platform installation
+needs no local artifact. A mismatched pair is refused at the greeting rather than
+half-working, because the protocol version is checked before any shell is opened.
 
 What is *not* needed for a Windows server and a Windows peer to agree: the
 session's shells are the peer's own `bash` (Git Bash there), its own paths, its
