@@ -46,6 +46,9 @@ pub const HELP: &[&str] = &[
     "Shift+Delete delete session",
     "Ctrl+V paste",
     "Ctrl+C copy selection",
+    "Click select",
+    "Ctrl+Click toggle",
+    "Shift/Alt+Click range",
     "Ctrl+Q exit",
 ];
 /// What separates two entries on one row of the reminder.

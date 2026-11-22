@@ -19,8 +19,17 @@ to see is the answer they are replying to, so the box stops growing.
 
 ## HELP
 
-SPEC's `hot-key` list, one entry per binding: eight of them, the ones the
+SPEC's `hot-key` list, one entry per binding: eleven of them, the ones the
 reminder may name.
+
+The three entries before `Ctrl+Q exit` are the mouse's: `Click select`,
+`Ctrl+Click toggle` and `Shift/Alt+Click range`, one entry per gesture the
+shared `window_select` answers. Shift and Alt share one entry on purpose:
+both spell range, and Alt is the spelling that reaches this window in the
+Windows Terminal and VS Code, which keep Shift+click for their own text
+selection. What a terminal forwards is `docs/notes/tui-lib.md`'s measured
+matter; the row names the gesture, not which modifier a particular terminal
+delivers.
 
 `Shift+Delete` is the delete and `Ctrl+V` the paste. Both are SPEC's, so they are
 on the row; the paste also arrives as a bracketed paste from a terminal that
