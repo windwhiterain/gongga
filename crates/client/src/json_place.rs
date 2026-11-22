@@ -394,7 +394,7 @@ fn finished(frames: &mut [(char, Expect)]) {
 fn step(stack: &mut Vec<Container>, token: &PieceKind, start: usize, end: usize) {
     match token {
         PieceKind::OpenBrace => {
-            let key = take_field(stack);
+            let key = held_field(stack);
             stack.push(Container::Object(Frame {
                 key,
                 field: None,
@@ -409,7 +409,7 @@ fn step(stack: &mut Vec<Container>, token: &PieceKind, start: usize, end: usize)
             }
         }
         PieceKind::OpenBracket => {
-            take_field(stack);
+            held_field(stack);
             stack.push(Container::List);
         }
         PieceKind::CloseBracket => {
@@ -559,9 +559,16 @@ fn object_mut(stack: &mut [Container]) -> Option<&mut Frame> {
     }
 }
 
-/// Takes the field name waiting for the value that just opened.
-fn take_field(stack: &mut [Container]) -> Option<String> {
-    object_mut(stack).and_then(|frame| frame.field.take())
+/// The field the innermost object is the value of.
+///
+/// # Invariant
+///
+/// Reading it does not take it: the name stays on the frame that waits for the value
+/// until that value closes, which is when [`finish`] records the member. A nested
+/// object or list is a value like any other, so a name emptied on the way in would
+/// come back as an unwritten field and be offered again.
+fn held_field(stack: &[Container]) -> Option<String> {
+    object(stack).and_then(|frame| frame.field.clone())
 }
 
 /// Records the value just read under the name that waited for it.
