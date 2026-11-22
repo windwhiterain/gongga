@@ -191,3 +191,25 @@ the existing planner, crash-resume of adopt -- all implemented and validated.
 
 Recommendation: 1 first (self-contained, builds on existing primitives), 2 as the
 flagship (needs a fixed task suite first), 3 as the companion to live_compact.
+
+## Later thread bearing on items 3 and 5 (added 2026-11-22 by a dream)
+
+The user opened a separate direction on 2026-11-22: a per-request **KV mask** over an
+append-only tape, positions unchanged, validated on a local engine. It is not a vertical
+agent; it is the inference/context layer under all of them. Recorded in
+`2026-11-22-a-kv-mask-is-a-view-not-an-edit.md`,
+`2026-11-22-a-hybrid-state-is-a-free-ghost.md`,
+`2026-11-22-append-is-the-only-primitive.md`, `kv-mask-experiment-plan.md`
+(direction settled by user verdicts; nothing built, no script permission yet).
+
+- **Item 3 (recall over cut history)**: with a mask tape, recall is an **in-place unmask**
+  -- order and positions intact, no re-prefill -- instead of appending a snippet at the end
+  as a tool result. That is a strictly better shape for the same experiment. On a hybrid
+  model it is exact: the recurrent state is never touched, so unmask restores the original
+  view rather than re-anchoring bytes at a new position.
+- **Item 5 (constraint pinning)**: an existing wheel exists on the engine side -- EVOKE
+  exposes harness-supplied `evoke_pinned` / `evoke_priority` tags. Note the user rejected
+  building on EVOKE's primitives (they mutate the cache; the proposal is a view), so this
+  is a pointer to prior art, not a dependency.
+- The survey's own method note still governs: paper numbers are self-reported and
+  untrusted; both KV-mask papers state their scripts were AI-written.

@@ -783,8 +783,12 @@ export class View {
         this.scheduleRender();
         return;
       }
-      if (!row.shown) this.send(intents.room([[row.name, this.predictedRoom()]]));
-      this.model.clickSession(row.name, event.shiftKey || event.ctrlKey || event.metaKey);
+      if (event.shiftKey) {
+        this.model.clickSessionRange(row.name, this.predictedRoom());
+      } else {
+        if (!row.shown) this.send(intents.room([[row.name, this.predictedRoom()]]));
+        this.model.clickSession(row.name, event.ctrlKey || event.metaKey);
+      }
       this.scheduleRender();
     });
   }

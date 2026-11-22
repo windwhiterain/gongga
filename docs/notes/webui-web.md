@@ -73,6 +73,24 @@ SPEC draws a "go to bottom" hint only while a view is away from its bottom:
 list is scrolled. Clicking it pins the view to its newest row, the same place
 Ctrl+↓ puts it.
 
+## Session list clicks
+
+The shown set is the selection, and the three clicks are the list's whole gesture:
+
+- a plain click shows that session alone (`solo`), and names it the anchor the next
+  shift+click spans from;
+- Ctrl/Cmd+click adds or removes that one session without touching the others, and
+  it also moves the anchor;
+- Shift+click selects the visible session rows between the anchor and the clicked
+  row, replacing the shown set with that range. Group rows name no session and a row
+  inside a collapsed group is not on screen, so the span counts session rows only.
+  With no anchor yet, the clicked row starts one. The clicked row is shown last, so
+  it is the sticky session.
+
+Each newly shown row first sends `Room` with the pane's measured capacity; the range
+sends one `Room` carrying every row it opens, then one solo `render_session` and one
+non-solo `render_session` per other row, in that order.
+
 ## Deliberate limits
 
 - **No markdown renderer.** The wire carries rows and span classes, not a document;

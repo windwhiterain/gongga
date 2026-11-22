@@ -35,7 +35,9 @@ and, at its end, a fresh timer.
 ## The dreamer
 
 `@skill(dreamer)`'s `dream()` clones the caller with `clone_session --dream_of true`
-into `<caller>/dream/<timestamp>`, mutes the caller, and sends the clone a dream
+into `<caller>/dream`, taking `/2`, `/3`, ... while a name is held -- the same
+free-name rule the subagent skill uses, so two dreams of one session never share a
+transcript -- mutes the caller, and sends the clone a dream
 notice that starts its turn. The `dream_of` mark is what makes the copy disposable:
 the epilogue discards it at its true turn end. The notice tells the dreamer to
 organize `.agents/notes/` and `docs/notes/`, write no code, no tests and no git
