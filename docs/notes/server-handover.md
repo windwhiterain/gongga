@@ -44,10 +44,10 @@ front of the transcript as an item that belonged to no row. Three consequences, 
 of them the same consequence:
 
 - It was a concept outside SPEC: a note the server knew about and no message was.
-- Its `@` references were neither indexed nor expanded. SPEC's prefix-cache
+- Its `@` references were neither planned nor expanded. SPEC's prefix-cache
   optimization starts from the prompt, walks what it names, and appends that to the
   instructions -- and a column is not something the walk looks at. A note that said
-  `@file(docs/notes/plan.md)` cost a turn to re-read a file the index could have
+  `@file(docs/notes/plan.md)` cost a turn to re-read a file the plan could have
   carried once.
 - The prose had to be taught to each new reader: which template, which lifetime,
   which placeholder.
@@ -56,7 +56,7 @@ It is one `send_message` now, from the script, to the session it just emptied --
 same command an operator would type. Everything the server already does for a
 message then applies: `expand_message` decides what stays literal, the row is
 appended at the next step boundary, and the *next* `prompt_in_force` finds the
-note's references with `meta::roots` and puts them in the index. The continuation's first
+note's references with `meta::roots` and puts them in the plan. The continuation's first
 request is an empty session's first request, which is the case SPEC's `.agents`
 optimization is written for.
 
@@ -67,9 +67,9 @@ turn is busy and the message waits in the inbox, `deliver_pending` lands it as a
 The marker is a fact about the session (it has no head row yet), not the caller:
 the note arrives over the wire as a `Client` origin (see below), so an origin test
 would never mark it and it would land as `inject`. Landing it as `inject`
-would hide it from `store.user_texts`, so `index_of` would write the prompt row
+would hide it from `store.user_texts`, so `plan_of` would write the prompt row
 without ever planning the note's references: the mention would stay literal and
-the file body would be missing from the index. With the `text` row in place,
+the file body would be missing from the plan. With the `text` row in place,
 `prefix_cache::plan` runs on the note exactly as it runs after `new_session` and
 one `send_message`.
 

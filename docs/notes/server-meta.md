@@ -9,7 +9,7 @@ something different:
 | `@skill(<name>)` | its spelling kept, with the `SKILL.md` it names: `@skill(<name>) (<path>)` |
 | `@file(<path>)` | nothing: a mention, left exactly as written |
 
-Keeping the spelling is what makes the index work, and it is why `@file(...)` is left
+Keeping the spelling is what makes the plan work, and it is why `@file(...)` is left
 alone entirely: without a spelling to match on, `@file(x)` would have to be guessed
 at, and a message about a picture would attach a picture the user only meant to talk
 about. The prefix decides, not the file's extension.
@@ -20,10 +20,10 @@ replaces it in the text, because a provider's file is not something a row may re
 expires. A request resolves the copy to whatever file the provider holds *now*, and that
 is the only value in the body that is looked up rather than copied.
 
-## indexed on the first turn: the root set
+## planned on the first turn: the root set
 
 The table above is what a reference becomes when it is expanded *in place*. The first
-turn in addition builds an index: a session's first prompt row carries the `AGENTS.md`
+turn in addition builds an plan: a session's first prompt row carries the `AGENTS.md`
 its directory keeps (`roots`'s `RULES`), every reference its messages name, and
 everything those name in turn, as `spelling` and the text it stands for, appended to the
 system instructions.
@@ -32,14 +32,14 @@ The reason is the prefix cache. Whatever is in the system instructions is charge
 and then reused by every later request of that conversation; whatever is inline in a
 message is re-sent as part of the transcript from that point on. A skill body is the
 one thing whose size makes that difference matter: SPEC asks for the metadata to be
-appended in place (`append path metadata to it`) and for the body to ride the index,
+appended in place (`append path metadata to it`) and for the body to ride the plan,
 so `@skill(...)` expands to a pointer rather than to prose, on the first turn too.
 
-That pointer is not a courtesy. The index carries a skill's body and nothing about
+That pointer is not a courtesy. The plan carries a skill's body and nothing about
 where the file is, so a first message that kept only `@skill(<name>)` sent the model
 hunting the three roots for the directory; measured on 2026-11-04 in one session, four
 `ls`/`skill` calls before it found `SKILL.md`. `@file(...)` is the opposite case: its
-spelling *is* its path, so it is left exactly as written and still keys the index.
+spelling *is* its path, so it is left exactly as written and still keys the plan.
 
 The body an entry carries is two halves and neither is re-rendered: the `SKILL.md`, and
 the `schema.json` its publisher generated beside `__init__.py`, appended as written under
@@ -49,7 +49,7 @@ half.
 
 ## the rules file is sent, not planned
 
-`AGENTS.md` in the session's own directory opens the index on every request, verbatim and
+`AGENTS.md` in the session's own directory opens the plan on every request, verbatim and
 in front of every planned entry: what a directory keeps as its rules is standing
 instruction for the work done in it, and a session that has to be told to read it has
 already spent the turn it was meant to save. It is one file, and no ancestor's copy:
@@ -58,9 +58,9 @@ nothing.
 
 It is deliberately *not* a memory module of the prefix cache. As a planned entry the rules
 were a node like any other: a chain that carried them later could be the cheaper one, an
-edit inside `index_change_tolerance` kept the stale copy at the head and appended what
-changed after the whole index, and an expiry could drop them. What a model has to read as
-written is not something a price gets to move. So `meta::rules` reads them and `index_of`
+edit inside `plan_change_tolerance` kept the stale copy at the head and appended what
+changed after the whole plan, and an expiry could drop them. What a model has to read as
+written is not something a price gets to move. So `meta::rules` reads them and `plan_of`
 prints them first, out of the plan's reach.
 
 What the plan does receive is what the rules *name*: `meta::roots` walks their references
@@ -70,9 +70,9 @@ anymore, which is also what the warm-prefix walk needs: it must see the chain th
 went out, and that chain starts at the first root the plan ordered.
 
 Where a message names it decides what its mention becomes, the same as for any other file: in
-the first message it stays literal -- the index carries the text under that spelling, and a
-literal mention points at it -- while a message sent later, whose index is already stamped,
-is inlined by the message that names it (`which message's references reach the index`). So
+the first message it stays literal -- the plan carries the text under that spelling, and a
+literal mention points at it -- while a message sent later, whose plan is already stamped,
+is inlined by the message that names it (`which message's references reach the plan`). So
 the rules travel twice only when someone names them again, which is the price of every late
 reference and not a reason to keep a second copy anywhere else. The file is read when the prompt row is stamped, like every root, so an edit reaches
 the next row rather than a request already sent: `scripts/append_only_selftest.sh` pins
@@ -107,7 +107,7 @@ Two consequences, both accepted:
 
 `roots` seeds one reference no message named — `@skill:remote`, when the session's
 directory is on a peer — after whatever the rules file names, since the rules themselves
-travel outside the index.
+travel outside the plan.
 The second is there because the tool instructions deliberately say nothing about the two
 machines (a description states what its tool is, and how two machines relate is prose).
 A model that is never told reads `remote_bash` as a second `bash`, which is what it did
@@ -116,7 +116,7 @@ same thing under another name.
 
 The seeding is by machine, not by message: `Space::is_local` is false for a session
 placed on a peer, whether or not its link answers right now, and the skill's body is read
-from this machine's own home either way. A session on this machine gets nothing — its index
+from this machine's own home either way. A session on this machine gets nothing — its plan
 does not grow by a skill it has no use for.
 
 Measured on a real server, three cases: a local session's request carries no
@@ -134,29 +134,29 @@ not text, or a skill this machine does not have -- is left out entirely rather t
 invented: its mention stays literal in the message, so the reader sees a name with
 nothing behind it, which is the truth.
 
-`@image(...)` is never indexed (a picture is not text), so it is copied and attached
+`@image(...)` is never planned (a picture is not text), so it is copied and attached
 wherever it is named, or a first message that pointed at a screenshot would lose it.
-An unknown skill is the same shape -- no text to index, so it answers with its path
-instead of a hint about a file. `@skill(...)` is neither: what the index holds is its
+An unknown skill is the same shape -- no text to plan, so it answers with its path
+instead of a hint about a file. `@skill(...)` is neither: what the plan holds is its
 body, and a body does not say where the file is.
 
-`spelling` is one function because it must be one spelling. The index carries it and
+`spelling` is one function because it must be one spelling. The plan carries it and
 `expand` writes it back into every `@skill(...)` mention, so a message naming a skill a
 second time keys the entry already there. `@skill(handoff)` and `@skill(handoff)` are one
 reference, and the canonical form is the one with no space.
 
-## the queue, and why the index is not only the transcript
+## the queue, and why the plan is not only the transcript
 
 A message delivered while the session has no prompt row yet keeps its `@file(...)` mentions
-as written, on the promise that the row about to be written will index them. That
-promise is only true if the row reads the inbox too, so `agent::index_of` takes
+as written, on the promise that the row about to be written will plan them. That
+promise is only true if the row reads the inbox too, so `agent::plan_of` takes
 `store.user_texts` (the transcript) *and* `store.queued_texts` (the messages still
 waiting there). Without the second, a file queued during the first turn would be named
 by a message and carried by no entry. The handoff note is marked `first_prompt` when
 it enters the queue, so it lands as a `text` row and `user_texts` sees it too; a
 harness `inject` row would keep the mention literal and carry no entry for it.
 
-## the index's prose is the config's
+## the plan's prose is the config's
 
 The sentence introducing the entries is a `[prompts]` template, `reference_index`,
 required like every other word the model reads. It was a `const` in this module for one
@@ -164,23 +164,23 @@ commit, which is exactly the thing `prompts::REQUIRED` exists to prevent -- and 
 startup check caught it: a build whose pin did not yet carry the template refused to
 start rather than sending a prompt with a hole in it.
 
-## which message's references reach the index
+## which message's references reach the plan
 
-`agent::index_of` runs on the request that writes the session's prompt row, and
+`agent::plan_of` runs on the request that writes the session's prompt row, and
 `prompt_in_force` returns that row from then on (see `server-agent.md`), so "when was
 this named" decides whether it is in there at all:
 
 | named in | `@file(...)`, `@skill(...)` |
 | --- | --- | --- |
-| the session's first user message | in the index; the mention stays as written | in the index; the mention becomes `@skill(<name>) (<path>)` |
-| a message already queued when that row was written | the queue is read too, so it is in the index as well | same |
-| any later message | inlined by the message itself -- the mention, its path for the machine that holds it, and the file's text -- because the index is stamped once and never grows | expanded to `@skill(<name>) (<its SKILL.md>)`; the body is not in the index, so the reader opens the file itself |
+| the session's first user message | in the plan; the mention stays as written | in the plan; the mention becomes `@skill(<name>) (<path>)` |
+| a message already queued when that row was written | the queue is read too, so it is in the plan as well | same |
+| any later message | inlined by the message itself -- the mention, its path for the machine that holds it, and the file's text -- because the plan is stamped once and never grows | expanded to `@skill(<name>) (<its SKILL.md>)`; the body is not in the plan, so the reader opens the file itself |
 
 `expand_message` reads `rooted` off the stored row and hands it to `meta::expand`: a
 `@file` spelling the row carries stays as written, and one it does not is carried by the
 message that names it. Before that row exists -- the session's first message -- every
 spelling is treated as about to be in it, which is what keeps the first message's
-references literal and indexed rather than carried twice.
+references literal and planned rather than carried twice.
 
 One more row, because skills name each other: a root's own mentions are walked, so a
 first message naming `@skill(chain)` whose body says `@skill(leaf)` carries both bodies.
@@ -194,12 +194,12 @@ session whose first message named `@file(early.md)` kept
 was stored as `@skill(late) (<path>)`, and the request behind that turn carried `EARLY`
 and no `LATE`. One `system` row, not one per request.
 
-Until 2026-11-03 this section said the index was rebuilt on every request, and that a
-later message joined it on the next rebuild. That was `index_of`'s rule before the head
+Until 2026-11-03 this section said the plan was rebuilt on every request, and that a
+later message joined it on the next rebuild. That was `plan_of`'s rule before the head
 was stamped, and the stamped head is the answer to a measured bill: a 24k-character
-index edited by one line cost one session 292,992 cached tokens (`server-agent.md`).
+plan edited by one line cost one session 292,992 cached tokens (`server-agent.md`).
 The head still never moves; what a later message names is carried by that message, so
-the two things a session can do -- name it early (indexed, cacheable) or name it late
+the two things a session can do -- name it early (planned, cacheable) or name it late
 (in the message, at the end of the prefix) -- both reach the model.
 
 What a reader should still take from this is a writing rule: name what the work needs in
@@ -261,7 +261,7 @@ joined against the session's directory as `p` spells it. The prefix sits *inside
 reference's own group, so a reference stays one group and one value: a second group would
 be a second thing to complete and a second thing to forget in a hand-typed message. The
 machine is part of the spelling, because `@file(x)` on this machine and `@file(x)` on a
-peer are two different texts; the index keys them apart.
+peer are two different texts; the plan keys them apart.
 
 The prefix counts only when it is whole -- `remote://` then a name then `/`. A value that
 merely begins with those letters is a path that begins with them. `remote://none/` is the

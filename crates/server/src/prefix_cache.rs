@@ -159,7 +159,7 @@ impl Rates {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 struct NodeId(usize);
 
-/// One thing that can be emitted: a table row, an indexed reference, a message.
+/// One thing that can be emitted: a table row, a planned reference, a message.
 ///
 /// # Invariant
 ///
@@ -180,7 +180,7 @@ pub struct Item {
     tokens: usize,
 }
 
-/// One entry whose text in the index is out of date, and the change since.
+/// One entry whose text in the plan is out of date, and the change since.
 struct Revision {
     item: usize,
     patch: String,

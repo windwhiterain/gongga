@@ -22,10 +22,10 @@ pub struct Prompt {
     #[serde(default)]
     pub instructions: String,
     /// The text of the references the first message named, in the order it is sent.
-    #[serde(default)]
-    pub index: Option<String>,
+    #[serde(default, alias = "index")]
+    pub plan: Option<String>,
     /// The directory's standing rules, kept apart so the reader can see them on
-    /// their own line. A record for the reader: they are still sent inside `index`.
+    /// their own line. A record for the reader: they are still sent inside `plan`.
     #[serde(default)]
     pub agents_md: Option<String>,
     /// The start card: name, build, the first turn's time and cwd. Stamped once.
@@ -40,7 +40,7 @@ pub struct Prompt {
     /// under way is sent as it was rather than told what it was never told.
     #[serde(default)]
     pub parameters: Option<String>,
-    /// The spellings `index` carries, so a mention of one stays literal.
+    /// The spellings `plan` carries, so a mention of one stays literal.
     ///
     /// # Invariant
     ///
@@ -52,12 +52,12 @@ pub struct Prompt {
     /// Which of `rooted` a message asked for outright -- a `@file`/`@skill`
     /// mention or the standing rules -- as opposed to riding in because the
     /// prefix cache needed its ancestor. A record for the reader, never sent.
-    #[serde(default, deserialize_with = "list_or_null")]
-    pub index_explicit: Vec<String>,
+    #[serde(default, deserialize_with = "list_or_null", alias = "index_explicit")]
+    pub plan_explicit: Vec<String>,
     /// Which of `rooted` came in only as a cached chain's ancestor, not asked
     /// for by any message. A record for the reader, never sent.
-    #[serde(default, deserialize_with = "list_or_null")]
-    pub index_cached: Vec<String>,
+    #[serde(default, deserialize_with = "list_or_null", alias = "index_cached")]
+    pub plan_cached: Vec<String>,
     /// The directory this row's index was read from; the cache owner names it.
     #[serde(default)]
     pub cwd: String,
@@ -180,6 +180,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     live_compact_interval_tokens INTEGER,
     live_compact_mode TEXT,
     memory_max_unmasked_blocks INTEGER,
+    -- Whether this session's head carries the one-shot meta plan. NULL follows the
+    -- home's `[agent] prefix_cache_plan`; read once, when the head is stamped.
+    prefix_cache_plan INTEGER,
     -- When this session's last turn ended, and nothing else. NULL is a session
     -- that has not finished a turn yet, which the list orders by `created_at`.
     -- Its own column rather than `updated_at`, which a tuning change rewrites:
@@ -601,6 +604,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         (
             "memory_max_unmasked_blocks",
             "ALTER TABLE sessions ADD COLUMN memory_max_unmasked_blocks INTEGER",
+        ),
+        (
+            "prefix_cache_plan",
+            "ALTER TABLE sessions ADD COLUMN prefix_cache_plan INTEGER",
         ),
         (
             "dream_of",
@@ -1120,6 +1127,7 @@ impl Store {
             "cache_tier",
             "live_compact_mode",
             "memory_max_unmasked_blocks",
+            "prefix_cache_plan",
             // Sent, but decided here rather than copied.
             "name",
             "status",
@@ -1167,6 +1175,7 @@ impl Store {
                                        tps, ttft_ms, remote, monitor_seq,
                                        cache_tier, cache_keepalive, mode, live_compact,
                                        live_compact_mode, memory_max_unmasked_blocks,
+                                       prefix_cache_plan,
                                        dream_of, dreamed_checkpoint_id)
                  SELECT ?2, 'idle', model, model_name, cwd, ?3, ?3, context_limit,
                         thinking_effort, context_tokens, context_generation, cached_tokens,
@@ -1175,6 +1184,7 @@ impl Store {
                         CASE WHEN ?4 IS NULL THEN mode ELSE 'work' END,
                         CASE WHEN ?4 IS NULL THEN NULL ELSE 0 END,
                         live_compact_mode, memory_max_unmasked_blocks,
+                        prefix_cache_plan,
                         ?4, ?5
                    FROM sessions WHERE name = ?1",
                 params![
@@ -1448,7 +1458,8 @@ impl Store {
                     s.live_compact, s.live_compact_interval_tokens, s.worktree,
                     s.worktree_merged, s.worktree_changed,
                     s.dream_of, s.dreamed_checkpoint_id, s.mentor_of,
-                    s.live_compact_mode, s.memory_max_unmasked_blocks
+                    s.live_compact_mode, s.memory_max_unmasked_blocks,
+                    s.prefix_cache_plan
              FROM sessions s";
 
     /// Every session in `error` because of a provider, with what a monitor turn
@@ -1596,6 +1607,7 @@ impl Store {
             memory_max_unmasked_blocks: r
                 .get::<_, Option<i64>>(28)?
                 .map(|maximum| maximum.max(0) as u64),
+            prefix_cache_plan: r.get::<_, Option<i64>>(29)?.map(|stated| stated != 0),
         })
     }
 
@@ -1654,6 +1666,21 @@ impl Store {
                     updated_at = ?3
               WHERE id = ?4",
             params![tier, i64::from(keepalive), now_millis(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Whether this session's head carries the one-shot meta plan.
+    ///
+    /// # Invariant
+    ///
+    /// Read when the head is stamped, never re-rendered: changing it moves only
+    /// sessions that have no head yet, and a session already under way keeps the
+    /// head it was sent.
+    pub fn set_session_prefix_cache_plan(&self, id: i64, plan: Option<bool>) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE sessions SET prefix_cache_plan = ?1, updated_at = ?2 WHERE id = ?3",
+            params![plan.map(i64::from), now_millis(), id],
         )?;
         Ok(())
     }
@@ -2095,12 +2122,12 @@ impl Store {
             row.get(key).cloned().unwrap_or(serde_json::Value::Null)
         };
         let agents = cell(3, &["agents_md"])?;
-        let index = cell(4, &["index"])?;
+        let plan = cell(4, &["index"])?;
         let info = cell(5, &["info"])?;
         // The one-row `system` spelling already holds the whole prompt.
         if get(&instructions, "instructions").is_string()
             && agents.is_none()
-            && index.is_none()
+            && plan.is_none()
             && info.is_none()
             && instructions.get("tail").is_some()
         {
@@ -2110,7 +2137,7 @@ impl Store {
         for (key, value) in instructions.as_object().unwrap_or(&serde_json::Map::new()) {
             merged.insert(key.clone(), value.clone());
         }
-        for row in [agents, index, info].into_iter().flatten() {
+        for row in [agents, plan, info].into_iter().flatten() {
             for (key, value) in row.as_object().unwrap_or(&serde_json::Map::new()) {
                 merged.insert(key.clone(), value.clone());
             }
@@ -2181,13 +2208,13 @@ impl Store {
         Self::append_head_conn(&conn, session_id, 1, Kind::Instructions, &instructions)?;
         let agents = serde_json::json!({ "agents_md": prompt.agents_md });
         Self::append_head_conn(&conn, session_id, 3, Kind::AgentsMd, &agents)?;
-        let index = serde_json::json!({
-            "index": prompt.index,
+        let plan = serde_json::json!({
+            "plan": prompt.plan,
             "rooted": prompt.rooted,
-            "index_explicit": prompt.index_explicit,
-            "index_cached": prompt.index_cached,
+            "plan_explicit": prompt.plan_explicit,
+            "plan_cached": prompt.plan_cached,
         });
-        Self::append_head_conn(&conn, session_id, 4, Kind::IndexRow, &index)?;
+        Self::append_head_conn(&conn, session_id, 4, Kind::PlanRow, &plan)?;
         let info = serde_json::json!({
             "tail": prompt.tail,
             "parameters": prompt.parameters,
@@ -4193,6 +4220,8 @@ pub struct SessionRow {
     pub live_compact_mode: Option<crate::live_compact::CompactMode>,
     /// Its raw-memory visibility limit; `None` follows the home's `[agent]`.
     pub memory_max_unmasked_blocks: Option<u64>,
+    /// Whether its head carries the one-shot meta plan; `None` follows `[agent]`.
+    pub prefix_cache_plan: Option<bool>,
     /// The branch, and so the worktree, this session was born in; `None` made none.
     pub worktree: Option<String>,
     /// Whether that worktree's commits are all in the main line; `None` is unread.
@@ -4313,7 +4342,9 @@ pub(crate) enum Kind {
     // version 5-to-6 session still has; a version 7 session writes these instead.
     Instructions,
     AgentsMd,
-    IndexRow,
+    // Stored as `index`: a kind string is a row's disk identity, kept across the
+    // plan rename.
+    PlanRow,
     Info,
     BuiltinCall,
     LiveCompactRequest,
@@ -4334,7 +4365,7 @@ impl Kind {
             Kind::Tools => "tools",
             Kind::Instructions => "instructions",
             Kind::AgentsMd => "agents_md",
-            Kind::IndexRow => "index",
+            Kind::PlanRow => "index",
             Kind::Info => "info",
             Kind::BuiltinCall => "builtin_call",
             Kind::LiveCompactRequest => crate::live_compact::REQUEST_KIND,
@@ -4356,7 +4387,7 @@ impl Kind {
             "tools" => Some(Kind::Tools),
             "instructions" => Some(Kind::Instructions),
             "agents_md" => Some(Kind::AgentsMd),
-            "index" => Some(Kind::IndexRow),
+            "index" => Some(Kind::PlanRow),
             "info" => Some(Kind::Info),
             "builtin_call" => Some(Kind::BuiltinCall),
             other if other == crate::live_compact::REQUEST_KIND => Some(Kind::LiveCompactRequest),
@@ -4423,8 +4454,8 @@ impl MessageRow {
                     "agents.md: {}\n",
                     str_of("agents_md").unwrap_or_default()
                 ));
-                // index -- which references, never their bodies.
-                out.push_str(&index_text(&value));
+                // plan -- which references, never their bodies.
+                out.push_str(&plan_text(&value));
                 out.push('\n');
                 // info -- the rest of the stamp, on one line.
                 let cwd = str_of("cwd").unwrap_or_default();
@@ -4449,7 +4480,7 @@ impl MessageRow {
             Some(Kind::AgentsMd) => {
                 row.text = format!("agents.md: {}", str_of("agents_md").unwrap_or_default());
             }
-            Some(Kind::IndexRow) => row.text = index_text(&value),
+            Some(Kind::PlanRow) => row.text = plan_text(&value),
             Some(Kind::Info) => {
                 let cwd = str_of("cwd").unwrap_or_default();
                 let model = str_of("model").unwrap_or_default();
@@ -4482,19 +4513,18 @@ impl MessageRow {
 /// `index` is the expanded bodies, which are what the provider already holds as a
 /// cached prefix; a reader wants the citations. So this never renders `index`.
 /// `index_explicit` names what a message asked for outright and `index_cached` what
-/// rode in only as a cached chain's ancestor; a row written before those two lists
-/// existed states `rooted`, the only record it has.
-/// The index line: which references the head carries, never their bodies.
+/// The plan line: which references the head carries, never their bodies.
 ///
 /// # Invariant
 ///
-/// `index` is the expanded bodies, which are what the provider already holds as a
+/// `plan` is the expanded bodies, which are what the provider already holds as a
 /// cached prefix; a reader wants the citations and why each one is there. So this
-/// never renders `index`. `index_explicit` names what the prompt requires outright --
-/// a `@file`/`@skill` mention or the standing rules -- and `index_cached` what rode in
+/// never renders `plan`. `plan_explicit` names what the prompt requires outright --
+/// a `@file`/`@skill` mention or the standing rules -- and `plan_cached` what rode in
 /// only as a cached chain's ancestor; a row written before those two lists existed
-/// states `rooted`, the only record it has.
-fn index_text(value: &serde_json::Value) -> String {
+/// states `rooted`, the only record it has. Rows stamped before the plan rename
+/// carry the `index_explicit`/`index_cached` spellings, read as the same lists.
+fn plan_text(value: &serde_json::Value) -> String {
     let list = |key: &str| -> Vec<String> {
         value
             .get(key)
@@ -4508,14 +4538,15 @@ fn index_text(value: &serde_json::Value) -> String {
             })
             .unwrap_or_default()
     };
-    let (required, riders) = match (list("index_explicit"), list("index_cached")) {
-        (required, riders) if required.is_empty() && riders.is_empty() => {
-            (list("rooted"), Vec::new())
-        }
-        (required, riders) => (required, riders),
-    };
+    let (mut required, mut riders) = (list("plan_explicit"), list("plan_cached"));
+    if required.is_empty() && riders.is_empty() {
+        (required, riders) = (list("index_explicit"), list("index_cached"));
+    }
+    if required.is_empty() && riders.is_empty() {
+        (required, riders) = (list("rooted"), Vec::new());
+    }
     let total = required.len() + riders.len();
-    let mut text = format!("index: {total} reference(s)");
+    let mut text = format!("plan: {total} reference(s)");
     if !required.is_empty() || !riders.is_empty() {
         text.push_str(&format!(
             "\n  required: {}",
@@ -4637,7 +4668,7 @@ fn wire_item(kind: Kind, value: &serde_json::Value) -> Option<serde_json::Value>
         | Kind::Tools
         | Kind::Instructions
         | Kind::AgentsMd
-        | Kind::IndexRow
+        | Kind::PlanRow
         | Kind::Info => None,
         // An injection is a user turn to the model: the kind names the reader's block.
         Kind::Text | Kind::Inject => {

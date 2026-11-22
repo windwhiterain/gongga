@@ -258,6 +258,9 @@ pub struct Tuning {
     pub live_compact_mode: Option<crate::live_compact::CompactMode>,
     /// Maximum original memory spans visible at once in mask mode.
     pub memory_max_unmasked_blocks: Option<u64>,
+    /// Whether the head carries the one-shot meta plan; `None` follows `[agent]`.
+    /// Read at stamping, never re-rendered.
+    pub prefix_cache_plan: Option<bool>,
 }
 
 /// A live session. Cheap to clone; the heavy parts are shared.
@@ -1347,6 +1350,7 @@ impl SessionManager {
                 live_compact_interval_tokens: None,
                 live_compact_mode: None,
                 memory_max_unmasked_blocks: None,
+                prefix_cache_plan: None,
                 // Born working; `set_session` moves it in the same command.
                 mode: crate::explore::Mode::Work,
                 worktree: worktree.map(str::to_string),
@@ -1651,6 +1655,7 @@ impl SessionManager {
                     live_compact_interval_tokens: row.live_compact_interval_tokens,
                     live_compact_mode: row.live_compact_mode,
                     memory_max_unmasked_blocks: row.memory_max_unmasked_blocks,
+                    prefix_cache_plan: row.prefix_cache_plan,
                 }),
                 explore: Mutex::new(crate::explore::watch_of(row.mode)),
                 dream_of: row.dream_of,

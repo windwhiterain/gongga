@@ -16,7 +16,7 @@ if that stops being true the fix is `spawn_blocking`, not a redesign.
 
 The head of a request is stamped once and read from the store after that. Since version
 7 it is five rows, one per thing the reader wants to see: instructions at slot 1, the
-tool schema at 2, agents.md at 3, the index at 4 and the rest (card, parameters, cwd,
+tool schema at 2, agents.md at 3, the plan at 4 and the rest (card, parameters, cwd,
 model, remote) at 5; ordinary messages start at slot 6. So there is one stored row per
 rendered line, and `prompt`/`tool_set` rebuild the exact same wire head from those same
 rows -- storage order is send order, and neither read nor send searches for a row. There
@@ -26,20 +26,21 @@ head behind the opening line; 5-to-6 moved it into fixed slots, and 6-to-7 split
 into the five, shifting ordinary messages and their stored seq references by three.
 
 `MessageRow::parse` renders each head row as its own line: `instructions:` (slot 1),
-`tools:` (2), `agents.md:` (3, the standing rules), `index:` (4) and `info:` (5,
+`tools:` (2), `agents.md:` (3, the standing rules), `plan:` (4) and `info:` (5,
 cwd/model/remote/card/parameters folded onto one). The tool row states the count and the
 names on its first line and then the whole schema below them, as stored and pretty-
 printed: the names are what a folded block shows, and the schema is the body an opened
-one draws. The index row states *which* references the head carries and nothing of what
+one draws. The plan row states *which* references the head carries and nothing of what
 they say: a count on its first line, then `required:` naming what the prompt needs
-outright (`index_explicit`: a `@file`/`@skill` mention or the standing rules), then
-`cached:` for what rode in only as a cached chain's ancestor (`index_cached`). A row
+outright (`plan_explicit`: a `@file`/`@skill` mention or the standing rules), then
+`cached:` for what rode in only as a cached chain's ancestor (`plan_cached`). A row
 written before those two lists existed falls back to `rooted` under `required:`. The
 expanded bodies are deliberately not rendered: they are the prefix the provider already
 caches, and the citations and their reason are what a reader wants.
 All five are records the reader sees: `content` is NULL so the transcript walk does not
 send them as messages; the sender rebuilds the head from their `display`. Older rows read
-as before.
+as before: the `index`, `index_explicit` and `index_cached` spellings a pre-rename
+row carries are aliases of the plan keys, and the reader's label is `plan:` for either era.
 
 This replaced `Prompt::rewritten_by`, which compared the three wire texts at every step
 and appended a row whenever they differed. The rule was right about `cwd` -- a shell
@@ -528,7 +529,7 @@ A request is built from three things, and only two of them were durable: the row
 and the model's own answers. The prose was rendered fresh before every request and
 kept nowhere, so the database could not say what the model had actually been told.
 `Prompt` is that missing piece: the rendered instructions with the project's rules
-already joined, the index behind them, the start card, and the directory the rules
+already joined, the plan behind them, the start card, and the directory the rules
 were read from. It is written as a `system` row, and `Store::prompt` returns the
 first one, so storage order and send order are the same.
 

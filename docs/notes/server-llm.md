@@ -246,22 +246,22 @@ a provider changes.
 Undeclared means unsent. Offering a tool a provider does not recognise is a
 plain 400 on every request of every turn, so the default has to be silence.
 
-### A long index on the wire
+### A long plan on the wire
 
 On one endpoint a long `user` turn is measured against a small input ceiling even
 though the model's own window is far larger. A single `user` turn carrying the
-whole index is refused with `... exceeds max 32768`; the same bytes split into
+whole plan is refused with `... exceeds max 32768`; the same bytes split into
 several `user` turns, each bridged by an `assistant` turn, are accepted. The check
 reads one turn, not the request total, so the accepted request still reports an
 `input` above the same number.
 
-`build_head` always applies that shape: the index is cut every
-`INDEX_CHUNK_CHARS` characters on a UTF-8 boundary, an `assistant` `output_text`
+`build_head` always applies that shape: the plan is cut every
+`PLAN_CHUNK_CHARS` characters on a UTF-8 boundary, an `assistant` `output_text`
 bridge is placed between turns, and the last turn stays `user` -- the endpoint
 refuses an `assistant` last turn before it reaches the length check. No text is
 dropped or reordered; only the message boundaries change. The cut depends only on
-the index bytes, never on the model, tools or provider, so swapping any of those
-leaves this prefix untouched. A short index still fits in one `user` turn and gets
+the plan bytes, never on the model, tools or provider, so swapping any of those
+leaves this prefix untouched. A short plan still fits in one `user` turn and gets
 no bridge.
 
 ## LlmClient::build_head — one `tools` array
@@ -403,10 +403,10 @@ the record and never used to price anything. See
 ## cache directives on the wire
 
 The head is the prose, the tool schemas, then two messages before the transcript: the
-**index** and the start card. The index is a message and not part of the system text,
+**plan** and the start card. The plan is a message and not part of the system text,
 because a provider serves an unchanged prefix and drops everything after a changed byte --
-a per-session index inside the system prompt would make every session's prose and tool
-schemas new. Measured on the provider that made this necessary: with the index in the
+a per-session plan inside the system prompt would make every session's prose and tool
+schemas new. Measured on the provider that made this necessary: with the plan in the
 system text a sibling read 189 cached of 20,158, and with it in a message, 189 again, so
 on that endpoint the split buys nothing; what it does buy is a system prompt that no
 session ever changes, which is the part a prefix cache can serve at all. See
@@ -435,7 +435,7 @@ delta or a key that means “query the current view again”:
 
 Every stored input item also has `"gongga_seq": <seq>`; seq endpoints are inclusive,
 unlisted items are visible, and the masked list is sorted by source span and memory id.
-Head-generated cards and index rows have no database seq and stay unannotated. Wire
+Head-generated cards and plan rows have no database seq and stay unannotated. Wire
 order is not seq order because one step's calls precede its outputs. The adapter must
 map by the annotation, consume the fields out of band, and never render them as model
 text. Both fields are absent in cut mode and on ordinary Responses endpoints.
@@ -580,7 +580,7 @@ the same loop, so it never ends this stream by unwinding past it. How far an att
 is not a reason to stop: only the provider saying the request itself is wrong ends this
 stream.
 
-**Two lifetimes in `build_head`.** The index joins the prose because both change only
+**Two lifetimes in `build_head`.** The plan joins the prose because both change only
 when a file does. The card does not: the prose follows an edited template while the card
 is stamped once.
 

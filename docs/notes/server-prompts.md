@@ -18,7 +18,7 @@ the only party that knows which names it asks for.
 `instructions` opens every request and is read, not rendered: `system()` substitutes
 nothing. That is the invariant, and it is about the cache. The provider holds the token
 prefix of a request, so a value that differs between sessions ends the shared prefix at
-the byte it changes. Two sessions of one directory send a byte-identical index --
+the byte it changes. Two sessions of one directory send a byte-identical plan --
 measured at 29,267 characters for both -- and a per-session value in front of it made
 every new session's first turn a prompt the provider had never seen: 14,310 tokens in,
 188 cached, 1.3%, paid once per session rather than once per directory.
@@ -37,7 +37,7 @@ next day (`3715d6c`, 2026-11-02) to fill `{{session}}`, because the prose had sa
 literal and said its prompt did not tell it. The revert's stated reason, "a
 conversation's prefix is its own, `prefix_layout` is keyed by session, so nothing was
 being shared", mistook this server's plan book for the provider's cache: `prefix_layout`
-is the order *we* emit an index in, kept per session; what the provider remembers is
+is the order *we* emit an plan in, kept per session; what the provider remembers is
 bytes at an endpoint, and any request sending them is warm. The card already stated the
 name one message after the prose, so the sentence was redundant as well as costly, and
 the remedy for a literal is to drop the sentence, not to fill it.
@@ -63,7 +63,7 @@ and the session and the spill path really are different every time.
 
 The check that replaces a compiled-in copy. Without it the failure is silent and
 total: a home whose config has no `[prompts]` and whose content checkout cannot be read
-would send a home's worth of missing templates -- notices, the card, the index framing --
+would send a home's worth of missing templates -- notices, the card, the plan framing --
 rendered as empty strings, run every tool, and look healthy in the log. `main.rs` refuses
 to start on a non-empty answer, naming the templates and the content.
 
@@ -147,12 +147,12 @@ reorders that text is reordering a cache, not a document.
 
 ## REVISION
 
-What introduces a patch for an entry of the index that has changed since it was sent:
+What introduces a patch for an entry of the plan that has changed since it was sent:
 `@@`-headed hunks, each under the spelling it corrects. `{{revisions}}` is the whole
 body, in the order the entries are emitted.
 
 Deliberately absent from `REQUIRED`. A home installed before this template existed has an
-index and no use for a patch, and refusing to start over prose it may not need is the
+plan and no use for a patch, and refusing to start over prose it may not need is the
 wrong trade; `Agent::index_tolerance` asks whether the template is there and stops
 patching when it is not -- the same answer a tolerance of `0` gives.
 
@@ -332,16 +332,16 @@ left with that template. The machine's own standing rules moved to a skill
 procedure: listed by `ls_skill`, read when a task matches its description.
 
 What came back on 2026-11-02 is narrower, and it comes back by a different road: the
-session's own `AGENTS.md` is a *root* of the prompt index (`meta::RULES`), so it lands in
-`instructions` behind the index rather than being concatenated onto the prose here. Three
+session's own `AGENTS.md` is a *root* of the prompt plan (`meta::RULES`), so it lands in
+`instructions` behind the plan rather than being concatenated onto the prose here. Three
 things follow from that, and they are why this is not the deleted read returning:
 
 - **One file, in the directory the shell stands in.** No machine-wide copy, no ancestor's.
-- **It is compared, ordered and stored with the other roots.** The index plans the order
+- **It is compared, ordered and stored with the other roots.** The plan plans the order
   (`prefix_cache::plan`), the row keeps the bytes, and a change appends a row instead of
   quietly altering what was sent.
 - **A first message that names it stays literal**, because it is also a spelling in the
-  index. A message sent later is inlined like every other late reference, so the rules are
+  plan. A message sent later is inlined like every other late reference, so the rules are
   carried twice only when someone names them again.
 
 The older argument still holds where it applies: prose in every request whether or not

@@ -17,7 +17,7 @@ use crate::llm::{LlmEvent, Outbox, SseEvent, Usage};
 /// The last word of the URL: what this face appends to a provider's base.
 pub const PATH: &str = "/v1/messages";
 
-/// The constant messages that keep the index off the first one: both are required, so
+/// The constant messages that keep the plan off the first one: both are required, so
 /// every request opens the same way.
 #[derive(Debug, Clone, Default)]
 pub struct Framing {
@@ -32,7 +32,7 @@ pub struct Framing {
 /// Two breakpoints and no more: the system text, which every request of a directory
 /// sends byte for byte, and the message before the newest one, which a turn extends.
 ///
-/// The index is a message and the prose is the system prompt: an index inside the system
+/// The plan is a message and the prose is the system prompt: a plan inside the system
 /// text would change the whole head with the first message.
 pub fn head(
     model: &str,
@@ -41,11 +41,11 @@ pub fn head(
     tools: &[Value],
     effort: Option<&str>,
     temperature: Option<f32>,
-    indexing: (Framing, Option<&str>),
+    planning: (Framing, Option<&str>),
     parameters: Option<&str>,
     card: Option<&str>,
 ) -> Vec<u8> {
-    let (framing, index) = indexing;
+    let (framing, plan) = planning;
     let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
@@ -78,16 +78,16 @@ pub fn head(
         );
         head.push(',');
     }
-    if !framing.separator.is_empty() && index.is_some() {
+    if !framing.separator.is_empty() && plan.is_some() {
         head.push_str(
             &json!({"role": "assistant", "content": [{"type": "text", "text": framing.separator}]})
                 .to_string(),
         );
         head.push(',');
     }
-    if let Some(index) = index.filter(|index| !index.is_empty()) {
+    if let Some(plan) = plan.filter(|plan| !plan.is_empty()) {
         head.push_str(
-            &json!({"role": "user", "content": [{"type": "text", "text": index}]}).to_string(),
+            &json!({"role": "user", "content": [{"type": "text", "text": plan}]}).to_string(),
         );
         head.push(',');
     }

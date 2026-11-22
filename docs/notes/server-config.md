@@ -128,17 +128,31 @@ Send the context notice once a request would carry more than this many input
 tokens. `0` disables the notice, which will eventually hit the provider's context
 limit.
 
-## AgentConfig::index_change_tolerance
+## AgentConfig::plan_change_tolerance
 
-How much of an indexed entry's lines may change before the entry is re-sent instead of
+How much of a planned entry's lines may change before the entry is re-sent instead of
 kept and patched. The default is the size of one edit a reader makes in one place: a
 paragraph, a rule, a row. `0` restores the old behaviour exactly -- any change to a file
-the index carries is a new item and a re-billed prefix.
+the plan carries is a new item and a re-billed prefix.
 
 A share rather than a count of lines, because these files are of wildly different sizes
 and one file's paragraph is another file's whole content. What the share is compared
 against, and why the comparison is the larger of the removed and added lines, is
 `docs/notes/server-diff.md`.
+
+## AgentConfig::prefix_cache_plan
+
+Whether a session's head carries the one-shot meta plan at all. `true` (the default)
+plans the references the first message names and stamps them into the prompt row;
+`false` skips the injection entirely, so the head is only instructions, card and
+parameters, and each reference travels in the message that names it. The switch is
+for a small-context model whose window the planned head would fill: the plan is
+stamped once and no `memorize` can mask it, so a session that cannot afford it must
+never be given it.
+
+A session's own `prefix_cache_plan` (SPEC's `SessionConfig`) overrides this default;
+`None` follows the file. Like every head fact it is read when the head is stamped and
+never re-rendered: changing it moves only sessions that have no head yet.
 
 ## Config::load_with_home
 

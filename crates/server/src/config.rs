@@ -54,8 +54,8 @@ pub const DEFAULT_CACHE_INVALID_RATE: f64 = 0.0;
 /// never expiring.
 pub const DEFAULT_CACHE_TTL_SECS: u64 = 0;
 
-/// The share of an indexed entry's lines that may change before it is re-sent.
-pub const DEFAULT_INDEX_CHANGE_TOLERANCE: f64 = 0.2;
+/// The share of a planned entry's lines that may change before it is re-sent.
+pub const DEFAULT_PLAN_CHANGE_TOLERANCE: f64 = 0.2;
 
 /// The room left below which a volume counts as out of room, in MiB.
 ///
@@ -336,13 +336,15 @@ pub struct AgentConfig {
     pub live_compact_mode: crate::live_compact::CompactMode,
     /// The home's default raw-memory visibility limit; mask checkpoints require one.
     pub memory_max_unmasked_blocks: Option<u64>,
+    /// Whether the head carries the one-shot meta plan; off keeps it minimal.
+    pub prefix_cache_plan: bool,
     /// The chance a cached prefix is gone by the next request, `0.0..=1.0`.
     pub cache_invalid_rate: f64,
     /// A lifetime for a cached prefix, in seconds, for every provider at once; `0`
     /// keeps the roster's own numbers.
     pub cache_ttl_secs: u64,
-    /// The share of an indexed entry's lines that may change and still be patched.
-    pub index_change_tolerance: f64,
+    /// The share of a planned entry's lines that may change and still be patched.
+    pub plan_change_tolerance: f64,
     /// Share of the window a `--context_limit` percentage defaults to.
     pub context_limit_percent: u8,
 }
@@ -465,9 +467,11 @@ struct FileAgent {
     live_compact_interval_tokens: Option<u64>,
     live_compact_mode: Option<String>,
     memory_max_unmasked_blocks: Option<u64>,
+    prefix_cache_plan: Option<bool>,
     cache_invalid_rate: Option<f64>,
     cache_ttl_secs: Option<u64>,
-    index_change_tolerance: Option<f64>,
+    #[serde(alias = "index_change_tolerance")]
+    plan_change_tolerance: Option<f64>,
     context_limit_percent: Option<u8>,
 }
 
@@ -791,6 +795,12 @@ impl Config {
                 .or_else(|| {
                     env_or("GONGGA_MEMORY_MAX_UNMASKED_BLOCKS").and_then(|v| v.parse().ok())
                 }),
+            prefix_cache_plan: file
+                .agent
+                .as_ref()
+                .and_then(|a| a.prefix_cache_plan)
+                .or_else(|| env_or("GONGGA_PREFIX_CACHE_PLAN").and_then(|v| v.parse().ok()))
+                .unwrap_or(true),
             cache_invalid_rate: file
                 .agent
                 .as_ref()
@@ -804,12 +814,13 @@ impl Config {
                 .and_then(|a| a.cache_ttl_secs)
                 .or_else(|| env_or("GONGGA_CACHE_TTL_SECS").and_then(|v| v.parse().ok()))
                 .unwrap_or(DEFAULT_CACHE_TTL_SECS),
-            index_change_tolerance: file
+            plan_change_tolerance: file
                 .agent
                 .as_ref()
-                .and_then(|a| a.index_change_tolerance)
+                .and_then(|a| a.plan_change_tolerance)
+                .or_else(|| env_or("GONGGA_PLAN_CHANGE_TOLERANCE").and_then(|v| v.parse().ok()))
                 .or_else(|| env_or("GONGGA_INDEX_CHANGE_TOLERANCE").and_then(|v| v.parse().ok()))
-                .unwrap_or(DEFAULT_INDEX_CHANGE_TOLERANCE)
+                .unwrap_or(DEFAULT_PLAN_CHANGE_TOLERANCE)
                 .clamp(0.0, 1.0),
             // Above 100 would put the notice past the window it is a share of.
             context_limit_percent: file

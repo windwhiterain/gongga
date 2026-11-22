@@ -94,7 +94,7 @@ separate matter -- they carry the per-conversation id, as `server-config.md` sta
 
 Why the unit matters, and why "per session" was a hole: the forests exist to *choose*
 among the orderings that were emitted ("the cheapest chain, then the rest", above). A
-session plans its prompt index exactly once -- the head is stamped with the first request
+session plans its prompt plan exactly once -- the head is stamped with the first request
 and replayed after that, because what has been sent is never rewritten -- and at that
 moment its own forest is empty. So a per-session forest never chooses anything: it holds
 one chain, on an empty probe, and nothing ever reads it again. The only reason a choice
@@ -112,7 +112,7 @@ owners sharing one layout cannot corrupt each other's order, only fail to share 
 
 `plan(store, owner, purpose, wanted, rates, tolerance)` is the whole interface: a caller
 hands over keys with their text and sizes and gets an order back -- each entry with the
-text to send under it, plus the patches that catch up what changed. The prompt index is the
+text to send under it, plus the patches that catch up what changed. The prompt plan is the
 caller: a listing a person or a model reads on demand has no cache to hit, which is why
 the skill rows are the walk's own order and not a plan. `purpose`
 separates chains inside one owner's forest, so two purposes never evict each other.
@@ -121,7 +121,7 @@ separates chains inside one owner's forest, so two purposes never evict each oth
 ## what a provider's cache actually serves
 
 The head fix above rests on a claim that had to be measured: two sessions of one
-directory send the same instructions and the same index, so a provider that caches a
+directory send the same instructions and the same plan, so a provider that caches a
 request's token prefix should serve the second session's head. Two providers disagree
 about whether any provider does that.
 
@@ -151,7 +151,7 @@ prefix: of ten fresh sessions of one directory, three hit ~99% and seven were co
 repeat almost always hits.
 
 The card stayed where SPEC puts it -- its own item, in front of the messages -- after the
-three positions came out indistinguishable. What that costs in theory is the index: with a
+three positions came out indistinguishable. What that costs in theory is the plan: with a
 shared prefix cache the card is the first differing byte, so a sibling can be served the
 tools and the prose and nothing after the card. On this provider it cost nothing
 measurable, and the position is the one the model reads best.
@@ -190,7 +190,7 @@ Three consequences for this module follow, and none of them is a bug in the plan
   reading of this face can be explained by the key.
 - **What the automatic cache warms is a prefix in a fixed module order**, tools first.
   A session whose tool list differs -- a `--remote` session, whose definitions come from
-  `definitions(session.on_remote())` -- can never share the system-and-index part with a
+  `definitions(session.on_remote())` -- can never share the system-and-plan part with a
   local one, however identical the prose.
 - **The lifetime of the tier we actually buy is unstated.** The roster's per-provider
   `cache_ttl_secs` is a claim about the *explicit* tier; the automatic cache documents
@@ -210,7 +210,7 @@ the root: a node is stale exactly when its own prefix expired.
 about a request: a 400, a dead socket, a cancelled turn all marked a chain warm that the
 provider never held. It is now written by `confirm`, called from the one place that knows
 the provider answered -- `LlmEvent::Completed` in `agent`, with the spellings the request
-emitted (`Prompt::rooted`, which is the index's own order). Retries inside `llm::stream`
+emitted (`Prompt::rooted`, which is the plan's own order). Retries inside `llm::stream`
 report a failure or a retry and only the attempt that completes counts, so a request that
 took four attempts warms nothing until the fourth works.
 
@@ -222,13 +222,13 @@ what actually went out. Making that exact would mean dropping unconfirmed nodes,
 worth doing when something else needs the distinction.
 
 The skill listing was once planned the same way and no longer is. `plan` answers a
-different question: *what content goes into the first turn's meta index, in what order*.
+different question: *what content goes into the first turn's meta plan, in what order*.
 That injection is paid once and reused by every later step of the conversation, which is
 why its order is worth a cost model. A `run_skill` call is a command result the agent may ask for
 at any time, or never; a listing a person reads has no cache to hit at all. Sorting the
 rows by a plan bought nothing the walk's own order does not, so the rows are the walk.
 
-`expire` runs first, before anything reads a node index. A stale node takes its whole
+`expire` runs first, before anything reads a node plan. A stale node takes its whole
 subtree with it, because a provider's cache is a prefix -- if the front of a chain is
 gone, the rest of it cannot be served from cache either, and keeping it would let a plan
 choose a chain whose first half is a miss.
@@ -328,7 +328,7 @@ which is the decision this module exists to make.
 ## the identity is the content
 
 A key is a name; the same name can come to mean other bytes. A skill body is edited, a
-row's description is reworded, a file the index carries gains a paragraph -- and every
+row's description is reworded, a file the plan carries gains a paragraph -- and every
 one of those leaves the name intact while the bytes the endpoint cached are gone.
 
 liana had no such problem: a memory was append-only, so a memory id was its content.
@@ -338,7 +338,7 @@ of the bytes and `plan` takes it from the caller. Two consequences, both wanted:
 - edited text is a *new* item, so the chain that carried the old bytes cannot warm it.
   Both halves are the identity, which is what `plan`'s tuple says: the key is the *raw
   spelling* (`@skill(helper)`, `@file(docs/plan.md)`) -- the thing that is also printed in
-  the index and so is itself part of the prefix -- and the digest is the text behind it.
+  the plan and so is itself part of the prefix -- and the digest is the text behind it.
   A path is not special; whatever the caller prints as the entry's name is its key.
   Without this the layout would claim a prefix the endpoint cannot serve, which shows up
   as a cache miss on every request that reuses the chain -- the exact cost this module
@@ -356,7 +356,7 @@ section is about: a patch is measured against the text the provider was actually
 
 ## tolerance: keep the node, append the change
 
-An edited file used to cost the whole index. New bytes, new item, the old item dropped
+An edited file used to cost the whole plan. New bytes, new item, the old item dropped
 with every chain through it -- so the request re-sent the entry *and* everything planned
 after it. What that throws away is the prefix, not the edit: measured against a real
 provider, an edit at one point of the instructions keeps everything before that point
@@ -367,7 +367,7 @@ end is the cheapest place there is.
 So an entry whose text changed is measured before it is replaced. `diff::patch` says how
 many of its lines the change touches; under the caller's tolerance the item *stays* --
 same identity, same nodes, so every chain that carried it is still a candidate -- and the
-plan answers with the text it already holds plus a patch to append after the whole index.
+plan answers with the text it already holds plus a patch to append after the whole plan.
 The request keeps its prefix and pays for the change alone.
 
 Three things make that safe:
@@ -396,16 +396,16 @@ newline measures zero changed lines, so the entry is kept and nothing is appende
 reader the two are the same text. And a change of exactly the tolerance -- `0.2` of a
 five-line entry is one line -- is over it: the boundary falls on the side of re-sending.
 
-Only the prompt index asks for this. The skill table passes `None`: a row is json, and a
+Only the prompt plan asks for this. The skill table passes `None`: a row is json, and a
 diff of json is not something a reader reads.
 
 ## purpose: two callers, one owner
 
-The skill table and the prompt index both plan for the same session, and their keys are
+The skill table and the prompt plan both plan for the same session, and their keys are
 different things (a `SKILL.md` path, a raw spelling). One shared map was wrong in a way
 the measurement caught: each plan forgot every item it had not just been given, so the
 two callers evicted each other on every call and neither kept a chain -- `skill table`
-planned, then `prompt index` planned and dropped it, forever.
+planned, then `prompt plan` planned and dropped it, forever.
 
 So an item carries the `purpose` that emitted it, `plan` takes one, and
 `forget_unwanted` prunes only its own. Two callers in one conversation now coexist: they
@@ -424,12 +424,12 @@ prose + a 355-line `self-control` body + `AGENTS.md` + tool schemas):
 
 The first row was read here as "a provider's price for a prompt it has not seen". It is
 also what every new session paid for its first turn while the head carried the session
-name, however many siblings had already sent the same index -- one directory's sessions
+name, however many siblings had already sent the same plan -- one directory's sessions
 warmed each other only above that byte. `docs/notes/server-prompts.md` has the decision
 and the measurement.
-The good reading: the index is worth its bytes, because a turn that follows a warm one
+The good reading: the plan is worth its bytes, because a turn that follows a warm one
 is billed almost entirely at the cache rate (¥0.10/1M against ¥1.00/1M on this roster)
--- the index, the prose and the schemas are re-used rather than re-sent.
+-- the plan, the prose and the schemas are re-used rather than re-sent.
 
 ### the 1.2% was a miss, not the price of the change
 
@@ -460,9 +460,9 @@ the end of the string keeps 98.6% either way, measured. Its reasons are elsewher
 stand -- a message that follows the transcript is read as a fresh injection, and a stamped
 card is not re-rendered at all. See `docs/notes/server-body.md`.
 
-## the index is derived, not stored
+## the plan is derived, not stored
 
-`Layout::index` maps `(key, digest)` to an item and `Layout::named` maps `(purpose, key)`
+`Layout::plan` maps `(key, digest)` to an item and `Layout::named` maps `(purpose, key)`
 to the item that name resolves to now; both are `#[serde(skip)]`, because JSON has no
 tuple key and both are lookups over `items` rather than facts of their own. So the store
 holds the list and the chains, and `reindex` rebuilds the pair -- `store::prefix_layout`

@@ -309,7 +309,7 @@ impl LlmClient {
     pub fn stream(
         &self,
         instructions: &str,
-        index: Option<&str>,
+        plan: Option<&str>,
         parameters: Option<&str>,
         tail: Option<&str>,
         source: &RequestSource,
@@ -336,7 +336,7 @@ impl LlmClient {
         let memory_mask = self.memory_mask && source.memory.is_some();
         let head = self.build_head(
             instructions,
-            index,
+            plan,
             parameters,
             tail,
             &session_id,
@@ -610,7 +610,7 @@ impl LlmClient {
     fn build_head(
         &self,
         instructions: &str,
-        index: Option<&str>,
+        plan: Option<&str>,
         parameters: Option<&str>,
         card: Option<&str>,
         session_id: &str,
@@ -620,9 +620,9 @@ impl LlmClient {
         spent: u64,
         memory: Option<&MemoryView>,
     ) -> Vec<u8> {
-        // The index travels as a message, never in the system text.
+        // The plan travels as a message, never in the system text.
         // See `docs/reference/prefix-cache.md`.
-        let index = index.filter(|index| !index.is_empty());
+        let plan = plan.filter(|plan| !plan.is_empty());
         if self.face == Face::Anthropic {
             // The stored row's bytes; a request assembles no part of its head.
             let offered: &[Value] = tools.as_array().map(Vec::as_slice).unwrap_or(&[]);
@@ -633,7 +633,7 @@ impl LlmClient {
                 offered,
                 effort,
                 self.temperature,
-                (index_framing(), index),
+                (plan_framing(), plan),
                 parameters,
                 card,
             );
@@ -692,8 +692,8 @@ impl LlmClient {
         let mut head = body.to_string();
         head.pop();
         head.push_str(",\"input\":[");
-        // The opening and separator come first: the index is never the first message.
-        let framing = index_framing();
+        // The opening and separator come first: the plan is never the first message.
+        let framing = plan_framing();
         if !framing.opening.is_empty() {
             head.push_str(
                 &json!({
@@ -704,7 +704,7 @@ impl LlmClient {
             );
             head.push(',');
         }
-        if !framing.separator.is_empty() && index.is_some() {
+        if !framing.separator.is_empty() && plan.is_some() {
             let separator = &framing.separator;
             head.push_str(
                 &json!({
@@ -715,29 +715,29 @@ impl LlmClient {
             );
             head.push(',');
         }
-        if let Some(index) = index {
+        if let Some(plan) = plan {
             // This endpoint measures one long `user` turn against a ceiling far below
-            // the model's window. Bridging the index with assistant turns keeps every
+            // the model's window. Bridging the plan with assistant turns keeps every
             // turn short while sending the same bytes in the same order, and the API
             // requires the last turn to be a user. Splitting is unconditional: it
-            // depends only on the index bytes, never on the model, tools or provider,
+            // depends only on the plan bytes, never on the model, tools or provider,
             // so swapping any of those cannot change this part of the wire prefix.
             let bridge: &str = if framing.separator.is_empty() {
                 "."
             } else {
                 &framing.separator
             };
-            let turns = split_index(index, bridge, INDEX_CHUNK_CHARS);
+            let turns = split_plan(plan, bridge, PLAN_CHUNK_CHARS);
             for turn in turns {
                 match turn {
-                    IndexTurn::User(text) => head.push_str(
+                    PlanTurn::User(text) => head.push_str(
                         &json!({
                             "role": "user",
                             "content": [{"type": "input_text", "text": text}],
                         })
                         .to_string(),
                     ),
-                    IndexTurn::Assistant(text) => head.push_str(
+                    PlanTurn::Assistant(text) => head.push_str(
                         &json!({
                             "role": "assistant",
                             "content": [{"type": "output_text", "text": text}],
@@ -773,46 +773,46 @@ impl LlmClient {
     }
 }
 
-/// Largest index turn, in characters, on the wire.
+/// Largest plan turn, in characters, on the wire.
 ///
 /// # Invariant
 ///
 /// The endpoint mis-reads one long `user` turn against a small ceiling. Chunks stay
 /// far below that ceiling even for dense CJK text (~2 tokens/char), and the bytes stay
 /// in order: only message boundaries change, never the transcript's content. The cut
-/// depends only on the index bytes, so it is the same for every model, provider and
+/// depends only on the plan bytes, so it is the same for every model, provider and
 /// tool set. See the split experiment in `docs/notes/server-llm.md`.
-const INDEX_CHUNK_CHARS: usize = 12_000;
+const PLAN_CHUNK_CHARS: usize = 12_000;
 
-/// One turn of a split index, written into the request body verbatim.
-enum IndexTurn<'a> {
+/// One turn of a split plan, written into the request body verbatim.
+enum PlanTurn<'a> {
     User(&'a str),
     Assistant(&'a str),
 }
 
-/// Splits one index into short `user` turns bridged by `assistant` turns.
+/// Splits one plan into short `user` turns bridged by `assistant` turns.
 ///
 /// # Invariant
 ///
-/// The concatenation of every `User` slice equals `index` byte for byte: no text
+/// The concatenation of every `User` slice equals `plan` byte for byte: no text
 /// is dropped, reordered or rewritten, and cuts land on UTF-8 character boundaries.
-/// A short index stays one `user` turn with no bridge. The last turn is always a
+/// A short plan stays one `user` turn with no bridge. The last turn is always a
 /// `user`, which the endpoint requires; an `assistant` last turn is refused before
 /// the length check is ever reached.
-fn split_index<'a>(index: &'a str, bridge: &'a str, limit: usize) -> Vec<IndexTurn<'a>> {
+fn split_plan<'a>(plan: &'a str, bridge: &'a str, limit: usize) -> Vec<PlanTurn<'a>> {
     let mut turns = Vec::new();
     let mut start = 0;
     let mut count = 0;
-    for (byte, _) in index.char_indices() {
+    for (byte, _) in plan.char_indices() {
         count += 1;
         if count > limit {
-            turns.push(IndexTurn::User(&index[start..byte]));
-            turns.push(IndexTurn::Assistant(bridge));
+            turns.push(PlanTurn::User(&plan[start..byte]));
+            turns.push(PlanTurn::Assistant(bridge));
             start = byte;
             count = 1;
         }
     }
-    turns.push(IndexTurn::User(&index[start..]));
+    turns.push(PlanTurn::User(&plan[start..]));
     turns
 }
 
@@ -1729,13 +1729,13 @@ pub(crate) fn sendable_activity(
 }
 
 /// The constant opening and separator, when this home carries them.
-fn index_framing() -> crate::anthropic::Framing {
+fn plan_framing() -> crate::anthropic::Framing {
     let prompts = crate::prompts::shared();
     // Both are in `REQUIRED`: a home without them does not start.
     let text = |name: &str| prompts.text(name).unwrap_or_default().trim().to_string();
     crate::anthropic::Framing {
-        opening: text(crate::prompts::INDEX_OPENING),
-        separator: text(crate::prompts::INDEX_SEPARATOR),
+        opening: text(crate::prompts::PLAN_OPENING),
+        separator: text(crate::prompts::PLAN_SEPARATOR),
     }
 }
 
@@ -2442,28 +2442,28 @@ fn shorten_body(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{INDEX_CHUNK_CHARS, IndexTurn, split_index};
+    use super::{PLAN_CHUNK_CHARS, PlanTurn, split_plan};
 
     #[test]
-    fn short_index_stays_one_user_turn() {
-        let turns = split_index("hello world", "---", INDEX_CHUNK_CHARS);
+    fn short_plan_stays_one_user_turn() {
+        let turns = split_plan("hello world", "---", PLAN_CHUNK_CHARS);
         assert_eq!(turns.len(), 1);
-        assert!(matches!(&turns[0], IndexTurn::User(s) if *s == "hello world"));
+        assert!(matches!(&turns[0], PlanTurn::User(s) if *s == "hello world"));
     }
 
     #[test]
     fn split_is_lossless_and_ends_on_user() {
-        let index = "x".repeat(INDEX_CHUNK_CHARS * 3 + 7);
-        let turns = split_index(&index, "---", INDEX_CHUNK_CHARS);
+        let plan = "x".repeat(PLAN_CHUNK_CHARS * 3 + 7);
+        let turns = split_plan(&plan, "---", PLAN_CHUNK_CHARS);
         let rebuilt: String = turns
             .iter()
             .filter_map(|t| match t {
-                IndexTurn::User(s) => Some(*s),
-                IndexTurn::Assistant(_) => None,
+                PlanTurn::User(s) => Some(*s),
+                PlanTurn::Assistant(_) => None,
             })
             .collect();
-        assert_eq!(rebuilt, index, "user turns must rebuild the index verbatim");
-        assert!(matches!(turns.last(), Some(IndexTurn::User(_))));
+        assert_eq!(rebuilt, plan, "user turns must rebuild the plan verbatim");
+        assert!(matches!(turns.last(), Some(PlanTurn::User(_))));
         // N+1 user turns separated by N assistant bridges for N+1 chunks.
         let chunks = 4; // 3 full + 1 remainder
         assert_eq!(turns.len(), chunks * 2 - 1);
@@ -2472,41 +2472,41 @@ mod tests {
     #[test]
     fn split_never_breaks_utf8_and_keeps_each_chunk_small() {
         // Multibyte CJK: cutting by char count must not slice a codepoint.
-        let index = "上下文索引".repeat(INDEX_CHUNK_CHARS / 5);
+        let plan = "上下文索引".repeat(PLAN_CHUNK_CHARS / 5);
         let bridge = "——";
-        let turns = split_index(&index, bridge, INDEX_CHUNK_CHARS);
+        let turns = split_plan(&plan, bridge, PLAN_CHUNK_CHARS);
         let rebuilt: String = turns
             .iter()
             .filter_map(|t| match t {
-                IndexTurn::User(s) => Some(*s),
-                IndexTurn::Assistant(_) => None,
+                PlanTurn::User(s) => Some(*s),
+                PlanTurn::Assistant(_) => None,
             })
             .collect();
-        assert_eq!(rebuilt, index);
+        assert_eq!(rebuilt, plan);
         for turn in &turns {
             match turn {
-                IndexTurn::User(s) => assert!(s.chars().count() <= INDEX_CHUNK_CHARS),
-                IndexTurn::Assistant(s) => assert_eq!(*s, bridge),
+                PlanTurn::User(s) => assert!(s.chars().count() <= PLAN_CHUNK_CHARS),
+                PlanTurn::Assistant(s) => assert_eq!(*s, bridge),
             }
         }
-        assert!(matches!(turns.last(), Some(IndexTurn::User(_))));
+        assert!(matches!(turns.last(), Some(PlanTurn::User(_))));
     }
 
     #[test]
     fn exactly_at_limit_is_one_turn() {
-        let index = "a".repeat(INDEX_CHUNK_CHARS);
-        let turns = split_index(&index, "---", INDEX_CHUNK_CHARS);
+        let plan = "a".repeat(PLAN_CHUNK_CHARS);
+        let turns = split_plan(&plan, "---", PLAN_CHUNK_CHARS);
         assert_eq!(turns.len(), 1);
-        assert!(matches!(&turns[0], IndexTurn::User(s) if s.len() == INDEX_CHUNK_CHARS));
+        assert!(matches!(&turns[0], PlanTurn::User(s) if s.len() == PLAN_CHUNK_CHARS));
     }
 
     #[test]
     fn one_over_limit_is_two_turns_with_a_bridge() {
-        let index = "a".repeat(INDEX_CHUNK_CHARS + 1);
-        let turns = split_index(&index, "---", INDEX_CHUNK_CHARS);
+        let plan = "a".repeat(PLAN_CHUNK_CHARS + 1);
+        let turns = split_plan(&plan, "---", PLAN_CHUNK_CHARS);
         assert_eq!(turns.len(), 3);
-        assert!(matches!(&turns[0], IndexTurn::User(s) if s.chars().count() == INDEX_CHUNK_CHARS));
-        assert!(matches!(&turns[1], IndexTurn::Assistant(_)));
-        assert!(matches!(&turns[2], IndexTurn::User(s) if s.chars().count() == 1));
+        assert!(matches!(&turns[0], PlanTurn::User(s) if s.chars().count() == PLAN_CHUNK_CHARS));
+        assert!(matches!(&turns[1], PlanTurn::Assistant(_)));
+        assert!(matches!(&turns[2], PlanTurn::User(s) if s.chars().count() == 1));
     }
 }

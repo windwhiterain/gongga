@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::live::Stamp;
 
-/// What introduces a patch for an entry of the index that has changed since.
+/// What introduces a patch for an entry of the plan that has changed since.
 ///
 /// # Invariant
 ///
@@ -30,11 +30,11 @@ pub const TAIL: &str = "dynamic_tail";
 /// to start over prose it may never need.
 pub const PARAMETERS: &str = "general_parameters";
 
-/// What opens the request, before the index. See `docs/reference/prefix-cache.md`.
-pub const INDEX_OPENING: &str = "index_opening";
+/// What opens the request, before the plan. See `docs/reference/prefix-cache.md`.
+pub const PLAN_OPENING: &str = "index_opening";
 
-/// The other-role message between the opening and the index, so they do not merge.
-pub const INDEX_SEPARATOR: &str = "index_separator";
+/// The other-role message between the opening and the plan, so they do not merge.
+pub const PLAN_SEPARATOR: &str = "index_separator";
 
 /// The same card when the session's workspace is on a peer.
 ///
@@ -180,8 +180,8 @@ pub const REQUIRED: &[&str] = &[
     "dynamic_tail_remote_unstated",
     "output_cap",
     "output_omitted",
-    INDEX_OPENING,
-    INDEX_SEPARATOR,
+    PLAN_OPENING,
+    PLAN_SEPARATOR,
     MONITOR_PROVIDERS,
     MONITOR_DISK,
     EXPLORE_NOTICE,

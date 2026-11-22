@@ -69,7 +69,7 @@ pub struct LiveCompact {
     pub max_unmasked_blocks: Option<u64>,
 }
 
-/// SPEC `SessionConfig := {model_config, workspace, keep_alive, live_compact}`.
+/// SPEC `SessionConfig := {model_config, workspace, keep_alive, live_compact, prefix_cache_plan}`.
 #[derive(Debug, Default, Deserialize)]
 pub struct SessionConfig {
     #[serde(default)]
@@ -80,6 +80,8 @@ pub struct SessionConfig {
     pub keep_alive: Option<bool>,
     #[serde(default)]
     pub live_compact: Option<LiveCompact>,
+    #[serde(default)]
+    pub prefix_cache_plan: Option<bool>,
 }
 
 /// Flatten a nested `SessionConfig` into the flat settings the handler reads.
@@ -143,6 +145,12 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
         args.insert(
             "keep_alive".to_string(),
             if keep_alive { "true" } else { "false" }.to_string(),
+        );
+    }
+    if let Some(plan) = config.prefix_cache_plan {
+        args.insert(
+            "prefix_cache_plan".to_string(),
+            if plan { "true" } else { "false" }.to_string(),
         );
     }
     if let Some(live_compact) = config.live_compact {
@@ -321,6 +329,17 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
         default: Some("false"),
         ..Default::default()
     };
+    let prefix_cache_plan = Field {
+        description: "Whether the head carries the one-shot meta plan; false keeps a small-context session's head minimal.",
+        spelling: "bool",
+        hint: Some("true|false"),
+        source: Some(CompletionSource::Static(vec![
+            "true".to_string(),
+            "false".to_string(),
+        ])),
+        default: Some("true"),
+        ..Default::default()
+    };
     let live_compact_enabled = Field {
         description: "Whether the server asks this session to fold its own context.",
         spelling: "bool",
@@ -379,6 +398,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
         ),
     ));
     fields.push(("keep_alive", keep_alive.build()));
+    fields.push(("prefix_cache_plan", prefix_cache_plan.build()));
     fields.push((
         "live_compact",
         object(

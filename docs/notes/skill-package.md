@@ -70,7 +70,7 @@ The package's directory holds one more file, and a reader never derives it again
 functions take, as JSON Schema, generated from the signatures by the *publisher* -- the
 content repository's `python/schemas.py`, which `scripts/ship.sh` runs before it commits and
 checks with `--check` before it publishes. Every reader trusts the file: the catalog hangs it on
-`run_skill`'s `cmd` for a client to complete from, and the prompt index appends its bytes to the
+`run_skill`'s `cmd` for a client to complete from, and the prompt plan appends its bytes to the
 skill's own prose. So one API has one document, and a signature that moved without the file
 regenerated is caught by `--check`, not by a disagreement between two readings.
 

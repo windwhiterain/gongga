@@ -1213,7 +1213,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
 fn config_arg(remotes: &[String], update: bool) -> protocol::ArgSpec {
     let mut spec = arg(
         "config",
-        "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (cwd, worktree), keep_alive and live_compact. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. cache_tier takes none to clear. `workspace.cwd` says both where the session works and which machine: `remote://<name>/<absolute path>` moves it to that peer. worktree is read when the session is created and never after: it makes a branch and a worktree of that name in the repository the cwd sits in, and the session works in it.",
+        "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (cwd, worktree), keep_alive, live_compact and prefix_cache_plan. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. cache_tier takes none to clear. `workspace.cwd` says both where the session works and which machine: `remote://<name>/<absolute path>` moves it to that peer. worktree is read when the session is created and never after: it makes a branch and a worktree of that name in the repository the cwd sits in, and the session works in it.",
         false,
         Some("json"),
         CompletionSource::None,
@@ -1331,7 +1331,12 @@ fn arg_spec(
 /// missed name publishes a type the command refuses.
 fn type_of(name: &str) -> &'static str {
     match name {
-        "keep_alive" | "must_create" | "persistant" | "live_compact_enabled" | "replay" => "bool",
+        "keep_alive"
+        | "must_create"
+        | "persistant"
+        | "live_compact_enabled"
+        | "replay"
+        | "prefix_cache_plan" => "bool",
         "since"
         | "limit"
         | "wait"
@@ -1403,6 +1408,13 @@ fn session_config_args(remotes: &[String], update: bool) -> Vec<protocol::ArgSpe
             false,
             Some("blocks"),
             CompletionSource::None,
+        ),
+        arg(
+            "prefix_cache_plan",
+            "Whether the head carries the one-shot meta plan of the references the first message names. false skips the injection so a small-context session keeps a minimal head; references then travel in the messages that name them. Read when the head is stamped, never re-rendered. Unset follows `[agent] prefix_cache_plan` (default true).",
+            false,
+            Some("true|false"),
+            CompletionSource::Static(vec!["true".into(), "false".into()]),
         ),
         arg(
             "must_create",
@@ -1803,7 +1815,7 @@ async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
 /// A message is expanded once, so a stored row never carries a reference a later
 /// retry would resolve differently. A session whose provider cannot be resolved still
 /// takes its message: only the skills are expanded then. A `@file` the prompt row's
-/// index carries stays as written; one it does not, this message carries.
+/// plan carries stays as written; one it does not, this message carries.
 /// See `docs/notes/server-meta.md`.
 async fn expand_message(
     d: &Dispatch,
@@ -1818,15 +1830,23 @@ async fn expand_message(
     let llm = llm.as_ref().map(|(client, _, _)| client.as_ref());
     let home = session.cwd();
     let prompt = d.store.prompt(session.id()).map_err(|e| e.to_string())?;
-    Ok(crate::meta::expand(
-        &d.store,
-        &machines,
-        &home,
-        &message,
-        llm,
-        prompt.as_ref().map(|row| row.rooted.as_slice()),
-    )
-    .await)
+    // No head yet: planning assumes a plan to come; opted-out assumes an empty plan.
+    let empty: [String; 0] = [];
+    let rooted = match prompt.as_ref() {
+        Some(row) => Some(row.rooted.as_slice()),
+        None => {
+            let plan_on = session
+                .tuning()
+                .prefix_cache_plan
+                .unwrap_or(d.agent.config.now().agent.prefix_cache_plan);
+            if plan_on {
+                None
+            } else {
+                Some(empty.as_slice())
+            }
+        }
+    };
+    Ok(crate::meta::expand(&d.store, &machines, &home, &message, llm, rooted).await)
 }
 
 /// Delivers `message`: a turn when free, an inbox row when busy.
@@ -2111,6 +2131,10 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
         Err(e) => return Outcome::err(format!("--memory_max_unmasked_blocks: {e}")),
     };
+    let prefix_plan = match flag_of(args, "prefix_cache_plan") {
+        Ok(value) => value,
+        Err(e) => return Outcome::err(format!("--prefix_cache_plan: {e}")),
+    };
     // A percentage needs a window; silently keeping the old budget would lie.
     let context = entry.context.or(d.agent.config.now().model.context);
     if let (Some(percent), None) = (threshold, context) {
@@ -2335,6 +2359,10 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(maximum) = memory_max {
         tuning.memory_max_unmasked_blocks = Some(maximum);
     }
+    let plan_changed = prefix_plan.is_some();
+    if let Some(value) = prefix_plan {
+        tuning.prefix_cache_plan = Some(value);
+    }
     // Zero is not a threshold: enabled live compact needs a positive interval.
     let config = d.agent.config.now();
     let live_on = tuning
@@ -2371,7 +2399,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "mask checkpoints need a positive memory_max_unmasked_blocks".to_string(),
         );
     }
-    if changed || cache_changed || live_changed {
+    if changed || cache_changed || live_changed || plan_changed {
         // Persist before applying: a restart must restore what turns here read.
         if let Err(e) = d.store.set_session_tuning(
             session.id(),
@@ -2389,6 +2417,14 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 tuning.cache_keepalive,
             ) {
                 return Outcome::err(format!("could not save the cache settings: {e}"));
+            }
+        }
+        if plan_changed {
+            if let Err(e) = d
+                .store
+                .set_session_prefix_cache_plan(session.id(), tuning.prefix_cache_plan)
+            {
+                return Outcome::err(format!("could not save the prefix cache plan setting: {e}"));
             }
         }
         if live_changed {
@@ -3811,7 +3847,7 @@ fn row_event(name: &str, row: &MessageRow) -> Option<Event> {
             | Kind::Tools
             | Kind::Instructions
             | Kind::AgentsMd
-            | Kind::IndexRow
+            | Kind::PlanRow
             | Kind::Info,
         ) => said(ResponsePart::Inject, None),
         None => said(ResponsePart::Inject, None),
@@ -4654,6 +4690,7 @@ fn stated_tuning(
             live_compact_interval_tokens: row.live_compact_interval_tokens,
             live_compact_mode: row.live_compact_mode,
             memory_max_unmasked_blocks: row.memory_max_unmasked_blocks,
+            prefix_cache_plan: row.prefix_cache_plan,
         },
     }
 }

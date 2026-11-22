@@ -623,7 +623,7 @@ impl Agent {
         let placed = placed.as_deref();
         let remote = session.remote_name();
         let remote = remote.as_deref();
-        // Where it stands now, which is what the card and the index are about.
+        // Where it stands now, which is what the card and the plan are about.
         let here = match placed {
             Some(path) => crate::session::stated(path),
             None => crate::session::stated(cwd),
@@ -659,24 +659,31 @@ impl Agent {
         let parameters = prompts
             .text(crate::prompts::PARAMETERS)
             .filter(|text| !text.is_empty());
-        // Where the conversation's references stand now, planned once, for the one
-        // request that carries it.
-        let (index, rooted, index_explicit, index_cached, agents_md) = match self
-            .index_of(id, name, model, &here, &home, machines, remote)
-            .await
-        {
-            Some(parts) => (Some(parts.0), parts.1, parts.2, parts.3, parts.4),
-            None => (None, Vec::new(), Vec::new(), Vec::new(), None),
+        // The references' plan, stamped once; an opted-out session gets no plan row.
+        let plan_on = session
+            .tuning()
+            .prefix_cache_plan
+            .unwrap_or(self.config.now().agent.prefix_cache_plan);
+        let (plan, rooted, plan_explicit, plan_cached, agents_md) = if plan_on {
+            match self
+                .plan_of(id, name, model, &here, &home, machines, remote)
+                .await
+            {
+                Some(parts) => (Some(parts.0), parts.1, parts.2, parts.3, parts.4),
+                None => (None, Vec::new(), Vec::new(), Vec::new(), None),
+            }
+        } else {
+            (None, Vec::new(), Vec::new(), Vec::new(), None)
         };
         let prompt = crate::store::Prompt {
             instructions,
-            index,
+            plan,
             agents_md,
             tail,
             parameters,
             rooted,
-            index_explicit,
-            index_cached,
+            plan_explicit,
+            plan_cached,
             cwd: here,
             remote: remote.map(str::to_string),
             model: Some(model.to_string()),
@@ -730,18 +737,18 @@ impl Agent {
         Ok(tool_set)
     }
 
-    /// How much an indexed entry may change before it is re-sent, or nothing when
+    /// How much a planned entry may change before it is re-sent, or nothing when
     /// no patch may be appended.
     ///
     /// # Invariant
     ///
     /// A patch is appended only where the prose introducing it exists: a diff with no
     /// template behind it would arrive as an unexplained second copy of the entry.
-    fn index_tolerance(&self) -> Option<f64> {
+    fn plan_tolerance(&self) -> Option<f64> {
         let prompts = crate::prompts::shared();
         let explained = prompts.text(crate::prompts::REVISION).is_some();
         explained
-            .then(|| self.config.now().agent.index_change_tolerance)
+            .then(|| self.config.now().agent.plan_change_tolerance)
             .filter(|tolerance| *tolerance > 0.0)
     }
 
@@ -844,10 +851,10 @@ impl Agent {
     ///
     /// The order is `prefix_cache`'s, a permutation of what it was given: no entry is
     /// invented for a reference that could not be read, and the spellings returned are the
-    /// ones the index carries, so a message naming one again keys the same entry. The rules
+    /// ones the plan carries, so a message naming one again keys the same entry. The rules
     /// travel outside it (`meta::rules`). Everything is read in `home`. See
     /// `docs/notes/server-agent.md`.
-    async fn index_of(
+    async fn plan_of(
         &self,
         id: i64,
         name: &str,
@@ -864,7 +871,7 @@ impl Agent {
         Option<String>,
     )> {
         // The queue as well as the transcript: an early message left its `@file(...)`
-        // mentions for this row to index.
+        // mentions for this row to plan.
         let mut texts = self.store.user_texts(id).ok()?;
         texts.extend(self.store.queued_texts(name).unwrap_or_default());
         let borrowed: Vec<&str> = texts.iter().map(String::as_str).collect();
@@ -891,10 +898,10 @@ impl Agent {
         let planned = crate::prefix_cache::plan(
             &self.store,
             owner,
-            "prompt index",
+            "prompt plan",
             &wanted,
             rates,
-            self.index_tolerance(),
+            self.plan_tolerance(),
         );
         // A plan may carry a chain's ancestors that nobody named: they ride in so
         // the cached prefix stays whole. The two lists partition `rooted`, letting a
@@ -935,7 +942,7 @@ impl Agent {
             None => body,
         };
         let prompts = crate::prompts::shared();
-        let mut index = prompts.render("reference_index", &[("entries", &body)]);
+        let mut plan = prompts.render("reference_index", &[("entries", &body)]);
         if !planned.revisions.is_empty() {
             let changes = planned
                 .revisions
@@ -943,10 +950,10 @@ impl Agent {
                 .map(|(spelling, patch)| format!("{spelling}\n{patch}"))
                 .collect::<Vec<_>>()
                 .join("\n\n");
-            index.push_str("\n\n");
-            index.push_str(&prompts.render(crate::prompts::REVISION, &[("revisions", &changes)]));
+            plan.push_str("\n\n");
+            plan.push_str(&prompts.render(crate::prompts::REVISION, &[("revisions", &changes)]));
         }
-        Some((index, rooted, explicit, cached, rules))
+        Some((plan, rooted, explicit, cached, rules))
     }
 
     /// Records the whole step around the narrower request and tool measurements.
@@ -1073,7 +1080,7 @@ impl Agent {
         let tier = self.cache_tier(llm, tier);
         let mut rx = llm.stream(
             &prompt.instructions,
-            prompt.index.as_deref(),
+            prompt.plan.as_deref(),
             prompt.parameters.as_deref(),
             prompt.tail.as_deref(),
             &source,
@@ -1311,12 +1318,12 @@ impl Agent {
                     window: stream,
                 } => {
                     saw_completion = true;
-                    // The index it carried is warm again -- and only that one. The
+                    // The plan it carried is warm again -- and only that one. The
                     // owner is the directory the prompt row states.
                     crate::prefix_cache::confirm(
                         &self.store,
                         &prompt.cwd,
-                        "prompt index",
+                        "prompt plan",
                         &prompt.rooted,
                     );
                     // Outside the guard: a provider with no counts still took the time.
@@ -2438,20 +2445,20 @@ mod tests {
             .expect("a session");
         let first = crate::store::Prompt {
             instructions: "prose".to_string(),
-            index: None,
+            plan: None,
             agents_md: None,
             tail: Some("Session `s`, 2026-11-01 14:00 UTC".to_string()),
             parameters: Some("every call may carry `description`".to_string()),
             rooted: Vec::new(),
-            index_explicit: Vec::new(),
-            index_cached: Vec::new(),
+            plan_explicit: Vec::new(),
+            plan_cached: Vec::new(),
             cwd: ".".to_string(),
             remote: None,
             model: Some("m".to_string()),
         };
         store.append_prompt(id, &first).expect("one row");
         // The head is five rows now: instructions/1, tools/2, agents.md/3,
-        // index/4, info/5. The prompt is rebuilt from them, field for field.
+        // plan/4, info/5. The prompt is rebuilt from them, field for field.
         let read = store.prompt(id).expect("a readable row").expect("one row");
         assert_eq!(read, first, "the five rows rebuild the same prompt");
         // The first transcript row follows the five head slots.
@@ -2474,13 +2481,13 @@ mod tests {
             .expect("a session");
         let prompt = crate::store::Prompt {
             instructions: "the system prose".to_string(),
-            index: Some("the expanded index".to_string()),
+            plan: Some("the expanded plan".to_string()),
             agents_md: Some("the standing rules".to_string()),
             tail: Some("the card".to_string()),
             parameters: Some("the shared args".to_string()),
             rooted: vec!["@file(a.md)".to_string()],
-            index_explicit: vec!["@file(a.md)".to_string()],
-            index_cached: vec!["@skill(b)".to_string()],
+            plan_explicit: vec!["@file(a.md)".to_string()],
+            plan_cached: vec!["@skill(b)".to_string()],
             cwd: "/here".to_string(),
             remote: Some("peer".to_string()),
             model: Some("m".to_string()),
@@ -2500,13 +2507,13 @@ mod tests {
             .expect("a session");
         let prompt = crate::store::Prompt {
             instructions: "the standing prose".to_string(),
-            index: Some("the expanded index".to_string()),
+            plan: Some("the expanded plan".to_string()),
             agents_md: Some("the standing rules".to_string()),
             tail: Some("the card".to_string()),
             parameters: Some("shared args".to_string()),
             rooted: vec![],
-            index_explicit: vec!["@file(a.md)".to_string()],
-            index_cached: vec!["@skill(old)".to_string()],
+            plan_explicit: vec!["@file(a.md)".to_string()],
+            plan_cached: vec!["@skill(old)".to_string()],
             cwd: "/home/session".to_string(),
             remote: None,
             model: Some("m".to_string()),
@@ -2527,13 +2534,18 @@ mod tests {
         let window = store.messages_between(id, 1, 5).expect("the head window");
         let texts: Vec<&str> = window.messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts.len(), 5, "five stored head rows render as five lines");
-        // The index names its references and why, and never carries their bodies.
+        // The plan names its references and why, and never carries their bodies.
+        assert!(texts[0].starts_with("instructions: the standing prose"));
+        assert!(texts[1].starts_with("tools: 1 tool(s) [read_file]"));
+        assert!(texts[2].starts_with("agents.md: the standing rules"));
+        assert!(texts[3].starts_with("plan: 2 reference(s)"));
         assert!(texts[3].contains("\n  required: @file(a.md)"));
         assert!(texts[3].contains("\n  cached: @skill(old)"));
         assert!(
-            !texts[3].contains("the expanded index"),
+            !texts[3].contains("the expanded plan"),
             "a body the provider caches is not a line the reader wants"
         );
+        assert!(texts[4].starts_with("info: cwd=/home/session"));
     }
 
     #[test]

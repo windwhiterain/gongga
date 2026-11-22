@@ -136,6 +136,7 @@ SessionConfig := { # sticky
   workspace: Workspace = default(),
   keep_alive: bool = false, # if auto send message to interrup waiting when approaching the cache alive deadline.
   live_compact: LiveCompact = default(),
+  prefix_cache_plan: bool = true, # unset follows [agent] prefix_cache_plan; false skips the one-shot meta plan injection so a small-context session keeps a minimal head; read when the head is stamped, never re-rendered
 }
 LiveCompact := { # sticky; the opt-in is a switch, never a token count
   enabled: bool = default(), # unset follows the home's [agent] live_compact_enabled
@@ -221,7 +222,7 @@ replace `id` with mapped File ID before sending for request.
 ### Meta Prefix Cache Planning
 a cache tree is simulated for each model or (model, some config) that shares prefix cache.
 
-for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as index to the system prompt, then per session dynamic content.
+for the first user message to a empty session, find all meta references recursively with the prompt as the root, plan the price optimal meta content order in the cache tree, append the meta's content with its raw form (without replacement) as plan to the system prompt, then per session dynamic content. `prefix_cache_plan = false` skips this injection entirely: the head carries only instructions, card and parameters, and references travel in the messages that name them.
 
 ## Live Compact
 - every session that starts in work mode opens the starting checkpoint before its first user message; a session created in explore opens it when the agent switches from explore to build. The checkpoint does not depend on the opt-in: the `live_compact` tool is always available.

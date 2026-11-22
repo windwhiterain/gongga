@@ -76,7 +76,7 @@ Measured 2026-11-05 against the real endpoint, with the messages long enough for
 answer to be readable: the read is quantized to 128 tokens, so a message of a few dozen
 tokens cannot locate a boundary inside itself. Three messages of ~1,200 tokens each, on
 top of the machine's 15 tool schemas, the stored prose and a stored 51,310-character
-index:
+plan:
 
 | send | total | read | read/128 |
 | --- | --- | --- | --- |
@@ -139,7 +139,7 @@ turn. The cross-session case, isolated: four siblings sharing the whole head ans
 What follows for a plan: the transcript's own shape already earns the 98-99% (every step
 appends a message to the last request), and the only cross-session reuse reachable is
 siblings whose messages are identical from the first one on -- which the start card's
-session name and minute forbid. No ordering of the index can buy that, because the system
+session name and minute forbid. No ordering of the plan can buy that, because the system
 text is a single unit and it comes first.
 
 MiniMax's automatic cache states three things worth writing down, checked 2026-11-05:

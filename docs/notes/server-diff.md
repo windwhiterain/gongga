@@ -7,8 +7,8 @@ the text? The answer is a unified patch -- the three-line-context, `@@`-headed s
 reader already knows from `git diff` -- or nothing at all, because a change larger than
 the caller's tolerance is not worth saying that way.
 
-It exists for one caller: an entry of the prompt index whose file was edited. Re-sending
-the index re-bills everything behind the entry, and the provider holds that prefix only
+It exists for one caller: an entry of the prompt plan whose file was edited. Re-sending
+the plan re-bills everything behind the entry, and the provider holds that prefix only
 in the old shape; keeping the entry as it was sent and appending the change is the only
 version that keeps the whole prefix warm. See `docs/notes/server-prefix-cache.md`.
 
@@ -61,7 +61,7 @@ already decides how large a change may be before the patch is abandoned.
 
 ## what it is not
 
-- Not a `git apply`-compatible patch: no `---`/`+++` header, no index line. Its reader is
+- Not a `git apply`-compatible patch: no `---`/`+++` header, no plan line. Its reader is
   a person, and the entry's spelling stands where the file name would.
 - Not word-level. A line is the unit, because a line is what an editor and a reader both
   see, and because the measure is compared against a line count.

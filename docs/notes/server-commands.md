@@ -217,9 +217,9 @@ the inbox task and lands as a `text` row at the boundary, the same row
 session's state, not the caller: the handoff note rides the `gongga-cli` shim,
 which greets on the wire as a `Client` rather than the in-process `Tool` origin,
 and an origin test would therefore never mark it. That is what puts its `@`
-references in `store.user_texts` for `agent::index_of` to plan; without the mark
+references in `store.user_texts` for `agent::plan_of` to plan; without the mark
 the note would be an `inject` row, invisible to the plan, and its files would
-never enter the index. See `server-handover.md`.
+never enter the plan. See `server-handover.md`.
 
 One read of `busy`, and it decides both things: what contract the row has and
 whether this call starts a turn. Two reads were a race with a nasty shape -- the
@@ -340,7 +340,7 @@ queryable, and the bridge reads the answer it is about to relay rather than
 reassembling it from `response` deltas (which interleave with tool calls and
 would need the same parsing rules as the UI).
 
-Read-only and cheap: one indexed range scan. It does not claim the session gate,
+Read-only and cheap: one planned range scan. It does not claim the session gate,
 because reading a transcript while a turn appends to it is exactly what the TUI's
 replay does, and neither has anything to write.
 

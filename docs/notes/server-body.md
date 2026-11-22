@@ -22,8 +22,8 @@ request's head opens with it -- one `input` item, ahead of every row.
 
 Four positions have been tried, and each was measured:
 
-- **Inside `instructions`.** A change there costs the index and the whole transcript,
-  which is the entire prompt: 24k characters of index edited by one line cost a session
+- **Inside `instructions`.** A change there costs the plan and the whole transcript,
+  which is the entire prompt: 24k characters of plan edited by one line cost a session
   292k cached tokens (`server-prefix-cache.md`). And a per-session value in the head
   makes every new session's first request one the provider has never seen.
 - **Its own item, after the transcript.** A value written after the rows is a *new
@@ -37,7 +37,7 @@ Four positions have been tried, and each was measured:
 
 As its own item in front of the messages, the card is the first byte two sessions
 differ in, so a provider with a shared prefix cache can serve the tools and the prose and
-nothing after the card -- the index included. That is the one cost of this position, and
+nothing after the card -- the plan included. That is the one cost of this position, and
 it is accepted: it is where SPEC puts it, the model reads the facts before the request
 rather than after it, and on the provider measured here the position made no difference
 at all. Measured on the real server after the change: three of ten fresh sessions of one
@@ -68,7 +68,7 @@ rows whose payload had gone were skipped, a picture's File ID was substituted on
 out. Every one of those is a way for the same transcript to leave as two different byte
 sequences, and a provider caches a *byte prefix*, so each one invalidated everything
 behind the point it landed. Measured on this machine: one session lost 292k cached
-tokens when an indexed file was edited, another lost 315k because a card was
+tokens when a planned file was edited, another lost 315k because a card was
 re-rendered for a new spelling of a directory.
 
 Recovery therefore happens where the row is written, not where the request is built:

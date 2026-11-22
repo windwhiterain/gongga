@@ -149,11 +149,11 @@ So the knowledge is split by how long it lives:
 
 | where | what | what it costs |
 | --- | --- | --- |
-| `@skill:monitor` (ship), in the prompt's index | the map, the triage table, the read-only schema, the safety rules, how a report ends | charged once, reused by every later request of the session |
+| `@skill:monitor` (ship), in the prompt's plan | the map, the triage table, the read-only schema, the safety rules, how a report ends | charged once, reused by every later request of the session |
 | the message | this failure: session, model, row range, build, home, pid, cwd, the `notice` the server wrote, the read-back command | charged once, and it rides the transcript |
 
 The reference is what makes the first row work: a message that names a skill makes
-that skill's body a root, `agent::index_of` appends it to the system prompt's index,
+that skill's body a root, `agent::plan_of` appends it to the system prompt's plan,
 and the mention itself stays literal in the message (SPEC's meta prefix cache
 optimize). Nothing about the *dynamic* half needs a skill, so a home that installed
 none still gets a report worth acting on; it just gets the map by exploring.
@@ -166,20 +166,20 @@ the one action it must not improvise.
 ## Why a skill and not the directory's `AGENTS.md`
 
 `meta::roots` also seeds `@file:AGENTS.md` from the session's own directory. That
-works, and it worked in the failing run: the first prompt's index carried
+works, and it worked in the failing run: the first prompt's plan carried
 `AGENTS.md` (21,400 characters). The rows that did not were **later** rows, and
-the reason is the one thing the index follows that the row does not show.
+the reason is the one thing the plan follows that the row does not show.
 
 `SessionHandle::cwd()` is `ShellSet::reported_cwd()` -- the directory the session's
 *shell* is in, which `remote::Shell` refreshes with a `pwd` after every command.
-The index is rebuilt from that live value at every step; `prompt.cwd` in the row is
+The plan is rebuilt from that live value at every step; `prompt.cwd` in the row is
 frozen at the first stored value (`prompt_in_force`: "the stored row's answer once
-there is one"). So every row claims one directory while the index behind it was
+there is one"). So every row claims one directory while the plan behind it was
 built in whatever directory the last tool call left the shell in.
 
 Measured on the failing run, exactly:
 
-| row | what the shell had just done | index |
+| row | what the shell had just done | plan |
 | --- | --- | --- |
 | 2 | nothing yet | `AGENTS.md` + `self-control`, 21,400 |
 | 11 → 13 | `cd /c/Users/17124/.gongga && ls -la` | `self-control` alone, 12,017 |
@@ -201,9 +201,9 @@ is one, and it is right at the first prompt. It is that a skill resolves through
 its shell constantly. It also means the map cannot silently vanish mid-turn.
 
 The selftest asserts the property directly: `@skill:monitor` must be in the prompt
-row's `rooted`, and the skill's own words must be in the index.
+row's `rooted`, and the skill's own words must be in the plan.
 
-The index is not free: 38,190 characters in this repository, because `AGENTS.md`
+The plan is not free: 38,190 characters in this repository, because `AGENTS.md`
 names `SPEC.md` and `whiting-dev` and the walk is recursive. That is the price of
 having the map in a cached prompt instead of a transcript, and it is paid once.
 
@@ -230,7 +230,7 @@ of two flash models where the first is the refused one:
 | `set_session` on the monitor | accepted, and the row carries the model it named -- and it is still there after the next handover |
 | the monitor's own failure | no second report: no handover names `@monitor/providers` as the failing session |
 | six more seconds of ticks | no second report for the same failure |
-| the disk kind | `bash scripts/disk_selftest.sh`: a successful tool call on a volume below the declared threshold writes one `disk_space` event and creates `@monitor/disk` with `@skill(clean-disk)` in its prompt index; a second call adds nothing |
+| the disk kind | `bash scripts/disk_selftest.sh`: a successful tool call on a volume below the declared threshold writes one `disk_space` event and creates `@monitor/disk` with `@skill(clean-disk)` in its prompt plan; a second call adds nothing |
 | the disk kind's arithmetic | `disk::tests::*`: an ordinary disk says nothing, a low one says it once, a recovered one says it again |
 
 The disk kind is a separate script because it needs no error to have happened

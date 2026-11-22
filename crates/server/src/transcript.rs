@@ -231,7 +231,7 @@ impl Transcript {
                 | Kind::Tools
                 | Kind::Instructions
                 | Kind::AgentsMd
-                | Kind::IndexRow
+                | Kind::PlanRow
                 | Kind::Info
                 | Kind::ToolCall
                 | Kind::BuiltinCall

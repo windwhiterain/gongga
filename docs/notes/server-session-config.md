@@ -18,6 +18,11 @@ a thing made for it: it is read when the session is created and refused afterwar
 `none` -- its default, so a delta that says nothing says none -- makes nothing. What the
 name becomes is `server-worktree.md`.
 
+`prefix_cache_plan` is a plain `bool` leaf, default `true`: whether the head carries
+the one-shot meta plan. `false` keeps a small-context session's head minimal. It is
+read when the head is stamped, so a delta changes only sessions that have no head
+yet; `None` follows the home's `[agent] prefix_cache_plan`.
+
 ## A model is spelled two ways
 
 SPEC spells `Model := {provider, model}`. The session's row, and the sticky entry a

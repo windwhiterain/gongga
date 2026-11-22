@@ -328,17 +328,17 @@ It is a threshold for *asking*, not for acting: zero turns the notice off.
 ## prompt_in_force
 
 The head is stamped once and read from the store after that, without comparison:
-if a row exists, that row is what this session sends, for ever. Prose, index and card
+if a row exists, that row is what this session sends, for ever. Prose, plan and card
 are rendered exactly once, for the one request that will carry them.
 
 The earlier rule re-rendered at every step and appended a new row whenever the text
 differed, so that "每次读都必须读的是最新的" held -- an edited template, an edited file the
-index named, and a directory all reached the model on the very next step. That rule is
+plan named, and a directory all reached the model on the very next step. That rule is
 what this file used to defend, and it was wrong in the way that matters most here: the
 head is a *byte prefix*. Any edit to it invalidates every token behind it, and behind it
 is the whole transcript. Measured on this machine, before the change:
 
-- 24k characters of index, edited by one line of `AGENTS.md`, cost session `hierarchy`
+- 24k characters of plan, edited by one line of `AGENTS.md`, cost session `hierarchy`
   292,992 cached tokens. The next request had a 849-byte common prefix with the one
   before it.
 - A card re-rendered because a shell reported `C:\resource\lichen-vm` where the row said
@@ -347,7 +347,7 @@ is the whole transcript. Measured on this machine, before the change:
   that could move it.
 
 The freshest text is still what the model reads; it now arrives as a row appended to the
-transcript instead of as a rewritten prefix (`server-body.md`). A stale index entry is
+transcript instead of as a rewritten prefix (`server-body.md`). A stale plan entry is
 the price, and it is one the reader can see and correct, unlike a bill for every token
 already sent. `scripts/prompt_selftest.sh` holds the surviving half: a `cd` writes no new
 prompt row, and the row that exists names the session, the rules file and every root.
@@ -360,9 +360,9 @@ reports, so one turn said `C:\...` and the next `C:/...`, which rewrote the tail
 the whole prefix -- 2462 tokens of context, 189 cached. One directory now renders one
 string, and a re-spelling is no longer a reason to re-bill.
 
-## index_of, built once instead of rebuilt
+## plan_of, built once instead of rebuilt
 
-The index is the first prompt row's second half: the `AGENTS.md` the session's directory
+The plan is the first prompt row's second half: the `AGENTS.md` the session's directory
 carries, the text of every reference its messages name, and everything those name in
 turn -- walked recursively, ordered by `prefix_cache::plan`, appended to the instructions
 as one string. The rules file opens it verbatim and is not planned at all: it is read by
@@ -373,7 +373,12 @@ item per entry: the entries are one thing to plan, a chain in `prefix_cache`, an
 measured, an item per node re-uses slightly less at steady state (94.5% against 97.7%),
 not more.
 
-It runs on the request that writes the row, and never again. Two arguments had to be
+It runs on the request that writes the row, and never again. Whether it runs at all
+is the session's `prefix_cache_plan`: a session that states `false` (or follows a
+home default of `false`) gets no plan row -- the head is instructions, card and
+parameters only, and references travel in the messages that name them. The switch
+exists for a small-context model: the plan is stamped once and unmaskable, so a
+window it would fill must never be given it. Two arguments had to be
 settled for that to be the right answer, and both were settled by measurement:
 
 - **Rebuilding is not free, it is the most expensive thing this server can do.** Each
@@ -382,17 +387,17 @@ settled for that to be the right answer, and both were settled by measurement:
   throws away everything that plan saves.
 - **Everything is read in one directory**: `home`, the one the prompt row itself records.
   `prompt_in_force` used to pass the process's live `cwd`, so a single `cd` inside a tool
-  call rebuilt the index somewhere else and appended a new row -- the map vanished exactly
+  call rebuilt the plan somewhere else and appended a new row -- the map vanished exactly
   when the session started exploring (`cd ~/.gongga` → `AGENTS.md` gone, 21,400 → 12,017
   characters), and the cached prefix went with it.
 
 
 
 Two facts are decided here and used everywhere after: the order (the cache's, not the
-message's) and `rooted`, the spellings the index carries. `meta::expand` leaves exactly
+message's) and `rooted`, the spellings the plan carries. `meta::expand` leaves exactly
 those literal, and `commands::expand_message` reads them off the stored row -- for a
 session with no row yet, it assumes the row about to be written will carry everything
-the message names, which is what makes the first turn's references both indexed and
+the message names, which is what makes the first turn's references both planned and
 literal instead of expanded twice. See `docs/notes/server-meta.md`.
 
 ## Agent::step
@@ -628,14 +633,14 @@ argument behind a short claim lives here.
 
 **The head is stamped once.** It is part of the prefix the provider caches, so it is
 written once and read from the store after that. A template edit, a rewritten
-`AGENTS.md` and a re-planned index all used to re-render it, and each one invalidated the
+`AGENTS.md` and a re-planned plan all used to re-render it, and each one invalidated the
 whole transcript behind it. What the references say is still read every step, but a
 change is a row appended to the transcript, never a head that moves.
 
 **There is no exception.** `Prompt::cwd`, `Prompt::remote` and `Prompt::model` record the
 facts of the first request, but nothing compares them: a move or a model swap is a
 setting, not context. The card may name a machine or model the session has since left,
-and the index may lack a skill the new arrangement would bring in. That is the price of
+and the plan may lack a skill the new arrangement would bring in. That is the price of
 a byte prefix that never moves, and it is visible to the reader in `messages_between`.
 `Store::prompt` reads slot 1, the fixed first row, so what was sent first is what every
 later request sends -- no search among rows. The tool schema sits in slot 2 and the first
@@ -644,9 +649,9 @@ moved into these slots by the 5-to-6 migrator before the store opens it; there i
 path that walks. A row written before `remote` or `model` existed reads as `None`, which
 is a record of a first request that did not carry that fact.
 
-**The index.** The order is `prefix_cache`'s, which is a permutation of what it was
+**The plan.** The order is `prefix_cache`'s, which is a permutation of what it was
 given: no entry is invented for a reference that could not be read, and the spellings
-returned are exactly the ones the index carries, so `meta::expand` leaves those mentions
+returned are exactly the ones the plan carries, so `meta::expand` leaves those mentions
 literal. Everything is read in `home`, the session's own directory: a `cd` in its shell
 must not rewrite what was already sent.
 

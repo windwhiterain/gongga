@@ -79,7 +79,7 @@ The report is written so a monitor can start work without reading anything first
 the room left per volume, the threshold, which session's tool call was running and
 whether it succeeded, the build, the home, the pid, and the read-back command. The
 standing map — where a home keeps its database and its log, how to tell a provider's
-refusal from a harness bug — comes from `@skill: clean-disk`, which is an index
+refusal from a harness bug — comes from `@skill: clean-disk`, which is a plan
 entry in the prompt's prefix rather than text in the message.
 
 ## A peer's disk is read by the peer

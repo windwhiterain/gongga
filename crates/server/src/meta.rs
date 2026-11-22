@@ -151,7 +151,7 @@ pub struct Root {
 ///
 /// # Invariant
 ///
-/// Seeded into the index of every session whose directory is on a peer, because the
+/// Seeded into the plan of every session whose directory is on a peer, because the
 /// tool instructions deliberately say nothing about the two machines: a model that is
 /// never told reads `remote_bash` as a second `bash`. See `docs/notes/server-meta.md`.
 pub const REMOTE_SKILL: &str = "remote";
@@ -164,7 +164,7 @@ pub const REMOTE_SKILL: &str = "remote";
 /// stands, and no ancestor's copy is inherited.
 pub const RULES: &str = "AGENTS.md";
 
-/// The spelling the directory's rules are indexed under.
+/// The spelling the directory's rules are carried in the plan under.
 pub fn rules_spelling() -> String {
     format!("@{}({})", Reference::File.name(), RULES)
 }
@@ -173,7 +173,7 @@ pub fn rules_spelling() -> String {
 ///
 /// # Invariant
 ///
-/// Not a memory module: what this returns opens the index on every request, verbatim,
+/// Not a memory module: what this returns opens the plan on every request, verbatim,
 /// so no plan can reorder it, patch it, or let it expire, and the model reads the rules
 /// that are on disk rather than the ones a provider was holding.
 pub async fn rules(machines: &Machines<'_>, home: &Path) -> Option<String> {
@@ -247,11 +247,11 @@ fn enqueue(
     queue.push((named, mention.remote.clone(), mention.value.clone()));
 }
 
-/// The spelling a reference is indexed under: its prefix, its value, and its machine.
+/// The spelling a reference is carried in the plan under: its prefix, its value, and its machine.
 ///
 /// # Invariant
 ///
-/// One spelling for one reference, whoever asks: the index carries these and
+/// One spelling for one reference, whoever asks: the plan carries these and
 /// `expand` writes one back into every `@skill(...)` mention, so a second way of
 /// writing it would make the same file two entries. The machine is part of the
 /// spelling because `@file(x)` on this machine and `@file(x)` on a peer are two
@@ -463,7 +463,7 @@ pub async fn embed(machines: &Machines<'_>, home: &Path, text: &str) -> String {
 /// # Invariant
 ///
 /// A `@skill(...)` mention keeps its spelling and gains the `SKILL.md` it names, even
-/// when the index already carries that body: a body never says where it lives.
+/// when the plan already carries that body: a body never says where it lives.
 ///
 /// An unresolvable reference stays in the text verbatim: an unreadable picture or
 /// an unknown skill must still be a message. `llm` is `None` when no client
@@ -483,7 +483,7 @@ pub async fn expand(
             continue;
         }
         let (replacement, image) = match mention.kind {
-            // A file the index carries stays as written; one it does not, this message carries.
+            // A file the plan carries stays as written; one it does not, this message carries.
             Reference::File => {
                 if rooted.is_none_or(|keys| keys.iter().any(|key| *key == spelling(&mention))) {
                     continue;
