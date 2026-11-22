@@ -1,6 +1,8 @@
 # Harness integration for declarative KV memory masks
 
-2026-11-22 design proposal. No code or SPEC change has been made.
+2026-11-22 design proposal; implemented in commit `81278dd1` (server: add harness-owned
+memory masks) and exercised end to end against the peer vLLM at `c95aa6ba8b00`
+(see `2026-11-22-vllm-memory-adapter-offload.md`, "Harness integration").
 
 ## User's direction
 
