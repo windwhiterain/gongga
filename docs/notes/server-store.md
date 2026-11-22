@@ -613,15 +613,16 @@ the config field is `compress_above_tokens`, so the wording may be stale.
 ## SessionRow::usage
 
 One `protocol::Usage` rather than four loose fields, because the values are one
-measurement: `context_tokens` is the provider's billed input, `cached_tokens` what
-of it came from its prefix cache, `tps` is output tokens over the time the stream
-took, and `ttft_ms` is the wait for its first token. A session that has never
+measurement: `context_tokens` is visible input, `tape_tokens` is the complete tape
+including masked spans, `cached_tokens` is what of the tape came from its prefix cache,
+`tps` is output tokens over the time the stream took, and `ttft_ms` is the wait for its
+first token. A session that has never
 completed a request has 0 context and no rate, and SPEC's title says nothing
 rather than zero.
 
 One measurement means they are cleared as one: a transcript cut and a committed
-checkpoint both reset `context_tokens` to zero, and they reset `cached_tokens`,
-`tps` and `ttft_ms` with it. Keeping the rate of a request whose transcript no
+checkpoint both reset `context_tokens` to zero, and they reset `tape_tokens`,
+`cached_tokens`, `tps` and `ttft_ms` with it. Keeping the rate of a request whose transcript no
 longer exists would put a number in a title that reads as one sentence about one
 request. The rate and the delay are the reader's clock, not the provider's -- see
 `docs/notes/server-agent.md`.

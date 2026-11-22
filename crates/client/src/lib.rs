@@ -3017,7 +3017,7 @@ fn title_note(session: &protocol::SessionInfo) -> String {
         if let Some(cached) = usage.cached_tokens {
             parts.push(format!(
                 "cached {}%",
-                cached.saturating_mul(100) / usage.context_tokens
+                cached.saturating_mul(100) / usage.tape_tokens.unwrap_or(usage.context_tokens)
             ));
         }
     }

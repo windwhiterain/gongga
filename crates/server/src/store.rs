@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- the point -- the first request of the next run needs a size to compare
     -- against, and no amount of character counting would give a better one.
     context_tokens INTEGER NOT NULL DEFAULT 0,
+    -- Complete tape positions, including spans hidden by the memory view.
+    tape_tokens INTEGER,
     -- Incremented by the reset trigger, so a notice queued for an older transcript
     -- stays obsolete even when the in-flight request writes its old usage back.
     context_generation INTEGER NOT NULL DEFAULT 0,
@@ -551,6 +553,10 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         (
             "context_tokens",
             "ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "tape_tokens",
+            "ALTER TABLE sessions ADD COLUMN tape_tokens INTEGER",
         ),
         (
             "context_generation",
@@ -1118,6 +1124,7 @@ impl Store {
             "context_limit",
             "thinking_effort",
             "context_tokens",
+            "tape_tokens",
             "context_generation",
             "cached_tokens",
             "tps",
@@ -1171,14 +1178,14 @@ impl Store {
             .execute(
                 "INSERT INTO sessions (name, status, model, model_name, cwd, created_at,
                                        updated_at, context_limit, thinking_effort,
-                                       context_tokens, context_generation, cached_tokens,
+                                       context_tokens, tape_tokens, context_generation, cached_tokens,
                                        tps, ttft_ms, remote, monitor_seq,
                                        cache_tier, cache_keepalive, mode, live_compact,
                                        live_compact_mode, memory_max_unmasked_blocks,
                                        prefix_cache_plan,
                                        dream_of, dreamed_checkpoint_id)
                  SELECT ?2, 'idle', model, model_name, cwd, ?3, ?3, context_limit,
-                        thinking_effort, context_tokens, context_generation, cached_tokens,
+                        thinking_effort, context_tokens, tape_tokens, context_generation, cached_tokens,
                         tps, ttft_ms, remote, monitor_seq, cache_tier,
                         CASE WHEN ?4 IS NULL THEN cache_keepalive ELSE 0 END,
                         CASE WHEN ?4 IS NULL THEN mode ELSE 'work' END,
@@ -1459,7 +1466,7 @@ impl Store {
                     s.worktree_merged, s.worktree_changed,
                     s.dream_of, s.dreamed_checkpoint_id, s.mentor_of,
                     s.live_compact_mode, s.memory_max_unmasked_blocks,
-                    s.prefix_cache_plan
+                    s.prefix_cache_plan, s.tape_tokens
              FROM sessions s";
 
     /// Every session in `error` because of a provider, with what a monitor turn
@@ -1582,6 +1589,7 @@ impl Store {
             thinking_effort: r.get(9)?,
             usage: protocol::Usage {
                 context_tokens: r.get::<_, i64>(10)?.max(0) as u64,
+                tape_tokens: r.get::<_, Option<i64>>(30)?.map(|n| n.max(0) as u64),
                 cached_tokens: r.get::<_, Option<i64>>(11)?.map(|n| n.max(0) as u64),
                 tps: r.get(12)?,
                 ttft_ms: r.get::<_, Option<i64>>(13)?.map(|ms| ms.max(0) as u64),
@@ -1895,6 +1903,16 @@ impl Store {
         Ok(tokens.max(0) as u64)
     }
 
+    /// Complete tape positions in the last measurement, falling back for ordinary providers.
+    pub fn measured_tape_tokens(&self, session_id: i64) -> anyhow::Result<u64> {
+        let tokens: i64 = self.lock().query_row(
+            "SELECT COALESCE(tape_tokens, context_tokens) FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(tokens.max(0) as u64)
+    }
+
     pub fn truncate_after(&self, session_id: i64, seq: i64) -> anyhow::Result<usize> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -1946,7 +1964,7 @@ impl Store {
                 // left in this row. See `docs/notes/server-store.md`.
                 "UPDATE sessions SET live_compact_baseline_tokens = NULL,
                         live_compact_interval_effective = NULL,
-                        context_tokens = 0, cached_tokens = NULL,
+                        context_tokens = 0, tape_tokens = NULL, cached_tokens = NULL,
                         tps = NULL, ttft_ms = NULL,
                         context_generation = context_generation - ?2
                  WHERE id = ?1",
@@ -2073,10 +2091,11 @@ impl Store {
         usage: protocol::Usage,
     ) -> anyhow::Result<()> {
         self.lock().execute(
-            "UPDATE sessions SET context_tokens = ?1, cached_tokens = ?2, tps = ?3, \
-             ttft_ms = ?4 WHERE id = ?5 AND context_generation = ?6",
+            "UPDATE sessions SET context_tokens = ?1, tape_tokens = ?2, cached_tokens = ?3, tps = ?4, \
+             ttft_ms = ?5 WHERE id = ?6 AND context_generation = ?7",
             params![
                 usage.context_tokens as i64,
+                usage.tape_tokens.map(|n| n as i64),
                 usage.cached_tokens.map(|n| n as i64),
                 usage.tps,
                 usage.ttft_ms.map(|ms| ms as i64),
@@ -2892,9 +2911,13 @@ impl Store {
         tx.execute(
             "UPDATE sessions SET live_compact_baseline_tokens = NULL,
                     live_compact_interval_effective = NULL,
-                    context_tokens = 0, cached_tokens = NULL,
+                    context_tokens = 0, tape_tokens = NULL, cached_tokens = NULL,
                     tps = NULL, ttft_ms = NULL
              WHERE id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "UPDATE memory_state SET unmasked_tokens = NULL WHERE session_id = ?1",
             params![session_id],
         )?;
         // Zero context needs an explicit +1; the trigger covers the rest.

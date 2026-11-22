@@ -249,6 +249,8 @@ fn blocks_of(content: &Value) -> Vec<Value> {
 pub fn usage(input: u64, cached: u64, output: u64, created: u64) -> Usage {
     Usage {
         input_tokens: Some(input.saturating_add(cached).saturating_add(created)),
+        gongga_unmasked_input_tokens: None,
+        gongga_memory_tokens: Vec::new(),
         output_tokens: Some(output),
         total_tokens: None,
         input_tokens_details: Some(crate::llm::InputTokens {

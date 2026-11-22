@@ -80,8 +80,10 @@ pub struct LlmClient {
     temperature: Option<f32>,
     /// The largest answer this model may give; this face requires the number.
     max_output_tokens: u32,
-    /// The input+output ceiling this model publishes, when the roster states one.
+    /// The full-tape input+output ceiling this model publishes, when stated.
     context: Option<u64>,
+    /// The visible input+output ceiling a memory-mask model publishes, when stated.
+    unmasked_context: Option<u64>,
     store: bool,
     /// How long the provider may take to send response headers: not about the body,
     /// which only [`Self::idle_timeout`] bounds.
@@ -187,7 +189,12 @@ impl LlmClient {
     /// provider's own arithmetic. See `docs/notes/server-llm.md`.
     fn wanted_output(&self, spent: u64) -> u32 {
         let stated = self.max_output_tokens;
-        let Some(window) = self.context else {
+        let window = if self.memory_mask {
+            self.unmasked_context.or(self.context)
+        } else {
+            self.context
+        };
+        let Some(window) = window else {
             return stated;
         };
         // A roster that states no ceiling leaves the number to the provider: capping by
@@ -236,6 +243,7 @@ impl LlmClient {
             temperature: cfg.temperature,
             max_output_tokens,
             context: cfg.context,
+            unmasked_context: cfg.context,
             store: cfg.store,
             headers_timeout: cfg.headers_timeout,
             idle_timeout: cfg.idle_timeout,
@@ -253,6 +261,12 @@ impl LlmClient {
         })
     }
 
+    /// Applies the provider's separate visible window after construction.
+    pub fn with_unmasked_context(mut self, context: Option<u64>) -> Self {
+        self.unmasked_context = context.or(self.context);
+        self
+    }
+
     /// The model this client asks for, `provider/model_name`; logged at the start
     /// of every turn.
     pub fn model(&self) -> &str {
@@ -262,6 +276,11 @@ impl LlmClient {
     /// Whether this endpoint accepts a full tape plus a declarative memory mask.
     pub fn supports_memory_mask(&self) -> bool {
         self.memory_mask
+    }
+
+    /// The visible context window used by mask-mode budgets.
+    pub fn unmasked_context(&self) -> Option<u64> {
+        self.unmasked_context.or(self.context)
     }
 
     /// The roster provider behind this client, when the roster named one.
@@ -1578,11 +1597,23 @@ async fn read_stream_inner(
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Usage {
+    /// Complete tape positions, including masked spans.
     pub input_tokens: Option<u64>,
+    /// Visible positions after the provider applies the pinned memory view.
+    pub gongga_unmasked_input_tokens: Option<u64>,
+    /// Provider-tokenized sizes of the masked blocks in this request.
+    #[serde(default)]
+    pub gongga_memory_tokens: Vec<MemoryTokenUsage>,
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     /// How much of `input_tokens` the provider served from its own prefix cache.
     pub input_tokens_details: Option<InputTokens>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryTokenUsage {
+    pub memory_id: String,
+    pub tokens: u64,
 }
 
 /// The nested half of `usage`, spelled the way the Responses API spells it.

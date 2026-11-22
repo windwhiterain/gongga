@@ -6,6 +6,7 @@ fn bare(id: &str) -> Model {
         id: id.to_string(),
         name: id.to_string(),
         context: None,
+        unmasked_context: None,
         endpoints: Vec::new(),
         max_output_tokens: None,
         reasoning_levels: Vec::new(),

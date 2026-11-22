@@ -315,7 +315,9 @@ numbers announced when a request completes.
 
 `Usage` carries `cached_tokens`, not the percentage SPEC's title shows: the tokens
 are what the provider reported, and a percent is a division the reader's side can
-decide to spell.
+decide to spell. `context_tokens` is visible input, while `tape_tokens` includes masked
+spans as well; cache percentages divide by `tape_tokens`, falling back to visible input
+for ordinary providers.
 
 `Usage` is split out of `UsageEvent` so the numbers can be carried without a
 session name in the one place that does not need it -- the session is the field

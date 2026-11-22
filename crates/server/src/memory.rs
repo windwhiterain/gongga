@@ -74,7 +74,8 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             session_id          INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
             view_generation     INTEGER NOT NULL DEFAULT 0 CHECK (view_generation >= 0),
             next_unmasked_order INTEGER NOT NULL DEFAULT 0 CHECK (next_unmasked_order >= 0),
-            unmasked_count      INTEGER NOT NULL DEFAULT 0 CHECK (unmasked_count >= 0)
+            unmasked_count      INTEGER NOT NULL DEFAULT 0 CHECK (unmasked_count >= 0),
+            unmasked_tokens     INTEGER CHECK (unmasked_tokens IS NULL OR unmasked_tokens >= 0)
         );
 
         CREATE TABLE IF NOT EXISTS memory_blocks (
@@ -83,6 +84,7 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             source_after_seq INTEGER NOT NULL,
             cutoff_seq      INTEGER NOT NULL,
             summary         TEXT NOT NULL,
+            token_count     INTEGER CHECK (token_count IS NULL OR token_count >= 0),
             unmasked_order  INTEGER,
             created_at      INTEGER NOT NULL,
             CHECK (unmasked_order IS NULL OR unmasked_order >= 0)
@@ -139,7 +141,26 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                SET unmasked_count = unmasked_count + 1
              WHERE session_id = NEW.session_id;
         END;",
-    )
+    )?;
+    if conn
+        .prepare("SELECT token_count FROM memory_blocks LIMIT 1")
+        .is_err()
+    {
+        conn.execute(
+            "ALTER TABLE memory_blocks ADD COLUMN token_count INTEGER",
+            [],
+        )?;
+    }
+    if conn
+        .prepare("SELECT unmasked_tokens FROM memory_state LIMIT 1")
+        .is_err()
+    {
+        conn.execute(
+            "ALTER TABLE memory_state ADD COLUMN unmasked_tokens INTEGER",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -162,6 +183,7 @@ struct RequestedBlock {
     checkpoint_id: i64,
     id: String,
     unmasked: bool,
+    tokens: Option<i64>,
 }
 
 fn stored_call(
@@ -293,6 +315,14 @@ fn maximum(value: u64) -> anyhow::Result<i64> {
     i64::try_from(value).map_err(|_| anyhow!("max_unmasked_blocks exceeds SQLite integer range"))
 }
 
+fn projected_unmasked_tokens(conn: &Connection, session_id: i64) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT unmasked_tokens FROM memory_state WHERE session_id = ?1",
+        params![session_id],
+        |row| row.get(0),
+    )
+}
+
 /// Masks the FIFO head until the configured count holds, at one pinned generation.
 ///
 /// # Invariant
@@ -302,20 +332,27 @@ fn enforce_limit_at_generation(
     conn: &Connection,
     session_id: i64,
     maximum: i64,
+    maximum_tokens: Option<i64>,
+    mut unmasked_tokens: Option<i64>,
     cause: &str,
     generation: i64,
 ) -> anyhow::Result<Vec<String>> {
-    let count = read_state(conn, session_id)?.unmasked_count;
-    let overflow = count.saturating_sub(maximum);
     let mut auto_masked = Vec::new();
-    for _ in 0..overflow {
-        let head = conn
+    loop {
+        let count = read_state(conn, session_id)?.unmasked_count;
+        let over_count = count > maximum;
+        let over_tokens = maximum_tokens
+            .is_some_and(|limit| unmasked_tokens.unwrap_or(0).saturating_sub(limit) > 0);
+        if (!over_count && !over_tokens) || count == 0 {
+            break;
+        }
+        let (head, tokens) = conn
             .query_row(
-                "SELECT checkpoint_id FROM memory_blocks
+                "SELECT checkpoint_id, token_count FROM memory_blocks
                  WHERE session_id = ?1 AND unmasked_order IS NOT NULL
                  ORDER BY unmasked_order ASC LIMIT 1",
                 params![session_id],
-                |row| row.get::<_, i64>(0),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .optional()?
             .ok_or_else(|| {
@@ -331,12 +368,23 @@ fn enforce_limit_at_generation(
         if changed != 1 {
             bail!("memory FIFO head changed while enforcing session {session_id}'s limit");
         }
+        if let (Some(visible), Some(tokens)) = (unmasked_tokens.as_mut(), tokens) {
+            *visible = visible.saturating_sub(tokens).max(0);
+        }
         record_view_event(conn, session_id, head, MASK, cause, generation)?;
         auto_masked.push(public_id(session_id, head));
     }
+    if maximum_tokens.is_some() {
+        conn.execute(
+            "UPDATE memory_state SET unmasked_tokens = ?2 WHERE session_id = ?1",
+            params![session_id, unmasked_tokens],
+        )?;
+    }
     let remaining = read_state(conn, session_id)?.unmasked_count;
-    if remaining > maximum {
-        bail!("memory unmasked count did not reach the configured limit");
+    let token_limit_unmet =
+        remaining > 0 && maximum_tokens.is_some_and(|limit| unmasked_tokens.unwrap_or(0) > limit);
+    if remaining > maximum || token_limit_unmet {
+        bail!("memory unmasked usage did not reach the configured limits");
     }
     Ok(auto_masked)
 }
@@ -423,6 +471,10 @@ impl crate::store::Store {
         artifacts.push(call.seq);
 
         ensure_state(&tx, session_id)?;
+        tx.execute(
+            "UPDATE memory_state SET unmasked_tokens = NULL WHERE session_id = ?1",
+            params![session_id],
+        )?;
         // The id needs the checkpoint row. Its result_seq placeholder is transaction-local.
         tx.execute(
             "INSERT INTO live_compact_checkpoints
@@ -517,8 +569,12 @@ impl crate::store::Store {
         call_id: &str,
         content: &Value,
         max_unmasked_blocks: u64,
+        max_unmasked_tokens: Option<u64>,
     ) -> anyhow::Result<MemoryRecall> {
         let maximum = maximum(max_unmasked_blocks)?;
+        let maximum_tokens = max_unmasked_tokens
+            .map(|value| crate::memory::maximum(value))
+            .transpose()?;
         let connection = self.picture_conn();
         let mut connection = connection.lock().unwrap_or_else(|error| error.into_inner());
         let tx = connection.transaction()?;
@@ -541,9 +597,9 @@ impl crate::store::Store {
             if !seen.insert(checkpoint_id) {
                 continue;
             }
-            let (unmasked_order, retired) = tx
+            let (unmasked_order, row_tokens, retired) = tx
                 .query_row(
-                    "SELECT m.unmasked_order, EXISTS(
+                    "SELECT m.unmasked_order, m.token_count, EXISTS(
                          SELECT 1 FROM live_compact_checkpoints retired
                          WHERE retired.session_id = m.session_id AND retired.kind = 'cut'
                            AND retired.result_seq >= c.result_seq)
@@ -551,7 +607,13 @@ impl crate::store::Store {
                      JOIN live_compact_checkpoints c ON c.id = m.checkpoint_id
                      WHERE m.session_id = ?1 AND m.checkpoint_id = ?2",
                     params![session_id, checkpoint_id],
-                    |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, bool>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<i64>>(0)?,
+                            row.get::<_, Option<i64>>(1)?,
+                            row.get::<_, bool>(2)?,
+                        ))
+                    },
                 )
                 .optional()?
                 .ok_or_else(|| {
@@ -564,6 +626,7 @@ impl crate::store::Store {
                 checkpoint_id,
                 id: id.to_string(),
                 unmasked: unmasked_order.is_some(),
+                tokens: row_tokens,
             });
         }
 
@@ -571,6 +634,7 @@ impl crate::store::Store {
         let generation = advance_generation(&tx, session_id)?;
         let mut next_order = read_state(&tx, session_id)?.next_unmasked_order;
         let mut recalled = Vec::new();
+        let mut recalled_tokens = 0_i64;
         for block in requested {
             if block.unmasked {
                 continue;
@@ -594,6 +658,7 @@ impl crate::store::Store {
                 RECALL_CAUSE,
                 generation,
             )?;
+            recalled_tokens = recalled_tokens.saturating_add(block.tokens.unwrap_or(0));
             recalled.push(block.id);
             next_order = following_order;
         }
@@ -601,8 +666,21 @@ impl crate::store::Store {
             "UPDATE memory_state SET next_unmasked_order = ?2 WHERE session_id = ?1",
             params![session_id, next_order],
         )?;
-        let auto_masked =
-            enforce_limit_at_generation(&tx, session_id, maximum, RECALL_CAUSE, generation)?;
+        let unmasked_tokens = if maximum_tokens.is_some() {
+            projected_unmasked_tokens(&tx, session_id)?
+                .map(|tokens| tokens.saturating_add(recalled_tokens))
+        } else {
+            None
+        };
+        let auto_masked = enforce_limit_at_generation(
+            &tx,
+            session_id,
+            maximum,
+            maximum_tokens,
+            unmasked_tokens,
+            RECALL_CAUSE,
+            generation,
+        )?;
         let view_generation = nonnegative(generation, "memory view generation")?;
         let output = serde_json::json!({
             "recalled": &recalled,
@@ -677,37 +755,107 @@ impl crate::store::Store {
         })
     }
 
-    /// Applies a newly configured unmasked-block count without appending a tool result.
+    /// Applies count and visible-token limits without appending a tool result.
     ///
     /// # Invariant
     ///
-    /// A configuration that already satisfies the count changes neither the view nor its
-    /// generation. Otherwise all displacements share one committed generation and `cause`.
+    /// A view that already satisfies both limits changes neither visibility nor generation.
     pub fn enforce_limit(
         &self,
         session_id: i64,
         max_unmasked_blocks: u64,
+        max_unmasked_tokens: Option<u64>,
         cause: &str,
     ) -> anyhow::Result<LimitEnforced> {
         let maximum = maximum(max_unmasked_blocks)?;
+        let maximum_tokens = max_unmasked_tokens
+            .map(|value| crate::memory::maximum(value))
+            .transpose()?;
         let connection = self.picture_conn();
         let mut connection = connection.lock().unwrap_or_else(|error| error.into_inner());
         let tx = connection.transaction()?;
         ensure_state(&tx, session_id)?;
         let state = read_state(&tx, session_id)?;
-        if state.unmasked_count <= maximum {
+        let unmasked_tokens = if maximum_tokens.is_some() {
+            projected_unmasked_tokens(&tx, session_id)?
+        } else {
+            None
+        };
+        let over_tokens = state.unmasked_count > 0
+            && maximum_tokens
+                .is_some_and(|limit| unmasked_tokens.unwrap_or(0).saturating_sub(limit) > 0);
+        if state.unmasked_count <= maximum && !over_tokens {
             return Ok(LimitEnforced {
                 auto_masked: Vec::new(),
                 view_generation: nonnegative(state.view_generation, "memory view generation")?,
             });
         }
         let generation = advance_generation(&tx, session_id)?;
-        let auto_masked = enforce_limit_at_generation(&tx, session_id, maximum, cause, generation)?;
+        let auto_masked = enforce_limit_at_generation(
+            &tx,
+            session_id,
+            maximum,
+            maximum_tokens,
+            unmasked_tokens,
+            cause,
+            generation,
+        )?;
         let view_generation = nonnegative(generation, "memory view generation")?;
         tx.commit()?;
         Ok(LimitEnforced {
             auto_masked,
             view_generation,
         })
+    }
+
+    /// Clears tokenization-specific measurements when a session changes models.
+    pub fn invalidate_memory_tokens(&self, session_id: i64) -> anyhow::Result<()> {
+        let connection = self.picture_conn();
+        let mut connection = connection.lock().unwrap_or_else(|error| error.into_inner());
+        let tx = connection.transaction()?;
+        tx.execute(
+            "UPDATE memory_state SET unmasked_tokens = NULL WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        tx.execute(
+            "UPDATE memory_blocks SET token_count = NULL WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Persists provider-tokenized block sizes for later recall-budget arithmetic.
+    pub fn note_memory_tokens(
+        &self,
+        session_id: i64,
+        measurements: &[crate::llm::MemoryTokenUsage],
+        unmasked_tokens: u64,
+    ) -> anyhow::Result<()> {
+        let connection = self.picture_conn();
+        let mut connection = connection.lock().unwrap_or_else(|error| error.into_inner());
+        let tx = connection.transaction()?;
+        ensure_state(&tx, session_id)?;
+        tx.execute(
+            "UPDATE memory_state SET unmasked_tokens = ?2 WHERE session_id = ?1",
+            params![session_id, maximum(unmasked_tokens)?],
+        )?;
+        for measurement in measurements {
+            let checkpoint_id = checkpoint_from_public_id(session_id, &measurement.memory_id)?;
+            let tokens = maximum(measurement.tokens)?;
+            let changed = tx.execute(
+                "UPDATE memory_blocks SET token_count = ?3
+                 WHERE session_id = ?1 AND checkpoint_id = ?2",
+                params![session_id, checkpoint_id, tokens],
+            )?;
+            if changed != 1 {
+                bail!(
+                    "provider reported memory id {:?}, which session {session_id} does not own",
+                    measurement.memory_id
+                );
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 }

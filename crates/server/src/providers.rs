@@ -120,8 +120,10 @@ pub struct Endpoint {
 pub struct Model {
     pub id: String,
     pub name: String,
-    /// Input+output ceiling when published; a `--context_limit` percent is of it.
+    /// Full-tape input+output ceiling when published.
     pub context: Option<u64>,
+    /// Visible input+output ceiling for a memory-mask endpoint; `--context_limit` uses it.
+    pub unmasked_context: Option<u64>,
     /// Request paths this model accepts; empty means unstated, assume OpenAI.
     pub endpoints: Vec<String>,
     /// The longest answer this model gives, when the roster states it.
@@ -174,6 +176,10 @@ impl Model {
         }
         if self.context.is_none() && found.context.is_some() {
             self.context = found.context;
+            filled = true;
+        }
+        if self.unmasked_context.is_none() && found.unmasked_context.is_some() {
+            self.unmasked_context = found.unmasked_context;
             filled = true;
         }
         if self.endpoints.is_empty() && !found.endpoints.is_empty() {
@@ -287,6 +293,7 @@ pub struct Entry {
     /// The key as written in the file; `None` is normal when a var is named.
     pub key: Option<String>,
     pub context: Option<u64>,
+    pub unmasked_context: Option<u64>,
     /// The roster's reasoning levels, in its own spelling, for validating a level.
     pub reasoning_levels: Vec<String>,
     pub reasoning_default: Option<String>,
@@ -682,6 +689,7 @@ impl Catalog {
             // back to for its own model.
             key: self.keys.get(&provider.id).cloned(),
             context: found.context,
+            unmasked_context: found.unmasked_context,
             reasoning_levels: found.reasoning_levels.clone(),
             reasoning_default: found.reasoning_default.clone(),
             reasoning_mapping: found.reasoning_mapping.clone(),
@@ -854,6 +862,8 @@ struct FileModel {
     name: String,
     #[serde(default)]
     context: Option<u64>,
+    #[serde(default)]
+    unmasked_context: Option<u64>,
     #[serde(default, alias = "max_output")]
     max_output_tokens: Option<u32>,
     #[serde(default)]
@@ -947,6 +957,7 @@ fn model_from_file(m: FileModel) -> Model {
         },
         id: m.id,
         context: m.context,
+        unmasked_context: m.unmasked_context,
         max_output_tokens: m.max_output_tokens,
         endpoints: m.endpoints,
         reasoning_levels: m.reasoning_levels,

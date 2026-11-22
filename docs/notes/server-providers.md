@@ -182,10 +182,13 @@ File order still means what it meant — it is the default preference order
 (`Catalog::default_entry`) — and `[model] provider` in `config.toml` is still
 how a server's own choice is stated.
 
-## Model::context
+## Model::context and Model::unmasked_context
 
-Input+output ceiling, when the provider publishes one. This is what a
-`--context_limit` percentage is a percentage *of*.
+`context` is the complete-tape input+output ceiling, when the provider publishes one.
+`unmasked_context` is the visible input+output ceiling of a memory-mask endpoint. In
+mask mode it is what `--context_limit`, output-space calculation and memory eviction
+use; an endpoint with no separate value falls back to `context`. Masking never changes
+the full-tape ceiling or token positions.
 
 ## Model::endpoints
 

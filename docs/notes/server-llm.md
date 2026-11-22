@@ -440,6 +440,13 @@ order is not seq order because one step's calls precede its outputs. The adapter
 map by the annotation, consume the fields out of band, and never render them as model
 text. Both fields are absent in cut mode and on ordinary Responses endpoints.
 
+The response's standard `usage.input_tokens` remains the full tape. A mask response also
+carries `gongga_unmasked_input_tokens` and `gongga_memory_tokens`, the latter naming each
+masked block and its provider-tokenized size. The harness persists those sizes for FIFO
+eviction and reports visible context and tape position separately. Cached-token ratios
+continue to use full-tape `input_tokens`. A mask response that omits these measurements
+is a protocol error, not a license to estimate token sizes from characters.
+
 `build_head` sends `prompt_cache_options` only when the configured tier appears
 in the roster's `cache_ttl_tiers` for that provider, and `prompt_cache_key` only
 when the roster's `[[provider]] cache_affinity` says this provider documents it (or

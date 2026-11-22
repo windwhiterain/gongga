@@ -363,11 +363,28 @@ impl Agent {
                     .or_else(|e| self.providers.resolve_by_name(model).ok_or(e))
                     .map_err(|e| anyhow::anyhow!("--model {model}: {e}"))?;
                 let client = self.client_for(&choice.entry, choice.api_key)?;
-                (client, choice.entry.context)
+                let mode = tuning
+                    .live_compact_mode
+                    .unwrap_or(self.config.now().agent.live_compact_mode);
+                let context = if mode == crate::live_compact::CompactMode::Mask {
+                    choice.entry.unmasked_context.or(choice.entry.context)
+                } else {
+                    choice.entry.context
+                };
+                (client, context)
             }
         };
         let budget = self.budget(name, context, tuning.context_limit);
         Ok((llm, budget, context))
+    }
+
+    /// The visible-token ceiling used for automatic memory displacement.
+    fn memory_token_limit(&self, llm: &LlmClient, tuning: &crate::session::Tuning) -> Option<u64> {
+        let context = llm.unmasked_context()?;
+        let percent = tuning
+            .context_limit
+            .unwrap_or(self.config.now().agent.context_limit_percent);
+        Some(crate::providers::tokens_for_percent(context, percent))
     }
 
     /// The notice threshold in input tokens; zero means off without exception.
@@ -415,7 +432,7 @@ impl Agent {
         // Every client measures its own provider, into this home's store.
         cfg.measure = Some(self.store.clone());
         cfg.price = entry.price;
-        let client = Arc::new(LlmClient::new(&cfg)?);
+        let client = Arc::new(LlmClient::new(&cfg)?.with_unmasked_context(entry.unmasked_context));
         self.clients
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1036,7 +1053,10 @@ impl Agent {
                 .ok_or_else(|| {
                     anyhow::anyhow!("mask mode requires a positive memory_max_unmasked_blocks")
                 })?;
-            let enforced = self.store.enforce_limit(id, maximum, "request")?;
+            let token_limit = self.memory_token_limit(llm, &tuning);
+            let enforced = self
+                .store
+                .enforce_limit(id, maximum, token_limit, "request")?;
             if !enforced.auto_masked.is_empty() {
                 self.log_event(
                     Some(id),
@@ -1336,7 +1356,7 @@ impl Agent {
                         let cached = u.cached_tokens();
                         // Read before this answer is stored: the last input is
                         // the largest prefix this one could hit.
-                        let expected = self.store.context_tokens(id).ok();
+                        let expected = self.store.measured_tape_tokens(id).ok();
                         let gap_ms =
                             self.store.last_usage_at(id).ok().flatten().map(|at| {
                                 crate::store::now_millis().saturating_sub(at).max(0) as u64
@@ -1371,6 +1391,7 @@ impl Agent {
                                 "latency_ms": requested.elapsed().as_millis() as u64,
                                 "stream_ms": stream_ms,
                                 "input": u.input_tokens,
+                                "unmasked_input": u.gongga_unmasked_input_tokens,
                                 "cached": cached,
                                 "uncached": u.uncached_tokens(),
                                 "expected": expected,
@@ -1387,9 +1408,40 @@ impl Agent {
                     }
                     // The provider's own counts, never computed: a request that
                     // reported none keeps the last one it did.
+                    if compact_mode == crate::live_compact::CompactMode::Mask
+                        && let Some(measurement) = usage.as_ref()
+                    {
+                        if measurement.gongga_unmasked_input_tokens.is_none() {
+                            anyhow::bail!(
+                                "memory-mask provider omitted gongga_unmasked_input_tokens"
+                            );
+                        }
+                        let masked = source
+                            .memory
+                            .as_ref()
+                            .map(|view| view.masked.len())
+                            .unwrap_or(0);
+                        if measurement.gongga_memory_tokens.len() != masked {
+                            anyhow::bail!(
+                                "memory-mask provider reported {} block measurements for {masked} masked blocks",
+                                measurement.gongga_memory_tokens.len()
+                            );
+                        }
+                        self.store.note_memory_tokens(
+                            id,
+                            &measurement.gongga_memory_tokens,
+                            measurement.gongga_unmasked_input_tokens.unwrap_or(0),
+                        )?;
+                    }
                     let context = usage
                         .as_ref()
-                        .and_then(|u| u.input_tokens)
+                        .and_then(|u| {
+                            if compact_mode == crate::live_compact::CompactMode::Mask {
+                                u.gongga_unmasked_input_tokens
+                            } else {
+                                u.input_tokens
+                            }
+                        })
                         .or_else(|| self.store.context_tokens(id).ok())
                         .unwrap_or(0);
                     // A share of one request's context says nothing about the next
@@ -1397,6 +1449,7 @@ impl Agent {
                     let cached = usage.as_ref().and_then(|u| u.cached_tokens());
                     let measured = protocol::Usage {
                         context_tokens: context,
+                        tape_tokens: usage.as_ref().and_then(|u| u.input_tokens),
                         cached_tokens: cached,
                         tps,
                         ttft_ms,
@@ -1404,7 +1457,13 @@ impl Agent {
                     let _ = self
                         .store
                         .set_usage_for_generation(id, generation, measured);
-                    if let Some(input_tokens) = usage.as_ref().and_then(|u| u.input_tokens) {
+                    if let Some(input_tokens) = usage.as_ref().and_then(|u| {
+                        if compact_mode == crate::live_compact::CompactMode::Mask {
+                            u.gongga_unmasked_input_tokens
+                        } else {
+                            u.input_tokens
+                        }
+                    }) {
                         if let Err(e) =
                             self.store
                                 .set_live_compact_baseline(id, generation, input_tokens)
@@ -1660,6 +1719,7 @@ impl Agent {
             .now()
             .agent
             .memory_max_unmasked_blocks);
+        let memory_token_limit = self.memory_token_limit(llm, &tuning);
         let memory_tool = tool == crate::tools::memory::MEMORIZE_TOOL
             || tool == crate::tools::memory::RECALL_TOOL;
         let mode_error = if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL
@@ -1781,10 +1841,13 @@ impl Agent {
             }
         }
         if tool == crate::tools::memory::RECALL_TOOL && outcome.ok {
-            match self
-                .store
-                .recall(id, &call_id, &content, memory_max.unwrap_or(0))
-            {
+            match self.store.recall(
+                id,
+                &call_id,
+                &content,
+                memory_max.unwrap_or(0),
+                memory_token_limit,
+            ) {
                 Ok(committed) => {
                     special_committed = true;
                     output = committed.output.clone();

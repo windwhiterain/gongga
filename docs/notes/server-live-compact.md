@@ -144,12 +144,21 @@ placeholder. Unlike a cut, a mask checkpoint does not advance `context_generatio
 clear measured context: the canonical transcript did not shrink.
 
 `memory_state` owns the monotonically increasing `view_generation`, the next FIFO order
-and the trigger-maintained unmasked count. `recall` validates and de-duplicates ids,
-assigns orders in argument order, and masks the FIFO head until the configured count
-holds. Recalling a visible block does not refresh its position. A later cut retires
-older memory ids explicitly; recalling one is an error rather than an unmask that the
-cut projection would silently ignore. Configuration changes and every request boundary
-run the same count check, so a live configuration edit cannot leave an over-limit view.
+and the trigger-maintained unmasked count. `memory_state.unmasked_tokens` is the current
+view's projected visible size, calibrated by provider usage rather than inferred from
+characters. Each `memory_blocks.token_count` is likewise provider-tokenized; a model
+change invalidates these measurements. `recall` validates and de-duplicates ids, assigns
+orders in argument order, adds newly visible blocks to the projection, and masks the
+FIFO head until both the configured count and the session's share of the provider's
+`unmasked_context` hold. A newly memorized block has no measurement yet, so its view's
+token projection is unknown until the next response rather than guessed. Recalling a
+visible block does not refresh its position. A later cut retires older memory ids
+explicitly; recalling one is an error rather than an unmask that the cut projection
+would silently ignore. Configuration changes and every request boundary run both
+checks. Eviction stops when no historical raw block remains: the always-visible summary
+and ordinary tail can exceed a small configured share without turning a configuration
+change into an error or advancing a generation without a view change, and the provider
+still enforces the actual request ceiling.
 
 The tool result is written in the same transaction as the view. `memorize` returns the
 id, inclusive source range and generation; `recall` returns newly recalled ids,

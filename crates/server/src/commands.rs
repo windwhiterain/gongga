@@ -2328,7 +2328,8 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         changed = true;
     }
     // Writing the session's own model is what keeps the config's out of its row.
-    if tuning.model.as_deref() != Some(entry.model.as_str()) {
+    let model_changed = tuning.model.as_deref() != Some(entry.model.as_str());
+    if model_changed {
         tuning.model = Some(entry.model.clone());
         changed = true;
     }
@@ -2410,6 +2411,11 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         ) {
             return Outcome::err(format!("could not save the session settings: {e}"));
         }
+        if model_changed && let Err(e) = d.store.invalidate_memory_tokens(session.id()) {
+            return Outcome::err(format!(
+                "could not invalidate model-specific memory measurements: {e}"
+            ));
+        }
         if cache_changed {
             if let Err(e) = d.store.set_session_cache(
                 session.id(),
@@ -2439,10 +2445,20 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 return Outcome::err(format!("could not save the live compact settings: {e}"));
             }
             if compact_mode_now == crate::live_compact::CompactMode::Mask {
-                match d
-                    .store
-                    .enforce_limit(session.id(), memory_max_now.unwrap_or(0), "config")
-                {
+                let token_limit = entry.unmasked_context.or(entry.context).map(|context| {
+                    crate::providers::tokens_for_percent(
+                        context,
+                        tuning
+                            .context_limit
+                            .unwrap_or(config.agent.context_limit_percent),
+                    )
+                });
+                match d.store.enforce_limit(
+                    session.id(),
+                    memory_max_now.unwrap_or(0),
+                    token_limit,
+                    "config",
+                ) {
                     Ok(enforced) => {
                         if !enforced.auto_masked.is_empty() {
                             d.agent.log_event(
