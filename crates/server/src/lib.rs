@@ -158,6 +158,7 @@ pub fn main(args: Args) -> anyhow::Result<()> {
         .build()?;
     let result = runtime.block_on(run(args));
     tracing::info!("main: dropping runtime");
+    // Joined, not abandoned: the two start-of-run jobs are not on this runtime.
     drop(runtime);
     tracing::info!("main: runtime dropped");
     result
@@ -662,7 +663,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     agents::start();
     {
         let home = cfg.home.clone();
-        tokio::task::spawn_blocking(move || match ship::refresh(&home) {
+        // A thread of its own, not a blocking job: a fetch waits on a network.
+        // See `server-lib.md`.
+        std::thread::spawn(move || match ship::refresh(&home) {
             Ok(Some(commit)) => tracing::info!(
                 content = %commit.get(..10).unwrap_or(commit.as_str()),
                 "the content moved while this server ran; the checkout is on it, and this home reads it"

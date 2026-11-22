@@ -9,14 +9,13 @@ will not be a roster, and a module renamed every time is a module nobody cites.
 
 ## The refresh cannot hang
 
-`sync` runs on the blocking pool, which the runtime joins at the exit, so a `git
-pull` that never gives up would hold the exit for as long as the kernel keeps the
-connection -- the same failure as a wait on a window that never closes. Git is
-therefore told what a stalled transfer is: below a trickle for longer than the
-limit it aborts (`http.lowSpeedLimit` / `http.lowSpeedTime`), an ssh transport is
-asked not to prompt and to give up on a connection in ten seconds, and
-`GIT_TERMINAL_PROMPT=0` keeps a credential question from becoming a hang with no
-console to appear on.
+`sync` runs on a thread of its own, which the exit does not join (`server-lib.md`),
+so a `git pull` that never gives up cannot hold a stopped server. It can still hold
+that thread, and with it every later hourly tick, so git is told what a stalled
+transfer is: below a trickle for longer than the limit it aborts
+(`http.lowSpeedLimit` / `http.lowSpeedTime`), an ssh transport is asked not to
+prompt and to give up on a connection in ten seconds, and `GIT_TERMINAL_PROMPT=0`
+keeps a credential question from becoming a hang with no console to appear on.
 
 This bounds silence, not duration: a slow but moving transfer is still allowed to
 finish, because AGENTS.md forbids turning a wait into a budget.
@@ -109,6 +108,11 @@ is dropped, so a skill deleted upstream stops being listed.
 Once per process (`STARTED`), then hourly, always off the caller's thread. The
 first tick is immediate because a fresh machine has no community layer at all
 and the sooner it lands the less of the run reads a half roster.
+
+The thread is a plain `std::thread`, not a blocking job of the server's runtime:
+a sync waiting on a network has no ending, and a stop that joined it would sit
+there having already logged `server stopped`. The thread dies with the process.
+See `server-lib.md`.
 
 Nothing waits on it. The roster read is what a turn depends on, and a turn must
 not wait for a network: `providers::roster` re-reads when a file it did not have

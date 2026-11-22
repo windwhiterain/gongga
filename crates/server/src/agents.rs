@@ -194,36 +194,39 @@ pub fn sync(roots: &Roots, urls: &[String]) -> anyhow::Result<Sync> {
 ///
 /// Never blocks and never refuses to return: the roster falls back to what is on
 /// disk, so no read may wait for a network, and a failed refresh is one warning.
+///
+/// # Invariant
+///
+/// A thread of its own, not a blocking job of the runtime: a sync waiting on a
+/// network has no ending to join, and the shutdown does not owe it one. The thread
+/// dies with the process. See `docs/notes/server-lib.md`.
 pub fn start() {
     static STARTED: AtomicBool = AtomicBool::new(false);
     if STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
     let roots = Roots::of();
-    tokio::spawn(async move {
+    std::thread::spawn(move || {
         loop {
             let dir = roots.clone();
-            let synced = tokio::task::spawn_blocking(move || {
-                let outcome = sync(&dir, &urls());
-                (outcome, link_skills(&dir))
-            })
-            .await;
-            match synced {
-                Ok((Ok(sync), linked)) => tracing::info!(
+            let outcome = sync(&dir, &urls());
+            // Linked whatever the sync did: the checkout on disk is what a reader sees.
+            let linked = link_skills(&dir);
+            match outcome {
+                Ok(sync) => tracing::info!(
                     community = %roots.community.display(),
                     ?sync,
                     linked,
                     "community content"
                 ),
-                Ok((Err(e), linked)) => tracing::warn!(
+                Err(e) => tracing::warn!(
                     community = %roots.community.display(),
                     linked,
                     error = %e,
                     "cannot refresh the community content"
                 ),
-                Err(e) => tracing::warn!(error = %e, "the community refresh task ended"),
             }
-            tokio::time::sleep(REFRESH).await;
+            std::thread::sleep(REFRESH);
         }
     });
 }

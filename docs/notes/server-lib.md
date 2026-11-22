@@ -40,9 +40,15 @@ The entry point as a function: `gongga-server`'s `main.rs` parses its flags into
 `Args` and calls this, and it owns the runtime for the life of the server.
 
 The runtime is built here rather than by `#[tokio::main]` so that the drop
-happens at a point where `run` has already closed every shell. The drop still
-waits, with no deadline -- but it now waits for something that ends, which is the
-difference between waiting and hanging.
+happens at a point where `run` has already closed every shell and ended every
+script. The drop still waits, with no deadline, for every blocking job -- which is
+right: a shell or a channel sweep is work the stop owes an ending.
+
+What the drop must not wait for is a job nobody owes an ending: the content fetch
+and the community sync, both of which can sit on a network forever. They do not run
+in this runtime at all. Each gets a thread of its own (`std::thread::spawn`), so the
+drop cannot see them, and they die with the process. That is the reason the code
+reads `std::thread` where a reader would expect `spawn_blocking`.
 
 The bug this replaces: every blocking task had to drain before the process could
 go, one of them was the reaper for a persistent shell, and a persistent shell
@@ -50,6 +56,11 @@ never exits on its own. After a session had used `bash`, the process sat there
 having already logged `server stopped`. Putting a 2s deadline on the drain hid
 that instead of fixing it; what fixes it is ending the shells in `run`, after
 which there is nothing left for the drain to wait on.
+
+The same hang came back through the fetch: a stopped server logged `server
+stopped`, then `main: dropping runtime`, and sat there for 33 hours. The fix is
+not a shorter deadline -- it is that `ship::refresh` and `agents::start` are
+start-of-run jobs, not requests, so they are not in the runtime the drop drains.
 
 ## run (flag overrides)
 
