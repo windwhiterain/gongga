@@ -1344,7 +1344,8 @@ fn type_of(name: &str) -> &'static str {
         | "block_size"
         | "box_edge"
         | "time"
-        | "live_compact_interval_tokens" => "int",
+        | "live_compact_interval_tokens"
+        | "memory_max_unmasked_blocks" => "int",
         "cmd" => "Cmd",
         "config" => "SessionConfig",
         "event" => "Event",
@@ -1380,7 +1381,7 @@ fn session_config_args(remotes: &[String], update: bool) -> Vec<protocol::ArgSpe
             Some("work|explore"),
             CompletionSource::Static(vec!["work".into(), "explore".into()]),
         ),
-        // SPEC's `LiveCompact`: the session's own opt-in and threshold; unset follows `[agent]`.
+        // SPEC's `LiveCompact`: opt-in, threshold, projection and visibility limit.
         arg(
             "live_compact_enabled",
             "Whether the server asks this session to write checkpoint summaries. Unset follows the home's `[agent] live_compact_enabled`; switched on, the starting checkpoint is the transcript's end.",
@@ -1393,6 +1394,20 @@ fn session_config_args(remotes: &[String], update: bool) -> Vec<protocol::ArgSpe
             "Input-token growth between this session's checkpoints. Unset follows the home's `[agent] live_compact_interval_tokens`; a count of tokens is the threshold, never the switch.",
             false,
             Some("tokens"),
+            CompletionSource::None,
+        ),
+        arg(
+            "live_compact_mode",
+            "Checkpoint projection: cut keeps live compact's transcript projection; mask keeps the canonical tape and uses memorize/recall. Unset follows `[agent] live_compact_mode`.",
+            false,
+            Some("cut|mask"),
+            CompletionSource::Static(vec!["cut".into(), "mask".into()]),
+        ),
+        arg(
+            "memory_max_unmasked_blocks",
+            "Maximum original memory spans visible at once in mask mode. Recall masks the earliest entries in the current unmasked set when this count is exceeded. Unset follows `[agent] memory_max_unmasked_blocks`.",
+            false,
+            Some("blocks"),
             CompletionSource::None,
         ),
         arg(
@@ -2059,6 +2074,27 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
         Err(e) => return Outcome::err(format!("--live_compact_interval_tokens: {e}")),
     };
+    let compact_mode = match args.word("live_compact_mode") {
+        None => None,
+        Some(raw) => match crate::live_compact::CompactMode::parse(raw) {
+            Some(mode) => Some(mode),
+            None => {
+                return Outcome::err(format!(
+                    "--live_compact_mode must be cut or mask, not {raw:?}"
+                ));
+            }
+        },
+    };
+    let memory_max = match count_of(args, "memory_max_unmasked_blocks") {
+        Ok(None) => None,
+        Ok(Some(maximum)) if maximum > 0 => Some(maximum as u64),
+        Ok(Some(_)) => {
+            return Outcome::err(
+                "--memory_max_unmasked_blocks takes a positive count of blocks".to_string(),
+            );
+        }
+        Err(e) => return Outcome::err(format!("--memory_max_unmasked_blocks: {e}")),
+    };
     // A percentage needs a window; silently keeping the old budget would lie.
     let context = entry.context.or(d.agent.config.now().model.context);
     if let (Some(percent), None) = (threshold, context) {
@@ -2263,12 +2299,21 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(tier) = cache_tier {
         tuning.cache_tier = tier;
     }
-    let live_changed = live_enabled.is_some() || live_interval.is_some();
+    let live_changed = live_enabled.is_some()
+        || live_interval.is_some()
+        || compact_mode.is_some()
+        || memory_max.is_some();
     if let Some(value) = live_enabled {
         tuning.live_compact_enabled = Some(value);
     }
     if let Some(tokens) = live_interval {
         tuning.live_compact_interval_tokens = Some(tokens);
+    }
+    if let Some(mode) = compact_mode {
+        tuning.live_compact_mode = Some(mode);
+    }
+    if let Some(maximum) = memory_max {
+        tuning.memory_max_unmasked_blocks = Some(maximum);
     }
     // Zero is not a threshold: enabled live compact needs a positive interval.
     let config = d.agent.config.now();
@@ -2283,6 +2328,27 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "--live_compact_interval_tokens is the threshold, not the switch: enable live \
              compact only with a positive interval"
                 .to_string(),
+        );
+    }
+    let compact_mode_now = tuning
+        .live_compact_mode
+        .unwrap_or(config.agent.live_compact_mode);
+    let memory_max_now = tuning
+        .memory_max_unmasked_blocks
+        .or(config.agent.memory_max_unmasked_blocks);
+    if compact_mode_now == crate::live_compact::CompactMode::Mask
+        && entry.api != crate::llm::MEMORY_MASK_API
+    {
+        return Outcome::err(format!(
+            "memory mask mode requires endpoint api {:?}; use cut mode with this provider",
+            crate::llm::MEMORY_MASK_API
+        ));
+    }
+    if compact_mode_now == crate::live_compact::CompactMode::Mask
+        && memory_max_now.unwrap_or(0) == 0
+    {
+        return Outcome::err(
+            "mask checkpoints need a positive memory_max_unmasked_blocks".to_string(),
         );
     }
     if changed || cache_changed || live_changed {
@@ -2311,8 +2377,35 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 &name,
                 tuning.live_compact_enabled,
                 tuning.live_compact_interval_tokens,
+                tuning.live_compact_mode,
+                tuning.memory_max_unmasked_blocks,
             ) {
                 return Outcome::err(format!("could not save the live compact settings: {e}"));
+            }
+            if compact_mode_now == crate::live_compact::CompactMode::Mask {
+                match d
+                    .store
+                    .enforce_limit(session.id(), memory_max_now.unwrap_or(0), "config")
+                {
+                    Ok(enforced) => {
+                        if !enforced.auto_masked.is_empty() {
+                            d.agent.log_event(
+                                Some(session.id()),
+                                "memory_limit",
+                                &json!({
+                                    "cause": "config",
+                                    "auto_masked": enforced.auto_masked,
+                                    "view_generation": enforced.view_generation,
+                                }),
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        return Outcome::err(format!(
+                            "could not enforce the memory visibility limit: {e}"
+                        ));
+                    }
+                }
             }
         }
         session.set_tuning(tuning.clone());
@@ -4530,6 +4623,8 @@ fn stated_tuning(
             cache_keepalive: row.cache_keepalive,
             live_compact_enabled: row.live_compact_enabled,
             live_compact_interval_tokens: row.live_compact_interval_tokens,
+            live_compact_mode: row.live_compact_mode,
+            memory_max_unmasked_blocks: row.memory_max_unmasked_blocks,
         },
     }
 }

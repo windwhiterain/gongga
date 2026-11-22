@@ -25,6 +25,7 @@ pub mod file;
 pub mod job;
 pub mod laws;
 pub mod live_compact;
+pub mod memory;
 pub mod skill;
 pub mod spec;
 pub mod spill;
@@ -716,6 +717,8 @@ impl ToolRegistry {
                 })
             }
             "live_compact" => Box::new(live_compact::LiveCompactTool),
+            "memorize" => Box::new(memory::MemorizeTool),
+            "recall" => Box::new(memory::RecallTool),
             // SPEC's `fn gongga_cli(cmd: Cmd)`: a call that names its own command.
             "gongga_cli" => Box::new(GonggaCli),
             // SPEC's `fn <tool>(**args)`: a row with no type here runs through the
@@ -748,8 +751,8 @@ impl ToolRegistry {
     /// # Invariant
     ///
     /// The only renderer of a schema, called only from a stored change -- never
-    /// while a request is built. `live_compact` is in every head, whatever the
-    /// switch says. See `docs/notes/server-tools.md`.
+    /// while a request is built. Checkpoint and memory tools are in every head,
+    /// whatever the switch says. See `docs/notes/server-tools.md`.
     ///
     /// Every session is offered the same set, `remote` included: a call may name
     /// any machine, and one the server does not know is refused when it runs.

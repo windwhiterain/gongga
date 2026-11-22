@@ -332,6 +332,10 @@ pub struct AgentConfig {
     /// Input-token growth between agent-written checkpoints; only the threshold an
     /// enabled live compact measures against.
     pub live_compact_interval_tokens: u64,
+    /// Whether checkpoints cut the provider projection or declare a memory view.
+    pub live_compact_mode: crate::live_compact::CompactMode,
+    /// The home's default raw-memory visibility limit; mask checkpoints require one.
+    pub memory_max_unmasked_blocks: Option<u64>,
     /// The chance a cached prefix is gone by the next request, `0.0..=1.0`.
     pub cache_invalid_rate: f64,
     /// A lifetime for a cached prefix, in seconds, for every provider at once; `0`
@@ -443,6 +447,8 @@ struct FileAgent {
     compress_above_tokens: Option<u64>,
     live_compact_enabled: Option<bool>,
     live_compact_interval_tokens: Option<u64>,
+    live_compact_mode: Option<String>,
+    memory_max_unmasked_blocks: Option<u64>,
     cache_invalid_rate: Option<f64>,
     cache_ttl_secs: Option<u64>,
     index_change_tolerance: Option<f64>,
@@ -726,6 +732,17 @@ impl Config {
             program: env_path("GONGGA_SCRIPT_PYTHON").or(scripts_file.program),
         };
 
+        let compact_mode = file
+            .agent
+            .as_ref()
+            .and_then(|agent| agent.live_compact_mode.clone())
+            .or_else(|| env_or("GONGGA_LIVE_COMPACT_MODE"));
+        let compact_mode = match compact_mode.as_deref() {
+            None => crate::live_compact::CompactMode::Cut,
+            Some("cut") => crate::live_compact::CompactMode::Cut,
+            Some("mask") => crate::live_compact::CompactMode::Mask,
+            Some(other) => anyhow::bail!("live_compact_mode must be cut or mask, not {other:?}"),
+        };
         let agent = AgentConfig {
             compress_above_tokens: file
                 .agent
@@ -747,6 +764,14 @@ impl Config {
                     env_or("GONGGA_LIVE_COMPACT_INTERVAL_TOKENS").and_then(|v| v.parse().ok())
                 })
                 .unwrap_or(DEFAULT_LIVE_COMPACT_INTERVAL_TOKENS),
+            live_compact_mode: compact_mode,
+            memory_max_unmasked_blocks: file
+                .agent
+                .as_ref()
+                .and_then(|agent| agent.memory_max_unmasked_blocks)
+                .or_else(|| {
+                    env_or("GONGGA_MEMORY_MAX_UNMASKED_BLOCKS").and_then(|v| v.parse().ok())
+                }),
             cache_invalid_rate: file
                 .agent
                 .as_ref()
@@ -776,6 +801,14 @@ impl Config {
                 .unwrap_or(DEFAULT_CONTEXT_LIMIT_PERCENT)
                 .min(100),
         };
+        if agent.live_compact_mode == crate::live_compact::CompactMode::Mask
+            && agent.memory_max_unmasked_blocks.unwrap_or(0) == 0
+        {
+            anyhow::bail!(
+                "mask checkpoints need a positive memory_max_unmasked_blocks; the harness, \
+                 not the provider, owns this limit"
+            );
+        }
         // Zero would ask about every step; the opt-in must not double as the interval.
         if agent.live_compact_enabled && agent.live_compact_interval_tokens == 0 {
             anyhow::bail!(

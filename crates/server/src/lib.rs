@@ -22,6 +22,7 @@ mod instance;
 pub mod live;
 mod live_compact;
 mod llm;
+mod memory;
 mod meta;
 mod migrate;
 mod monitor;

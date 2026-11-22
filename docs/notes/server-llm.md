@@ -419,6 +419,27 @@ for one home, and a name the provider does not offer falls back to the built-in 
 its events and what it costs are `docs/notes/server-anthropic.md`. Everything below
 describes the Responses face, which is still what every provider but one speaks.
 
+The exact api label `openai-responses-memory-mask` keeps that same Responses face and
+declares one private extension. A mask request carries a complete snapshot, never a
+delta or a key that means “query the current view again”:
+
+```json
+{
+  "gongga_memory": {
+    "upto_seq": 1200,
+    "view_generation": 9,
+    "masked": [{"memory_id": "mem:4:3", "start_seq": 410, "end_seq": 688}]
+  }
+}
+```
+
+Every stored input item also has `"gongga_seq": <seq>`; seq endpoints are inclusive,
+unlisted items are visible, and the masked list is sorted by source span and memory id.
+Head-generated cards and index rows have no database seq and stay unannotated. Wire
+order is not seq order because one step's calls precede its outputs. The adapter must
+map by the annotation, consume the fields out of band, and never render them as model
+text. Both fields are absent in cut mode and on ordinary Responses endpoints.
+
 `build_head` sends `prompt_cache_options` only when the configured tier appears
 in the roster's `cache_ttl_tiers` for that provider, and `prompt_cache_key` only
 when the roster's `[[provider]] cache_affinity` says this provider documents it (or

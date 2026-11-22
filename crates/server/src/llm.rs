@@ -26,6 +26,9 @@ const HARNESS_AGENT: &str = concat!("gongga-harness/", env!("CARGO_PKG_VERSION")
 /// stable database id, pure ASCII.
 const SESSION_ID_PREFIX: &str = "gongga-";
 
+/// A Responses endpoint that understands the harness's declarative memory view.
+pub const MEMORY_MASK_API: &str = "openai-responses-memory-mask";
+
 /// The request shape a provider is spoken in, named by the roster's endpoint.
 ///
 /// # Invariant
@@ -61,6 +64,8 @@ impl Face {
 pub struct LlmClient {
     /// Which shape this provider is spoken in.
     face: Face,
+    /// Whether this endpoint accepts `gongga_memory` and per-row `gongga_seq`.
+    memory_mask: bool,
     http: reqwest::Client,
     base_url: String,
     api_key: String,
@@ -115,6 +120,22 @@ pub struct LlmClient {
 /// once and a retry has to send the same bytes as the attempt it follows. The window
 /// is closed before the request is sent, so a row landing while the network is still
 /// writing belongs to the next request, not to a retry of this one.
+/// One original memory span hidden in a pinned view.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct MemoryMaskSpan {
+    pub memory_id: String,
+    pub start_seq: i64,
+    pub end_seq: i64,
+}
+
+/// The complete memory view a request and every retry must send.
+#[derive(Clone, Debug)]
+pub struct MemoryView {
+    pub upto_seq: i64,
+    pub view_generation: u64,
+    pub masked: Vec<MemoryMaskSpan>,
+}
+
 #[derive(Clone)]
 pub struct RequestSource {
     pub db_path: std::path::PathBuf,
@@ -122,6 +143,8 @@ pub struct RequestSource {
     pub upto_seq: i64,
     /// Where the pictures are kept: owned, because the body outlives the call.
     pub store: crate::store::Store,
+    /// Present only in mask mode, including an empty masked snapshot at generation 0.
+    pub memory: Option<MemoryView>,
 }
 
 impl RequestSource {
@@ -131,6 +154,7 @@ impl RequestSource {
         face: Face,
         head: &[u8],
         uploader: std::sync::Arc<Uploader>,
+        memory_mask: bool,
     ) -> anyhow::Result<(
         crate::body::RequestBody,
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -139,7 +163,14 @@ impl RequestSource {
             crate::transcript::Transcript::open(&self.db_path, self.session_id, self.upto_seq)?;
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let files = crate::image::files::Files::new(self.store.clone(), uploader);
-        let body = crate::body::RequestBody::new(face, head.to_vec(), rows, files, counter.clone());
+        let body = crate::body::RequestBody::new(
+            face,
+            head.to_vec(),
+            rows,
+            files,
+            counter.clone(),
+            memory_mask,
+        );
         Ok((body, counter))
     }
 }
@@ -194,6 +225,7 @@ impl LlmClient {
             .unwrap_or_else(|_| reqwest::Client::new());
         Ok(Self {
             face,
+            memory_mask: cfg.api == MEMORY_MASK_API && face == Face::Responses,
             http,
             base_url: cfg.base_url.trim_end_matches('/').to_string(),
             api_key: cfg.api_key.clone(),
@@ -225,6 +257,11 @@ impl LlmClient {
     /// of every turn.
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Whether this endpoint accepts a full tape plus a declarative memory mask.
+    pub fn supports_memory_mask(&self) -> bool {
+        self.memory_mask
     }
 
     /// The roster provider behind this client, when the roster named one.
@@ -296,6 +333,7 @@ impl LlmClient {
             .as_ref()
             .and_then(|store| store.measured_input_tokens(source.session_id).ok())
             .unwrap_or(0);
+        let memory_mask = self.memory_mask && source.memory.is_some();
         let head = self.build_head(
             instructions,
             index,
@@ -306,6 +344,7 @@ impl LlmClient {
             effort,
             cache_tier,
             spent,
+            source.memory.as_ref(),
         );
         let session_headers: Vec<(String, String)> = self
             .session_id_headers
@@ -343,7 +382,7 @@ impl LlmClient {
                 // Opened again for every attempt: a body is read once, and a retry
                 // has to send what the attempt before it sent.
                 let open_started = Instant::now();
-                let opened = source.open(face, &head, uploader.clone());
+                let opened = source.open(face, &head, uploader.clone(), memory_mask);
                 let transcript_open_ms = open_started.elapsed().as_millis() as u64;
                 let mut probe =
                     crate::probe::AttemptProbe::new(build_head_ms, transcript_open_ms, head_bytes);
@@ -579,6 +618,7 @@ impl LlmClient {
         effort: Option<&str>,
         cache_tier: Option<&str>,
         spent: u64,
+        memory: Option<&MemoryView>,
     ) -> Vec<u8> {
         // The index travels as a message, never in the system text.
         // See `docs/reference/prefix-cache.md`.
@@ -639,6 +679,13 @@ impl LlmClient {
             // Without server-side storage, reasoning can only be replayed from
             // its encrypted blob.
             body["include"] = json!(["reasoning.encrypted_content"]);
+        }
+        if let Some(memory) = memory {
+            body["gongga_memory"] = json!({
+                "upto_seq": memory.upto_seq,
+                "view_generation": memory.view_generation,
+                "masked": memory.masked,
+            });
         }
         // Reopened at `input`, whose array the body fills as the network asks: the
         // transcript is never one value.

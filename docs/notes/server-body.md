@@ -8,8 +8,11 @@ proportional to the history three times over -- the rows, the items, the string 
 and it made a retry send a body that had already been read.
 
 `RequestBody` is a `Stream` of byte chunks instead. The head is the only part
-serialized as JSON; every item after it is the bytes the database already holds,
-and the array is closed with a tail. Nothing parses the transcript.
+serialized as JSON on an ordinary face; every item after it is the bytes the
+database already holds, and the array is closed with a tail. The memory-mask
+Responses face is the one exception: it parses each item to add `gongga_seq`,
+then emits the same item with that annotation. Ordinary Responses and Anthropic
+bodies never carry the private field.
 
 ## the card is the head's first message
 
@@ -89,12 +92,16 @@ File ID the provider minted, while the `display` column keeps what the reader wr
 and a provider-side item's payload already read back from its blob. A blob that cannot
 be read makes the item non-replayable *then*, not at the tenth replay.
 
-`Transcript` is the consequence: a walk that yields the stored items in `seq` order.
-`body.rs` writes them between the head and `]}`, comma-separated, and does nothing else.
+`Transcript` is the consequence: a walk that yields stored items plus their seq.
+`body.rs` writes them between the head and `]}`, comma-separated. A row with
+pictures keeps its seq beside the asynchronous resolution, so the memory
+annotation cannot be lost on the slow path.
 
 ## RequestSource — what a retry replays
 
 The source names a session and a pinned `upto_seq` rather than holding a body,
 because a body is consumed by the attempt that sends it. Retries are `LlmClient`'s
 own loop, so every attempt opens the same window again: the same rows, in the same
-order, for the same request.
+order, for the same request. In mask mode the source also owns the complete
+`MemoryView` -- generation and every masked seq span -- so a later recall cannot
+change what a retry sends.

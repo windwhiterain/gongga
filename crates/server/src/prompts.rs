@@ -118,6 +118,9 @@ pub const LOST_NOTICES: &str = "lost_notices";
 /// What asks a session to fold its context: the live compaction interval.
 pub const LIVE_COMPACT_NOTICE: &str = "live_compact_notice";
 
+/// What asks a mask-mode session to commit a memory block.
+pub const MEMORY_MASK_NOTICE: &str = "memory_mask_notice";
+
 /// What a keep_alive fire asks a session to decide: dream, hand off, or mute.
 ///
 /// # Invariant
@@ -197,6 +200,7 @@ pub const REQUIRED: &[&str] = &[
     DETACHED_RUNNING,
     LOST_NOTICES,
     LIVE_COMPACT_NOTICE,
+    MEMORY_MASK_NOTICE,
     THINKING_MARK,
 ];
 

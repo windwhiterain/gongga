@@ -130,7 +130,11 @@ SessionConfig := { # sticky
 LiveCompact := { # sticky; the opt-in is a switch, never a token count
   enabled: bool = default(), # unset follows the home's [agent] live_compact_enabled
   interval_tokens: int = default(), # the threshold only; [agent] live_compact_interval_tokens
+  mode: "cut" | "mask" = default(), # unset follows [agent] live_compact_mode
+  max_unmasked_blocks: int = default(), # mask mode only; [agent] memory_max_unmasked_blocks
 }
+MemoryCommit := {id: str, source_range: Range, view_generation: int}
+MemoryRecall := {recalled: list[str], auto_masked: list[str], view_generation: int}
 fn new_session(id: Session, config: SessionConfig)
 fn set_session(id: Session, config_delta: SessionConfig{..})
 fn ls_session(path: path)
@@ -165,6 +169,12 @@ live_compact(settled: str, next: str, continue: bool = true, session: Session = 
   # rather than the model's own words.
   # continue=false only builds context: the turn ends after this step, and the next
   # message answers `next`.
+memorize(summary: str, session: Session = caller()) -> MemoryCommit
+  # mask-mode checkpoint: summarize the segment through the latest complete ordinary
+  # round, keep the summary call/result visible, and mask its original source span.
+recall(ids: list[str], session: Session = caller()) -> MemoryRecall
+  # unmask original spans in argument order; the harness masks the earliest entries
+  # in the current unmasked set when max_unmasked_blocks is exceeded.
 ```
 ## Python Cmd
 provided by a shipped uv python package.
@@ -184,7 +194,7 @@ everything in database (sqlite) under a home directory, structured for agentic r
 ## Prompt
 after the system prompt, before the first client user message, inject two messages: one with useful information about session name, harness version (commit id), cwd, time; one introducing the parameters every tool call shares besides its own arguments. they are stamped once with the session's first prompt row and never re-rendered.
 
-**Invariant: context only has append/cut API**
+**Invariant: canonical context only has append/cut API; a memory mask changes only the provider view**
 
 ## Meta
 preprocess before saving to transcripts.
@@ -206,9 +216,18 @@ for the first client user message to a empty session, find all meta references r
 ## Live Compact
 - every session that starts in work mode opens the starting checkpoint before its first user message; a session created in explore opens it when the agent switches from explore to build. The checkpoint does not depend on the opt-in: the `live_compact` tool is always available.
 - the opt-in is the session's own `live_compact`; a session that states none follows the home's `[agent]` setting. It governs one thing only: whether the server asks.
-- after the starting checkpoint, at a step boundary whose context has grown by the current interval since the last checkpoint, the server asks the agent to call `live_compact` to summary and replace the history since the last checkpoint, and creates a new checkpoint. An ask the agent ignores doubles the interval; a committed checkpoint resets it to the configured interval.
+- after the starting checkpoint, at a step boundary whose context has grown by the current interval since the last checkpoint, the server asks the agent to call `live_compact` in cut mode or `memorize` in mask mode, and creates a new checkpoint. An ask the agent ignores doubles the interval; a committed checkpoint resets it to the configured interval.
 - `live_compact` summary can reference meta that directly embed in the summary, creating a new checkpoint.
 - the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
+
+## Memory Mask
+- `live_compact.mode = "mask"` selects memory checkpoints instead of transcript cuts. The opt-in, interval, backoff and complete-ordinary-round boundary are the same; `memorize` and `recall` are always offered, and mask mode requires a positive `max_unmasked_blocks`.
+- the canonical transcript and the provider's KV tape are append-only. A mask never deletes rows, moves token positions or rewrites KV. The summary call and its id-bearing result stay visible; the original source span becomes masked.
+- the harness is the only writer of visibility. Provider pressure and attention may change GPU/host residency, never the view. Masked KV may be offloaded and recalled KV must be restored at its original logical position before the forward that reads it.
+- `recall` unmasks original source spans in argument order. Recalling an already unmasked block is idempotent and does not change its queue position. When the configured count is exceeded, the harness masks the earliest entries in the current unmasked set and returns their ids as `auto_masked`. Summary artifacts and the current ordinary tail are not counted.
+- every `memorize`, `recall` and automatic displacement commits its cause and advances `view_generation` before the next request. A request pins `(upto_seq, view_generation)` and every retry sends the same pair and view.
+- a mask-capable provider receives the full projected tape and declarative seq ranges; physical block ids and tokenization are the provider's. An endpoint that does not declare this capability uses cut mode; silently treating a mask view as an ordinary prompt is forbidden.
+- masking reduces attention work and offload reduces resident KV; neither makes the tape's last position smaller. Context reporting states visible tokens and tape position separately.
 
 ## Keep Alive
 when a session turn end, a timer start to count, when step into the dangerous zone that cache is nearing cold, ask the session to decide whether fork a dreamer(organize documentation) or handoff without continue.

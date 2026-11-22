@@ -20,7 +20,7 @@ use crate::llm::{LlmClient, LlmEvent};
 use crate::providers::{self};
 use crate::session::SessionHandle;
 use crate::store::{Kind, Store};
-use crate::tools::{ToolContext, ToolRegistry};
+use crate::tools::{ToolContext, ToolOutcome, ToolRegistry};
 
 /// A turn that failed because the provider refused the request or stopped answering.
 ///
@@ -425,8 +425,13 @@ impl Agent {
 
     /// Moves the session's inbox into the transcript in one durable transaction.
     pub(crate) fn deliver_inbox(&self, id: i64, name: &str) -> usize {
-        let live_compact = self.config.now().agent.live_compact_enabled;
-        match self.store.deliver_pending(id, name, live_compact) {
+        let agent = &self.config.now().agent;
+        let live_compact = agent.live_compact_enabled;
+        let compact_mode = agent.live_compact_mode;
+        match self
+            .store
+            .deliver_pending(id, name, live_compact, compact_mode)
+        {
             // `waited` is the "no answer yet" number: a message written mid-step lands
             // only here.
             Ok((delivered, waited_ms, written)) => {
@@ -552,12 +557,31 @@ impl Agent {
         if measurement.tokens.saturating_sub(baseline) < interval {
             return;
         }
-        let next = interval.saturating_mul(2);
-        let message = live_compact_notice();
-        match self
-            .store
-            .request_live_compact(id, name, measurement.generation, &message, next)
+        let mode = tuning
+            .live_compact_mode
+            .unwrap_or(config.agent.live_compact_mode);
+        if mode == crate::live_compact::CompactMode::Mask
+            && tuning
+                .memory_max_unmasked_blocks
+                .or(config.agent.memory_max_unmasked_blocks)
+                .unwrap_or(0)
+                == 0
         {
+            return;
+        }
+        let next = interval.saturating_mul(2);
+        let message = match mode {
+            crate::live_compact::CompactMode::Cut => live_compact_notice(),
+            crate::live_compact::CompactMode::Mask => memory_mask_notice(),
+        };
+        match self.store.request_live_compact(
+            id,
+            name,
+            measurement.generation,
+            &message,
+            next,
+            mode,
+        ) {
             Ok(true) => {
                 self.log_event(
                     Some(id),
@@ -568,6 +592,7 @@ impl Agent {
                         "interval": interval,
                         "next_interval": next,
                         "generation": measurement.generation,
+                        "mode": mode.as_str(),
                     }),
                 );
             }
@@ -972,6 +997,38 @@ impl Agent {
             tier,
             moderation,
         } = *attempt;
+        let tuning = session.tuning();
+        let current = self.config.now();
+        let compact_mode = tuning
+            .live_compact_mode
+            .unwrap_or(current.agent.live_compact_mode);
+        if compact_mode == crate::live_compact::CompactMode::Mask && !llm.supports_memory_mask() {
+            anyhow::bail!(
+                "memory mask mode requires endpoint api {:?}; use cut mode with this provider",
+                crate::llm::MEMORY_MASK_API
+            );
+        }
+        if compact_mode == crate::live_compact::CompactMode::Mask {
+            let maximum = tuning
+                .memory_max_unmasked_blocks
+                .or(current.agent.memory_max_unmasked_blocks)
+                .filter(|maximum| *maximum > 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("mask mode requires a positive memory_max_unmasked_blocks")
+                })?;
+            let enforced = self.store.enforce_limit(id, maximum, "request")?;
+            if !enforced.auto_masked.is_empty() {
+                self.log_event(
+                    Some(id),
+                    "memory_limit",
+                    &json!({
+                        "cause": "request",
+                        "auto_masked": enforced.auto_masked,
+                        "view_generation": enforced.view_generation,
+                    }),
+                );
+            }
+        }
         let generation = self.store.context_generation(id)?;
         let phase_started = std::time::Instant::now();
         // Read beside the stored prompt; a request assembles no part of its head.
@@ -987,7 +1044,7 @@ impl Agent {
         // Pinned here, so every retry of this request replays the window that was
         // current when it started.
         let phase_started = std::time::Instant::now();
-        let source = self.store.request_source(id)?;
+        let source = self.store.request_source(id, compact_mode)?;
         phases.source_ms = phase_started.elapsed().as_millis() as u64;
         // Where a failed attempt's rows end: the retry inside `llm.stream` sends this
         // window. See `docs/notes/server-agent.md`.
@@ -1574,7 +1631,39 @@ impl Agent {
         let printed_on = self.tools().machine_of(&tool, &arguments, &ctx);
         // Held for the whole run: the table a call started in is the one it finishes in.
         let table = self.tools();
-        let outcome = table.run(&tool, arguments, &ctx).await;
+        let tuning = session.tuning();
+        let compact_mode = tuning
+            .live_compact_mode
+            .unwrap_or(self.config.now().agent.live_compact_mode);
+        let memory_max = tuning.memory_max_unmasked_blocks.or(self
+            .config
+            .now()
+            .agent
+            .memory_max_unmasked_blocks);
+        let memory_tool = tool == crate::tools::memory::MEMORIZE_TOOL
+            || tool == crate::tools::memory::RECALL_TOOL;
+        let mode_error = if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL
+            && compact_mode != crate::live_compact::CompactMode::Cut
+        {
+            Some("this session uses mask checkpoints; call memorize instead".to_string())
+        } else if memory_tool && compact_mode != crate::live_compact::CompactMode::Mask {
+            Some(format!("{tool} requires live_compact.mode = mask"))
+        } else if memory_tool && !llm.supports_memory_mask() {
+            Some(format!(
+                "{tool} requires endpoint api {:?}",
+                crate::llm::MEMORY_MASK_API
+            ))
+        } else if memory_tool && memory_max.unwrap_or(0) == 0 {
+            Some(format!(
+                "{tool} requires a positive memory_max_unmasked_blocks"
+            ))
+        } else {
+            None
+        };
+        let outcome = match mode_error {
+            Some(reason) => ToolOutcome::err(reason),
+            None => table.run(&tool, arguments, &ctx).await,
+        };
         let run_ms = run_started.elapsed().as_millis() as u64;
         let attach_started = std::time::Instant::now();
         let scanned = self
@@ -1586,9 +1675,9 @@ impl Agent {
         // over. Nothing is done to it again -- a second cap would be a second answer.
         let capped = outcome.output.clone();
         // A tool that streamed nothing owes its output to the final chunk.
-        let compacting = tool == crate::tools::live_compact::LIVE_COMPACT_TOOL;
+        let special_tool = tool == crate::tools::live_compact::LIVE_COMPACT_TOOL || memory_tool;
         let mut tail = match sent.load(Ordering::Relaxed) {
-            0 if compacting => outcome.output.clone(),
+            0 if special_tool => outcome.output.clone(),
             0 => capped.clone(),
             _ => String::new(),
         };
@@ -1607,12 +1696,11 @@ impl Agent {
             .collect();
         let mut content = json!({"call_id": call_id, "output": output, "images": images,
                     "turn": turn, "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
-        let mut checkpointed = false;
-        let mut checkpoint_error = None;
+        let mut special_committed = false;
+        let mut commit_error = None;
         // Set only once the call's own rows are written.
         let mut ends_turn = false;
         // Nothing to fold: an answer, not an error (an error invites a retry loop).
-        // See `docs/notes/server-live-compact.md`.
         let mut nothing = None;
         if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && outcome.ok {
             match self
@@ -1620,7 +1708,7 @@ impl Agent {
                 .append_live_compact_result(id, &call_id, &content)
             {
                 Ok(crate::live_compact::Commit::Checkpointed(committed)) => {
-                    checkpointed = true;
+                    special_committed = true;
                     ends_turn = !committed.continue_turn;
                     self.announce_row(name, Ok(committed.result_seq));
                     self.log_event(
@@ -1637,7 +1725,66 @@ impl Agent {
                 Ok(crate::live_compact::Commit::Nothing(reason)) => nothing = Some(reason),
                 Err(e) => {
                     tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
-                    checkpoint_error = Some(format!("{e:#}"));
+                    commit_error = Some(format!("{e:#}"));
+                }
+            }
+        }
+        if tool == crate::tools::memory::MEMORIZE_TOOL && outcome.ok {
+            match self
+                .store
+                .memorize(id, &call_id, &content, memory_max.unwrap_or(0))
+            {
+                Ok(crate::memory::MemorizeCommit::Checkpointed(committed)) => {
+                    special_committed = true;
+                    output = committed.output.clone();
+                    content["output"] = json!(output.clone());
+                    tail = output.clone();
+                    self.announce_row(name, Ok(committed.result_seq));
+                    self.log_event(
+                        Some(id),
+                        "memorize",
+                        &json!({
+                            "memory": committed.id,
+                            "checkpoint": committed.checkpoint_id,
+                            "result_seq": committed.result_seq,
+                            "source_after_seq": committed.source_after_seq,
+                            "cutoff_seq": committed.cutoff_seq,
+                            "view_generation": committed.view_generation,
+                        }),
+                    );
+                }
+                Ok(crate::memory::MemorizeCommit::Nothing(reason)) => nothing = Some(reason),
+                Err(e) => {
+                    tracing::warn!(session = %name, error = %e, "could not commit memory checkpoint");
+                    commit_error = Some(format!("{e:#}"));
+                }
+            }
+        }
+        if tool == crate::tools::memory::RECALL_TOOL && outcome.ok {
+            match self
+                .store
+                .recall(id, &call_id, &content, memory_max.unwrap_or(0))
+            {
+                Ok(committed) => {
+                    special_committed = true;
+                    output = committed.output.clone();
+                    content["output"] = json!(output.clone());
+                    tail = output.clone();
+                    self.announce_row(name, Ok(committed.result_seq));
+                    self.log_event(
+                        Some(id),
+                        "recall",
+                        &json!({
+                            "result_seq": committed.result_seq,
+                            "recalled": committed.recalled,
+                            "auto_masked": committed.auto_masked,
+                            "view_generation": committed.view_generation,
+                        }),
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(session = %name, error = %e, "could not commit memory recall");
+                    commit_error = Some(format!("{e:#}"));
                 }
             }
         }
@@ -1649,10 +1796,10 @@ impl Agent {
                 self.store.append_message(id, Kind::ToolResult, &content),
             );
             tail = output.clone();
-        } else if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && !checkpointed {
+        } else if special_tool && !special_committed {
             status = "error";
-            let reason = checkpoint_error.unwrap_or_else(|| output.clone());
-            output = format!("ERROR: live_compact checkpoint was not committed: {reason}");
+            let reason = commit_error.unwrap_or_else(|| output.clone());
+            output = format!("ERROR: {tool} was not committed: {reason}");
             content["output"] = json!(output.clone());
             content["ok"] = json!(false);
             self.announce_row(
@@ -1660,7 +1807,7 @@ impl Agent {
                 self.store.append_message(id, Kind::ToolResult, &content),
             );
             tail = output.clone();
-        } else if !checkpointed {
+        } else if !special_committed {
             self.announce_row(
                 name,
                 self.store.append_message(id, Kind::ToolResult, &content),
@@ -2153,6 +2300,13 @@ fn context_measure(
 fn live_compact_notice() -> String {
     crate::prompts::harness_wrap(
         crate::prompts::shared().render(crate::prompts::LIVE_COMPACT_NOTICE, &[]),
+    )
+}
+
+/// The mask-mode ask shares the interval but commits a view, never a transcript cut.
+fn memory_mask_notice() -> String {
+    crate::prompts::harness_wrap(
+        crate::prompts::shared().render(crate::prompts::MEMORY_MASK_NOTICE, &[]),
     )
 }
 

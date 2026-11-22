@@ -25,6 +25,8 @@ use crate::transcript::Transcript;
 pub struct RequestBody {
     /// Which shape the rows are written in: one is copied, the other converted.
     face: Face,
+    /// Whether Responses rows carry their database sequence for the memory adapter.
+    memory_mask: bool,
     /// The object up to and including `"input":[`.
     head: Option<Vec<u8>>,
     rows: Option<Transcript>,
@@ -38,7 +40,7 @@ pub struct RequestBody {
     /// How many bytes the network has taken, counted as they go.
     counter: Arc<AtomicUsize>,
     /// A row whose pictures were still being resolved when the last poll returned.
-    pending: Option<Next>,
+    pending: Option<(i64, Next)>,
     /// The newest message, held back on the anthropic face.
     ///
     /// # Invariant
@@ -56,9 +58,11 @@ impl RequestBody {
         rows: Transcript,
         files: Files,
         counter: Arc<AtomicUsize>,
+        memory_mask: bool,
     ) -> Self {
         Self {
             face,
+            memory_mask,
             head: Some(head),
             rows: Some(rows),
             files,
@@ -78,9 +82,18 @@ impl RequestBody {
     /// A row that cannot be expressed stops the body here: SPEC's "everything must
     /// store and send" is a promise about the request, and a transcript that quietly
     /// lost a row would be sent anyway.
-    fn push(&mut self, item: String) -> Result<(), IoError> {
+    fn push(&mut self, item: String, seq: i64) -> Result<(), IoError> {
         if self.face == Face::Responses {
-            self.emit(item);
+            if self.memory_mask {
+                if let Ok(mut value) = serde_json::from_str::<Value>(&item) {
+                    value["gongga_seq"] = Value::from(seq);
+                    self.emit(value.to_string());
+                } else {
+                    self.emit(item);
+                }
+            } else {
+                self.emit(item);
+            }
             return Ok(());
         }
         let stored = serde_json::from_str::<serde_json::Value>(&item)
@@ -120,15 +133,19 @@ impl RequestBody {
         if let Some(rows) = self.rows.as_mut() {
             match rows.next() {
                 Some(Err(e)) => return Step::Failed(IoError::other(e)),
-                Some(Ok(Stored { item, pictures })) => {
+                Some(Ok(Stored {
+                    seq,
+                    item,
+                    pictures,
+                })) => {
                     if pictures.is_empty() {
-                        if let Err(e) = self.push(item) {
+                        if let Err(e) = self.push(item, seq) {
                             return Step::Failed(e);
                         }
                         return Step::Ready(true);
                     }
                     // The one value resolved while writing: the provider's file per picture.
-                    return Step::Resolving((item, pictures));
+                    return Step::Resolving((seq, item, pictures));
                 }
                 None => {
                     self.rows = None;
@@ -161,28 +178,30 @@ impl Stream for RequestBody {
             }
             // A chunk queued by the last await is taken first; only when there is none
             // is the next one asked for.
-            let mut future: Next = match this.pending.take() {
+            let (seq, mut future): (i64, Next) = match this.pending.take() {
                 Some(pending) => pending,
                 None => match this.step() {
                     Step::Ready(true) => continue,
                     Step::Ready(false) => return Poll::Ready(None),
                     Step::Failed(e) => return Poll::Ready(Some(Err(e))),
-                    Step::Resolving((item, pictures)) => {
+                    Step::Resolving((seq, item, pictures)) => {
                         let files = this.files.clone();
                         let face = this.face;
-                        Box::pin(async move { resolved(files, face, item, pictures).await })
+                        let future =
+                            Box::pin(async move { resolved(files, face, item, pictures).await });
+                        (seq, future)
                     }
                 },
             };
             match future.as_mut().poll(cx) {
                 Poll::Ready(text) => {
-                    if let Err(e) = this.push(text) {
+                    if let Err(e) = this.push(text, seq) {
                         return Poll::Ready(Some(Err(e)));
                     }
                     continue;
                 }
                 Poll::Pending => {
-                    this.pending = Some(future);
+                    this.pending = Some((seq, future));
                     return Poll::Pending;
                 }
             }
@@ -201,7 +220,7 @@ enum Step {
     /// A chunk was queued, or the body is over.
     Ready(bool),
     /// This row carries pictures, and the files behind them have to be found first.
-    Resolving((String, Vec<ImageRef>)),
+    Resolving((i64, String, Vec<ImageRef>)),
     Failed(IoError),
 }
 
@@ -210,6 +229,7 @@ type Next = std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>;
 
 /// One stored row as a request reads it: the item, and the pictures it named.
 pub struct Stored {
+    pub seq: i64,
     pub item: String,
     pub pictures: Vec<ImageRef>,
 }

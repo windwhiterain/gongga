@@ -126,3 +126,39 @@ Two rules hold it now. `start_live_compact` takes the newest row that is not a
 moves a projection's prefix end back the same way, which is what lets a checkpoint
 written under the old rule still be read: the row the checkpoint names is checked
 against the cut, not the other way round.
+
+## Mask checkpoints change a view, not the transcript
+
+`live_compact.mode` chooses `cut` (the behavior above) or `mask`. Both modes share the
+origin, interval, backoff and complete-ordinary-round selection. Mask mode requires a
+positive `memory_max_unmasked_blocks` and an endpoint whose `api` is exactly
+`openai-responses-memory-mask`; an ordinary provider never receives a full tape with the
+mask fields simply omitted.
+
+A `memorize` call inserts a checkpoint whose `kind` is `mask`, its summary artifacts, a
+`memory_blocks` row and the initial masked event in one transaction. The checkpoint row
+temporarily has `result_seq = 0` inside that transaction: its stable public id contains
+the checkpoint id, and the id-bearing tool result cannot be written before that id
+exists. The result seq is filled before commit, so no reader can observe the
+placeholder. Unlike a cut, a mask checkpoint does not advance `context_generation` or
+clear measured context: the canonical transcript did not shrink.
+
+`memory_state` owns the monotonically increasing `view_generation`, the next FIFO order
+and the trigger-maintained unmasked count. `recall` validates and de-duplicates ids,
+assigns orders in argument order, and masks the FIFO head until the configured count
+holds. Recalling a visible block does not refresh its position. A later cut retires
+older memory ids explicitly; recalling one is an error rather than an unmask that the
+cut projection would silently ignore. Configuration changes and every request boundary
+run the same count check, so a live configuration edit cannot leave an over-limit view.
+
+The tool result is written in the same transaction as the view. `memorize` returns the
+id, inclusive source range and generation; `recall` returns newly recalled ids,
+`auto_masked` ids and the generation. `memory_view_events` is the durable audit for
+automatic displacement as well as explicit operations.
+
+A mask request owns a `MemoryView`: the pinned upto-seq, generation and complete masked
+span snapshot. `Transcript` applies only the latest `cut` projection and otherwise sends
+every row. `build_head` adds `gongga_memory` and the body adds `gongga_seq` to every
+stored item, including one whose pictures resolve asynchronously. Retries reopen rows
+but reuse the same owned view, never a newly queried current generation. The private
+fields are absent in cut mode and on ordinary providers.

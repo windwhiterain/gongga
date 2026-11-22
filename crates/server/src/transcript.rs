@@ -54,7 +54,7 @@ impl Transcript {
                 "SELECT s.live_compact_origin_seq, c.round_start_seq
                  FROM live_compact_checkpoints c
                  JOIN sessions s ON s.id = c.session_id
-                 WHERE c.session_id = ?1 AND c.result_seq <= ?2
+                 WHERE c.session_id = ?1 AND c.result_seq <= ?2 AND c.kind = 'cut'
                  ORDER BY c.id DESC LIMIT 1",
                 params![session_id, upto_seq],
                 |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, i64>(1)?)),
@@ -241,7 +241,11 @@ impl Transcript {
         };
         Ok(Some(Row {
             seq,
-            stored: crate::body::Stored { item, pictures },
+            stored: crate::body::Stored {
+                seq,
+                item,
+                pictures,
+            },
             kind: Kind::parse(&kind),
             step: turn.zip(step),
         }))

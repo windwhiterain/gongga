@@ -254,6 +254,10 @@ pub struct Tuning {
     pub live_compact_enabled: Option<bool>,
     /// Input-token growth between checkpoints; `None` follows `[agent]`.
     pub live_compact_interval_tokens: Option<u64>,
+    /// Whether checkpoints cut the projection or declare a memory-mask view.
+    pub live_compact_mode: Option<crate::live_compact::CompactMode>,
+    /// Maximum original memory spans visible at once in mask mode.
+    pub memory_max_unmasked_blocks: Option<u64>,
 }
 
 /// A live session. Cheap to clone; the heavy parts are shared.
@@ -1341,6 +1345,8 @@ impl SessionManager {
                 // which is what the NULL columns mean.
                 live_compact_enabled: None,
                 live_compact_interval_tokens: None,
+                live_compact_mode: None,
+                memory_max_unmasked_blocks: None,
                 // Born working; `set_session` moves it in the same command.
                 mode: crate::explore::Mode::Work,
                 worktree: worktree.map(str::to_string),
@@ -1643,6 +1649,8 @@ impl SessionManager {
                     cache_keepalive: row.cache_keepalive,
                     live_compact_enabled: row.live_compact_enabled,
                     live_compact_interval_tokens: row.live_compact_interval_tokens,
+                    live_compact_mode: row.live_compact_mode,
+                    memory_max_unmasked_blocks: row.memory_max_unmasked_blocks,
                 }),
                 explore: Mutex::new(crate::explore::watch_of(row.mode)),
                 dream_of: row.dream_of,

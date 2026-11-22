@@ -6,6 +6,32 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 pub const REQUEST_KIND: &str = "live_compact_request";
 
+/// What a committed checkpoint does to the canonical transcript's provider projection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactMode {
+    #[default]
+    Cut,
+    Mask,
+}
+
+impl CompactMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "cut" => Some(Self::Cut),
+            "mask" => Some(Self::Mask),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cut => "cut",
+            Self::Mask => "mask",
+        }
+    }
+}
+
 /// What one step measures: the context, the last checkpoint, and the backoff.
 #[derive(Debug, Clone, Copy)]
 pub struct Measurement {
@@ -184,8 +210,17 @@ pub fn ordinary_round(
             break;
         }
         if kind == "tool_call"
-            && value.get("name").and_then(serde_json::Value::as_str)
-                == Some(crate::tools::live_compact::LIVE_COMPACT_TOOL)
+            && value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| {
+                    [
+                        crate::tools::live_compact::LIVE_COMPACT_TOOL,
+                        crate::tools::memory::MEMORIZE_TOOL,
+                        crate::tools::memory::RECALL_TOOL,
+                    ]
+                    .contains(&name)
+                })
         {
             return Ok(None);
         }

@@ -171,6 +171,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- session that never asked reads the file.
     live_compact INTEGER,
     live_compact_interval_tokens INTEGER,
+    live_compact_mode TEXT,
+    memory_max_unmasked_blocks INTEGER,
     -- When this session's last turn ended, and nothing else. NULL is a session
     -- that has not finished a turn yet, which the list orders by `created_at`.
     -- Its own column rather than `updated_at`, which a tuning change rewrites:
@@ -572,6 +574,14 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
             "ALTER TABLE sessions ADD COLUMN live_compact_interval_tokens INTEGER",
         ),
         (
+            "live_compact_mode",
+            "ALTER TABLE sessions ADD COLUMN live_compact_mode TEXT",
+        ),
+        (
+            "memory_max_unmasked_blocks",
+            "ALTER TABLE sessions ADD COLUMN memory_max_unmasked_blocks INTEGER",
+        ),
+        (
             "dream_of",
             "ALTER TABLE sessions ADD COLUMN dream_of INTEGER",
         ),
@@ -746,6 +756,7 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     }
     backfill_wire_items(conn)?;
     crate::live_compact::migrate(conn)?;
+    crate::memory::migrate(conn)?;
     conn.execute_batch(
         "CREATE TRIGGER IF NOT EXISTS session_context_reset
          AFTER UPDATE OF context_tokens ON sessions
@@ -1086,6 +1097,8 @@ impl Store {
             "remote",
             "monitor_seq",
             "cache_tier",
+            "live_compact_mode",
+            "memory_max_unmasked_blocks",
             // Sent, but decided here rather than copied.
             "name",
             "status",
@@ -1132,6 +1145,7 @@ impl Store {
                                        context_tokens, context_generation, cached_tokens,
                                        tps, ttft_ms, remote, monitor_seq,
                                        cache_tier, cache_keepalive, mode, live_compact,
+                                       live_compact_mode, memory_max_unmasked_blocks,
                                        dream_of, dreamed_checkpoint_id)
                  SELECT ?2, 'idle', model, model_name, cwd, ?3, ?3, context_limit,
                         thinking_effort, context_tokens, context_generation, cached_tokens,
@@ -1139,6 +1153,7 @@ impl Store {
                         CASE WHEN ?4 IS NULL THEN cache_keepalive ELSE 0 END,
                         CASE WHEN ?4 IS NULL THEN mode ELSE 'work' END,
                         CASE WHEN ?4 IS NULL THEN NULL ELSE 0 END,
+                        live_compact_mode, memory_max_unmasked_blocks,
                         ?4, ?5
                    FROM sessions WHERE name = ?1",
                 params![
@@ -1411,7 +1426,8 @@ impl Store {
                     s.cache_tier, s.cache_keepalive, s.ended_at, s.mode,
                     s.live_compact, s.live_compact_interval_tokens, s.worktree,
                     s.worktree_merged, s.worktree_changed,
-                    s.dream_of, s.dreamed_checkpoint_id, s.mentor_of
+                    s.dream_of, s.dreamed_checkpoint_id, s.mentor_of,
+                    s.live_compact_mode, s.memory_max_unmasked_blocks
              FROM sessions s";
 
     /// Every session in `error` because of a provider, with what a monitor turn
@@ -1553,6 +1569,12 @@ impl Store {
             dream_of: r.get(24)?,
             dreamed_checkpoint_id: r.get(25)?,
             mentor_of: r.get(26)?,
+            live_compact_mode: r
+                .get::<_, Option<String>>(27)?
+                .and_then(|mode| crate::live_compact::CompactMode::parse(&mode)),
+            memory_max_unmasked_blocks: r
+                .get::<_, Option<i64>>(28)?
+                .map(|maximum| maximum.max(0) as u64),
         })
     }
 
@@ -1630,28 +1652,35 @@ impl Store {
         session: &str,
         enabled: Option<bool>,
         interval_tokens: Option<u64>,
+        mode: Option<crate::live_compact::CompactMode>,
+        max_unmasked_blocks: Option<u64>,
     ) -> anyhow::Result<()> {
+        let interval_tokens = interval_tokens.map(i64::try_from).transpose()?;
+        let max_unmasked_blocks = max_unmasked_blocks.map(i64::try_from).transpose()?;
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
             "UPDATE sessions SET live_compact = ?1, live_compact_interval_tokens = ?2,
-                    updated_at = ?3
-              WHERE id = ?4",
+                    live_compact_mode = ?3, memory_max_unmasked_blocks = ?4,
+                    updated_at = ?5
+              WHERE id = ?6",
             params![
                 enabled.map(i64::from),
-                interval_tokens.map(|tokens| tokens as i64),
+                interval_tokens,
+                mode.map(|mode| mode.as_str()),
+                max_unmasked_blocks,
                 now_millis(),
                 id
             ],
         )?;
-        // Off, or a new base: the backoff measured a stretch this session left.
-        if enabled == Some(false) || interval_tokens.is_some() {
+        // Off, a new base or a new projection: the old ask measured another contract.
+        if enabled == Some(false) || interval_tokens.is_some() || mode.is_some() {
             tx.execute(
                 "UPDATE sessions SET live_compact_interval_effective = NULL WHERE id = ?1",
                 params![id],
             )?;
         }
-        if enabled == Some(false) {
+        if enabled == Some(false) || mode.is_some() {
             tx.execute(
                 "DELETE FROM pending_tasks
                   WHERE session = ?1 AND kind = 'inject'
@@ -1757,7 +1786,7 @@ impl Store {
         Self::append_message_conn(&self.lock(), session_id, kind, content)
     }
 
-    fn append_message_conn(
+    pub(crate) fn append_message_conn(
         conn: &rusqlite::Connection,
         session_id: i64,
         kind: Kind,
@@ -2563,6 +2592,7 @@ impl Store {
         generation: u64,
         message: &str,
         next_interval: u64,
+        mode: crate::live_compact::CompactMode,
     ) -> anyhow::Result<bool> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -2584,6 +2614,7 @@ impl Store {
                     "live_compact": {
                         "generation": generation,
                         "next_interval": next_interval,
+                        "mode": mode.as_str(),
                     },
                 }))?,
                 now_millis(),
@@ -2807,12 +2838,22 @@ impl Store {
     }
 
     /// The transcript a request reads, closed at the row that exists right now.
-    pub fn request_source(&self, session_id: i64) -> anyhow::Result<crate::llm::RequestSource> {
+    pub fn request_source(
+        &self,
+        session_id: i64,
+        mode: crate::live_compact::CompactMode,
+    ) -> anyhow::Result<crate::llm::RequestSource> {
+        let upto_seq = self.last_seq(session_id)?;
+        let memory = match mode {
+            crate::live_compact::CompactMode::Cut => None,
+            crate::live_compact::CompactMode::Mask => Some(self.memory_view(session_id, upto_seq)?),
+        };
         Ok(crate::llm::RequestSource {
             db_path: self.path.clone(),
             session_id,
-            upto_seq: self.last_seq(session_id)?,
+            upto_seq,
             store: self.clone(),
+            memory,
         })
     }
 
@@ -3203,6 +3244,7 @@ impl Store {
         session_id: i64,
         session: &str,
         live_compact: bool,
+        compact_mode: crate::live_compact::CompactMode,
     ) -> anyhow::Result<(usize, i64, OperatorRows)> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
@@ -3272,6 +3314,27 @@ impl Store {
                     .ok_or_else(|| {
                         anyhow::anyhow!("pending live compact {id} has no generation")
                     })?;
+                let requested_mode = request
+                    .get("mode")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("cut");
+                let requested_mode = crate::live_compact::CompactMode::parse(requested_mode)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("pending live compact {id} has an invalid mode")
+                    })?;
+                let stated_mode: Option<String> = tx.query_row(
+                    "SELECT live_compact_mode FROM sessions WHERE id = ?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )?;
+                let current_mode = stated_mode
+                    .as_deref()
+                    .and_then(crate::live_compact::CompactMode::parse)
+                    .unwrap_or(compact_mode);
+                if current_mode != requested_mode {
+                    tx.execute("DELETE FROM pending_tasks WHERE id = ?1", params![id])?;
+                    continue;
+                }
                 let current_generation: i64 = tx.query_row(
                     "SELECT context_generation FROM sessions WHERE id = ?1",
                     params![session_id],
@@ -4075,6 +4138,10 @@ pub struct SessionRow {
     pub live_compact_enabled: Option<bool>,
     /// Its own interval; `None` follows the home's `[agent]`.
     pub live_compact_interval_tokens: Option<u64>,
+    /// Its checkpoint projection; `None` follows the home's `[agent]`.
+    pub live_compact_mode: Option<crate::live_compact::CompactMode>,
+    /// Its raw-memory visibility limit; `None` follows the home's `[agent]`.
+    pub memory_max_unmasked_blocks: Option<u64>,
     /// The branch, and so the worktree, this session was born in; `None` made none.
     pub worktree: Option<String>,
     /// Whether that worktree's commits are all in the main line; `None` is unread.

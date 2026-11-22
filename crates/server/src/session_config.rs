@@ -52,13 +52,17 @@ pub struct Workspace {
     pub worktree: Option<String>,
 }
 
-/// SPEC `LiveCompact := {enabled, interval_tokens}`: a session's own opt-in.
+/// SPEC `LiveCompact := {enabled, interval_tokens, mode, max_unmasked_blocks}`.
 #[derive(Debug, Default, Deserialize)]
 pub struct LiveCompact {
     #[serde(default)]
     pub enabled: Option<bool>,
     #[serde(default)]
     pub interval_tokens: Option<u64>,
+    #[serde(default)]
+    pub mode: Option<crate::live_compact::CompactMode>,
+    #[serde(default)]
+    pub max_unmasked_blocks: Option<u64>,
 }
 
 /// SPEC `SessionConfig := {model_config, workspace, keep_alive, live_compact}`.
@@ -151,6 +155,15 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
             args.insert(
                 "live_compact_interval_tokens".to_string(),
                 tokens.to_string(),
+            );
+        }
+        if let Some(mode) = live_compact.mode {
+            args.insert("live_compact_mode".to_string(), mode.as_str().to_string());
+        }
+        if let Some(maximum) = live_compact.max_unmasked_blocks {
+            args.insert(
+                "memory_max_unmasked_blocks".to_string(),
+                maximum.to_string(),
             );
         }
     }
@@ -330,6 +343,22 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
         hint: Some("tokens"),
         ..Default::default()
     };
+    let live_compact_mode = Field {
+        description: "Whether checkpoints cut the transcript projection or declare a memory-mask view.",
+        spelling: "str",
+        hint: Some("cut|mask"),
+        source: Some(CompletionSource::Static(vec![
+            "cut".to_string(),
+            "mask".to_string(),
+        ])),
+        ..Default::default()
+    };
+    let max_unmasked_blocks = Field {
+        description: "Maximum original memory spans visible at once in mask mode.",
+        spelling: "int",
+        hint: Some("blocks"),
+        ..Default::default()
+    };
     let mut fields: Vec<(&str, Value)> = Vec::new();
     // SPEC: `ModelConfig := {model, thinking, ctx_limit, cache_tier} # sticky`.
     fields.push((
@@ -369,6 +398,8 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
             vec![
                 ("enabled", live_compact_enabled.build()),
                 ("interval_tokens", live_compact_interval.build()),
+                ("mode", live_compact_mode.build()),
+                ("max_unmasked_blocks", max_unmasked_blocks.build()),
             ],
         ),
     ));

@@ -15,7 +15,13 @@ had already cached, and each such rewrite cost the whole transcript.
 `upto_seq` is fixed when the walk is made, so every row it returns was stored
 before the request began. That is what lets a retry replay one window: the
 window is the same set of rows, not a fresh reading of a transcript that moved
-underneath it.
+underneath it. Each yielded row also carries its database `seq`; the memory-mask
+Responses body uses it for `gongga_seq`, without asking the adapter to infer seq
+from wire order (outputs of one step can follow later calls).
+
+Only checkpoints whose `kind` is `cut` create the live-compact projection. A
+`mask` checkpoint leaves every sendable row in the walk; its visibility lives in
+the request's memory-view snapshot instead.
 
 The pictures ride in the row's `display`, which is what the row recorded when it
 was written. An item names a copy, and the copy is read when a request is built
