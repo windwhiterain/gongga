@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::Agent;
 use crate::bus::EventBus;
 use crate::session::{SessionHandle, SessionManager};
-use crate::store::{Kind, MessageRow, PendingTask, Store, Transcript};
+use crate::store::{Dream, Kind, MessageRow, PendingTask, Store, Transcript};
 
 /// How long `cancel` waits before pulling the plug, so the acknowledgement
 /// still reaches whoever asked for it.
@@ -1079,6 +1079,15 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                     true,
                     Some("name"),
                     CompletionSource::None,
+                ),
+                kind_arg(
+                    "dream_of",
+                    "True marks the copy as a dreamer: its true turn end discards it, so \
+                     it must never delete itself mid-turn.",
+                    false,
+                    "bool",
+                    Some("true|false"),
+                    CompletionSource::Static(vec!["true".into(), "false".into()]),
                 ),
             ],
         },
@@ -2998,7 +3007,23 @@ fn replay_transcript(
 async fn clone_session(d: &Dispatch, args: &Args) -> Outcome {
     let source = path_of(args.word("id").unwrap_or_default());
     let name = path_of(args.word("new_id").unwrap_or_default());
-    let report = match d.store.clone_session(&source, &name, None) {
+    let dreamer = match flag_of(args, "dream_of") {
+        Ok(value) => value.unwrap_or(false),
+        Err(e) => return Outcome::err(format!("--dream_of: {e}")),
+    };
+    let dream = if dreamer {
+        match d.store.get_session(&source) {
+            Ok(Some(row)) => Some(Dream {
+                source: row.id,
+                generation: 0,
+            }),
+            Ok(None) => return Outcome::err(format!("no session named {source}")),
+            Err(e) => return Outcome::err(format!("could not read {source}: {e}")),
+        }
+    } else {
+        None
+    };
+    let report = match d.store.clone_session(&source, &name, dream) {
         Ok(report) => report,
         Err(e) => return Outcome::err(e.to_string()),
     };

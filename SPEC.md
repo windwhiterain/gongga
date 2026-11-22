@@ -174,7 +174,8 @@ Skill := path # abstract naming space
 fn ls_skill(path: path, session: Sesssion = caller())
 fn run_skill(id: Skill, cmd: Cmd, sesssion: Session = caller())
 fn get_trajectory(sesssion: Sesssion, range: Range)
-fn clone_session(source: path, dest: path)
+fn clone_session(source: path, dest: path, dream_of: bool = false)
+  # dream_of=true marks a disposable dreamer: its true turn end discards it.
 ```
 
 ## Server State

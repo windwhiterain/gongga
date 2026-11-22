@@ -415,6 +415,11 @@ ever lists: the tree is drawn from the `sessions` event, and a script's `insert`
 none. The handoff copied its transcript that way, which is what this command exists to
 replace -- the copy is the server's act, so the server can say it happened.
 
+`dream_of=true` marks the copy as a disposable dreamer: its true turn end discards
+it through the same path as an older `dream_of` row. A dreamer must not delete
+itself with `del_session` mid-turn -- the delete waits on the gate its own turn
+holds and is abandoned at the tool's 120s bound.
+
 Two refusals, both structural. The source must exist, and the target name must be free
 (`UNIQUE` on `sessions.name`, reported as "already exists"): a copy that joined a
 transcript already under that name would be two conversations in one window, the same
