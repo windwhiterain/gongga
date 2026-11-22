@@ -125,6 +125,8 @@ pub enum Part {
     Fold,
     /// One session's header: its name and the figures beside it.
     Header,
+    /// The marker cell that folds a session's header to one line, or opens it.
+    HeaderFold,
     /// One session's events.
     Pane,
     /// The way back to the newest row, drawn over a pane's last row.
@@ -284,10 +286,13 @@ impl Screen {
                 part,
             });
         }
-        if let Some(name) = render::header_at(&slots, column, row) {
+        if let Some((name, on_marker)) = render::header_at(&slots, column, row) {
             return Some(Hit {
                 name: name.to_string(),
-                part: Part::Header,
+                part: match on_marker {
+                    true => Part::HeaderFold,
+                    false => Part::Header,
+                },
             });
         }
         render::pane_at(&slots, column, row).map(|name| Hit {
@@ -1708,6 +1713,7 @@ impl Tui {
             // A row that names no session is only a group, and the only thing that
             // can happen to it is folding.
             Part::Fold => self.screen.panes.toggle_row(&hit.name),
+            Part::HeaderFold => self.screen.panes.toggle_header(&hit.name),
             Part::List => {
                 if !self.is_session_row(&hit.name) {
                     self.screen.panes.toggle_row(&hit.name);

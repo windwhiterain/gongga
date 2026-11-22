@@ -128,6 +128,14 @@ pub struct Panes {
     /// A view, never a deletion: folding a name keeps every block under it, and a
     /// name that is gone leaves its entry here as one string that matches nothing.
     folded: std::collections::BTreeSet<String>,
+    /// The sessions whose header is opened: everything it carries is drawn.
+    ///
+    /// # Invariant
+    ///
+    /// A view, never a deletion: a name absent from here shows its header folded to
+    /// one line, which is the state a frame starts in. A name that is gone leaves its
+    /// entry here as one string that matches nothing.
+    expanded_headers: std::collections::BTreeSet<String>,
     /// The sessions that stopped while they were not shown.
     ///
     /// # Invariant
@@ -155,6 +163,7 @@ impl Panes {
             listed: Vec::new(),
             list_rows: Vec::new(),
             folded: std::collections::BTreeSet::new(),
+            expanded_headers: std::collections::BTreeSet::new(),
             unseen: std::collections::BTreeSet::new(),
             quota: Vec::new(),
             wants: BTreeSet::new(),
@@ -256,6 +265,18 @@ impl Panes {
     ///
     /// # Invariant
     ///
+    /// Whether a session's header shows everything it carries, or only its first line.
+    pub fn header_expanded(&self, name: &str) -> bool {
+        self.expanded_headers.contains(name)
+    }
+
+    /// Folds a session's header to one line, or opens it to all of them.
+    pub fn toggle_header(&mut self, name: &str) {
+        if !self.expanded_headers.remove(name) {
+            self.expanded_headers.insert(name.to_string());
+        }
+    }
+
     /// The layout's own answer: a session nobody set is shown, and a session that
     /// was hidden has no window. See `docs/notes/tui-panes.md`.
     pub fn is_shown(&self, name: &str) -> bool {

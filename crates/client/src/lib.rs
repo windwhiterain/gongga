@@ -2996,7 +2996,22 @@ impl Client {
 /// happened. See `docs/notes/client-lib.md`.
 fn title_note(session: &protocol::SessionInfo) -> String {
     let usage = &session.usage;
-    let mut parts: Vec<String> = Vec::new();
+    // The order is the reading order, and a folded header shows only the head of
+    // this line: what the session is doing, then what it spends, then what it is.
+    let mut parts: Vec<String> = vec![
+        match session.status {
+            protocol::SessionStatus::Idle => "idle",
+            protocol::SessionStatus::Running => "running",
+            protocol::SessionStatus::Error => "error",
+        }
+        .to_string(),
+    ];
+    if let Some(model) = &session.model {
+        parts.push(model.clone());
+    }
+    if let Some(level) = &session.thinking_effort {
+        parts.push(level.clone());
+    }
     if usage.context_tokens > 0 {
         parts.push(format!("ctx {}", usage.context_tokens));
         // SPEC says the share, so the client does the division, not the reader.
@@ -3016,9 +3031,19 @@ fn title_note(session: &protocol::SessionInfo) -> String {
             _ => format!("ttft {:.1}s", ms as f64 / 1000.0),
         });
     }
-    // From here the values speak for themselves: a path, a `provider/model`, a level.
+    if let Some(percent) = session.context_limit {
+        // `off` is the one share a number cannot say: SPEC's `0` is the notice
+        // switched off, not a share of zero.
+        parts.push(match percent {
+            0 => "limit off".to_string(),
+            percent => format!("limit {percent}%"),
+        });
+    }
     if !session.cwd.is_empty() {
         parts.push(session.cwd.clone());
+    }
+    if let Some(remote) = &session.remote {
+        parts.push(format!("remote {remote}"));
     }
     // SPEC's `worktree`: three states, because a fourth cannot happen.
     if let Some(worktree) = &session.worktree {
@@ -3031,20 +3056,8 @@ fn title_note(session: &protocol::SessionInfo) -> String {
             }
         ));
     }
-    if let Some(model) = &session.model {
-        parts.push(model.clone());
-    }
-    if let Some(level) = &session.thinking_effort {
-        parts.push(level.clone());
-    }
-    if let Some(percent) = session.context_limit {
-        // `off` is the one share a number cannot say: SPEC's `0` is the notice switched
-        // off, not a share of zero.
-        parts.push(match percent {
-            0 => "off".to_string(),
-            percent => format!("{percent}%"),
-        });
-    }
+    parts.push(format!("{} messages", session.messages));
+    parts.push(format!("seq {}", session.transcript));
     parts.join(" · ")
 }
 

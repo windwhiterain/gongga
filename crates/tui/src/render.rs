@@ -209,6 +209,8 @@ pub struct Slot {
     /// The box a sticky pane is drawn in, and its rows start inside it.
     pub frame: Option<Rect>,
     pub header: Option<Rect>,
+    /// SPEC: the one row between the header and the events.
+    pub rule: Option<Rect>,
     pub body: Rect,
     /// What the header says beside the name, and how many rows it needed.
     pub note: Option<String>,
@@ -284,12 +286,19 @@ fn slot_of(panes: &Panes, name: &str, column: Rect, sticky: Option<&str>) -> Slo
         None => column,
     };
     // A header's own height needs the width it will be drawn at, so it comes after.
+    let expanded = panes.header_expanded(name);
     let rows = match inner.height {
         0 | 1 => 0,
-        height => (pane_header_rows(name, note.as_deref(), inner.width).len() as u16)
+        height => (pane_header_rows(name, note.as_deref(), inner.width, expanded).len() as u16)
             .min(height - 1)
             .max(1),
     };
+    let rule = (rows > 0 && inner.height > rows).then_some(Rect {
+        y: inner.y + rows,
+        height: 1,
+        ..inner
+    });
+    let used = rows + u16::from(rule.is_some());
     Slot {
         name: name.to_string(),
         frame,
@@ -297,9 +306,10 @@ fn slot_of(panes: &Panes, name: &str, column: Rect, sticky: Option<&str>) -> Slo
             height: rows,
             ..inner
         }),
+        rule,
         body: Rect {
-            y: inner.y + rows,
-            height: inner.height - rows,
+            y: inner.y + used,
+            height: inner.height.saturating_sub(used),
             ..inner
         },
         note,
@@ -327,15 +337,42 @@ pub fn pane_note(panes: &Panes, name: &str) -> Option<String> {
 ///
 /// The one function that decides where a title breaks -- the layout reserves these
 /// rows and the frame draws these rows -- and every row it returns fits `width`.
-pub fn pane_header_rows(name: &str, note: Option<&str>, width: u16) -> Vec<String> {
+pub fn pane_header_rows(name: &str, note: Option<&str>, width: u16, expanded: bool) -> Vec<String> {
     let text = match note {
         Some(note) if !note.is_empty() => format!("{} {note}", bracketed(name)),
         _ => bracketed(name),
     };
-    wrap_words(&text, width.saturating_sub(1).max(1))
+    let room = width.saturating_sub(1).max(1);
+    if !expanded {
+        // Folded: one row, and the marker says the rest is one click away.
+        let first = wrap_words(&text, room)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        return vec![folded_row(&first, width)];
+    }
+    wrap_words(&text, room)
         .into_iter()
-        .map(|row| format!(" {row}"))
+        .enumerate()
+        .map(|(at, row)| match at {
+            0 => format!("▾{row}"),
+            _ => format!(" {row}"),
+        })
         .collect()
+}
+
+/// The one row a folded header is drawn on: its marker, then as much of the line as
+/// fits, then an ellipsis when the rest was cut away.
+fn folded_row(row: &str, width: u16) -> String {
+    let keep = (width as usize).saturating_sub(3);
+    let mut kept = row.to_string();
+    while UnicodeWidthStr::width(kept.as_str()) > keep {
+        kept.pop();
+    }
+    match kept.len() < row.len() {
+        true => format!("▸ {kept}…"),
+        false => format!("▸ {kept}"),
+    }
 }
 
 /// `text` broken into rows: greedy on spaces, and a word wider than the column is
@@ -427,11 +464,16 @@ pub fn list_at(area: Rect, panes: &Panes, column: u16, row: u16) -> Option<ListH
 ///
 /// Headers only: SPEC's click sets the sticky session from a session's own name
 /// and figures, and the events under them are read, not clicked.
-pub fn header_at(slots: &[Slot], column: u16, row: u16) -> Option<&str> {
+pub fn header_at(slots: &[Slot], column: u16, row: u16) -> Option<(&str, bool)> {
     slots
         .iter()
         .find(|slot| slot.header.is_some_and(|head| covers(&head, column, row)))
-        .map(|slot| slot.name.as_str())
+        .map(|slot| {
+            // The marker's own cell folds; every other cell of the header is the
+            // click SPEC gives to the sticky session.
+            let marker = slot.header.is_some_and(|head| column == head.x);
+            (slot.name.as_str(), marker)
+        })
 }
 
 /// The pane that covers screen row `row`, for the wheel and a click.
@@ -756,9 +798,16 @@ pub fn bottom_at(
 /// The one place a pane's header is drawn, so a session reads the same whatever
 /// else the frame holds; `selected` is [`name_style`]'s fill, which the caller
 /// turns off for a pane its frame already marks. See `docs/notes/tui-render.md`.
-fn draw_pane_header(f: &mut Frame, name: &str, area: Rect, selected: bool, note: Option<&str>) {
+fn draw_pane_header(
+    f: &mut Frame,
+    name: &str,
+    area: Rect,
+    selected: bool,
+    note: Option<&str>,
+    expanded: bool,
+) {
     let style = name_style(selected, dim());
-    let rows: Vec<Line> = pane_header_rows(name, note, area.width)
+    let rows: Vec<Line> = pane_header_rows(name, note, area.width, expanded)
         .into_iter()
         .map(|row| Line::from(Span::styled(row, style)))
         .collect();
@@ -956,7 +1005,19 @@ fn draw_panes(f: &mut Frame, s: &mut Screen, area: Rect) {
             let note = slot.note.as_deref();
             // A framed pane is marked by its box; the fill is the fallback.
             let filled = slot.frame.is_none() && Some(slot.name.as_str()) == sticky.as_deref();
-            draw_pane_header(f, &slot.name, header, filled, note);
+            draw_pane_header(
+                f,
+                &slot.name,
+                header,
+                filled,
+                note,
+                s.panes.header_expanded(&slot.name),
+            );
+        }
+        if let Some(rule) = slot.rule {
+            // SPEC: a header and the events are two areas, and this row is the seam.
+            let line = "─".repeat(rule.width as usize);
+            f.render_widget(Paragraph::new(Line::from(Span::styled(line, dim()))), rule);
         }
         draw_rows(f, s, &slot.name, slot.body);
     }
