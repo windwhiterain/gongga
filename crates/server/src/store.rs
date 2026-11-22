@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use anyhow::Context;
 use protocol::SessionStatus;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -40,16 +41,22 @@ pub struct Prompt {
     #[serde(default)]
     pub parameters: Option<String>,
     /// The spellings `index` carries, so a mention of one stays literal.
-    #[serde(default)]
+    ///
+    /// # Invariant
+    ///
+    /// `null` reads as empty, not as a broken row: the 6-to-7 migrator split a
+    /// version-6 prompt written before these fields existed and copied the missing
+    /// keys out as `null`, and `#[serde(default)]` covers only a key that is absent.
+    #[serde(default, deserialize_with = "list_or_null")]
     pub rooted: Vec<String>,
     /// Which of `rooted` a message asked for outright -- a `@file`/`@skill`
     /// mention or the standing rules -- as opposed to riding in because the
     /// prefix cache needed its ancestor. A record for the reader, never sent.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_null")]
     pub index_explicit: Vec<String>,
     /// Which of `rooted` came in only as a cached chain's ancestor, not asked
     /// for by any message. A record for the reader, never sent.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_null")]
     pub index_cached: Vec<String>,
     /// The directory this row's index was read from; the cache owner names it.
     #[serde(default)]
@@ -441,6 +448,20 @@ pub struct Store {
     conn: Arc<Mutex<Connection>>,
     /// Where the database is, so a request can open its own read-only view of it.
     path: PathBuf,
+}
+
+/// Reads a list field whose stored value may be an explicit `null`.
+///
+/// # Invariant
+///
+/// `null` and an absent key mean the same thing here -- nothing recorded -- because
+/// `#[serde(default)]` alone refuses the first spelling and a row written that way
+/// then reads as no row at all. See [`Prompt`].
+fn list_or_null<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// Whether `table` already has `column`, and adds it when it does not.
@@ -2045,35 +2066,37 @@ impl Store {
     ///
     /// Read by position, never by kind: slot 1 is the head. Version 5 sessions
     /// were moved there by the 5-to-6 migrator before this build opened them, so
-    /// no walk is needed and storage order is send order.
+    /// no walk is needed and storage order is send order. A slot holding more than
+    /// one row is read as its newest: that is the row the last request sent.
     pub fn prompt(&self, session_id: i64) -> anyhow::Result<Option<Prompt>> {
         let conn = self.lock();
-        // Version 7 keeps the head in five rows (instructions/1, tools/2,
-        // agents.md/3, index/4, info/5). Read by slot, never by a walk. A version
-        // 5-to-6 session still has the whole prompt in one `system` row at 1.
-        let cell = |seq: i64, kind: &str| -> anyhow::Result<Option<serde_json::Value>> {
-            let display = conn
-                .query_row(
-                    "SELECT display FROM messages WHERE session_id = ?1 AND seq = ?2 AND kind = ?3",
-                    params![session_id, seq, kind],
-                    |r| r.get::<_, String>(0),
-                )
+        // Version 7 keeps the head in five rows: 1, 3, 4, 5.
+        let cell = |seq: i64, kinds: &[&str]| -> anyhow::Result<Option<serde_json::Value>> {
+            let placeholders = std::iter::repeat_n("?", kinds.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut statement = conn.prepare(&format!(
+                "SELECT display FROM messages\n                 WHERE session_id = ?1 AND seq = ?2 AND kind IN ({placeholders})\n                 ORDER BY id DESC LIMIT 1"
+            ))?;
+            let mut bound: Vec<&dyn rusqlite::ToSql> = vec![&session_id, &seq];
+            for kind in kinds {
+                bound.push(kind);
+            }
+            let display = statement
+                .query_row(rusqlite::params_from_iter(bound), |r| r.get::<_, String>(0))
                 .optional()?;
             Ok(display.and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok()))
         };
-        let instructions = match cell(1, "instructions")? {
-            Some(row) => Some(row),
-            None => cell(1, "system")?,
-        };
+        let instructions = cell(1, &["instructions", "system"])?;
         let Some(instructions) = instructions else {
             return Ok(None);
         };
         let get = |row: &serde_json::Value, key: &str| -> serde_json::Value {
             row.get(key).cloned().unwrap_or(serde_json::Value::Null)
         };
-        let agents = cell(3, "agents_md")?;
-        let index = cell(4, "index")?;
-        let info = cell(5, "info")?;
+        let agents = cell(3, &["agents_md"])?;
+        let index = cell(4, &["index"])?;
+        let info = cell(5, &["info"])?;
         // The one-row `system` spelling already holds the whole prompt.
         if get(&instructions, "instructions").is_string()
             && agents.is_none()
@@ -2092,7 +2115,18 @@ impl Store {
                 merged.insert(key.clone(), value.clone());
             }
         }
-        Ok(serde_json::from_value(serde_json::Value::Object(merged)).ok())
+        // An unreadable head is an error, never a missing one: the caller writes
+        // the head when this answers None.
+        let merged = serde_json::Value::Object(merged);
+        serde_json::from_value(merged.clone()).with_context(|| {
+            format!(
+                "session {session_id} has a prompt row this build cannot read (fields: {})",
+                merged
+                    .as_object()
+                    .map(|fields| fields.keys().cloned().collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default()
+            )
+        })
     }
 
     /// Appends a row at an explicit slot. The head uses slots 1 and 2, written
@@ -2120,12 +2154,29 @@ impl Store {
         Ok(())
     }
 
-    /// Stores the prompt as four head rows: instructions at 1, agents.md at 3,
-    /// the index at 4 and the rest at 5 (the tool set owns slot 2). One row per
-    /// thing the reader wants to see, so the UI renders them as five lines and
-    /// `prompt` rebuilds the same wire head from the same rows it reads from.
+    /// Stores the prompt as four head rows: 1, 3, 4 and 5.
     pub fn append_prompt(&self, session_id: i64, prompt: &Prompt) -> anyhow::Result<i64> {
         let conn = self.lock();
+        // Written once: a second write is refused, so a misread head cannot be
+        // appended again.
+        for (seq, kind) in [
+            (1, "instructions"),
+            (3, "agents_md"),
+            (4, "index"),
+            (5, "info"),
+        ] {
+            let taken: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages\n                  WHERE session_id = ?1 AND seq = ?2 AND kind = ?3)",
+                params![session_id, seq, kind],
+                |r| r.get(0),
+            )?;
+            if taken {
+                anyhow::bail!(
+                    "session {session_id} already has a head row at {seq} ({kind}); context is \
+                     append and cut only"
+                );
+            }
+        }
         let instructions = serde_json::json!({ "instructions": prompt.instructions });
         Self::append_head_conn(&conn, session_id, 1, Kind::Instructions, &instructions)?;
         let agents = serde_json::json!({ "agents_md": prompt.agents_md });
