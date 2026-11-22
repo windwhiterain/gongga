@@ -237,7 +237,15 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     supervise::remember();
     let mut clock = Clock::new();
     // The content comes first: this home's config is one of its files.
+    //
+    // # Invariant
+    //
+    // The home is expanded before the content is looked for, so `--home .dev/x`
+    // names the same checkout as an absolute spelling of it: the ship content is
+    // read through `owned()`, which canonicalizes, and a relative path there
+    // resolves against whatever directory this process happens to be in.
     let home = args.home.clone().unwrap_or_else(crate::config::home_dir);
+    let home = crate::config::expand(home);
     let content = if args.check_config {
         ship::inspect(&home)?
     } else {
