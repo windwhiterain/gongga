@@ -371,6 +371,22 @@ struct FileConfig {
     endpoint: Option<FileEndpoint>,
 }
 
+impl FileConfig {
+    /// The repository this file names, when it names one.
+    ///
+    /// # Invariant
+    ///
+    /// An empty line is the compiled URL, not a repository called nothing.
+    fn ship_url(&self) -> Option<String> {
+        self.ship
+            .as_ref()
+            .and_then(|s| s.url.as_deref())
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(str::to_string)
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct FileServer {
     home: Option<PathBuf>,
@@ -503,6 +519,9 @@ impl Config {
         } else {
             FileConfig::default()
         };
+        // An empty line is the compiled URL, not a repository called nothing: read it
+        // before any field of `file` is moved.
+        let ship_url = file.ship_url();
         // These belong to the machine, not to the merged file.
         let stranded = crate::remotes::stranded(&config_path);
         if !stranded.is_empty() {
@@ -858,13 +877,6 @@ impl Config {
                 .unwrap_or(DEFAULT_QUOTA_INTERVAL_SECS),
         );
 
-        // An empty line is the compiled URL, not a repository called nothing.
-        let ship_url = file
-            .ship
-            .and_then(|s| s.url)
-            .map(|url| url.trim().to_string())
-            .filter(|url| !url.is_empty());
-
         Ok(Self {
             read: READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
             config_path: std::path::absolute(&config_path).unwrap_or(config_path),
@@ -1042,6 +1054,18 @@ fn read_file(path: &Path) -> anyhow::Result<FileConfig> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
     toml::from_str(&text).map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))
+}
+
+/// The repository a config file names, when it names one.
+///
+/// # Invariant
+///
+/// Read without loading the config, for the one caller that cannot resolve its
+/// content: the mapping that would name a different file lives inside the content it
+/// cannot read, so this asks the file at the name this build has always used. See
+/// `docs/notes/server-ship.md`.
+pub fn ship_url_of(path: &Path) -> Option<String> {
+    read_file(path).ok()?.ship_url()
 }
 
 /// The home this program has when nobody names one: `GONGGA_HOME`, else `~/.gongga`.

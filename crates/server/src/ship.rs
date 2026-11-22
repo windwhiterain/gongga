@@ -279,8 +279,22 @@ pub fn python(home: &Path) -> PathBuf {
 
 /// The file this home's config is.
 pub fn config(home: &Path) -> PathBuf {
-    mapped(home, |declared| &declared.config, "config/config.toml")
+    mapped(home, |declared| &declared.config, CONFIG_AT_REST)
 }
+
+/// The file this home's config is, asked without resolving the content.
+///
+/// # Invariant
+///
+/// The name this mapping has always had, under the checkout: a start that cannot read
+/// the content cannot read the declaration either, and it must not ask -- asking is
+/// what sent it to the fetch this function serves.
+fn config_at_rest(home: &Path) -> PathBuf {
+    checkout(home).join(CONFIG_AT_REST)
+}
+
+/// Where the config has always been, for a reader that cannot be told otherwise.
+const CONFIG_AT_REST: &str = "config/config.toml";
 
 /// One path the content declares, under the checkout.
 ///
@@ -368,23 +382,32 @@ pub fn inspect(home: &Path) -> anyhow::Result<Paths> {
 ///
 /// # Invariant
 ///
-/// The repository is the home's answer, not a property of the clone: a home whose
-/// config moved from the published content to a local checkout fetches from there at
-/// this start, and moving back is the same edit removed. Only `origin` moves -- the
-/// commits, the personal branch and the working tree are this home's own. One fetch per
-/// process, reused by every later `refresh`.
+/// Only `origin` moves: the commits, the personal branch and the working tree stay this
+/// home's own. See `docs/notes/server-fork.md`.
 pub fn follow(home: &Path, named: Option<&str>) {
-    let url = url(named);
-    let fork = Fork::at(&checkout(home));
+    start_fetch(home, Fork::at(&checkout(home)), &url(named));
+}
+
+/// Starts the one fetch this process makes, unless one has already started.
+///
+/// # Invariant
+///
+/// One round trip per process, whoever calls: `follow` is the ordinary caller and
+/// `wait_for_fetch` the other, and both read the answer through `fetched`.
+fn start_fetch(home: &Path, fork: Fork, url: &str) {
+    let slot = FETCH.get_or_init(|| Mutex::new(None));
+    let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if held.is_some() || FETCHED.get().is_some() {
+        return;
+    }
+    if point(home, &fork, url).is_err() || !fork.exists() {
+        // Nothing to fetch: the answer is given, so nobody waits for one.
+        drop(held);
+        let _ = FETCHED.set(Ok(Sync::Current));
+        return;
+    }
     let (tx, rx) = mpsc::sync_channel(1);
-    if FETCH.set(Mutex::new(Some(rx))).is_err() {
-        return;
-    }
-    if point(home, &fork, &url).is_err() || !fork.exists() {
-        // `prepare` reported what is wrong with this checkout; nothing to fetch.
-        let _ = tx.send(Ok(Sync::Current));
-        return;
-    }
+    *held = Some(rx);
     let started = std::thread::Builder::new()
         .name("ship-fetch".to_string())
         .spawn(move || {
@@ -459,8 +482,8 @@ pub fn refresh(home: &Path) -> anyhow::Result<Option<String>> {
 /// Protocol drift walks *back*, never forward: content that has moved to a protocol
 /// this build cannot read still serves this build the last commit it could read. The
 /// alternative is a machine that cannot start because somebody else's repository
-/// advanced. A checkout whose history holds nothing readable waits for the fetch this
-/// start already made, then walks the history it brought.
+/// advanced. A checkout holding nothing readable makes this start's fetch, since
+/// `prepare` resolves before `follow` runs.
 fn resolve(home: &Path) -> anyhow::Result<Content> {
     let fork = Fork::at(&checkout(home));
     let link = link();
@@ -479,21 +502,24 @@ fn resolve(home: &Path) -> anyhow::Result<Content> {
     Ok(Content { commit, declared })
 }
 
-/// Waits for the fetch this start already made when the checkout's own history says
-/// nothing this build can read.
+/// Waits for the one fetch this start makes, and makes it when nothing has.
 ///
 /// # Invariant
 ///
-/// The fetch is shared, so waiting costs no second round trip; one resolve still names
-/// one commit. `refresh` runs behind the port, which is why a checkout the fetch was
-/// about to move can still be read: without it a build whose content moved would never
-/// reach the port where the fetch is collected.
+/// The fetch is shared, so waiting costs no second trip. `prepare` runs before `follow`,
+/// so a checkout holding nothing this build reads starts one here, from the repository
+/// the home's config names at `config/config.toml` -- the name this mapping always had,
+/// since the mapping is inside the content this cannot read.
 fn wait_for_fetch(
     fork: &Fork,
     tip: &str,
     link: &Link,
     first: anyhow::Error,
 ) -> anyhow::Result<String> {
+    // `prepare` resolves before `follow` fetches, so this is where the fetch starts.
+    let home = fork.dir().parent().unwrap_or_else(|| fork.dir());
+    let named = crate::config::ship_url_of(&config_at_rest(home));
+    start_fetch(home, fork.clone(), &url(named.as_deref()));
     let state = match fetched() {
         Ok(state) => state.clone(),
         Err(why) => anyhow::bail!("{first:#}; the content fetch this start makes: {why}"),
