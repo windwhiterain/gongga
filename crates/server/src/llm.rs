@@ -311,6 +311,7 @@ impl LlmClient {
         instructions: &str,
         plan: Option<&str>,
         parameters: Option<&str>,
+        parameters_before_card: Option<&str>,
         tail: Option<&str>,
         source: &RequestSource,
         tools: &Value,
@@ -338,6 +339,7 @@ impl LlmClient {
             instructions,
             plan,
             parameters,
+            parameters_before_card,
             tail,
             &session_id,
             tools,
@@ -612,6 +614,7 @@ impl LlmClient {
         instructions: &str,
         plan: Option<&str>,
         parameters: Option<&str>,
+        parameters_before_card: Option<&str>,
         card: Option<&str>,
         session_id: &str,
         tools: &Value,
@@ -634,7 +637,7 @@ impl LlmClient {
                 effort,
                 self.temperature,
                 (plan_framing(), plan),
-                parameters,
+                (parameters, parameters_before_card),
                 card,
             );
         }
@@ -692,7 +695,18 @@ impl LlmClient {
         let mut head = body.to_string();
         head.pop();
         head.push_str(",\"input\":[");
-        // The opening and separator come first: the plan is never the first message.
+        // The shared-argument section opens the messages: it follows the tool block.
+        if let Some(parameters) = parameters.filter(|text| !text.is_empty()) {
+            head.push_str(
+                &json!({
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": parameters}],
+                })
+                .to_string(),
+            );
+            head.push(',');
+        }
+        // The opening and separator come after it: the plan is never the first message.
         let framing = plan_framing();
         if !framing.opening.is_empty() {
             head.push_str(
@@ -748,8 +762,8 @@ impl LlmClient {
                 head.push(',');
             }
         }
-        // Before the card: the same words for every session, the card being what differs.
-        if let Some(parameters) = parameters.filter(|parameters| !parameters.is_empty()) {
+        // Before the card: an older head keeps the words where it wrote them.
+        if let Some(parameters) = parameters_before_card.filter(|text| !text.is_empty()) {
             head.push_str(
                 &json!({
                     "role": "user",

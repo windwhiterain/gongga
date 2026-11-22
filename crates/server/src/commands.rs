@@ -4776,13 +4776,13 @@ mod tests {
     fn prompt_row() -> crate::store::Prompt {
         crate::store::Prompt {
             instructions: "the standing prose".to_string(),
-            index: Some("the expanded index".to_string()),
+            plan: Some("the expanded plan".to_string()),
             agents_md: Some("the directory rules".to_string()),
             tail: Some("the start card".to_string()),
-            parameters: Some("the shared args".to_string()),
+            parameters: None,
             rooted: vec!["@file(a.md)".to_string()],
-            index_explicit: vec!["@file(a.md)".to_string()],
-            index_cached: Vec::new(),
+            plan_explicit: vec!["@file(a.md)".to_string()],
+            plan_cached: Vec::new(),
             cwd: ".".to_string(),
             remote: None,
             model: Some("m".to_string()),

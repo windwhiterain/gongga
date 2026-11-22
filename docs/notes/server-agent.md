@@ -375,8 +375,9 @@ not more.
 
 It runs on the request that writes the row, and never again. Whether it runs at all
 is the session's `prefix_cache_plan`: a session that states `false` (or follows a
-home default of `false`) gets no plan row -- the head is instructions, card and
-parameters only, and references travel in the messages that name them. The switch
+home default of `false`) gets no plan row -- the head is instructions, card and the
+section on shared arguments only, and references travel in the messages that name them.
+The switch
 exists for a small-context model: the plan is stamped once and unmaskable, so a
 window it would fill must never be given it. Two arguments had to be
 settled for that to be the right answer, and both were settled by measurement:

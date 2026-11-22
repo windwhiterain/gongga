@@ -35,9 +35,9 @@ pub struct Prompt {
     ///
     /// # Invariant
     ///
-    /// Stamped with the card, and `None` on a row written before this field existed:
-    /// a session's context has two operations, append and cut, so a session already
-    /// under way is sent as it was rather than told what it was never told.
+    /// Only a head whose tool row states no section keeps it here, and a request sends it
+    /// where that head wrote it: context is append and cut, so a session already under way
+    /// is sent as it was. Every other head stamps the section with its schema.
     #[serde(default)]
     pub parameters: Option<String>,
     /// The spellings `plan` carries, so a mention of one stays literal.
@@ -81,6 +81,15 @@ pub struct Prompt {
 pub struct ToolSet {
     /// The block exactly as it goes on the wire, in this session's face.
     pub tools: serde_json::Value,
+    /// What a call may carry besides the arguments its own row lists.
+    ///
+    /// # Invariant
+    ///
+    /// Sent as the message right after the block: these words are about tool arguments,
+    /// so a reader meets them where the block ends. It is stated here or in the head's
+    /// info row, never both, so one section reaches a request exactly once.
+    #[serde(default)]
+    pub parameters: Option<String>,
     /// The model of the first request: a record, never compared.
     #[serde(default)]
     pub model: Option<String>,
@@ -4486,10 +4495,11 @@ impl MessageRow {
                 let model = str_of("model").unwrap_or_default();
                 let remote = str_of("remote").unwrap_or_default();
                 let tail = str_of("tail").unwrap_or_default();
-                let parameters = str_of("parameters").unwrap_or_default();
-                row.text = format!(
-                    "info: cwd={cwd}, model={model}, remote={remote}, tail={tail}, parameters={parameters}"
-                );
+                row.text = format!("info: cwd={cwd}, model={model}, remote={remote}, tail={tail}");
+                // A head stamped before the section moved to the tool row keeps it here.
+                if let Some(parameters) = str_of("parameters") {
+                    row.text.push_str(&format!(", parameters={parameters}"));
+                }
             }
             // The set in force: the names on the fold, the schema below it.
             Some(Kind::Tools) => row.text = tools_text(&value),
@@ -4562,12 +4572,14 @@ fn plan_text(value: &serde_json::Value) -> String {
     text
 }
 
-/// The tool row: the names on its first line, the whole schema below them.
+/// The tool row: the names, the schema below them, and the section on the
+/// arguments every call shares.
 ///
 /// # Invariant
 ///
 /// The schema is a request's bytes rather than a summary of them, so it is rendered
-/// as stored -- the block folds to the names line until a reader opens it.
+/// as stored -- the block folds to the names line until a reader opens it. The section
+/// is part of this row rather than a row of its own: what it says is about calls.
 fn tools_text(value: &serde_json::Value) -> String {
     let tools = value.get("tools").and_then(|v| v.as_array());
     let names = tools
@@ -4584,9 +4596,17 @@ fn tools_text(value: &serde_json::Value) -> String {
         .unwrap_or_default();
     let count = tools.map(|list| list.len()).unwrap_or(0);
     let head = format!("tools: {count} tool(s) [{names}]");
-    match tools.map(|list| serde_json::to_string_pretty(list)) {
+    let schema = match tools.map(|list| serde_json::to_string_pretty(list)) {
         Some(Ok(schema)) if !schema.is_empty() && count > 0 => format!("{head}\n{schema}"),
         _ => head,
+    };
+    match value
+        .get("parameters")
+        .and_then(|text| text.as_str())
+        .filter(|text| !text.is_empty())
+    {
+        Some(parameters) => format!("{schema}\nparameters:\n{parameters}"),
+        None => schema,
     }
 }
 
