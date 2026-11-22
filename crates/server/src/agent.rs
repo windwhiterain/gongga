@@ -629,6 +629,8 @@ impl Agent {
             None => crate::session::stated(cwd),
         };
         // The first row is the head: storage order and send order are the same one.
+        // `prompt` reports a head it cannot read rather than answering None, so this
+        // branch is reached only by a session that has never had one.
         if let Some(kept) = self.store.prompt(id)? {
             return Ok(kept);
         }
@@ -679,8 +681,19 @@ impl Agent {
             remote: remote.map(str::to_string),
             model: Some(model.to_string()),
         };
-        self.store.append_prompt(id, &prompt)?;
-        Ok(prompt)
+        // # Invariant
+        //
+        // A head written by another caller in between is not this call's to write:
+        // the store refuses the second one, so the prompt read back is the head in
+        // force whatever wrote it. Reading it again is the only way to keep a
+        // concurrent writer from turning a refusal into a lost request.
+        match self.store.append_prompt(id, &prompt) {
+            Ok(_) => Ok(prompt),
+            Err(_) => self
+                .store
+                .prompt(id)?
+                .ok_or_else(|| anyhow::anyhow!("session {id} lost the head it was about to write")),
+        }
     }
 
     /// The stored tool set this session sends, written once and only read after.
