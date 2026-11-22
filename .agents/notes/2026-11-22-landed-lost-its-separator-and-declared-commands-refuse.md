@@ -37,7 +37,7 @@ mask-offload's `read_3` — the first caller of the new door, and it refused. On
 build every package-skill call through `run_skill` (read, write, edit, and any content
 command) refuses on this machine.
 
-## The fix (applied, verified; merge pending)
+## The fix (landed)
 
 One line: `landed`'s local arm writes the separator, making it the same shape as the
 peer arm — `format!("{PREFIX}{}/{path}", protocol::local_machine())`. Windows then spells
@@ -53,6 +53,18 @@ to the d1d590c2 baseline; `spawn_dir_selftest.sh` — every skill scenario green
 regression scenario first), scenario 6 still red as the documented Left-open of 454f542c
 ("a peer session with an omitted cwd now really reaches that peer"); scratch L3 on a
 temp home — the declared `read` returns the file's lines, the refusal is gone, `ls_skill`
-spells `remote://local/C:/…`. A second session (`fix-probe`, qwen) started the same fix
-in `.worktrees/fix-probe` (branch `fix/skill-separator`) while this one was building; one
-branch should land.
+spells `remote://local/C:/…`. Two sessions wrote the same fix while the other build waited on the network:
+`fix/landed-separator` (`fea7c5e8`, the separator alone) and `fix/skill-separator`
+(`4d24e01b`, the same spelling with both arms unified into one `format!`, and the
+invariant written above the function). One landed: `fix/skill-separator`, because the
+unified arm leaves no second copy of the spelling to drift. `fix/landed-separator` is
+superseded; its measurement stands and is cited here.
+
+Gates on the landed sha (`.dev/verify/4d24e01b-landed-separator.json`): `mbx build` exit 0;
+`mbx fmt --check` exit 0; `test-layout-check` 0 violations; `comments-check` 10 errors, the
+same count as the `e928efaf` baseline and none in `space.rs`; `scripts/skill_contract.sh`
+PASS; `scripts/skill_call_selftest.sh` PASS 6/6, whose package call through `run_skill` is
+the regression own scenario; `scripts/spawn_dir_selftest.sh` every skill scenario green,
+scenario 6 red as above. `scripts/meta_selftest.sh` is red on this sha **and on the
+unpatched binary** ("a first turn wrote 0 prompt rows"): a gate stale against `f0e77e14`
+prompt index, not this change.

@@ -67,11 +67,11 @@ pub fn is_local_name(name: &str) -> bool {
 ///
 /// [`machine_of`] reads back exactly what this writes, and this machine is
 /// `remote://local/` -- never one of its names, or the same file would be two references.
+/// The separator belongs to every arm: the reader splits at the first `/`, so a name run
+/// into the path is read as a machine no table configures and leaves a relative tail.
 pub fn landed(machine: Option<&str>, path: &str) -> String {
-    match machine {
-        Some(name) => format!("{PREFIX}{name}/{path}"),
-        None => format!("{PREFIX}{}{path}", protocol::local_machine()),
-    }
+    let name = machine.unwrap_or(protocol::local_machine());
+    format!("{PREFIX}{name}/{path}")
 }
 
 /// A path a caller stated, once the machine it names is checked.
