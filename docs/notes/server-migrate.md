@@ -33,8 +33,10 @@ next start runs the same bytes, and executed with `--home` and `--db`.
 ## a_home_behind_waits_for_the_fetch
 
 A start resolves content without waiting for its fetch, so a column heal never
-depends on a network. A versioned step is the opposite case: it exists in the
-fetched commit and nowhere in the pin, so a home at an older version would refuse
+depends on a network -- unless the checkout holds nothing this build can read, which
+makes the fetch (`wait_for_fetch` in `docs/notes/server-ship.md`); a protocol step is
+the other instance of exactly that. A versioned step is the opposite case: it exists in
+the fetched commit and nowhere in the pin, so a home at an older version would refuse
 to start on every attempt, and the fetch it started dies with the process that
 refused. `run` therefore waits for that one answer before `bring_forward`, and only
 when the home is behind (`version < VERSION`). Every other start still reads what

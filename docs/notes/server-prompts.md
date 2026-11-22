@@ -224,6 +224,17 @@ keys nobody reads yet are inert for the builds that are already running: a name 
 safe for an older reader, a name *renamed* is not (see `monitor_error` above, whose name
 survived a rewrite of its text for exactly that reason).
 
+It is also a **protocol step**, not only an ordering rule. The protocol is the promise
+that content speaking that number is content this build can start on, and a name the
+build requires and the content may lack breaks that promise: without the step, the
+walk-back keeps handing such a build the last commit of the old protocol, which is
+exactly the content it cannot start on. Protocol 15 is `memory_mask_notice` for this
+reason -- measured: a home whose checkout still spoke 14 refused every start
+(`config.toml says nothing about ["memory_mask_notice"]`), and the fetch that would have
+carried the template died with the process that refused. See `docs/notes/server-ship.md`
+for the start that now makes its own fetch; the rule above is still what keeps a machine
+from paying that wait when the content is already there.
+
 ## dynamic_tail
 
 The session's start card: name, the model it runs on, the harness and the commit it

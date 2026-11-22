@@ -84,6 +84,18 @@ and replaces the live answer; a moved checkout therefore reaches a running serve
 restart. `ship::content` is a `RwLock`, so one call gets one `Content` and no reader holds a
 reference into state another thread may replace.
 
+`prepare` runs before `follow`, so a checkout whose history holds nothing this build can
+read has no fetch to wait for -- and that is exactly the home a protocol step strands:
+every attempt refuses, and the fetch it made dies with the process that refused. So
+`wait_for_fetch` starts the fetch itself when no caller has (`start_fetch`, the same one
+`follow` uses: one round trip per process, shared through `fetched`). The repository is
+the one this home's config names, read at `config/config.toml` -- the name this mapping
+has always had -- because the mapping that might name another file lives inside the
+content this resolve cannot read, and asking for it sends the reader back here. This is
+the only start that waits on a network; a checkout that answers is read as it stands, and
+`refresh` moves it behind the port as before. Measured with protocol 15: a home whose
+checkout still spoke 14 fetched, rebased `local` onto it, and listened in one start.
+
 ## Paths, and what reads them
 
 `paths_of` is the only place the mapping becomes paths, and it refuses a declared path that
