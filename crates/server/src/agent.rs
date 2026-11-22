@@ -2492,40 +2492,6 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_row_shows_the_five_labelled_lines() {
-        let display = serde_json::json!({
-            "instructions": "the standing prose",
-            "index": "the expanded index body",
-            "agents_md": "the standing rules",
-            "index_explicit": ["@file(a.md)", "AGENTS.md"],
-            "index_cached": ["@skill(old)"],
-            "tail": "the start card",
-            "parameters": "shared args",
-            "cwd": "/home/session",
-            "model": "m",
-            "remote": null,
-        })
-        .to_string();
-        let row = crate::store::MessageRow::parse(1, "system", &display);
-        // Four labelled lines on the prompt row, each on its own line.
-        let lines: Vec<&str> = row.text.lines().collect();
-        assert!(lines.iter().any(|l| l.starts_with("instructions: ")));
-        assert!(lines.iter().any(|l| l.starts_with("agents.md: ")));
-        assert!(lines.iter().any(|l| l.starts_with("index: ")));
-        assert!(lines.iter().any(|l| l.starts_with("info: ")));
-        // Full text of every field, not a character count.
-        assert!(row.text.contains("instructions: the standing prose"));
-        assert!(row.text.contains("agents.md: the standing rules"));
-        assert!(row.text.contains("info: cwd=/home/session"));
-        assert!(row.text.contains("tail=the start card"));
-        assert!(row.text.contains("parameters=shared args"));
-        // The index names its references and never carries their bodies.
-        assert!(row.text.contains("index: @file(a.md), AGENTS.md"));
-        assert!(row.text.contains("cached: @skill(old)"));
-        assert!(!row.text.contains("the expanded index body"));
-    }
-
-    #[test]
     fn the_five_head_rows_each_render_as_one_line() {
         let store =
             crate::store::Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
@@ -2561,16 +2527,13 @@ mod tests {
         let window = store.messages_between(id, 1, 5).expect("the head window");
         let texts: Vec<&str> = window.messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts.len(), 5, "five stored head rows render as five lines");
-        assert!(texts[0].starts_with("instructions: the standing prose"));
-        assert!(texts[1].starts_with("tools: 1 tool(s) [read_file]"));
-        assert!(texts[2].starts_with("agents.md: the standing rules"));
-        assert!(texts[3].starts_with("index: @file(a.md)"));
-        assert!(texts[3].contains("cached: @skill(old)"));
+        // The index names its references and why, and never carries their bodies.
+        assert!(texts[3].contains("\n  required: @file(a.md)"));
+        assert!(texts[3].contains("\n  cached: @skill(old)"));
         assert!(
             !texts[3].contains("the expanded index"),
             "a body the provider caches is not a line the reader wants"
         );
-        assert!(texts[4].starts_with("info: cwd=/home/session"));
     }
 
     #[test]

@@ -31,10 +31,12 @@ cwd/model/remote/card/parameters folded onto one). The tool row states the count
 names on its first line and then the whole schema below them, as stored and pretty-
 printed: the names are what a folded block shows, and the schema is the body an opened
 one draws. The index row states *which* references the head carries and nothing of what
-they say -- `index_explicit` names what a message asked for outright, `index_cached` what
-rode in only as a cached chain's ancestor, and a row written before those two lists
-existed falls back to `rooted`. The expanded bodies are deliberately not rendered: they
-are the prefix the provider already caches, and the citations are what a reader wants.
+they say: a count on its first line, then `required:` naming what the prompt needs
+outright (`index_explicit`: a `@file`/`@skill` mention or the standing rules), then
+`cached:` for what rode in only as a cached chain's ancestor (`index_cached`). A row
+written before those two lists existed falls back to `rooted` under `required:`. The
+expanded bodies are deliberately not rendered: they are the prefix the provider already
+caches, and the citations and their reason are what a reader wants.
 All five are records the reader sees: `content` is NULL so the transcript walk does not
 send them as messages; the sender rebuilds the head from their `display`. Older rows read
 as before.

@@ -4484,6 +4484,16 @@ impl MessageRow {
 /// `index_explicit` names what a message asked for outright and `index_cached` what
 /// rode in only as a cached chain's ancestor; a row written before those two lists
 /// existed states `rooted`, the only record it has.
+/// The index line: which references the head carries, never their bodies.
+///
+/// # Invariant
+///
+/// `index` is the expanded bodies, which are what the provider already holds as a
+/// cached prefix; a reader wants the citations and why each one is there. So this
+/// never renders `index`. `index_explicit` names what the prompt requires outright --
+/// a `@file`/`@skill` mention or the standing rules -- and `index_cached` what rode in
+/// only as a cached chain's ancestor; a row written before those two lists existed
+/// states `rooted`, the only record it has.
 fn index_text(value: &serde_json::Value) -> String {
     let list = |key: &str| -> Vec<String> {
         value
@@ -4498,17 +4508,23 @@ fn index_text(value: &serde_json::Value) -> String {
             })
             .unwrap_or_default()
     };
-    let (asked, riders) = match (list("index_explicit"), list("index_cached")) {
-        (asked, riders) if asked.is_empty() && riders.is_empty() => (list("rooted"), Vec::new()),
-        (asked, riders) => (asked, riders),
-    };
-    let mut text = format!(
-        "index: {}",
-        match asked.is_empty() {
-            true => "(none)".to_string(),
-            false => asked.join(", "),
+    let (required, riders) = match (list("index_explicit"), list("index_cached")) {
+        (required, riders) if required.is_empty() && riders.is_empty() => {
+            (list("rooted"), Vec::new())
         }
-    );
+        (required, riders) => (required, riders),
+    };
+    let total = required.len() + riders.len();
+    let mut text = format!("index: {total} reference(s)");
+    if !required.is_empty() || !riders.is_empty() {
+        text.push_str(&format!(
+            "\n  required: {}",
+            match required.is_empty() {
+                true => "(none)".to_string(),
+                false => required.join(", "),
+            }
+        ));
+    }
     if !riders.is_empty() {
         text.push_str(&format!("\n  cached: {}", riders.join(", ")));
     }
