@@ -31,6 +31,8 @@ pub struct Outcome {
     pub output: String,
     /// Time since the channel's last input, or its start: SPEC's `time`.
     pub time: Duration,
+    /// What this call itself spent speaking to the channel: SPEC's `waited`.
+    pub waited: Duration,
     /// Whether `until` was found. No `until` given is never a match.
     pub matched: bool,
     /// `None` while the program runs; the status once it ended.
@@ -43,6 +45,7 @@ impl Outcome {
             "id": self.id,
             "output": self.output,
             "time": format!("{:.3}s", self.time.as_secs_f64()),
+            "waited": format!("{:.3}s", self.waited.as_secs_f64()),
             "matched": self.matched,
             "exit": match self.exit {
                 Some(code) => json!(code),
@@ -842,6 +845,8 @@ impl Channels {
         cancel: Option<&CancellationToken>,
         inbox: Option<&crate::session::InboxSignal>,
     ) -> Result<Outcome, String> {
+        // SPEC's `waited`: what this call itself spends, from the moment it speaks.
+        let began = Instant::now();
         let mut row = self.row_of(session, id)?;
         // Whoever is inside the channel is the one that tells the session: the watcher
         // skips what a call holds.
@@ -876,6 +881,7 @@ impl Channels {
                     time: Duration::from_millis(
                         (now_millis() - since).max(0).try_into().unwrap_or(0),
                     ),
+                    waited: began.elapsed(),
                     matched: false,
                     exit: None,
                 });
@@ -963,10 +969,10 @@ impl Channels {
                 tokio::select! {
                     read = &mut read => read?,
                     _ = cancel_fired(cancel) => {
-                        return self.answer(row, String::new(), false, upto, None, None, since);
+                        return self.answer(row, String::new(), false, upto, None, None, since, began);
                     }
                     _ = inbox_arrived(inbox) => {
-                        return self.answer(row, String::new(), false, upto, None, None, since);
+                        return self.answer(row, String::new(), false, upto, None, None, since, began);
                     }
                 }
             };
@@ -980,6 +986,7 @@ impl Channels {
                     looked.exit.or(ended),
                     ended,
                     since,
+                    began,
                 );
             }
             // What is left is the clock: the read found nothing, so a wait run out answers
@@ -990,7 +997,7 @@ impl Channels {
                 self.store
                     .set_channel_wait(session, id, marker.as_deref().unwrap_or(""))
                     .map_err(quiet)?;
-                return self.answer(row, String::new(), false, upto, None, None, since);
+                return self.answer(row, String::new(), false, upto, None, None, since, began);
             }
             tokio::time::sleep(LOOK).await;
         }
@@ -1014,6 +1021,7 @@ impl Channels {
         exit: Option<i32>,
         gone: Option<i32>,
         since: i64,
+        began: Instant,
     ) -> Result<Outcome, String> {
         self.store
             .set_channel_upto(row.id, read_to)
@@ -1031,6 +1039,7 @@ impl Channels {
             id: row.path.clone(),
             output,
             time: Duration::from_millis((now_millis() - since).max(0).try_into().unwrap_or(0)),
+            waited: began.elapsed(),
             matched,
             exit,
         })
