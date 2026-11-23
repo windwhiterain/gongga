@@ -72,6 +72,7 @@ fn announce(d: &Dispatch, name: &str, seq: i64) {
     d.bus.publish(protocol::Event::Transcript {
         session: name.to_string(),
         seq,
+        first: None,
     });
 }
 

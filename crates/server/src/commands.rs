@@ -3273,6 +3273,7 @@ async fn sync_session(d: &Dispatch, args: &Args) -> Outcome {
     d.bus.publish(Event::Transcript {
         session: name.clone(),
         seq: last_seq,
+        first: None,
     });
     tracing::info!(session = %name, rows = sent, last_seq, "session synced");
     Outcome::ok_with(

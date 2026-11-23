@@ -156,7 +156,11 @@ pub async fn answer_transcripts(
                 client.declare_drawn(&name, created, drawn, Some(floor));
             }
         }
-        let Some(message) = client.ask_transcript(&name, ui.room_of(&name)) else {
+        let message = match client.ask_owed_range(&name) {
+            Some(message) => Some(message),
+            None => client.ask_transcript(&name, ui.room_of(&name)),
+        };
+        let Some(message) = message else {
             continue;
         };
         if open.send(message.clone()).await.is_err() {

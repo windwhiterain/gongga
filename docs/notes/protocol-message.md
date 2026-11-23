@@ -593,3 +593,18 @@ finished call's duration with it, and a window spells a running one with it: two
 spellings would let the duration change shape -- `4.4s` to `4300ms` -- on the frame
 the verdict lands, and a row that grows an extra column at the end of a call is a
 row that jumps.
+
+## Transcript: a watermark, or a written range
+
+`Event::Transcript { session, seq, first }` is the watermark by default (`first`
+absent): every row up to `seq` is written, and a smaller `seq` is a truncation. The
+transcript is not always dense, though -- a handoff cuts the head and the server
+re-stamps it on the next request, so for a moment ordinary rows stand while seqs
+`1..=5` are empty. A watermark cannot say "rows below the end appeared".
+
+`first` stated makes it a *range write* `first..=seq`: those rows are written below
+the end, the end does not move, and nothing is truncated. A client fetches the part
+of the interval it does not hold (one `get_messages` range, an Older page) and never
+infers `held` from the end or the requested range -- `held` is exactly the rows it
+drew. The head re-stamp announces `first: Some(1), seq: HEAD_SLOTS`; a fresh session
+(`context_generation` 0) is not announced. See `docs/notes/client-refill.md`.

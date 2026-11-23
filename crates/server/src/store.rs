@@ -454,6 +454,10 @@ CREATE INDEX IF NOT EXISTS uploads_by_id ON uploads(file_id);
 /// What a character costs when nothing has been measured; see `docs/notes/server-store.md`.
 pub const CHARS_PER_TOKEN: f64 = 4.0;
 
+/// The head occupies seqs `1..=HEAD_SLOTS` (instructions, tools, agents_md, index,
+/// info); ordinary rows start after them.
+pub const HEAD_SLOTS: i64 = 5;
+
 #[derive(Debug, Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,

@@ -1008,6 +1008,9 @@ struct Sync {
     /// not behind, and answering it as if it were would send rows it has just
     /// trimmed away, once per step. See `docs/notes/client-window-journal.md`.
     short: bool,
+    /// A written interval below the end the copy does not hold yet, fetched as one
+    /// Older page; the end does not move.
+    owed_range: Option<(i64, i64)>,
 }
 
 /// What a fill is for: the window itself, or one page beside it.
@@ -1816,8 +1819,12 @@ impl Client {
                 self.refresh(sink);
             }
             // Where a session's transcript ends: a stamp, never a line of its own.
-            Event::Transcript { session, seq } => {
-                self.announce_transcript(&session, seq, sink);
+            Event::Transcript {
+                session,
+                seq,
+                first,
+            } => {
+                self.announce_transcript(&session, seq, first, sink);
             }
             // An edited roster: silent, and the catalog follows it.
             Event::Models { models } => self.catalog.set_models(models),
@@ -2090,6 +2097,7 @@ impl Client {
             blocked: false,
             snapshot_cursor: None,
             short: false,
+            owed_range: None,
         });
         if entry.created != row.created_at {
             entry.created = row.created_at;
@@ -2099,6 +2107,7 @@ impl Client {
             entry.deferred.clear();
             entry.loaded = false;
             entry.blocked = false;
+            entry.owed_range = None;
         }
         entry.server = row.transcript;
     }
@@ -2145,7 +2154,27 @@ impl Client {
 
     /// One transcript grew: the server's side of the comparison, and the
     /// front-end's chance to stamp what it just drew.
-    fn announce_transcript(&mut self, session: &str, seq: i64, sink: &mut dyn Sink) {
+    fn announce_transcript(
+        &mut self,
+        session: &str,
+        seq: i64,
+        first: Option<i64>,
+        sink: &mut dyn Sink,
+    ) {
+        // A range write below the end (a re-stamped head): owed the interval, not a
+        // truncation; held is only rows drawn.
+        if let Some(from) = first {
+            if let Some(sync) = self.sync.get_mut(session) {
+                sync.server = sync.server.max(seq);
+                if !sync.held.contains(from) {
+                    sync.owed_range = Some((from, seq));
+                }
+            }
+            if let Some(row) = self.sessions.iter_mut().find(|s| s.name == session) {
+                row.transcript = row.transcript.max(seq);
+            }
+            return;
+        }
         if self.sync.get(session).is_some_and(|sync| seq < sync.server) {
             sink.forget(session);
             self.declare_empty(session);
@@ -2162,7 +2191,6 @@ impl Client {
                     created: sync.created,
                     seq,
                 };
-                sync.held.insert_run(sync.floor().unwrap_or(seq), seq);
             }
         }
         if let Some(row) = self.sessions.iter_mut().find(|s| s.name == session) {
@@ -2265,7 +2293,6 @@ impl Client {
         }
         if let Some(sync) = self.sync.get_mut(&name) {
             sync.server = sync.server.max(last);
-            sync.held.insert_run(first, through);
             // A page below moves where the window ends, and says whether the rows
             // under it are still there to ask for.
             if fill.kind == FillKind::Newer {
@@ -2574,6 +2601,7 @@ impl Client {
             sync.held.clear();
             sync.loaded = false;
             sync.short = false;
+            sync.owed_range = None;
         }
     }
 
@@ -2586,6 +2614,7 @@ impl Client {
             sync.fill = None;
             sync.blocked = false;
             sync.short = false;
+            sync.owed_range = None;
         }
     }
 
@@ -2680,6 +2709,27 @@ impl Client {
         }
         let reach = above.saturating_sub(history.max(1) as i64 - 1).max(1);
         self.begin_fill(name, format!("{reach}:{above}"), FillKind::Older)
+    }
+
+    /// Fetches the interval a range-write `Transcript` announced and the copy lacks
+    /// (a re-stamped head): one Older page.
+    ///
+    /// # Invariant
+    ///
+    /// The ask is kept until a fill carries it, so an in-flight page does not lose it.
+    pub fn ask_owed_range(&mut self, name: &str) -> Option<ClientMessage> {
+        let (from, through) = self.sync.get(name)?.owed_range?;
+        let sync = self.sync.get(name)?;
+        if sync.fill.is_some() || sync.blocked || !sync.loaded {
+            return None;
+        }
+        let message = self.begin_fill(name, format!("{from}:{through}"), FillKind::Older);
+        if message.is_some()
+            && let Some(sync) = self.sync.get_mut(name)
+        {
+            sync.owed_range = None;
+        }
+        message
     }
 
     /// Asks the server for the page of rows just below the newest one a window

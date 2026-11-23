@@ -1164,6 +1164,9 @@ impl Agent {
             }
         }
         let generation = self.store.context_generation(id)?;
+        // A head missing after a reset is re-stamped below; announce the interval it
+        // fills (generation 0 is fresh, unannounced).
+        let head_missing = self.store.prompt(id)?.is_none() || self.store.tool_set(id)?.is_none();
         let phase_started = std::time::Instant::now();
         // Read beside the stored prompt; a request assembles no part of its head.
         let tools = self.tool_set_in_force(session, id, llm.model(), llm)?;
@@ -1173,6 +1176,13 @@ impl Agent {
             .prompt_in_force(session, id, llm.model(), cwd, &machines)
             .await?;
         phases.prompt_ms = phase_started.elapsed().as_millis() as u64;
+        if head_missing && generation > 0 {
+            self.bus.publish(Event::Transcript {
+                session: name.to_string(),
+                seq: crate::store::HEAD_SLOTS,
+                first: Some(1),
+            });
+        }
         // A request cannot answer the model's own half step; fill the boundary first.
         self.fill_resume_mark(id, &name);
         // Pinned here, so every retry of this request replays the window that was
@@ -2003,6 +2013,7 @@ impl Agent {
                 self.bus.publish(Event::Transcript {
                     session: session.to_string(),
                     seq,
+                    first: None,
                 });
             }
             Err(e) => {
@@ -2177,6 +2188,7 @@ impl Agent {
                 self.bus.publish(Event::Transcript {
                     session: session.to_string(),
                     seq,
+                    first: None,
                 });
             }
             Err(e) => tracing::warn!(session = %session, error = %e, "the failure was not written"),

@@ -424,7 +424,15 @@ pub enum Event {
     /// event up to this has drawn every row up to `seq`. It can go backwards -- a
     /// failed step's rows are truncated -- so "different" is the comparison, not
     /// "behind".
-    Transcript { session: String, seq: i64 },
+    ///
+    /// `first` stated marks a *range write* `first..=seq` below the end (a re-stamped
+    /// head); see `docs/notes/protocol-message.md`.
+    Transcript {
+        session: String,
+        seq: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first: Option<i64>,
+    },
     /// The models a request could run on here changed.
     ///
     /// # Invariant

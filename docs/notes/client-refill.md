@@ -34,3 +34,19 @@ asks for the rows above its floor and `UiIntent::Newer` for the rows after its n
 received a page (`loaded`), because what an empty window is owed is the *tail*. `Fill`'s
 two booleans became one `FillKind` (`Whole`, `Tail`, `Older`, `Newer`): the pages never
 rewind and never restamp the end they are not anchored on.
+
+## Held is the rows drawn, never a range inferred (2026-11-23)
+
+`Held` is written only where a row is handed to the copy (`hand_over`), by number. A
+fill records the rows it actually returned, not the range it asked for; a watermark
+advances `drawn`/`server` but does not fill `held` across a gap. The transcript is not
+always dense: a handoff cuts the head and the server re-stamps it on the next request,
+so a recovery fill can return seqs 6,7 while 1..=5 do not exist yet. Claiming the
+requested range made the window believe it held the head, floor reached 1, and
+`answer_older` never went back -- the head (tools, plan) never drew again.
+
+A write below the end is announced as a range-write `Transcript { first, seq }` (see
+`docs/notes/protocol-message.md`). `announce_transcript` sets `Sync.owed_range` to the
+interval the copy does not hold; `ask_owed_range`, fired by `answer_transcripts` before
+the ordinary tail ask, fetches it as one Older page. One interval event and one range
+fetch per re-stamp; the head content travels once.
