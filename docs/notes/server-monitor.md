@@ -87,11 +87,11 @@ needs quoting. The references a message carries are `@image(...)`, `@skill(...)`
 `@file(...)` -- prefixes with an opening parenthesis -- so a bare
 `@monitor/providers` is never read as one (`meta::mentions`).
 
-Creation is `commands::create_session`: `set_session` with a name and nothing else.
-So a monitor comes into being exactly where a session a person named would -- the
-model `set_session` gives one that names none (`DEFAULT_SESSION_MODEL`), the
-server's own directory as its cwd, the default tuning. An existing row is never
-written here.
+Creation is `commands::create_session`: `set_session` with a name and, when the caller
+has one, a model. A monitor comes into being exactly where a session a person named
+would -- the server's own directory as its cwd, the default tuning -- and its model
+is drawn once, immediately afterwards, by `model_pool` (see the section below). An
+existing row is never written here.
 
 Its configuration is the ordinary command, and it is the whole of it:
 
@@ -107,16 +107,30 @@ turn starts now, busy means an inbox row the next step boundary reads. The queue
 gate, `@skill(...)` expansion, shells, tools, events, and the window's rendering are
 all reused; there is no second way to start a turn.
 
-## No model is chosen, and no failure switches one
+## The model is drawn once, from `model_pool`
 
-The monitor runs on what its row says. There is no flash search, no ranking by
-allowance, no `Catalog::speaks_responses` gate and no `sessions.monitor_attempts`
-column: all of it existed to pick a model for a session nobody could pick one for.
+The model a monitor runs on is not chosen by this server. At creation `monitor::draw_model`
+asks the `model_pool` skill for one -- `pick(tier=...)`, the same call a spawn makes,
+through the same door `run_skill` uses: the package's contract, its call on stdin,
+`GONGGA_SKILL_LIB`. The tier is a field of `Kind`, so a monitor's work decides it:
+both kinds state `flash`, because reading a roster or cleaning a disk is not a
+judgement call.
 
-What that gives up is the automatic switch when the monitor's own model breaks. What
-stands in its place is a session in `error`, drawn by the window like any other, and
-one `set_session` away from running on something else. `quota::of` went with the
-ranking; the `active_quota` block still reads `quota::readings()`.
+What the draw buys is the pool's own gates -- the whitelist in `preference.toml`, the
+credential this machine actually has, the allowance above its floor. What it costs is
+that the server must not keep a second opinion: there is no flash search, no ranking
+by allowance and no `Catalog::speaks_responses` gate here, because re-deciding what
+`pick` decided is how the two come to disagree.
+
+A draw that cannot answer -- no pool on this machine, nothing left in the tier, a wall
+it cannot see past, a name `set_session` then refuses -- leaves the session on
+`DEFAULT_SESSION_MODEL` and logs why (`no model drawn: ...`). The monitor still gets
+its report: one that goes silent because it could not choose is the worse failure.
+
+Nothing re-draws it. Not a later handover, not a failure of the monitor's own model:
+what stands in for a switch is a session in `error`, drawn by the window like any
+other, and one `set_session` away from running on something else. `quota::of` is not
+in this path; the `active_quota` block still reads `quota::readings()`.
 
 ## When the monitor itself fails
 

@@ -2023,11 +2023,32 @@ pub(crate) async fn deliver(
 ///
 /// A monitor's session comes into being here and nowhere else, so it starts on the
 /// model, the tier and the tuning a session a person named starts on: this is
-/// `set_session` with a name and nothing else, never a second creation path that a
-/// later change to one of them would leave behind.
-pub(crate) async fn create_session(d: &Dispatch, name: &str) -> Result<(), String> {
+/// `set_session` with a name and, when the caller drew one, a model -- never a second
+/// creation path that a later change to one of them would leave behind.
+pub(crate) async fn create_session(
+    d: &Dispatch,
+    name: &str,
+    model: Option<&str>,
+) -> Result<(), String> {
+    tuned_session(d, name, model).await
+}
+
+/// Applies `model` to a session that already exists, through the same command.
+///
+/// # Invariant
+///
+/// One door: a model a caller drew takes exactly the checks `--model` takes, because
+/// it is the same body reading it.
+pub(crate) async fn retune_session(d: &Dispatch, name: &str, model: &str) -> Result<(), String> {
+    tuned_session(d, name, Some(model)).await
+}
+
+async fn tuned_session(d: &Dispatch, name: &str, model: Option<&str>) -> Result<(), String> {
     let mut args = Args::new();
     args.insert("id", name.to_string());
+    if let Some(model) = model {
+        args.insert("model", model.to_string());
+    }
     let outcome = set_session(d, &args).await;
     if outcome.ok {
         Ok(())

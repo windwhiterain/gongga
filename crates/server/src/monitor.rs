@@ -4,14 +4,17 @@
 //!
 //! # Invariant
 //!
-//! A monitor is an ordinary session. No name is reserved, no model is picked for
-//! it, and no failure switches it: what it runs on is what its own row says. A
-//! monitor that fails is a session in `error`, drawn like any other.
+//! A monitor is an ordinary session. No name is reserved, and no failure switches
+//! it: what it runs on is what its own row says. The one exception is creation —
+//! the model there comes from `model_pool`, drawn once for the tier the kind states
+//! — and after that nothing re-draws it. A monitor that fails is a session in
+//! `error`, drawn like any other.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use protocol::LogLevel;
+use serde_json::json;
 
 use crate::commands::Dispatch;
 use crate::store::Failure;
@@ -30,6 +33,9 @@ pub struct Kind {
     pub session: &'static str,
     /// The skill the report references: its words ride the prompt's prefix.
     pub skill: &'static str,
+    /// The tier `model_pool` draws this monitor's model from, once, at creation.
+    /// See `docs/notes/server-monitor.md`.
+    pub model_tier: &'static str,
 }
 
 /// A session stopped because a provider refused, or stopped answering, its request.
@@ -43,12 +49,14 @@ pub struct Kind {
 pub const PROVIDERS: Kind = Kind {
     session: "@monitor/providers",
     skill: "providers",
+    model_tier: "flash",
 };
 
 /// This device ran out of room.
 pub const DISK: Kind = Kind {
     session: "@monitor/disk",
     skill: "clean-disk",
+    model_tier: "flash",
 };
 
 /// How many rows of the failing transcript a report opens with.
@@ -305,8 +313,9 @@ where
 /// # Invariant
 ///
 /// No creation path of its own: `commands::create_session` is `set_session` with a
-/// name and nothing else, so a monitor starts on what a session a person named
-/// starts on. An existing one is never written to here.
+/// name and nothing else, so a monitor comes into being the way a session a person
+/// named does. The model is drawn once, right after creation, and an existing one
+/// is never written to here.
 async fn ensure(d: &Dispatch, kind: Kind) -> Result<String, String> {
     let found = d
         .store
@@ -315,12 +324,102 @@ async fn ensure(d: &Dispatch, kind: Kind) -> Result<String, String> {
     if let Some(row) = found {
         return Ok(row.model);
     }
-    crate::commands::create_session(d, kind.session).await?;
+    crate::commands::create_session(d, kind.session, None).await?;
+    draw_model(d, kind).await;
     d.store
         .get_session(kind.session)
         .map_err(|e| e.to_string())?
         .map(|row| row.model)
         .ok_or_else(|| format!("{} was created and cannot be read back", kind.session))
+}
+
+/// The skill that draws a model, and the function of it that answers with one.
+const MODEL_POOL: &str = "model_pool";
+const MODEL_FUNCTION: &str = "pick";
+
+/// Moves the session `kind` just created onto the model `model_pool` draws for it.
+///
+/// # Invariant
+///
+/// The draw decides only which model. A draw that cannot answer — no pool on this
+/// machine, no candidate inside the tier, a wall it cannot see past — leaves the
+/// session on what creation gave it and says so in the log: a monitor that will not
+/// speak because it could not choose is a worse failure than an unpooled model.
+async fn draw_model(d: &Dispatch, kind: Kind) {
+    let model = match drawn(d, kind).await {
+        Ok(model) => model,
+        Err(why) => {
+            tracing::warn!(monitor = kind.session, "no model drawn: {why}");
+            return;
+        }
+    };
+    if let Err(why) = crate::commands::retune_session(d, kind.session, &model).await {
+        tracing::warn!(monitor = kind.session, %model, "the drawn model was refused: {why}");
+    }
+}
+
+/// Asks `model_pool` for `<provider>/<model id>`, or says why it named none.
+///
+/// # Invariant
+///
+/// One door, the same one `run_skill` uses: the package's contract, its call on
+/// stdin, its `GONGGA_SKILL_LIB`. Re-reading `preference.toml` here instead would be
+/// a second opinion that goes stale the first time the skill's weights change.
+async fn drawn(d: &Dispatch, kind: Kind) -> Result<String, String> {
+    let handle = d.sessions.get(kind.session).map_err(|e| e.to_string())?;
+    let roots = crate::tools::skill::installed_in(&handle.space(), &handle.cwd()).await;
+    let found = roots
+        .iter()
+        .find(|skill| skill.name == MODEL_POOL)
+        .ok_or_else(|| format!("no skill is {MODEL_POOL:?} on this machine"))?;
+    let skill = ::skill::Skill {
+        name: found.name.clone(),
+        description: found.description.clone(),
+        path: std::path::PathBuf::from(
+            crate::space::machine_of(&found.path)
+                .map(|(_, plain)| plain)
+                .unwrap_or(&found.path),
+        ),
+        bucket: match found.bucket.as_str() {
+            "project" => ::skill::Bucket::Project,
+            "harness" => ::skill::Bucket::Harness,
+            _ => ::skill::Bucket::General,
+        },
+    };
+    let table = d.agent.tools();
+    let skills = table
+        .skills()
+        .ok_or_else(|| "this build was given no skill programs".to_string())?;
+    let ctx = crate::tool_cmd::context(
+        &d.agent,
+        &d.sessions,
+        &d.store,
+        kind.session,
+        MODEL_FUNCTION,
+    )?;
+    let outcome = skills
+        .run(
+            &skill,
+            MODEL_FUNCTION,
+            &json!({ "tier": kind.model_tier }),
+            &ctx,
+        )
+        .await;
+    if !outcome.ok {
+        return Err(outcome.output.trim().to_string());
+    }
+    // One line is the answer; anything else it printed is not a model name.
+    let model = outcome
+        .output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_string();
+    if model.is_empty() {
+        return Err(format!("{MODEL_POOL} {MODEL_FUNCTION} printed no model"));
+    }
+    Ok(model)
 }
 
 /// What the error report says: enough to start work without reading anything first.
