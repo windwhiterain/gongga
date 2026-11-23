@@ -13,7 +13,7 @@ session keeps. A build that leaves this empty instead makes `set_session` requir
 poor one for interacting: creating a session from a window would mean typing a
 model name every time.
 
-The stated value is `gongga-official/minicmp4.7-35b-a3b`: the community roster's
+The stated value is `gongga-official/minicpm4.7-35b-a3b`: the community roster's
 free, keyless endpoint, so a machine that has just installed gongga starts a
 session without an account, a key or a price list. It is a *default*, not a
 policy — anything else the roster carries is one `--model` away, and a machine

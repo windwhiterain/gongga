@@ -27,7 +27,7 @@ pub const DEFAULT_API_KEY_ENV: &str = "MINIMAX_CN_API_KEY";
 /// A constant, not a config key: a config key would decide what every session
 /// runs on. An empty one makes `set_session` require `--model`: refusing at the
 /// command beats failing at the first turn.
-pub const DEFAULT_SESSION_MODEL: &str = "gongga-official/minicmp4.7-35b-a3b";
+pub const DEFAULT_SESSION_MODEL: &str = "gongga-official/minicpm4.7-35b-a3b";
 
 /// Tool output larger than this is capped and spilled to disk, keeping `cat`s out
 /// of later requests.

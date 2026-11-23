@@ -187,14 +187,14 @@ the endpoint needs no credential: `credential` answers it with an empty key and 
 name instead of reporting a miss, `LlmClient::new` accepts that pairing, and `with_bearer` sends
 no `Authorization` header at all. A route that still names a variable must still have a value —
 an unauthenticated request there fails as a provider error nobody can read.
-2. **`DEFAULT_SESSION_MODEL`** became `gongga-official/minicmp4.7-35b-a3b`, so a fresh machine
+2. **`DEFAULT_SESSION_MODEL`** became `gongga-official/minicpm4.7-35b-a3b`, so a fresh machine
 starts a session with no account, key or price list.
 3. **The gateway dropped its key check**, keeping the caps: 2 concurrent per IP, 4 per server,
 `503` beyond that. `Authorization` is still rewritten to vLLM's own `sk-fake` on the way through.
 
 The model had to be served under the published name, because the roster's `wire_id` *overwrites*
 the row id — a provider's model id **is** the name sent on the wire (`providers/layers.rs`). So
-vLLM was restarted with two names, `minicpm47-35b-a3b` and `minicmp4.7-35b-a3b`; the first keeps
+vLLM was restarted with two names, `minicpm47-35b-a3b` and `minicpm4.7-35b-a3b`; the first keeps
 the LAN route working, the second is the public one. Cold load was 105 s.
 
 Evidence, from a throwaway home with `GONGGA_PROVIDERS_CATALOG` pointed at the new roster, no key
@@ -202,11 +202,11 @@ anywhere in the environment:
 
 | Probe | Result |
 | --- | --- |
-| `new_session` with no `--model` | `model: gongga-official/minicmp4.7-35b-a3b` |
+| `new_session` with no `--model` | `model: gongga-official/minicpm4.7-35b-a3b` |
 | that session's turn | `POST http://162.14.81.104:4000/v1/responses` → `200 OK`, 68 KB, 414 ms |
 | session row after the turn | state `idle`, 17785 prompt / 8 completion tokens, 15 tps |
 | `GET /v1/models` with no key, from outside | both names listed |
-| completion with no key, `model: minicmp4.7-35b-a3b` | `free endpoint ok` |
+| completion with no key, `model: minicpm4.7-35b-a3b` | `free endpoint ok` |
 
 Publication: `gongga-agents` commit `8ee4feb` on `main` (`cf8d30a..8ee4feb`, pushed), then the
 machine's `local` replayed onto it as `1df6f9c` after one conflict at the end of `providers.toml`.
