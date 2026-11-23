@@ -140,10 +140,13 @@ and so is the only kind whose turn end raises a toast. SPEC's `ClientSessionConf
 has two flags set by one command, `set_client_session --config '{...}' --session`;
 one JSON object carries `client` and `show`, and field left out keeps what it was.
 
-A session with no explicit entry follows the names this client has addressed:
-every name the `render_session` section holds, shown or since hidden. A session
-the window only heard about from the server is in neither section, so a subagent
-or a dream ends its turn without interrupting the operator. See
+A session with no entry is not this client's: membership is stated, never inferred
+from `render_session`. SPEC's default writes `true` once, for a session this window
+created -- its own accepted `new_session` or `set_session` naming a session the
+server did not already hold. Drawing a session, typing to it or hiding it again
+writes no mark, so a subagent or a dream the operator looked at ends its turn
+without interrupting them. A file with no `client_session` section at all predates
+this rule and is seeded once from the sessions it draws. See
 `docs/notes/tui-notice.md`.
 
 ## BlockSize and BoxEdge

@@ -18,9 +18,21 @@ end through its own subscription. The client decides this once, where the
 reaches a front-end's `stopped`, so no front-end can raise a toast for it.
 
 The client set is the window's state (`client.toml`), pushed into the client on
-every sync. A session the operator named here -- typed to, shown, or hidden
-afterwards -- is one of its own; an explicit `set_client_session` can add one the
-window never drew or take one away. See `docs/notes/tui-state.md`.
+every sync, and it holds only stated marks: SPEC's default is true for a session
+*created* in this client -- its own accepted `new_session` or `set_session` naming
+a session the server did not already hold -- and false for every other. Drawing a
+session, typing to it or hiding it again says nothing about whose it is;
+`set_client_session` is the only other way in or out. See
+`docs/notes/tui-state.md`.
+
+## The file that predates the rule
+
+Membership was once inferred from every name the window had ever drawn, so a
+`client.toml` with no `client_session` section at all carries no answer. The first
+load seeds it once from the sessions that file draws; every other name it holds --
+subagents, mentors and monitors looked at once -- falls to false. A mark the
+operator wrote is never overwritten: the seed runs only while nothing was ever
+stated.
 
 ## Why PowerShell
 

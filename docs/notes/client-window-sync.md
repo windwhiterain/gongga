@@ -4,20 +4,22 @@
 
 Two things happen after a keystroke or a burst of wire bytes: the window's own
 state has to reach the view and the completion, and a command the server
-accepted has to write its sticky entries back. Both used to live in
+accepted has to write back what it stated. Both used to live in
 `crates/tui/src/run.rs`. As of 2026-11-08 they live here, unchanged in order and
 meaning.
 
-`sync` is one place setting six things, in this order: the state-file settings
-(`show_state`), the client's sticky vocabulary, the shown sessions, the
-completion vocabulary built by `Window::refresh`, the front-end's completion
-refresh, and finally the lines a `Client::refresh` produces. A front-end that
-set half of them would draw one state and complete against another.
+`sync` is one place setting seven things, in this order: the state-file settings
+(`show_state`), the client's sticky vocabulary, the shown sessions, the sessions
+that belong to this client, the completion vocabulary built by `Window::refresh`,
+the front-end's completion refresh, and finally the lines a `Client::refresh`
+produces. A front-end that set half of them would draw one state and complete
+against another.
 
-`settle` walks `take_settled()` and only writes back entries for an *accepted*
-command: a refusal leaves `client.toml` as it was, which is why nothing was
-written when the line was sent. `command::follows` then forgets what follows a
-changed model unless the command stated it too (SPEC's `sticky to xxx`).
+`settle` walks `take_settled()` and only writes back for an *accepted* command: a
+refusal leaves `client.toml` as it was, which is why nothing was written when the
+line was sent. It writes the sticky entries the line stated, and marks the session
+that command created as this client's own. `command::follows` then forgets what
+follows a changed model unless the command stated it too (SPEC's `sticky to xxx`).
 
 ## WindowView
 

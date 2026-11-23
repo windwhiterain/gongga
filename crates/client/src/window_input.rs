@@ -250,10 +250,11 @@ fn submit_json(
 ///
 /// # Invariant
 ///
-/// Three things, all SPEC's: a session the command names is drawn and becomes the
-/// sticky one; an accepted `set_session` or `new_session` writes back every value
-/// the line stated that an entry could fill -- a structured one leaf by leaf; and
-/// neither is written before the answer, so a refused command writes nothing.
+/// All SPEC's: a session the command names is drawn and becomes the sticky one;
+/// an accepted `set_session` or `new_session` writes back every value the line
+/// stated that an entry could fill -- a structured one leaf by leaf -- and marks
+/// a session it created as this client's own. The writeback waits for the answer,
+/// so a refused command writes none of it.
 pub fn follow(
     client: &Client,
     state: &mut State,
@@ -264,33 +265,39 @@ pub fn follow(
     let crate::protocol::ClientMessage::Command { id, name, args } = msg else {
         return;
     };
-    if let Some(session) = client.session_named(name, args).map(str::to_string) {
-        if !state.is_shown(&session) {
-            let _ = state.set_shown(&session, true);
+    let named = client.session_named(name, args).map(str::to_string);
+    if let Some(session) = &named {
+        if !state.is_shown(session) {
+            let _ = state.set_shown(session, true);
         }
-        let _ = state.set_sticky("session", &session);
+        let _ = state.set_sticky("session", session);
     }
     // The two commands whose arguments are a session's settings.
     if name != "set_session" && name != "new_session" {
         return;
     }
-    let Some(spec) = client
-        .commands()
-        .into_iter()
-        .find(|spec| spec.name == *name)
-    else {
-        return;
+    // SPEC's client default: only a session this window creates is its own;
+    // joining an existing one writes no mark.
+    let created = named.filter(|session| !client.sessions().iter().any(|row| row.name == *session));
+    let sticky = stated_entries(client, state, name, line);
+    if !sticky.is_empty() || created.is_some() {
+        pending.push((*id, Follow { sticky, created }));
+    }
+}
+
+/// The sticky entries an accepted settings command writes back: only what the
+/// line typed, not what a fill supplied.
+fn stated_entries(client: &Client, state: &State, name: &str, line: &str) -> Vec<(String, String)> {
+    let Some(spec) = client.commands().into_iter().find(|spec| spec.name == name) else {
+        return Vec::new();
     };
-    // Only what was typed: a filled value is already in the file.
     let Some(typed) = typed_args(client, line) else {
-        return;
+        return Vec::new();
     };
     let fillable = crate::commands::sticky_kinds(&client.commands());
     let mut pairs = state.sticky().absorb(&spec, &typed);
     pairs.retain(|(kind, _)| fillable.contains(kind));
-    if !pairs.is_empty() {
-        pending.push((*id, pairs));
-    }
+    pairs
 }
 
 /// The arguments a line spelled out itself, before any sticky filled one in.

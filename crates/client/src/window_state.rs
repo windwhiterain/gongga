@@ -188,22 +188,6 @@ impl Shown {
         self.show.get(name).copied().unwrap_or(false)
     }
 
-    /// Whether this client has ever named the session, drawn or since hidden.
-    ///
-    /// # Invariant
-    ///
-    /// The answer to "was it created in this client": a name stays in the map
-    /// when it is hidden, so a window the operator closed is still one of theirs.
-    /// Hiding a pane never revokes the session's turn-end toast.
-    pub fn addressed(&self, name: &str) -> bool {
-        self.show.contains_key(name)
-    }
-
-    /// Every name this client has ever addressed, shown or since hidden.
-    pub fn addressed_names(&self) -> Vec<String> {
-        self.show.keys().cloned().collect()
-    }
-
     /// Every name that is shown, in the order the file keeps them.
     pub fn names(&self) -> Vec<String> {
         self.show
@@ -258,8 +242,8 @@ impl Shown {
     /// # Invariant
     ///
     /// The range click's one save. A name outside the set stays in the map as
-    /// hidden, the way [`Self::set`] leaves one, so addressed history is kept; a
-    /// name in the set that was never addressed is inserted, the way `solo`
+    /// hidden, the way [`Self::set`] leaves one, so render history is kept; a
+    /// name in the set that was never drawn is inserted, the way `solo`
     /// inserts its own. `known` is which names are sessions now: an entry a
     /// deleted name left is not a window and is not counted.
     pub fn show_set(
@@ -294,18 +278,20 @@ impl Shown {
 ///
 /// # Invariant
 ///
-/// Only a session that belongs to this client announces its turn end. An
-/// explicit answer is kept here; one never set follows [`Shown::addressed`],
-/// because a session the operator named in this client was created in it and a
-/// window closed since is still theirs. A session the window only heard about
-/// from the server is not. See `docs/notes/tui-notice.md`.
+/// Only a session that belongs to this client announces its turn end, and
+/// membership is stated, never inferred from what the window drew: SPEC's
+/// default is true for a session *created* in this client and false for every
+/// other. A subagent, a mentor or a monitor the operator once looked at is not
+/// one of its own, however long its pane stayed open. See
+/// `docs/notes/tui-notice.md`.
 pub struct ClientMark {
     path: PathBuf,
     client: BTreeMap<String, bool>,
 }
 
 impl ClientMark {
-    /// Loads `client_home/client.toml`; a session without an entry is unmarked.
+    /// Loads `client_home/client.toml`; a session without an entry is not this
+    /// client's.
     pub fn load(client_home: &Path) -> Self {
         let path = client_home.join("client.toml");
         let client = read_file(&path)
@@ -316,18 +302,34 @@ impl ClientMark {
         Self { path, client }
     }
 
-    /// The explicit answer for this session, before the default is applied.
-    fn marked(&self, name: &str) -> Option<bool> {
-        self.client.get(name).copied()
+    pub fn is_client(&self, name: &str) -> bool {
+        self.client.get(name).copied().unwrap_or(false)
     }
 
-    pub fn is_client(&self, name: &str, shown: &Shown) -> bool {
-        self.marked(name).unwrap_or_else(|| shown.addressed(name))
+    /// Every session stated as this client's own.
+    fn names(&self) -> Vec<String> {
+        self.client
+            .iter()
+            .filter(|(_, mark)| **mark)
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
-    /// Every explicit answer, so the caller can resolve the default too.
-    fn entries(&self) -> &BTreeMap<String, bool> {
-        &self.client
+    /// Whether membership was ever stated: a file written before this rule has
+    /// no `client_session` section at all.
+    fn stated(&self) -> bool {
+        !self.client.is_empty()
+    }
+
+    /// The one-time seed, in one write: the sessions a window draws become its
+    /// own; every other name falls to false.
+    fn seed(&mut self, names: &[String]) -> anyhow::Result<()> {
+        for name in names {
+            self.client.insert(name.clone(), true);
+        }
+        let mut file = read_file(&self.path);
+        self.apply(&mut file);
+        write_file(&self.path, &file)
     }
 
     fn set(&mut self, name: &str, client: bool) -> anyhow::Result<()> {
@@ -716,14 +718,19 @@ fn leaf_value(property: &Value, text: &str) -> Value {
     Leaf::from_schema(property).value(text)
 }
 
-/// A sticky value an accepted command writes back, by kind.
+/// What an accepted command writes back: the sticky entries it stated, and the
+/// session it created in this client.
 ///
 /// # Invariant
 ///
-/// It is a pair, not a command: an entry the server accepted is what the next
-/// command inherits, and the window holds it until the `cmd_result` says the
-/// command ran.
-pub type Follow = Vec<(String, String)>;
+/// It is what the answer confirms, not the command: the window holds it until
+/// the `cmd_result` says the command ran, so a refused line leaves the file as
+/// it was. Membership is here for the same reason -- a session exists only once
+/// the server said so.
+pub struct Follow {
+    pub sticky: Vec<(String, String)>,
+    pub created: Option<String>,
+}
 
 /// Everything the window keeps between runs.
 pub struct State {
@@ -745,7 +752,7 @@ impl State {
     /// `home` is the harness home and is kept only for what a window *reads* from
     /// it (the skills a completion offers). Nothing here writes to it.
     pub fn load(home: &Path, client_home: &Path) -> Self {
-        Self {
+        let mut state = Self {
             home: home.to_path_buf(),
             client_home: client_home.to_path_buf(),
             sticky: Sticky::load(client_home),
@@ -754,7 +761,29 @@ impl State {
             block_size: BlockSize::load(client_home),
             box_edge: BoxEdge::load(client_home),
             keep_rows: KeepRows::load(client_home),
+        };
+        state.seed_membership();
+        state
+    }
+
+    /// A file that never stated membership seeds it once from what it draws.
+    ///
+    /// # Invariant
+    ///
+    /// The default before this rule counted every session the window had ever
+    /// named, so such a file carries no answer at all. The sessions it draws are
+    /// the operator's own; the rest -- every subagent, mentor and monitor it once
+    /// looked at -- fall to false. Only while nothing was ever stated, so a mark
+    /// the operator wrote is never overwritten. See `docs/notes/tui-notice.md`.
+    fn seed_membership(&mut self) {
+        if self.client.stated() {
+            return;
         }
+        let shown = self.shown.names();
+        if shown.is_empty() {
+            return;
+        }
+        let _ = self.client.seed(&shown);
     }
 
     pub fn sticky(&self) -> &Sticky {
@@ -772,26 +801,17 @@ impl State {
 
     /// Whether this session belongs to this client, and so announces its turn end.
     pub fn is_client(&self, name: &str) -> bool {
-        self.client.is_client(name, &self.shown)
+        self.client.is_client(name)
     }
 
     /// Every session that belongs to this client, for the toast gate.
     ///
     /// # Invariant
     ///
-    /// The same resolution [`Self::is_client`] gives: a session ever named here
-    /// is one of its own, hidden or not, unless marked otherwise; an explicit
-    /// mark adds or removes one. The gate and the answer cannot disagree.
+    /// The same answer [`Self::is_client`] gives, so the gate and the line the
+    /// operator reads cannot disagree: only a stated mark counts.
     pub fn client_names(&self) -> Vec<String> {
-        let mut names: BTreeSet<String> = self.shown.addressed_names().into_iter().collect();
-        for (name, mark) in self.client.entries() {
-            if *mark {
-                names.insert(name.clone());
-            } else {
-                names.remove(name);
-            }
-        }
-        names.into_iter().collect()
+        self.client.names()
     }
 
     /// Sets one session's client flag without touching any other section.

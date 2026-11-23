@@ -63,13 +63,18 @@ pub fn settle(
         let Some(at) = pending.iter().position(|(other, _)| *other == id) else {
             continue;
         };
-        let (_, pairs) = pending.remove(at);
+        let (_, follow) = pending.remove(at);
         if !ok {
             continue;
         }
-        let written: Vec<String> = pairs.iter().map(|(kind, _)| kind.clone()).collect();
+        // SPEC's client default: the session this window created is its own, and
+        // only the answer says it was created.
+        if let Some(name) = &follow.created {
+            let _ = state.set_client(name, true);
+        }
+        let written: Vec<String> = follow.sticky.iter().map(|(kind, _)| kind.clone()).collect();
         let mut changed: Vec<String> = Vec::new();
-        for (kind, value) in &pairs {
+        for (kind, value) in &follow.sticky {
             if state.change_sticky(kind, value).unwrap_or(false) {
                 changed.push(kind.clone());
             }

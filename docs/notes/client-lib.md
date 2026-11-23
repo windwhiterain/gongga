@@ -127,6 +127,11 @@ telling them it happened is noise, and marking the session yellow says it finish
 out of sight when it finished because they looked at it. The wire carries the word so
 that this decision is not a parse of `detail`, which is a sentence for a person.
 
+Nor for a session that is not this client's own. The window's client set gates the
+hook, so a subagent's, a mentor's or a monitor's turn end never reaches a front-end;
+only a session created in this client, or one it explicitly marked, is announced.
+See `docs/notes/tui-notice.md`.
+
 ## Client::handle_response
 
 Who is speaking belongs on that prefix, not in the text: a session tag in the

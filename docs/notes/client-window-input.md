@@ -45,3 +45,8 @@ back what the line stated -- `Sticky::absorb`, pruning the fields that have defa
 and merging each stated value into the entry of its own type. A value the entries
 supplied is not written back, because it is already in the file. A struct *update*
 (`set_session`) is never filled; a value (`new_session`) is.
+
+The same accepted command marks a session it *created* as this client's own: the
+name is one the server's table did not hold when the line was sent, so joining an
+existing session -- another client's, a subagent's -- writes no mark. Both halves
+wait for the answer, as one `Follow { sticky, created }`.
