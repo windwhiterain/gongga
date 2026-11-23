@@ -188,7 +188,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     live_compact INTEGER,
     live_compact_interval_tokens INTEGER,
     live_compact_mode TEXT,
-    memory_max_unmasked_blocks INTEGER,
     -- Whether this session's head carries the one-shot meta plan. NULL follows the
     -- home's `[agent] prefix_cache_plan`; read once, when the head is stamped.
     prefix_cache_plan INTEGER,
@@ -489,6 +488,18 @@ fn add_column_if_missing(
     Ok(())
 }
 
+/// Removes a column a setting left behind, and says nothing if it cannot.
+///
+/// # Invariant
+///
+/// A setting that is gone takes its column with it; a build that cannot drop one
+/// leaves an unused column behind rather than refusing to start.
+fn drop_column_if_present(conn: &Connection, table: &str, column: &str) {
+    if has_column(conn, table, column) {
+        let _ = conn.execute(&format!("ALTER TABLE {table} DROP COLUMN {column}"), []);
+    }
+}
+
 /// Gives a row written before `ended_at` existed the turn end it already had.
 ///
 /// # Invariant
@@ -615,10 +626,6 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
             "ALTER TABLE sessions ADD COLUMN live_compact_mode TEXT",
         ),
         (
-            "memory_max_unmasked_blocks",
-            "ALTER TABLE sessions ADD COLUMN memory_max_unmasked_blocks INTEGER",
-        ),
-        (
             "prefix_cache_plan",
             "ALTER TABLE sessions ADD COLUMN prefix_cache_plan INTEGER",
         ),
@@ -645,6 +652,8 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
     ] {
         add_column_if_missing(conn, "sessions", column, ddl)?;
     }
+    // The count this home used to keep is gone: the provider's window is the limit.
+    drop_column_if_present(conn, "sessions", "memory_max_unmasked_blocks");
     // A channel says when a caller waits on it, and for what.
     add_column_if_missing(
         conn,
@@ -1140,7 +1149,6 @@ impl Store {
             "monitor_seq",
             "cache_tier",
             "live_compact_mode",
-            "memory_max_unmasked_blocks",
             "prefix_cache_plan",
             // Sent, but decided here rather than copied.
             "name",
@@ -1188,7 +1196,7 @@ impl Store {
                                        context_tokens, tape_tokens, context_generation, cached_tokens,
                                        tps, ttft_ms, remote, monitor_seq,
                                        cache_tier, cache_keepalive, mode, live_compact,
-                                       live_compact_mode, memory_max_unmasked_blocks,
+                                       live_compact_mode,
                                        prefix_cache_plan,
                                        dream_of, dreamed_checkpoint_id)
                  SELECT ?2, 'idle', model, model_name, cwd, ?3, ?3, context_limit,
@@ -1197,7 +1205,7 @@ impl Store {
                         CASE WHEN ?4 IS NULL THEN cache_keepalive ELSE 0 END,
                         CASE WHEN ?4 IS NULL THEN mode ELSE 'work' END,
                         CASE WHEN ?4 IS NULL THEN NULL ELSE 0 END,
-                        live_compact_mode, memory_max_unmasked_blocks,
+                        live_compact_mode,
                         prefix_cache_plan,
                         ?4, ?5
                    FROM sessions WHERE name = ?1",
@@ -1472,7 +1480,7 @@ impl Store {
                     s.live_compact, s.live_compact_interval_tokens, s.worktree,
                     s.worktree_merged, s.worktree_changed,
                     s.dream_of, s.dreamed_checkpoint_id, s.mentor_of,
-                    s.live_compact_mode, s.memory_max_unmasked_blocks,
+                    s.live_compact_mode,
                     s.prefix_cache_plan, s.tape_tokens
              FROM sessions s";
 
@@ -1596,7 +1604,7 @@ impl Store {
             thinking_effort: r.get(9)?,
             usage: protocol::Usage {
                 context_tokens: r.get::<_, i64>(10)?.max(0) as u64,
-                tape_tokens: r.get::<_, Option<i64>>(30)?.map(|n| n.max(0) as u64),
+                tape_tokens: r.get::<_, Option<i64>>(29)?.map(|n| n.max(0) as u64),
                 cached_tokens: r.get::<_, Option<i64>>(11)?.map(|n| n.max(0) as u64),
                 tps: r.get(12)?,
                 ttft_ms: r.get::<_, Option<i64>>(13)?.map(|ms| ms.max(0) as u64),
@@ -1619,10 +1627,7 @@ impl Store {
             live_compact_mode: r
                 .get::<_, Option<String>>(27)?
                 .and_then(|mode| crate::live_compact::CompactMode::parse(&mode)),
-            memory_max_unmasked_blocks: r
-                .get::<_, Option<i64>>(28)?
-                .map(|maximum| maximum.max(0) as u64),
-            prefix_cache_plan: r.get::<_, Option<i64>>(29)?.map(|stated| stated != 0),
+            prefix_cache_plan: r.get::<_, Option<i64>>(28)?.map(|stated| stated != 0),
         })
     }
 
@@ -1716,22 +1721,19 @@ impl Store {
         enabled: Option<bool>,
         interval_tokens: Option<u64>,
         mode: Option<crate::live_compact::CompactMode>,
-        max_unmasked_blocks: Option<u64>,
     ) -> anyhow::Result<()> {
         let interval_tokens = interval_tokens.map(i64::try_from).transpose()?;
-        let max_unmasked_blocks = max_unmasked_blocks.map(i64::try_from).transpose()?;
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute(
             "UPDATE sessions SET live_compact = ?1, live_compact_interval_tokens = ?2,
-                    live_compact_mode = ?3, memory_max_unmasked_blocks = ?4,
-                    updated_at = ?5
-              WHERE id = ?6",
+                    live_compact_mode = ?3,
+                    updated_at = ?4
+              WHERE id = ?5",
             params![
                 enabled.map(i64::from),
                 interval_tokens,
                 mode.map(|mode| mode.as_str()),
-                max_unmasked_blocks,
                 now_millis(),
                 id
             ],
@@ -4288,8 +4290,6 @@ pub struct SessionRow {
     pub live_compact_interval_tokens: Option<u64>,
     /// Its checkpoint projection; `None` follows the home's `[agent]`.
     pub live_compact_mode: Option<crate::live_compact::CompactMode>,
-    /// Its raw-memory visibility limit; `None` follows the home's `[agent]`.
-    pub memory_max_unmasked_blocks: Option<u64>,
     /// Whether its head carries the one-shot meta plan; `None` follows `[agent]`.
     pub prefix_cache_plan: Option<bool>,
     /// The branch, and so the worktree, this session was born in; `None` made none.

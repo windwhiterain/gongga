@@ -142,7 +142,6 @@ LiveCompact := { # sticky; the opt-in is a switch, never a token count
   enabled: bool = default(), # unset follows the home's [agent] live_compact_enabled
   interval_tokens: int = default(), # the threshold only; [agent] live_compact_interval_tokens
   mode: "cut" | "mask" = default(), # unset follows [agent] live_compact_mode
-  max_unmasked_blocks: int = default(), # mask mode only; [agent] memory_max_unmasked_blocks
 }
 MemoryCommit := {id: str, source_range: Range, view_generation: int}
 MemoryRecall := {recalled: list[str], auto_masked: list[str], view_generation: int}
@@ -185,7 +184,8 @@ memorize(summary: str, session: Session = caller()) -> MemoryCommit
   # round, keep the summary call/result visible, and mask its original source span.
 recall(ids: list[str], session: Session = caller()) -> MemoryRecall
   # unmask original spans in argument order; the harness masks the earliest entries
-  # in the current unmasked set when max_unmasked_blocks is exceeded.
+  # in the current unmasked set when the session's share of the provider's
+  # unmasked_context is exceeded.
 ```
 ## Python Cmd
 provided by a shipped uv python package.
@@ -232,10 +232,10 @@ for the first user message to a empty session, find all meta references recursiv
 - the summary include `settled`/`next` two part, `settled` will be placed before the new check point so accumulated, `next` will be placed after the checkpoint so won be accumulated.
 
 ## Memory Mask
-- `live_compact.mode = "mask"` selects memory checkpoints instead of transcript cuts. The opt-in, interval, backoff and complete-ordinary-round boundary are the same; `memorize` and `recall` are always offered, and mask mode requires a positive `max_unmasked_blocks`.
+- `live_compact.mode = "mask"` selects memory checkpoints instead of transcript cuts. The opt-in, interval, backoff and complete-ordinary-round boundary are the same; `memorize` and `recall` are always offered.
 - the canonical transcript and the provider's KV tape are append-only. A mask never deletes rows, moves token positions or rewrites KV. The summary call and its id-bearing result stay visible; the original source span becomes masked.
 - the harness is the only writer of visibility. Provider pressure and attention may change GPU/host residency, never the view. Masked KV may be offloaded and recalled KV must be restored at its original logical position before the forward that reads it.
-- `recall` unmasks original source spans in argument order. Every recalled block moves to the tail of the unmasked queue, so a block just recalled outlives one recalled earlier; a duplicate id still moves it only once. The harness masks the earliest entries in the current unmasked set when either the configured count or the session's share of the provider's `unmasked_context` is exceeded, and returns their ids as `auto_masked`. Summary artifacts and the current ordinary tail are not counted toward the block count. Provider-tokenized block measurements drive token eviction; character estimates never substitute for them.
+- `recall` unmasks original source spans in argument order. Every recalled block moves to the tail of the unmasked queue, so a block just recalled outlives one recalled earlier; a duplicate id still moves it only once. Visibility has one limit: the session's share of the provider's `unmasked_context`, which is the session's `ctx_limit` of that ceiling (falling back to `context` when the roster states none). The harness masks the earliest entries in the current unmasked set while the projected visible tokens exceed it, and returns their ids as `auto_masked`; a provider that states no ceiling at all leaves nothing to evict against. The current ordinary tail is not evictable. Provider-tokenized block measurements drive the eviction; character estimates never substitute for them.
 - every `memorize`, `recall` and automatic displacement commits its cause and advances `view_generation` before the next request. A request pins `(upto_seq, view_generation)` and every retry sends the same pair and view.
 - a mask-capable provider receives the full projected tape and declarative seq ranges; physical block ids and tokenization are the provider's. An endpoint that does not declare this capability uses cut mode; silently treating a mask view as an ordinary prompt is forbidden.
 - masking reduces attention work and offload reduces resident KV; neither makes the tape's last position smaller. The roster's `context` is the full-tape input+output ceiling and `unmasked_context` is the visible input+output ceiling, falling back to `context` when unstated. In mask mode `ctx_limit`, output-space calculation and live-compact growth use the visible ceiling. A mask-capable provider reports standard `input_tokens` as the full tape, plus `gongga_unmasked_input_tokens` and `gongga_memory_tokens`; context reporting states visible tokens and tape position separately, and cache ratios use the full tape.

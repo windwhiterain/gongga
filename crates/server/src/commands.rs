@@ -1332,8 +1332,7 @@ fn type_of(name: &str) -> &'static str {
         | "block_size"
         | "box_edge"
         | "time"
-        | "live_compact_interval_tokens"
-        | "memory_max_unmasked_blocks" => "int",
+        | "live_compact_interval_tokens" => "int",
         "cmd" => "Cmd",
         "config" => "SessionConfig",
         "event" => "Event",
@@ -1390,13 +1389,6 @@ fn session_config_args(remotes: &[String], update: bool) -> Vec<protocol::ArgSpe
             false,
             Some("cut|mask"),
             CompletionSource::Static(vec!["cut".into(), "mask".into()]),
-        ),
-        arg(
-            "memory_max_unmasked_blocks",
-            "Maximum original memory spans visible at once in mask mode. Recall masks the earliest entries in the current unmasked set when this count is exceeded. Unset follows `[agent] memory_max_unmasked_blocks`.",
-            false,
-            Some("blocks"),
-            CompletionSource::None,
         ),
         arg(
             "prefix_cache_plan",
@@ -2105,16 +2097,6 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             }
         },
     };
-    let memory_max = match count_of(args, "memory_max_unmasked_blocks") {
-        Ok(None) => None,
-        Ok(Some(maximum)) if maximum > 0 => Some(maximum as u64),
-        Ok(Some(_)) => {
-            return Outcome::err(
-                "--memory_max_unmasked_blocks takes a positive count of blocks".to_string(),
-            );
-        }
-        Err(e) => return Outcome::err(format!("--memory_max_unmasked_blocks: {e}")),
-    };
     let prefix_plan = match flag_of(args, "prefix_cache_plan") {
         Ok(value) => value,
         Err(e) => return Outcome::err(format!("--prefix_cache_plan: {e}")),
@@ -2328,10 +2310,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     if let Some(tier) = cache_tier {
         tuning.cache_tier = tier;
     }
-    let live_changed = live_enabled.is_some()
-        || live_interval.is_some()
-        || compact_mode.is_some()
-        || memory_max.is_some();
+    let live_changed = live_enabled.is_some() || live_interval.is_some() || compact_mode.is_some();
     if let Some(value) = live_enabled {
         tuning.live_compact_enabled = Some(value);
     }
@@ -2340,9 +2319,6 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     }
     if let Some(mode) = compact_mode {
         tuning.live_compact_mode = Some(mode);
-    }
-    if let Some(maximum) = memory_max {
-        tuning.memory_max_unmasked_blocks = Some(maximum);
     }
     let plan_changed = prefix_plan.is_some();
     if let Some(value) = prefix_plan {
@@ -2366,9 +2342,6 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
     let compact_mode_now = tuning
         .live_compact_mode
         .unwrap_or(config.agent.live_compact_mode);
-    let memory_max_now = tuning
-        .memory_max_unmasked_blocks
-        .or(config.agent.memory_max_unmasked_blocks);
     if compact_mode_now == crate::live_compact::CompactMode::Mask
         && entry.api != crate::llm::MEMORY_MASK_API
     {
@@ -2376,13 +2349,6 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
             "memory mask mode requires endpoint api {:?}; use cut mode with this provider",
             crate::llm::MEMORY_MASK_API
         ));
-    }
-    if compact_mode_now == crate::live_compact::CompactMode::Mask
-        && memory_max_now.unwrap_or(0) == 0
-    {
-        return Outcome::err(
-            "mask checkpoints need a positive memory_max_unmasked_blocks".to_string(),
-        );
     }
     if changed || cache_changed || live_changed || plan_changed {
         // Persist before applying: a restart must restore what turns here read.
@@ -2424,7 +2390,6 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                 tuning.live_compact_enabled,
                 tuning.live_compact_interval_tokens,
                 tuning.live_compact_mode,
-                tuning.memory_max_unmasked_blocks,
             ) {
                 return Outcome::err(format!("could not save the live compact settings: {e}"));
             }
@@ -2437,12 +2402,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
                             .unwrap_or(config.agent.context_limit_percent),
                     )
                 });
-                match d.store.enforce_limit(
-                    session.id(),
-                    memory_max_now.unwrap_or(0),
-                    token_limit,
-                    "config",
-                ) {
+                match d.store.enforce_limit(session.id(), token_limit, "config") {
                     Ok(enforced) => {
                         if !enforced.auto_masked.is_empty() {
                             d.agent.log_event(
@@ -4683,7 +4643,6 @@ fn stated_tuning(
             live_compact_enabled: row.live_compact_enabled,
             live_compact_interval_tokens: row.live_compact_interval_tokens,
             live_compact_mode: row.live_compact_mode,
-            memory_max_unmasked_blocks: row.memory_max_unmasked_blocks,
             prefix_cache_plan: row.prefix_cache_plan,
         },
     }
@@ -4758,7 +4717,6 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
                 }
                 .to_string()
             }),
-            max_unmasked_blocks: row.memory_max_unmasked_blocks,
         }),
         state: d.store.session_state(&row.name).unwrap_or_default(),
     }

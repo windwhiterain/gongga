@@ -334,8 +334,6 @@ pub struct AgentConfig {
     pub live_compact_interval_tokens: u64,
     /// Whether checkpoints cut the provider projection or declare a memory view.
     pub live_compact_mode: crate::live_compact::CompactMode,
-    /// The home's default raw-memory visibility limit; mask checkpoints require one.
-    pub memory_max_unmasked_blocks: Option<u64>,
     /// Whether the head carries the one-shot meta plan; off keeps it minimal.
     pub prefix_cache_plan: bool,
     /// The chance a cached prefix is gone by the next request, `0.0..=1.0`.
@@ -466,7 +464,6 @@ struct FileAgent {
     live_compact_enabled: Option<bool>,
     live_compact_interval_tokens: Option<u64>,
     live_compact_mode: Option<String>,
-    memory_max_unmasked_blocks: Option<u64>,
     prefix_cache_plan: Option<bool>,
     cache_invalid_rate: Option<f64>,
     cache_ttl_secs: Option<u64>,
@@ -788,13 +785,6 @@ impl Config {
                 })
                 .unwrap_or(DEFAULT_LIVE_COMPACT_INTERVAL_TOKENS),
             live_compact_mode: compact_mode,
-            memory_max_unmasked_blocks: file
-                .agent
-                .as_ref()
-                .and_then(|agent| agent.memory_max_unmasked_blocks)
-                .or_else(|| {
-                    env_or("GONGGA_MEMORY_MAX_UNMASKED_BLOCKS").and_then(|v| v.parse().ok())
-                }),
             prefix_cache_plan: file
                 .agent
                 .as_ref()
@@ -831,14 +821,6 @@ impl Config {
                 .unwrap_or(DEFAULT_CONTEXT_LIMIT_PERCENT)
                 .min(100),
         };
-        if agent.live_compact_mode == crate::live_compact::CompactMode::Mask
-            && agent.memory_max_unmasked_blocks.unwrap_or(0) == 0
-        {
-            anyhow::bail!(
-                "mask checkpoints need a positive memory_max_unmasked_blocks; the harness, \
-                 not the provider, owns this limit"
-            );
-        }
         // Zero would ask about every step; the opt-in must not double as the interval.
         if agent.live_compact_enabled && agent.live_compact_interval_tokens == 0 {
             anyhow::bail!(

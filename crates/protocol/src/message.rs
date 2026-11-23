@@ -1034,8 +1034,6 @@ pub struct LiveCompactState {
     /// SPEC's `mode`, `cut` or `mask`.
     #[serde(default)]
     pub mode: Option<String>,
-    #[serde(default)]
-    pub max_unmasked_blocks: Option<u64>,
 }
 
 /// What a session's own worktree holds, as the repository it was made in sees it.

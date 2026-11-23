@@ -331,7 +331,6 @@ fn projected_unmasked_tokens(conn: &Connection, session_id: i64) -> rusqlite::Re
 fn enforce_limit_at_generation(
     conn: &Connection,
     session_id: i64,
-    maximum: i64,
     maximum_tokens: Option<i64>,
     mut unmasked_tokens: Option<i64>,
     cause: &str,
@@ -340,10 +339,9 @@ fn enforce_limit_at_generation(
     let mut auto_masked = Vec::new();
     loop {
         let count = read_state(conn, session_id)?.unmasked_count;
-        let over_count = count > maximum;
         let over_tokens = maximum_tokens
             .is_some_and(|limit| unmasked_tokens.unwrap_or(0).saturating_sub(limit) > 0);
-        if (!over_count && !over_tokens) || count == 0 {
+        if !over_tokens || count == 0 {
             break;
         }
         let (head, tokens) = conn
@@ -383,8 +381,8 @@ fn enforce_limit_at_generation(
     let remaining = read_state(conn, session_id)?.unmasked_count;
     let token_limit_unmet =
         remaining > 0 && maximum_tokens.is_some_and(|limit| unmasked_tokens.unwrap_or(0) > limit);
-    if remaining > maximum || token_limit_unmet {
-        bail!("memory unmasked usage did not reach the configured limits");
+    if token_limit_unmet {
+        bail!("memory visible usage did not reach the configured limit");
     }
     Ok(auto_masked)
 }
@@ -395,17 +393,13 @@ impl crate::store::Store {
     /// # Invariant
     ///
     /// The transcript is append-only: only the memory view advances, never
-    /// `context_generation`. A positive configured block count is a mask-mode prerequisite.
+    /// `context_generation`.
     pub fn memorize(
         &self,
         session_id: i64,
         call_id: &str,
         content: &Value,
-        max_unmasked_blocks: u64,
     ) -> anyhow::Result<MemorizeCommit> {
-        if max_unmasked_blocks == 0 {
-            bail!("a mask checkpoint requires a positive max_unmasked_blocks");
-        }
         let connection = self.picture_conn();
         let mut connection = connection.lock().unwrap_or_else(|error| error.into_inner());
         let tx = connection.transaction()?;
@@ -569,10 +563,8 @@ impl crate::store::Store {
         session_id: i64,
         call_id: &str,
         content: &Value,
-        max_unmasked_blocks: u64,
         max_unmasked_tokens: Option<u64>,
     ) -> anyhow::Result<MemoryRecall> {
-        let maximum = maximum(max_unmasked_blocks)?;
         let maximum_tokens = max_unmasked_tokens
             .map(|value| crate::memory::maximum(value))
             .transpose()?;
@@ -675,7 +667,6 @@ impl crate::store::Store {
         let auto_masked = enforce_limit_at_generation(
             &tx,
             session_id,
-            maximum,
             maximum_tokens,
             unmasked_tokens,
             RECALL_CAUSE,
@@ -755,19 +746,17 @@ impl crate::store::Store {
         })
     }
 
-    /// Applies count and visible-token limits without appending a tool result.
+    /// Applies the visible-token limit without appending a tool result.
     ///
     /// # Invariant
     ///
-    /// A view that already satisfies both limits changes neither visibility nor generation.
+    /// A view that already fits the budget changes neither visibility nor generation.
     pub fn enforce_limit(
         &self,
         session_id: i64,
-        max_unmasked_blocks: u64,
         max_unmasked_tokens: Option<u64>,
         cause: &str,
     ) -> anyhow::Result<LimitEnforced> {
-        let maximum = maximum(max_unmasked_blocks)?;
         let maximum_tokens = max_unmasked_tokens
             .map(|value| crate::memory::maximum(value))
             .transpose()?;
@@ -784,7 +773,7 @@ impl crate::store::Store {
         let over_tokens = state.unmasked_count > 0
             && maximum_tokens
                 .is_some_and(|limit| unmasked_tokens.unwrap_or(0).saturating_sub(limit) > 0);
-        if state.unmasked_count <= maximum && !over_tokens {
+        if !over_tokens {
             return Ok(LimitEnforced {
                 auto_masked: Vec::new(),
                 view_generation: nonnegative(state.view_generation, "memory view generation")?,
@@ -794,7 +783,6 @@ impl crate::store::Store {
         let auto_masked = enforce_limit_at_generation(
             &tx,
             session_id,
-            maximum,
             maximum_tokens,
             unmasked_tokens,
             cause,

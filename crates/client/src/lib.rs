@@ -3020,7 +3020,6 @@ fn drawn_by_a_field(key: &str) -> bool {
             | "live_compact_interval_tokens"
             | "live_compact_mode"
             | "live_compact_interval_effective"
-            | "memory_max_unmasked_blocks"
     )
 }
 
@@ -3105,9 +3104,6 @@ fn title_note(session: &protocol::SessionInfo) -> String {
         }
         if let Some(mode) = &live.mode {
             said.push(mode.clone());
-        }
-        if let Some(maximum) = live.max_unmasked_blocks {
-            said.push(format!("max {maximum}"));
         }
         if !said.is_empty() {
             parts.push(format!("live_compact {}", said.join(" ")));

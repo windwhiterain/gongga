@@ -576,15 +576,6 @@ impl Agent {
         let mode = tuning
             .live_compact_mode
             .unwrap_or(config.agent.live_compact_mode);
-        if mode == crate::live_compact::CompactMode::Mask
-            && tuning
-                .memory_max_unmasked_blocks
-                .or(config.agent.memory_max_unmasked_blocks)
-                .unwrap_or(0)
-                == 0
-        {
-            return;
-        }
         let next = interval.saturating_mul(2);
         let message = match mode {
             crate::live_compact::CompactMode::Cut => live_compact_notice(),
@@ -1056,17 +1047,8 @@ impl Agent {
             );
         }
         if compact_mode == crate::live_compact::CompactMode::Mask {
-            let maximum = tuning
-                .memory_max_unmasked_blocks
-                .or(current.agent.memory_max_unmasked_blocks)
-                .filter(|maximum| *maximum > 0)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("mask mode requires a positive memory_max_unmasked_blocks")
-                })?;
             let token_limit = self.memory_token_limit(llm, &tuning);
-            let enforced = self
-                .store
-                .enforce_limit(id, maximum, token_limit, "request")?;
+            let enforced = self.store.enforce_limit(id, token_limit, "request")?;
             if !enforced.auto_masked.is_empty() {
                 self.log_event(
                     Some(id),
@@ -1727,11 +1709,6 @@ impl Agent {
         let compact_mode = tuning
             .live_compact_mode
             .unwrap_or(self.config.now().agent.live_compact_mode);
-        let memory_max = tuning.memory_max_unmasked_blocks.or(self
-            .config
-            .now()
-            .agent
-            .memory_max_unmasked_blocks);
         let memory_token_limit = self.memory_token_limit(llm, &tuning);
         let memory_tool = tool == crate::tools::memory::MEMORIZE_TOOL
             || tool == crate::tools::memory::RECALL_TOOL;
@@ -1745,10 +1722,6 @@ impl Agent {
             Some(format!(
                 "{tool} requires endpoint api {:?}",
                 crate::llm::MEMORY_MASK_API
-            ))
-        } else if memory_tool && memory_max.unwrap_or(0) == 0 {
-            Some(format!(
-                "{tool} requires a positive memory_max_unmasked_blocks"
             ))
         } else {
             None
@@ -1822,10 +1795,7 @@ impl Agent {
             }
         }
         if tool == crate::tools::memory::MEMORIZE_TOOL && outcome.ok {
-            match self
-                .store
-                .memorize(id, &call_id, &content, memory_max.unwrap_or(0))
-            {
+            match self.store.memorize(id, &call_id, &content) {
                 Ok(crate::memory::MemorizeCommit::Checkpointed(committed)) => {
                     special_committed = true;
                     output = committed.output.clone();
@@ -1853,13 +1823,10 @@ impl Agent {
             }
         }
         if tool == crate::tools::memory::RECALL_TOOL && outcome.ok {
-            match self.store.recall(
-                id,
-                &call_id,
-                &content,
-                memory_max.unwrap_or(0),
-                memory_token_limit,
-            ) {
+            match self
+                .store
+                .recall(id, &call_id, &content, memory_token_limit)
+            {
                 Ok(committed) => {
                     special_committed = true;
                     output = committed.output.clone();
