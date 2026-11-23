@@ -37,15 +37,10 @@ const COMMAND_TIMEOUT: Duration = Duration::from_millis(crate::config::CALL_TIME
 ///
 /// # Invariant
 ///
-/// `input_channel` waits for as long as its `wait` says -- that is the call's own clock,
-/// and cutting it would break a read that is working. `run_skill` is started under the
-/// skill runner's own bound. `cancel` is the stop itself: cutting it would leave the
-/// acknowledgement it owes unwritten.
-///
-/// The third of those is a convention and not a check: a skill must not block, and nothing
-/// here refuses one that does (`ship/skills/skill/SKILL.md`, "A skill must not block"). It
-/// is exempt because a skill is a program with its own bound, not because blocking is
-/// allowed.
+/// `input_channel` waits as long as its `wait` says: cutting it would break a read that
+/// is working. `run_skill` has the skill runner's bound, and `cancel` is the stop itself --
+/// cutting it would leave its acknowledgement unwritten. A skill must not block; nothing
+/// here refuses one that does.
 const OWN_CLOCK: &[&str] = &["input_channel", "run_skill", "cancel"];
 
 /// What a heartbeat asks, when the content has no template for it.
@@ -267,12 +262,9 @@ fn arm_source_after_dream(d: &Arc<Dispatch>, source_id: i64) {
 ///
 /// # Invariant
 ///
-/// The timer is the cache timeline: it is armed when the cache was last
-/// warmed, sleeps to the lower edge, and fires only if it is still inside
-/// `[lower, upper)`. No usage row is read -- a second timer, a late wake, or
-/// an old request never moves this band. A source with a live dream reads
-/// none of it: the dreamer owns the countdown, so the source owes no fire.
-/// See `docs/notes/server-dream.md`.
+/// The timer is the cache timeline: armed when the cache was last warmed, it fires only
+/// inside `[lower, upper)`. No usage row moves it, and a source with a live dream owes no
+/// fire -- the dreamer owns the countdown.
 pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
     let tuning = session.tuning();
     let muted = d
@@ -301,14 +293,12 @@ pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
     }
     let armed_generation = keepalive_generation(&d, &session);
     let armed_mute = d.store.keepalive_handoff_at(session.id()).unwrap_or(None);
-    // The timer itself is the timeline: it starts here, when the cache was
-    // last warmed, and no usage row is read to move it later or earlier.
+    // The timer is the timeline: it starts here, when the cache was last warmed, and no
+    // usage row moves it.
     let armed_at = crate::store::now_millis();
     tokio::spawn(async move {
-        // A live dream owns the countdown: its every request keeps the shared
-        // prefix hot, so the source reads no timeline and fires nothing. This
-        // is the first thing checked, before the band and before any cache
-        // state. See `server-dream.md`.
+        // A live dream owns the countdown: its requests keep the prefix hot, so the source
+        // fires nothing.
         if d.store
             .dreams_of(session.id())
             .is_ok_and(|dreams| !dreams.is_empty())
@@ -316,17 +306,16 @@ pub(crate) fn arm_keepalive(d: Arc<Dispatch>, session: SessionHandle) -> bool {
             return;
         }
         tokio::time::sleep(Duration::from_millis(lower_ms)).await;
-        // A dream may have started during the wait. The source owes no timer
-        // while one lives, so it reads no band at all -- not even at wake.
+        // A dream may have started during the wait, so the source owes no timer while one
+        // lives, not even at wake.
         if d.store
             .dreams_of(session.id())
             .is_ok_and(|dreams| !dreams.is_empty())
         {
             return;
         }
-        // Fire only inside the band: too early is a still-warm cache, too late
-        // is a cold one. Both retire the timer. No anchor is fetched -- the
-        // elapsed time is measured from this timer's own arm.
+        // Fire only inside the band: too early is a warm cache, too late a cold one.
+        // Neither keeps the timer.
         let elapsed = crate::store::now_millis().saturating_sub(armed_at).max(0) as u64;
         if elapsed < lower_ms || elapsed >= upper_ms {
             return;
@@ -1763,12 +1752,9 @@ async fn mute_keepalive(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
 ///
 /// # Invariant
 ///
-/// The marker is a fact about the session -- it has no prompt (head) row yet --
-/// not about who sent the message. The `handoff` skill delivers its note through
-/// the `gongga-cli` shim, and a shim on the wire greets as an `Origin::Client`,
-/// never the in-process `Origin::Tool` (see `docs/notes/server-handover.md`).
-/// Gating this on the origin left every handoff note to land as an `inject` row,
-/// so `store.user_texts` and the prefix-cache plan never saw the note's references.
+/// The marker is a fact about the session -- no head row yet -- not about the sender: a
+/// shim greets as `Origin::Client`, and gating on the origin made every handoff note an
+/// `inject`.
 fn first_prompt_for(store: &Store, session_id: i64) -> bool {
     store.prompt(session_id).ok().flatten().is_none()
 }
@@ -1786,9 +1772,7 @@ async fn send_message(d: &Dispatch, args: &Args, origin: &Origin) -> Outcome {
             "send_message runs for a session: name one, or run it from a session's shell",
         );
     };
-    // A session with no prompt row takes this as its first prompt, whoever sent
-    // it: the handoff note crosses the wire as a Client origin. See
-    // `docs/notes/server-handover.md`.
+    // A session with no prompt row takes this as its first prompt, whoever sent it.
     let first_prompt = d
         .sessions
         .get(&name)
@@ -2509,9 +2493,7 @@ async fn set_session(d: &Dispatch, args: &Args) -> Outcome {
         }
     }
     publish_sessions(d);
-    // No arm here: a heartbeat is owed only at a turn's end, when the cache was
-    // last warmed. Turning the flag on is a config write, not a turn; a busy
-    // turn owns its arm at the epilogue, and an idle one waits for its next turn.
+    // No arm here: a heartbeat is owed only at a turn's end, and this is a config write.
 
     let cwd = session.cwd();
     // Confirms the write and stops: what the session runs on is its pane's title.
@@ -2811,10 +2793,8 @@ async fn del_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
             .collect(),
         Err(why) => return Outcome::err(why),
     };
-    // The exact name is the single-channel case; anything else is a path taking what is
-    // under it, even when only one channel is under it. Counting the matches instead is
-    // what made `del_channel /ask` refuse while `/ask/1` existed. See
-    // `docs/notes/server-commands.md`.
+    // An exact name is the single-channel case; anything else is a path taking what is
+    // under it, even one channel.
     if doomed.iter().any(|path| path != &id) {
         let mut ended = 0;
         let mut failed: Vec<String> = Vec::new();
@@ -2868,8 +2848,8 @@ async fn new_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outcome
         Ok(handle) => handle,
         Err(e) => return Outcome::err(e.to_string()),
     };
-    // The machine is the `cwd`'s: a channel runs where the call says, and a bare or
-    // omitted `cwd` is the session's own. SPEC gives a workspace one path.
+    // The machine is the `cwd`'s: a channel runs where the call says, and a bare or omitted
+    // `cwd` is the session's own.
     let (remote, cwd) = match args.word("cwd").map(str::trim).filter(|c| !c.is_empty()) {
         None => (handle.remote_name(), handle.cwd()),
         Some(text) => match crate::space::stated(text) {
@@ -3437,10 +3417,8 @@ async fn declared_command(
     args: &Args,
     caller: Option<&str>,
 ) -> Outcome {
-    // The shared arguments are the call layer's, so they are read off here: a function
-    // has no parameter of that name, and one that arrived as a keyword argument is a name
-    // the caller may not spell. The same list the tool layer takes, read in the other door
-    // a declared command comes in by.
+    // The shared arguments are read off here: a function has no parameter of that name,
+    // and this is the command door.
     let mut own = args.clone();
     for (name, _, _) in crate::tools::laws::ALL {
         own.remove(*name);
@@ -4806,10 +4784,12 @@ mod tests {
         }
     }
 
-    /// The handoff skill empties the session down to its one in-flight call, so the
-    /// note its `gongga-cli` shim delivers next finds no prompt row. The marker must
-    /// follow that structural fact, not the caller's origin: on the wire the shim is
-    /// an `Origin::Client`, and gating on `Origin::Tool` made every note an `inject`.
+    /// # Invariant
+    ///
+    /// The handoff empties the session down to its one in-flight call, so the note its shim
+    /// delivers next finds no head row. The marker follows that fact, not the origin: on
+    /// the wire the shim is an `Origin::Client`, and gating on `Origin::Tool` made every
+    /// note an `inject`.
     #[test]
     fn a_message_to_a_session_with_no_prompt_row_is_its_first_prompt() {
         let store = Store::open(std::path::Path::new(":memory:")).expect("a throwaway store");
