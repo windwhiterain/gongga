@@ -137,7 +137,6 @@ SessionConfig := { # sticky
   model_config: ModelConfig,
   workspace: Workspace = default(),
   keep_alive: bool = false, # if auto send message to interrup waiting when approaching the cache alive deadline.
-  client: bool = is_client(), # true in client, other wise false.
 }
 LiveCompact := { # sticky; the opt-in is a switch, never a token count
   enabled: bool = default(), # unset follows the home's [agent] live_compact_enabled
