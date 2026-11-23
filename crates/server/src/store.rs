@@ -24,8 +24,8 @@ pub struct Prompt {
     /// The text of the references the first message named, in the order it is sent.
     #[serde(default, alias = "index")]
     pub plan: Option<String>,
-    /// The directory's standing rules, kept apart so the reader can see them on
-    /// their own line. A record for the reader: they are still sent inside `plan`.
+    /// The directory's standing rules, apart on their own line: a record for the reader,
+    /// still sent inside `plan`.
     #[serde(default)]
     pub agents_md: Option<String>,
     /// The start card: name, build, the first turn's time and cwd. Stamped once.
@@ -49,13 +49,11 @@ pub struct Prompt {
     /// keys out as `null`, and `#[serde(default)]` covers only a key that is absent.
     #[serde(default, deserialize_with = "list_or_null")]
     pub rooted: Vec<String>,
-    /// Which of `rooted` a message asked for outright -- a `@file`/`@skill`
-    /// mention or the standing rules -- as opposed to riding in because the
-    /// prefix cache needed its ancestor. A record for the reader, never sent.
+    /// Which of `rooted` a message asked for outright, or the rules; not a cached chain's
+    /// ancestor. A record, never sent.
     #[serde(default, deserialize_with = "list_or_null", alias = "index_explicit")]
     pub plan_explicit: Vec<String>,
-    /// Which of `rooted` came in only as a cached chain's ancestor, not asked
-    /// for by any message. A record for the reader, never sent.
+    /// Which of `rooted` came in only as a cached chain's ancestor. A record, never sent.
     #[serde(default, deserialize_with = "list_or_null", alias = "index_cached")]
     pub plan_cached: Vec<String>,
     /// The directory this row's index was read from; the cache owner names it.
@@ -661,8 +659,8 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
         "wait_marker",
         "ALTER TABLE channels ADD COLUMN wait_marker TEXT",
     )?;
-    // A channel a `cancel` was asked to keep alive: a state on the row, so the
-    // next stop can tell it from a channel nobody asked for.
+    // A channel a `cancel` was asked to keep alive: a state on the row, so the next stop
+    // can tell it apart.
     add_column_if_missing(
         conn,
         "channels",
@@ -1968,9 +1966,8 @@ impl Store {
             let trigger_advance = if context_tokens == 0 { 0 } else { 1 };
             // Cancel the trigger's conditional +1, leaving one generation rewind per checkpoint.
             tx.execute(
-                // The four measured columns go together: the transcript this request
-                // was billed for is gone, so its rate and its delay describe nothing
-                // left in this row. See `docs/notes/server-store.md`.
+                // The four measured columns go together: the transcript they billed is
+                // gone, so the rate describes nothing here.
                 "UPDATE sessions SET live_compact_baseline_tokens = NULL,
                         live_compact_interval_effective = NULL,
                         context_tokens = 0, tape_tokens = NULL, cached_tokens = NULL,
@@ -3741,9 +3738,8 @@ impl Store {
         // The machine's own spelling: a peer's directory is not a path this one has.
         dir: &str,
         pid: u32,
-        // The relay's own pid and its start, when this machine started the relay. A
-        // successor cannot adopt what it cannot name: `pid` is the program's, and
-        // the relay is reachable only as the parent of a pid that may be gone.
+        // The relay's own pid and start, when this machine started it: a successor cannot
+        // adopt what it cannot name.
         relay: Option<(u32, i64)>,
     ) -> anyhow::Result<i64> {
         let conn = self.lock();
@@ -4213,8 +4209,8 @@ pub struct ChannelRow {
     /// that did not ask spares it too. `stop_every` reads this; nothing else writes
     /// it but `mark_detached` and `clear_detached`.
     pub detached: bool,
-    /// The relay's pid, which is not [`Self::pid`]: that one is the program's.
-    /// `None` is a row written before the column, or a channel on a peer.
+    /// The relay's pid, not [`Self::pid`]; `None` is a row written before the column, or a
+    /// channel on a peer.
     pub relay_pid: Option<i64>,
     /// When that relay started, so a recycled pid is refused before a job is armed.
     pub relay_started_at: Option<i64>,
@@ -4412,8 +4408,8 @@ pub(crate) enum Kind {
     Error,
     System,
     Tools,
-    // The five head rows, one per slot. `System` and `Tools` are kept for rows a
-    // version 5-to-6 session still has; a version 7 session writes these instead.
+    // The five head rows, one per slot. `System` and `Tools` are kept for 5-to-6 rows; a
+    // version 7 session writes these.
     Instructions,
     AgentsMd,
     // Stored as `index`: a kind string is a row's disk identity, kept across the
@@ -4513,9 +4509,8 @@ impl MessageRow {
             Some(Kind::Notice | Kind::ThinkingMark | Kind::Inject | Kind::Error) => {
                 row.text = str_of("text").unwrap_or_default()
             }
-            // Version 5-to-6 kept the whole prompt in one row. Render it as the
-            // five labelled lines the new rows carry, so an old session reads the
-            // same way. The front-end folds a row to one line until opened.
+            // Version 5-to-6 kept the whole prompt in one row: render it as the five
+            // labelled lines an old session now reads.
             Some(Kind::System) => {
                 let mut out = String::new();
                 // instructions
@@ -4542,9 +4537,8 @@ impl MessageRow {
                 ));
                 row.text = out;
             }
-            // The head in force, one row per line. Each of these is a real stored
-            // row a version 7 session wrote, so the UI shows five lines and the
-            // sender rebuilds the same wire head from these same rows.
+            // The head in force, one row per line: real stored rows, so every reader sees
+            // the same head.
             Some(Kind::Instructions) => {
                 row.text = format!(
                     "instructions: {}",
@@ -4581,24 +4575,15 @@ impl MessageRow {
     }
 }
 
-/// The index line: which references the head carries, never their bodies.
-///
-/// # Invariant
-///
-/// `index` is the expanded bodies, which are what the provider already holds as a
-/// cached prefix; a reader wants the citations. So this never renders `index`.
-/// `index_explicit` names what a message asked for outright and `index_cached` what
 /// The plan line: which references the head carries, never their bodies.
 ///
 /// # Invariant
 ///
-/// `plan` is the expanded bodies, which are what the provider already holds as a
-/// cached prefix; a reader wants the citations and why each one is there. So this
-/// never renders `plan`. `plan_explicit` names what the prompt requires outright --
-/// a `@file`/`@skill` mention or the standing rules -- and `plan_cached` what rode in
-/// only as a cached chain's ancestor; a row written before those two lists existed
-/// states `rooted`, the only record it has. Rows stamped before the plan rename
-/// carry the `index_explicit`/`index_cached` spellings, read as the same lists.
+/// A reader wants the citations and why each is there, so `plan` -- the expanded bodies
+/// the provider already caches -- is never rendered. `plan_explicit` names what the
+/// prompt requires outright, `plan_cached` what rode in as an ancestor; a row older than
+/// both states `rooted`. Rows stamped before the rename carry `index_*` as the same
+/// lists.
 fn plan_text(value: &serde_json::Value) -> String {
     let list = |key: &str| -> Vec<String> {
         value
@@ -4746,9 +4731,8 @@ fn wire_item(kind: Kind, value: &serde_json::Value) -> Option<serde_json::Value>
     };
     // Pictures stay in `display` and resolve per request.
     match kind {
-        // Records a request reads, not messages it sends: the five head rows keep
-        // their payload in `display`, and `prompt`/`tool_set` rebuild the wire head.
-        // `System` is the version 5-to-6 spelling of the same record.
+        // Records a request reads, not messages it sends: `prompt`/`tool_set` rebuild the
+        // wire head.
         Kind::System
         | Kind::Tools
         | Kind::Instructions
