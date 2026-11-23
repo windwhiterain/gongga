@@ -515,6 +515,10 @@ impl Sticky {
         {
             let stated_field = stated_object.and_then(|object| object.get(name));
             if protocol::argschema::is_struct(property) {
+                // A defaulted struct is the type's decision: fill it only when the line stated it.
+                if stated_field.is_none() && protocol::argschema::default(property).is_some() {
+                    continue;
+                }
                 if let Some(filled) =
                     self.value_of(property, protocol::argschema::kind(property), stated_field)
                 {

@@ -237,6 +237,7 @@ fn object(
     description: &str,
     spelling: &str,
     kind: Option<&str>,
+    default: Option<&str>,
     fields: Vec<(&str, serde_json::Value)>,
 ) -> serde_json::Value {
     let mut properties = serde_json::Map::new();
@@ -251,7 +252,7 @@ fn object(
         source: &protocol::CompletionSource::None,
         kind,
         hint: None,
-        default: None,
+        default,
         model_ref: false,
         update: false,
         schema_of: None,
@@ -359,6 +360,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
         default: Some("true"),
         ..Default::default()
     };
+    // SPEC: each `LiveCompact` field is `= default()`; a default is the type's choice, so sticky never fills it.
     let live_compact_enabled = Field {
         description: "Whether the server asks this session to fold its own context.",
         spelling: "bool",
@@ -367,12 +369,14 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
             "true".to_string(),
             "false".to_string(),
         ])),
+        default: Some("default()"),
         ..Default::default()
     };
     let live_compact_interval = Field {
         description: "Input-token growth between this session's checkpoints.",
         spelling: "int",
         hint: Some("tokens"),
+        default: Some("default()"),
         ..Default::default()
     };
     let live_compact_mode = Field {
@@ -383,6 +387,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
             "cut".to_string(),
             "mask".to_string(),
         ])),
+        default: Some("default()"),
         ..Default::default()
     };
     let mut fields: Vec<(&str, Value)> = Vec::new();
@@ -393,6 +398,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
             "The model, how it is asked, and what its checkpoints do.",
             "ModelConfig",
             Some("model_config"),
+            None,
             vec![
                 ("model", model.build()),
                 ("thinking", thinking.build()),
@@ -404,6 +410,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
                         "Whether the server asks this session for checkpoint summaries.",
                         "LiveCompact",
                         None,
+                        Some("default()"),
                         vec![
                             ("enabled", live_compact_enabled.build()),
                             ("interval_tokens", live_compact_interval.build()),
@@ -421,6 +428,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
             "Where the session works.",
             "Workspace",
             None,
+            None,
             vec![("cwd", cwd.build()), ("worktree", worktree.build())],
         ),
     ));
@@ -428,6 +436,7 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
     object(
         "The session's settings as SPEC spells them.",
         "SessionConfig",
+        None,
         None,
         fields,
     )
