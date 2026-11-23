@@ -418,8 +418,8 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     id: end.id.clone(),
                     output: end.output.clone(),
                     time: end.time,
-                    // A notice is owed to no call's wait: the call that gave up is
-                    // over, so the row states zero rather than repeating `time`.
+                    // A notice is owed to no call's wait: that call is over, so the row
+                    // states zero rather than repeating `time`.
                     waited: std::time::Duration::ZERO,
                     matched: end.matched,
                     exit: end.exit,
