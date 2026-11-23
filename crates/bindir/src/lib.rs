@@ -1,9 +1,5 @@
-//! The directory the harness's own programs live in: how one lands there, and whether
-//! the copy answering to a name is this build's.
-//!
-//! SPEC, "Bundled binary": programs placed in one directory "auto detect, validate and
-//! install each other with latest compatible protocol". This module is that sentence,
-//! written once. See `docs/notes/bindir.md`.
+//! Programs in one directory: how one lands there, and whether that copy is this build's.
+//! SPEC, "Bundled binary".
 //!
 //! # Invariant
 //!
@@ -21,10 +17,8 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// How many times a rename over a fresh program is tried before the name is called held.
-///
-/// A freshly written executable is what a scanner opens, and Windows answers a rename
-/// over one with "access denied" for a moment.
+/// Tries before a rename is called held: Windows refuses one over a fresh executable a
+/// moment.
 const RENAME_ATTEMPTS: u32 = 5;
 
 /// Where the bytes come from: a program beside this one, or a payload a file carries.
@@ -41,8 +35,8 @@ pub enum Outcome {
     Already(PathBuf),
     /// Written beside and renamed in: the directory holds these bytes now.
     Placed(PathBuf),
-    /// A running program holds the name, so this start cannot replace it. `installed` is
-    /// what answers to it, and it is not this build's bytes.
+    /// A running program holds the name, so this start cannot replace it: `installed` is
+    /// not this build's.
     Pinned { installed: PathBuf, why: String },
 }
 
