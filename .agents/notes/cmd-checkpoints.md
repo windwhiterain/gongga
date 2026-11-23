@@ -22,5 +22,19 @@ User directives (2026-11-23):
 - config: `offered=false`, rewrite notices + standing prompt to `gongga_cli(...)`.
 - Operator/client invocation has no model call anchor -> refuse clearly.
 
-## Status
-- worktree `.worktrees/cmd-checkpoints`, branch `feature/cmd-checkpoints`, base b26e2073.
+## Status — DONE (merged + published 2026-11-23)
+- Squash-merged to main as `b4355069`; rebased onto main `67705d38` first (main's
+  `f9660971` moved `live_compact`/`prefix_cache_plan` into `model_config`; the flat
+  handler names are unchanged, so `tuning.live_compact_mode` still reads them).
+- Content published: ship `81bcd5a` on main (`7c0c1f5..81bcd5a`), `offered=false` on the
+  three rows + notices rewritten to `gongga_cli`. `scripts/ship.sh --check` exit 0.
+- Gates after rebase: `mbx build` 0, `mbx fmt --check` 0, `test-layout-check` 0,
+  server lib 40/40. comments-check: every file this change touches is clean; the only
+  violations (`net.rs`, `remote/runner.rs`, `tools/detached.rs`) are byte-identical to
+  main — pre-existing baseline, not introduced here.
+- L3: `scripts/checkpoint_selftest.sh` PASS — model offered `gongga_cli` but not the
+  three commands; `gongga_cli cmd.name=live_compact` commits a checkpoint, injects
+  `next` (kind=inject), writes its own `tool_result` row keyed by the call id.
+  Mask-mode L3 not feasible with the shared fake (a mask turn bails when the provider
+  omits `gongga_unmasked_input_tokens`); memorize/recall share the verified plumbing
+  and are covered by the lib tests. Data: `.dev/verify/9704113c-checkpoints.json`.
