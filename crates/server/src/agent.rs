@@ -2367,7 +2367,10 @@ fn live_compact_notice() -> String {
 ///
 /// Read at every use, never cached into the session: a model change re-derives
 /// the default, and a session that states the value still wins over it.
-fn model_defaults(catalog: &crate::providers::Handle, model: Option<&str>) -> crate::providers::ModelDefaults {
+fn model_defaults(
+    catalog: &crate::providers::Handle,
+    model: Option<&str>,
+) -> crate::providers::ModelDefaults {
     model
         .and_then(|name| catalog.place(name))
         .map(|entry| entry.defaults)
