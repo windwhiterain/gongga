@@ -44,10 +44,12 @@ travels once. No protocol bump (optional field is wire-compatible).
   `gongga-client`). After a simulated handoff cut, the window fetches the re-stamped
   head as an Older page (seq 1,2,4,5). Result: `.dev/verify/<sha>-head-refill.json`.
 
-Merge to main is **pending**: the main checkout carries an uncommitted, unrelated
-change to `crates/client/src/lib.rs` (`title_note` header reorder, ~line 3050) that is
-not this branch's work -- likely a parallel session. Merging would disturb it, so the
-fix stays on `fix/head-refill` until that WIP lands or the user says to merge.
+Merged to main as `bd53ef20` (squash). The unrelated `title_note` WIP in the main
+checkout was committed separately first (`cce591e9`), then this fix squash-merged on
+top; `mbx build -p gongga-server -p gongga-client -p gongga-protocol` green and the L3
+re-run PASS on the merged build. (A full `mbx build` cannot replace `gongga-tui.exe`
+while the operator's window holds it -- os error 5 -- which is the running-exe lock,
+not a compile failure.)
 
 ## Known related defect (not fixed here)
 
