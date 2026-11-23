@@ -47,17 +47,22 @@ Gates on `a56fd434`, all exit 0: `comments-check` (0 violations), `mbx build`, `
 run from the main checkout because this worktree holds no `ship` submodule, and no ship path
 changed). Record: `.dev/verify/a56fd434-comments.json`.
 
-## Not done, and why
+## Merged
 
-**The branch is not merged into `main`.** `main` was `6cab1377 + 3 note commits`, and its
-working tree carries an **uncommitted `crates/server/src/llm.rs`** change from another session
-(`null_as_empty`, for a provider that spells an empty list as `null`). A fast-forward would
-overwrite it. `main` is a strict ancestor of `feature/comments-clean`, so the merge is a plain
-fast-forward whenever that file is committed or stashed:
+The branch is **merged into `main`** as `9d363f23`. The feature branch and this session's
+worktree are deleted.
 
-```bash
-git -C C:/resource/gongga merge --ff-only feature/comments-clean
-```
+`main` was not a fast-forward target twice over: it gained three note commits, then the
+`null_as_empty` work (`84bcbbeb`, `50db9e0c`) in `llm.rs` — the same file as some of my
+comment edits, in a different region (mine at ~200/752/809/974, that change at ~1616), so the
+merge auto-merged cleanly. `main` was clean both times and the merge landed on it directly.
 
-Nothing else is left behind: the worktree is clean, and the scratch helpers live in
+Gates on the merge result (`9d363f23`, run in the worktree before the merge): `comments-check`
+0 violations, `mbx fmt --check`, `mbx build`, `mbx test -p gongga-server --lib` (40 passed),
+`test-layout-check` (0), `scripts/skill_contract.sh` — all exit 0. On `main` afterwards,
+`comments-check` is 0; `mbx build` there fails with **exit 101, zero compile errors** — `target\debug\gongga-tui.exe` is held open by the running TUI (pid 82820, the live session, with
+its server on :9700), which the linker cannot replace. That is a file lock on a checkout whose
+binary is in use, not a defect in this merge, and the same build passed in the worktree.
+
+Nothing else is left behind: no worktree, no feature branch, and the scratch helpers live in
 `.dev/verify` (gitignored).
