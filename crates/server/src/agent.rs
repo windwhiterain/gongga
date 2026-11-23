@@ -155,9 +155,8 @@ impl Agent {
         let interrupted = session.interrupted();
         // No part outlives its turn: what is left is text whose row was never written.
         session.open_clear();
-        // The turn's own words ride the row, whole: a subscriber reads them there, and the
-        // `{event.answer}` of a subscription over this event is that same text. A head of
-        // an answer would be a notice that sends its reader back for the rest.
+        // The turn's own words ride the row, whole: `{event.answer}` is that same text,
+        // never a head.
         let answer = self.store.last_answer(session.id()).unwrap_or(None);
         // The turn's outcome as a row, not only a line: a reader with the database need
         // not match prose.
@@ -645,9 +644,8 @@ impl Agent {
             Some(path) => crate::session::stated(path),
             None => crate::session::stated(cwd),
         };
-        // The first row is the head: storage order and send order are the same one.
-        // `prompt` reports a head it cannot read rather than answering None, so this
-        // branch is reached only by a session that has never had one.
+        // The first row is the head: storage order is send order, and `prompt` reports a
+        // head it cannot read, never `None`.
         if let Some(kept) = self.store.prompt(id)? {
             return Ok(kept);
         }
@@ -703,12 +701,8 @@ impl Agent {
             remote: remote.map(str::to_string),
             model: Some(model.to_string()),
         };
-        // # Invariant
-        //
-        // A head written by another caller in between is not this call's to write:
-        // the store refuses the second one, so the prompt read back is the head in
-        // force whatever wrote it. Reading it again is the only way to keep a
-        // concurrent writer from turning a refusal into a lost request.
+        // The store refuses a second head: reading the head in force is how a race answers
+        // instead of losing a request.
         match self.store.append_prompt(id, &prompt) {
             Ok(_) => Ok(prompt),
             Err(_) => self
@@ -915,8 +909,8 @@ impl Agent {
             return None;
         }
         let rates = self.rates(model);
-        // What a message asked for outright. The rules count too: they are named
-        // without a mention, but nothing dragged them in for the cache's sake.
+        // What a message asked for outright: the rules count, since nothing dragged them
+        // in for the cache.
         let mut explicit: Vec<String> = roots.iter().map(|root| root.spelling.clone()).collect();
         if rules.is_some() {
             explicit.push(crate::meta::rules_spelling());
@@ -937,9 +931,8 @@ impl Agent {
             rates,
             self.plan_tolerance(),
         );
-        // A plan may carry a chain's ancestors that nobody named: they ride in so
-        // the cached prefix stays whole. The two lists partition `rooted`, letting a
-        // reader tell an ask from a rider. Kept as a record, never sent to the model.
+        // Ancestors nobody named ride in so the cached prefix stays whole; the two lists
+        // partition `rooted`, kept as a record.
         let rooted: Vec<String> = planned.entries.iter().map(|(key, _)| key.clone()).collect();
         let cached: Vec<String> = rooted
             .iter()
@@ -958,8 +951,8 @@ impl Agent {
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        // The rules first and out of the plan's reach: no price moves them, no patch hides them.
-        // Matched by reference so the raw text can be kept as a record for the reader.
+        // The rules first, out of the plan's reach: nothing moves or hides them. Kept by
+        // reference as a record.
         let body = match &rules {
             Some(text) => {
                 let spelling = crate::meta::rules_spelling();
@@ -1108,10 +1101,8 @@ impl Agent {
         let window = source.upto_seq;
         // One number for "how long the model took": the whole stream, retries included.
         let requested = std::time::Instant::now();
-        // SPEC's ttft and tps are the stream's own, measured by the task that reads
-        // the provider's events: this task stops reading while a tool call runs, so a
-        // clock read here would count the tool as generation. See
-        // `docs/notes/server-agent.md`.
+        // ttft and tps are the stream's own: a clock read here would count a tool as
+        // generation.
         phases.llm_started = Some(requested);
         // One tier for the whole turn, settled before its first request.
         let tier = self.cache_tier(llm, tier);
@@ -1384,9 +1375,8 @@ impl Agent {
                             self.store.last_usage_at(id).ok().flatten().map(|at| {
                                 crate::store::now_millis().saturating_sub(at).max(0) as u64
                             });
-                        // The share SPEC's title draws: what of *this* request the
-                        // provider served from cache. `expected` above is the prefix
-                        // it could have hit, which is a different question.
+        // The share the title draws: what of *this* request was served from cache.
+        // `expected` is the prefix it could have hit.
                         let hit_ratio = match (cached, u.input_tokens) {
                             (Some(hit), Some(size)) if size > 0 => Some(hit as f64 / size as f64),
                             _ => None,
@@ -1773,9 +1763,8 @@ impl Agent {
             .attach_references(&ctx, printed_on, &outcome.output)
             .await;
         let attach_ms = attach_started.elapsed().as_millis() as u64;
-        // The call layer applied the one cap before this point, so what arrives here is
-        // the whole answer the model reads: already cut, and already spilled if it was
-        // over. Nothing is done to it again -- a second cap would be a second answer.
+        // The call layer capped this answer: nothing is done to it again, since a second
+        // cap is a second answer.
         let capped = outcome.output.clone();
         // A tool that streamed nothing owes its output to the final chunk.
         let special_tool = tool == crate::tools::live_compact::LIVE_COMPACT_TOOL || memory_tool;
@@ -2543,8 +2532,7 @@ mod tests {
             model: Some("m".to_string()),
         };
         store.append_prompt(id, &first).expect("one row");
-        // The head is five rows now: instructions/1, tools/2, agents.md/3,
-        // plan/4, info/5. The prompt is rebuilt from them, field for field.
+        // The head is five rows: instructions/1, tools/2, agents.md/3, plan/4, info/5.
         let read = store.prompt(id).expect("a readable row").expect("one row");
         assert_eq!(read, first, "the five rows rebuild the same prompt");
         // The first transcript row follows the five head slots.
@@ -2716,9 +2704,8 @@ mod tests {
 /// crate and nothing on the wire moves. See `docs/notes/protocol-message.md`.
 pub(crate) fn call_head(tool: &str, arguments: &str) -> protocol::Head {
     let value: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
-    // The title is read by the same list the call layer reads, never by a second literal
-    // here: two readers of one name are two answers to what a call said. Read, not taken:
-    // the row still carries `max_output`, a field like any other.
+    // The title comes from the list the call layer reads, never a second literal: the row
+    // still carries `max_output`.
     let title = crate::tools::laws::Given::take(&mut value.clone()).description;
     protocol::Head::call(
         tool,
