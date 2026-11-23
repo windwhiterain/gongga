@@ -7,10 +7,18 @@ use serde_json::Value;
 
 use crate::store::Kind;
 
+#[cfg(test)]
+#[path = "memory_tests.rs"]
+mod tests;
+
 const MASK: &str = "mask";
 const UNMASK: &str = "unmask";
 const MEMORIZE_CAUSE: &str = "memorize";
 const RECALL_CAUSE: &str = "recall";
+/// The cause a capacity refusal writes: the provider's own refusal shrank the view.
+pub(crate) const REFUSAL_CAUSE: &str = "refusal";
+/// How many successful requests raise the visible limit one step.
+const SUCCESS_STREAK_TO_GROW: i64 = 3;
 
 /// A committed memory checkpoint. The source range is `(source_after_seq, cutoff_seq]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +60,34 @@ pub struct LimitEnforced {
     pub view_generation: u64,
 }
 
+/// What one capacity refusal did to the session's adaptive visible limit.
+///
+/// # Invariant
+///
+/// `lowered` is false only when the limit already sits at the ordinary tail, which
+/// masking cannot remove. A turn reads that as a refusal no smaller view can answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusalEnforced {
+    pub limit: u64,
+    pub lowered: bool,
+    pub auto_masked: Vec<String>,
+    pub view_generation: u64,
+}
+
+/// The limit one refusal asks for: half of it, never through the floor.
+pub(crate) fn halved_limit(limit: i64, floor: i64) -> i64 {
+    (limit / 2).max(floor).max(1)
+}
+
+/// The limit one success streak restores: half again as much, never past the ceiling.
+pub(crate) fn grown_limit(limit: i64, ceiling: i64) -> i64 {
+    limit
+        .saturating_mul(3)
+        .div_euclid(2)
+        .min(ceiling)
+        .max(limit)
+}
+
 /// The stable public identifier of a memory checkpoint.
 pub fn public_id(session_id: i64, checkpoint_id: i64) -> String {
     format!("mem:{session_id}:{checkpoint_id}")
@@ -75,7 +111,9 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             view_generation     INTEGER NOT NULL DEFAULT 0 CHECK (view_generation >= 0),
             next_unmasked_order INTEGER NOT NULL DEFAULT 0 CHECK (next_unmasked_order >= 0),
             unmasked_count      INTEGER NOT NULL DEFAULT 0 CHECK (unmasked_count >= 0),
-            unmasked_tokens     INTEGER CHECK (unmasked_tokens IS NULL OR unmasked_tokens >= 0)
+            unmasked_tokens     INTEGER CHECK (unmasked_tokens IS NULL OR unmasked_tokens >= 0),
+            unmasked_ctx_limit  INTEGER CHECK (unmasked_ctx_limit IS NULL OR unmasked_ctx_limit >= 0),
+            unmasked_ctx_streak INTEGER NOT NULL DEFAULT 0 CHECK (unmasked_ctx_streak >= 0)
         );
 
         CREATE TABLE IF NOT EXISTS memory_blocks (
@@ -157,6 +195,24 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     {
         conn.execute(
             "ALTER TABLE memory_state ADD COLUMN unmasked_tokens INTEGER",
+            [],
+        )?;
+    }
+    if conn
+        .prepare("SELECT unmasked_ctx_limit FROM memory_state LIMIT 1")
+        .is_err()
+    {
+        conn.execute(
+            "ALTER TABLE memory_state ADD COLUMN unmasked_ctx_limit INTEGER",
+            [],
+        )?;
+    }
+    if conn
+        .prepare("SELECT unmasked_ctx_streak FROM memory_state LIMIT 1")
+        .is_err()
+    {
+        conn.execute(
+            "ALTER TABLE memory_state ADD COLUMN unmasked_ctx_streak INTEGER NOT NULL DEFAULT 0",
             [],
         )?;
     }
@@ -355,6 +411,51 @@ fn projected_unmasked_tokens(conn: &Connection, session_id: i64) -> rusqlite::Re
     )
 }
 
+/// The session's stored adaptive limit and its success streak.
+fn stored_limit(conn: &Connection, session_id: i64) -> rusqlite::Result<(Option<i64>, i64)> {
+    conn.query_row(
+        "SELECT unmasked_ctx_limit, unmasked_ctx_streak FROM memory_state WHERE session_id = ?1",
+        params![session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+}
+
+/// Masks the FIFO head of the unmasked set, reporting the id and tokens it removed.
+///
+/// # Invariant
+///
+/// One implementation serves every eviction cause; the head lookup uses the partial
+/// FIFO index, and a head that changed under the update is an error, never a retry.
+fn mask_fifo_head(
+    conn: &Connection,
+    session_id: i64,
+    cause: &str,
+    generation: i64,
+) -> anyhow::Result<Option<(String, Option<i64>)>> {
+    let head = conn
+        .query_row(
+            "SELECT checkpoint_id, token_count FROM memory_blocks
+             WHERE session_id = ?1 AND unmasked_order IS NOT NULL
+             ORDER BY unmasked_order ASC LIMIT 1",
+            params![session_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .optional()?;
+    let Some((checkpoint_id, tokens)) = head else {
+        return Ok(None);
+    };
+    let changed = conn.execute(
+        "UPDATE memory_blocks SET unmasked_order = NULL
+         WHERE session_id = ?1 AND checkpoint_id = ?2 AND unmasked_order IS NOT NULL",
+        params![session_id, checkpoint_id],
+    )?;
+    if changed != 1 {
+        bail!("memory FIFO head changed while enforcing session {session_id}'s limit");
+    }
+    record_view_event(conn, session_id, checkpoint_id, MASK, cause, generation)?;
+    Ok(Some((public_id(session_id, checkpoint_id), tokens)))
+}
+
 /// Masks the FIFO head until the configured count holds, at one pinned generation.
 ///
 /// # Invariant
@@ -376,33 +477,14 @@ fn enforce_limit_at_generation(
         if !over_tokens || count == 0 {
             break;
         }
-        let (head, tokens) = conn
-            .query_row(
-                "SELECT checkpoint_id, token_count FROM memory_blocks
-                 WHERE session_id = ?1 AND unmasked_order IS NOT NULL
-                 ORDER BY unmasked_order ASC LIMIT 1",
-                params![session_id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?)),
-            )
-            .optional()?
-            .ok_or_else(|| {
-                anyhow!(
-                    "memory unmasked count has no corresponding FIFO head for session {session_id}"
-                )
-            })?;
-        let changed = conn.execute(
-            "UPDATE memory_blocks SET unmasked_order = NULL
-             WHERE session_id = ?1 AND checkpoint_id = ?2 AND unmasked_order IS NOT NULL",
-            params![session_id, head],
-        )?;
-        if changed != 1 {
-            bail!("memory FIFO head changed while enforcing session {session_id}'s limit");
-        }
+        let head = mask_fifo_head(conn, session_id, cause, generation)?;
+        let Some((id, tokens)) = head else {
+            bail!("memory unmasked count has no corresponding FIFO head for session {session_id}");
+        };
         if let (Some(visible), Some(tokens)) = (unmasked_tokens.as_mut(), tokens) {
             *visible = visible.saturating_sub(tokens).max(0);
         }
-        record_view_event(conn, session_id, head, MASK, cause, generation)?;
-        auto_masked.push(public_id(session_id, head));
+        auto_masked.push(id);
     }
     if maximum_tokens.is_some() {
         conn.execute(
@@ -836,6 +918,118 @@ impl crate::store::Store {
             auto_masked,
             view_generation,
         })
+    }
+
+    /// The session's adaptive visible limit, started at the provider's ceiling.
+    ///
+    /// # Invariant
+    ///
+    /// Never above `ceiling`: a stored value outliving a smaller roster entry is
+    /// clamped here, so a changed provider cannot inherit an old promise.
+    pub fn unmasked_ctx_limit(&self, session_id: i64, ceiling: u64) -> anyhow::Result<u64> {
+        let ceiling_tokens = maximum(ceiling)?;
+        let connection = self.picture_conn();
+        let connection = connection.lock().unwrap_or_else(|error| error.into_inner());
+        ensure_state(&connection, session_id)?;
+        let (stored, _) = stored_limit(&connection, session_id)?;
+        Ok(stored.unwrap_or(ceiling_tokens).clamp(1, ceiling_tokens) as u64)
+    }
+
+    /// One explicit capacity refusal halves the limit and evicts down to it.
+    ///
+    /// # Invariant
+    ///
+    /// The limit never drops below the ordinary tail, which masking cannot remove, so
+    /// a refusal that leaves the visible set unchanged reports `lowered == false` and
+    /// the turn fails rather than halving forever.
+    pub fn record_capacity_refusal(
+        &self,
+        session_id: i64,
+        ceiling: u64,
+    ) -> anyhow::Result<RefusalEnforced> {
+        let ceiling_tokens = maximum(ceiling)?;
+        let connection = self.picture_conn();
+        let mut connection = connection.lock().unwrap_or_else(|error| error.into_inner());
+        let tx = connection.transaction()?;
+        ensure_state(&tx, session_id)?;
+        let (stored, _) = stored_limit(&tx, session_id)?;
+        let current = stored.unwrap_or(ceiling_tokens).clamp(1, ceiling_tokens);
+        let target = halved_limit(current, 1);
+        let mut visible = projected_unmasked_tokens(&tx, session_id)?;
+        let mut generation = read_state(&tx, session_id)?.view_generation;
+        let mut auto_masked = Vec::new();
+        if visible.is_some_and(|visible| visible > target) {
+            generation = advance_generation(&tx, session_id)?;
+            loop {
+                let Some((id, tokens)) =
+                    mask_fifo_head(&tx, session_id, REFUSAL_CAUSE, generation)?
+                else {
+                    break;
+                };
+                if let (Some(visible), Some(tokens)) = (visible.as_mut(), tokens) {
+                    *visible = visible.saturating_sub(tokens).max(0);
+                }
+                auto_masked.push(id);
+                if visible.is_some_and(|visible| visible <= target) {
+                    break;
+                }
+            }
+            tx.execute(
+                "UPDATE memory_state SET unmasked_tokens = ?2 WHERE session_id = ?1",
+                params![session_id, visible],
+            )?;
+        }
+        let limit = halved_limit(current, visible.unwrap_or(0));
+        let lowered = limit < current;
+        tx.execute(
+            "UPDATE memory_state SET unmasked_ctx_limit = ?2, unmasked_ctx_streak = 0
+             WHERE session_id = ?1",
+            params![session_id, limit],
+        )?;
+        let view_generation = nonnegative(generation, "memory view generation")?;
+        tx.commit()?;
+        Ok(RefusalEnforced {
+            limit: u64::try_from(limit).unwrap_or(0),
+            lowered,
+            auto_masked,
+            view_generation,
+        })
+    }
+
+    /// Counts one successful request; every third grows the limit back one step.
+    ///
+    /// # Invariant
+    ///
+    /// Success is counted, never assumed: the limit moves only on the configured
+    /// streak, and never past the provider's ceiling.
+    pub fn record_unmasked_success(
+        &self,
+        session_id: i64,
+        ceiling: u64,
+    ) -> anyhow::Result<Option<u64>> {
+        let ceiling_tokens = maximum(ceiling)?;
+        let connection = self.picture_conn();
+        let mut connection = connection.lock().unwrap_or_else(|error| error.into_inner());
+        let tx = connection.transaction()?;
+        ensure_state(&tx, session_id)?;
+        let (stored, streak) = stored_limit(&tx, session_id)?;
+        let limit = stored.unwrap_or(ceiling_tokens).clamp(1, ceiling_tokens);
+        if streak + 1 < SUCCESS_STREAK_TO_GROW {
+            tx.execute(
+                "UPDATE memory_state SET unmasked_ctx_streak = ?2 WHERE session_id = ?1",
+                params![session_id, streak + 1],
+            )?;
+            tx.commit()?;
+            return Ok(None);
+        }
+        let grown = grown_limit(limit, ceiling_tokens);
+        tx.execute(
+            "UPDATE memory_state SET unmasked_ctx_limit = ?2, unmasked_ctx_streak = 0
+             WHERE session_id = ?1",
+            params![session_id, grown],
+        )?;
+        tx.commit()?;
+        Ok((grown > limit).then(|| u64::try_from(grown).unwrap_or(0)))
     }
 
     /// Clears tokenization-specific measurements when a session changes models.

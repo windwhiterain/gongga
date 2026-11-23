@@ -166,7 +166,7 @@ fn mask_guard(
             crate::llm::MEMORY_MASK_API
         )));
     }
-    let token_limit = d.agent.memory_token_limit(&llm, &tuning);
+    let token_limit = d.agent.memory_token_limit(handle.id(), &llm, &tuning);
     Ok((llm, token_limit))
 }
 

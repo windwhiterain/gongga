@@ -1182,6 +1182,34 @@ fn dead_file(detail: &str) -> bool {
     file && gone
 }
 
+/// Whether the provider refused this request for capacity or device memory.
+///
+/// # Invariant
+///
+/// Only a stated capacity refusal counts: a `503`/`507`, or words naming device memory
+/// or the KV cache. A timeout, a dropped connection and a broken answer are other
+/// minutes, and shrinking a session's visible view on them would be guessing.
+///
+/// See `SPEC.md` "Memory Mask".
+pub fn capacity_refusal(message: &str) -> bool {
+    let said = message.to_ascii_lowercase();
+    if said.contains("http 503") || said.contains("http 507") || said.contains("<503>") {
+        return true;
+    }
+    const WORDS: &[&str] = &[
+        "out of memory",
+        "outofmemory",
+        "device memory",
+        "insufficient memory",
+        "not enough memory",
+        "no available memory",
+        "kv cache memory",
+        "memory is exhausted",
+        "cuda error: out",
+    ];
+    WORDS.iter().any(|word| said.contains(word))
+}
+
 /// Whether resending the same request could succeed: a bad minute could, a
 /// refusal cannot.
 ///

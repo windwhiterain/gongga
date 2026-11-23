@@ -289,6 +289,7 @@ impl Agent {
             };
             match self.step(session, id, &name, turn, &cancel, &attempt).await {
                 Ok(StepResult::Finished) => {
+                    self.count_accepted_request(session, &llm);
                     // Something may have landed while it finished; deliver it and go round again.
                     if self.deliver_inbox(id, &name) > 0 {
                         step = step.wrapping_add(1);
@@ -296,7 +297,9 @@ impl Agent {
                     }
                     break (TurnOutcome::Done, step, None);
                 }
-                Ok(StepResult::RanTools) => {}
+                Ok(StepResult::RanTools) => {
+                    self.count_accepted_request(session, &llm);
+                }
                 Ok(StepResult::Stopped) => break (TurnOutcome::Cancelled, step, None),
                 // A refusal a row can answer is answered once, then asked again.
                 Err(e)
@@ -308,6 +311,14 @@ impl Agent {
                     continue;
                 }
                 Err(e) => {
+                    // SPEC "Memory Mask": a stated capacity refusal is answered with a
+                    // smaller view, not with the same request again.
+                    if crate::llm::capacity_refusal(&format!("{e:#}"))
+                        && self.answer_capacity_refusal(session, &llm)
+                    {
+                        step = step.wrapping_add(1);
+                        continue;
+                    }
                     let origin = if e.downcast_ref::<ProviderFailure>().is_some() {
                         "provider"
                     } else {
@@ -377,8 +388,8 @@ impl Agent {
         Ok((llm, budget, context))
     }
 
-    /// The visible-token ceiling used for automatic memory displacement.
-    pub(crate) fn memory_token_limit(
+    /// The visible-token ceiling the provider promises, before any adaptation.
+    pub(crate) fn unmasked_ceiling(
         &self,
         llm: &LlmClient,
         tuning: &crate::session::Tuning,
@@ -388,6 +399,93 @@ impl Agent {
             .context_limit
             .unwrap_or(self.config.now().agent.context_limit_percent);
         Some(crate::providers::tokens_for_percent(context, percent))
+    }
+
+    /// The visible-token limit used for automatic memory displacement.
+    ///
+    /// # Invariant
+    ///
+    /// SPEC "Memory Mask": a capacity refusal halves this and a success streak raises
+    /// it, so the stored value is clamped to the ceiling and can only ask for less than
+    /// the provider promised.
+    pub(crate) fn memory_token_limit(
+        &self,
+        session_id: i64,
+        llm: &LlmClient,
+        tuning: &crate::session::Tuning,
+    ) -> Option<u64> {
+        let ceiling = self.unmasked_ceiling(llm, tuning)?;
+        match self.store.unmasked_ctx_limit(session_id, ceiling) {
+            Ok(limit) => Some(limit.min(ceiling)),
+            Err(e) => {
+                tracing::warn!(session = session_id, error = %e, "could not read the visible limit");
+                Some(ceiling)
+            }
+        }
+    }
+
+    /// Counts one request the provider accepted; see `Store::record_unmasked_success`.
+    fn count_accepted_request(&self, session: &SessionHandle, llm: &LlmClient) {
+        let tuning = session.tuning();
+        let Some(ceiling) = self.unmasked_ceiling(llm, &tuning) else {
+            return;
+        };
+        match self.store.record_unmasked_success(session.id(), ceiling) {
+            Ok(Some(limit)) => self.log_event(
+                Some(session.id()),
+                "memory_limit",
+                &json!({ "cause": "success", "unmasked_ctx_limit": limit }),
+            ),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(session = session.id(), error = %e, "could not raise the visible limit")
+            }
+        }
+    }
+
+    /// One explicit capacity refusal: ask for half, evict to it, and say whether it moved.
+    ///
+    /// # Invariant
+    ///
+    /// Only a limit that really fell lets the turn go round again; a refusal with the
+    /// view already at the ordinary tail is a failure, not another halving.
+    fn answer_capacity_refusal(&self, session: &SessionHandle, llm: &LlmClient) -> bool {
+        let tuning = session.tuning();
+        let Some(ceiling) = self.unmasked_ceiling(llm, &tuning) else {
+            return false;
+        };
+        match self.store.record_capacity_refusal(session.id(), ceiling) {
+            Ok(enforced) if enforced.lowered => {
+                tracing::info!(
+                    session = %session.name(),
+                    limit = enforced.limit,
+                    masked = enforced.auto_masked.len(),
+                    "capacity refusal lowered the visible limit"
+                );
+                self.log_event(
+                    Some(session.id()),
+                    "memory_limit",
+                    &json!({
+                        "cause": crate::memory::REFUSAL_CAUSE,
+                        "auto_masked": enforced.auto_masked,
+                        "view_generation": enforced.view_generation,
+                        "unmasked_ctx_limit": enforced.limit,
+                    }),
+                );
+                true
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    session = %session.name(),
+                    "the visible limit is already at the ordinary tail"
+                );
+                false
+            }
+            Err(e) => {
+                tracing::warn!(session = %session.name(), error = %e, "could not lower the visible limit");
+                false
+            }
+        }
     }
 
     /// The notice threshold in input tokens; zero means off without exception.
@@ -1051,7 +1149,7 @@ impl Agent {
             );
         }
         if compact_mode == crate::live_compact::CompactMode::Mask {
-            let token_limit = self.memory_token_limit(llm, &tuning);
+            let token_limit = self.memory_token_limit(id, llm, &tuning);
             let enforced = self.store.enforce_limit(id, token_limit, "request")?;
             if !enforced.auto_masked.is_empty() {
                 self.log_event(
