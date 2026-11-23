@@ -611,9 +611,7 @@ impl crate::store::Store {
             ],
         )?;
         tx.execute(
-            "UPDATE memory_state SET next_unmasked_order = ?2,
-                    unmasked_count = unmasked_count + 1
-             WHERE session_id = ?1",
+            "UPDATE memory_state SET next_unmasked_order = ?2 WHERE session_id = ?1",
             params![session_id, next_order.saturating_add(1)],
         )?;
         let view_generation = nonnegative(
