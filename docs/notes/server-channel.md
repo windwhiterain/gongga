@@ -100,11 +100,17 @@ column, a read-only `exec` had no marker at all -- so it could only ever answer 
 `wait`, which is the shape a model then learns to live with: every read costs the whole
 ceiling.
 
-`time` is what *this call* cost, and its start is the call's own input: an `exec` that
-writes measures from that write, and one that only reads measures from the channel's
-last write (the program's start, before any). A channel that has been alive for an
-hour answers a fresh command with the milliseconds it took, which is the number a
-reader is asking for -- so the row records `wrote_at` beside the cursor.
+`time` is the age of the input, never what the call cost: an `exec` that writes measures
+from that write, and one that only reads from the channel's last write (the program's
+start, before any) -- so a channel that has been alive for an hour answers a fresh
+command with the milliseconds since its command, and a poll of it would answer with the
+hour. The row records `wrote_at` beside the cursor for that.
+
+`waited` is what *this call* spent, and it is the number a reader asking "how long did I
+wait" wants: from the moment the call speaks to the channel to the answer, whether the
+marker matched, the program ended or the wait ran out. A poll of an hour-old channel
+states both, and only one of them is about the poll: a `wait: 1000` that found nothing
+answers `time: 3600.000s` beside `waited: 1.000s`.
 
 ## `[channel.<name>]`: what a name is
 

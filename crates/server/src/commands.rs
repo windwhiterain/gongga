@@ -2961,23 +2961,14 @@ async fn input_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outco
         Err(e) => return Outcome::err(e),
     };
     let until = args.word("until");
-    let began = std::time::Instant::now();
     match d
         .agent
         .channels
         .talk(&session, &id, Some(&input), wait, until, None, None)
         .await
     {
-        Ok(outcome) => Outcome::ok_with(
-            outcome.output.clone(),
-            json!({
-                "id": outcome.id,
-                "output": outcome.output,
-                "time": format!("{:.3}s", began.elapsed().as_secs_f64()),
-                "matched": outcome.matched,
-                "exit": outcome.exit,
-            }),
-        ),
+        // One `Result`, built by the one builder: `time`, `waited` and the rest.
+        Ok(outcome) => Outcome::ok_with(outcome.output.clone(), outcome.to_json()),
         Err(why) => Outcome::err(why),
     }
 }

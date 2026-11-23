@@ -59,7 +59,7 @@ all tool call have extra parameter `discription: optional[str] = none`
 
 ```python
 Channel := path
-Result := {id: Channel, output: str, time: time, mactehd: bool, exit: int|none}
+Result := {id: Channel, output: str, time: time, waited: time, mactehd: bool, exit: int|none}
 fn exec(
   bin: path = channel[id].bin, #summary
   args: list[str],
@@ -94,7 +94,11 @@ fn gongga_cli(
 - util: wait util macthed certain string, config default value for channel based on its name.
 - id: in each session's namespace.
 - output: new output since last read.
-- time: time cost since last input.
+- time: how long ago this channel was last given input: a call that wrote measures from that
+  write, a call that only read from the last write before it (the program's start, before
+  any). It is the age of that input, never what this call cost.
+- waited: what this call itself spent, from the moment it spoke to the channel: the wait it
+  was given, or less when the marker matched or the program ended.
 
 ## Server Cmd
 each cmd has internal timeout that timeout will abort with a harness bug result.
