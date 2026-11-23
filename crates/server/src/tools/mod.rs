@@ -707,8 +707,8 @@ impl ToolRegistry {
                 timeout: WAIT_DEFAULT,
             }),
             "exec" => {
-                // The channels are the call's own, and the default wait is the tool's. The
-                // cap is not: one cap, at the call layer, so `max_output` can raise it.
+                // The channels and default wait are the tool's; the cap is the call
+                // layer's, so `max_output` can raise it.
                 Box::new(exec::ExecTool {
                     wait: exec::Wait {
                         default: exec::DEFAULT_WAIT,
@@ -786,14 +786,12 @@ impl ToolRegistry {
     /// noticed -- what it notices is not the tool's own words but the room left where the
     /// harness writes: see `docs/notes/server-disk.md`.
     pub async fn run(self: &Arc<Self>, name: &str, args: Value, ctx: &ToolContext) -> ToolOutcome {
-        // Before anything reads the arguments: the shared names are the call layer's, and
-        // a handler that took one would be answering for an argument it never declared.
-        // What they said is kept here, because the cap is applied by this layer too.
+        // Shared names come off before anything reads the arguments, so no handler
+        // answers for what it never declared.
         let mut args = args;
         let shared = laws::Given::take(&mut args);
-        // The one cap this answer is held to. Read here rather than by a tool, so a call
-        // that runs a command is held to it as well: the command branch below returns
-        // before any tool would have seen it.
+        // The one cap, read here so a command call is held to it too: its branch returns
+        // before any tool sees it.
         let cap = shared.cap(self.settings.max_output_chars);
         let Some(tool) = self.get(name) else {
             // SPEC `fn <tool>(**args)`: an unregistered name is a cmd a skill taught; the command layer runs it.
@@ -885,9 +883,8 @@ async fn waited(tool: &Arc<dyn Tool>, args: &Value, ctx: &ToolContext) -> ToolOu
         elapsed = ?started.elapsed(),
         "the wait ended before the call answered"
     );
-    // SPEC: a waiting call returns early; its token says the wait is over. What the
-    // call is doing is not the turn's to kill: one with no wait to end answers on its
-    // own path, and the turn ends at the next step boundary after it.
+    // A waiting call returns early; its token says the wait is over. A call with no wait
+    // to end answers on its own path.
     token.cancel();
     match rx.recv().await {
         Some(answer) => answer,
@@ -1203,8 +1200,8 @@ pub(crate) fn capped(
     if max == 0 || outcome.output.chars().count() <= max {
         return outcome;
     }
-    // An answer on an endpoint session is not spilled here: a path on this machine is
-    // not a path the reader can open. It is still cut.
+    // An endpoint session's answer is not spilled here: its path is not one the reader
+    // can open. It is still cut.
     let dir = (!ctx.on_endpoint(ctx.machine)).then_some(ctx.output_dir.as_path());
     let label = spill_label(
         &ctx.session,
@@ -1376,8 +1373,8 @@ mod tests {
         );
     }
 
-    /// The point of the list: a schema is handed the shared arguments by the call layer,
-    /// so a row that declares none of them still offers them to a model.
+    /// A schema is handed the shared arguments by the call layer, so a row that
+    /// declares none still offers them.
     #[test]
     fn a_schema_that_declares_nothing_is_still_offered_the_shared_arguments() {
         let offered = laws::schema(json!({"properties": {}}));
@@ -1395,8 +1392,8 @@ mod tests {
         assert_eq!(offered["properties"]["description"]["type"], "integer");
     }
 
-    /// The check a call is held to must not refuse what the schema offers: a shared
-    /// argument is not an "argument it does not take".
+    /// The check must not refuse what the schema offers: a shared argument is not one
+    /// "it does not take".
     #[test]
     fn a_shared_argument_is_never_an_argument_the_tool_does_not_take() {
         let offered = laws::schema(exec_schema());
@@ -1417,8 +1414,8 @@ mod tests {
         }
     }
 
-    /// Taken off the arguments, and read: a command would answer for a name its handler
-    /// never declared, and a skill's function cannot bind one.
+    /// Taken off the arguments: a command would answer for a name its handler never
+    /// declared.
     #[test]
     fn the_shared_arguments_are_taken_off_and_read() {
         let mut args = json!({
@@ -1473,8 +1470,8 @@ mod tests {
         // 4000 characters is under 8000 characters: nothing is taken away at all.
         assert_eq!(kept.chars().count(), 4_000, "the whole text survives");
         assert_eq!(kept, text, "not one character is cut");
-        // And over it, the answer keeps the stated length in characters, head and tail.
-        // Asserted by counting rather than by the notice's prose, which a home supplies.
+        // The answer keeps the stated length, head and tail, counted rather than read
+        // from the notice's prose.
         let cut =
             crate::tools::spill::cap_output(crate::prompts::shared(), &text, 1_000, None, "t");
         let heads = cut.chars().take(600).filter(|c| *c == '\u{4e2d}').count();

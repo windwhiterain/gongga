@@ -1,20 +1,13 @@
-//! The arguments every call carries, whatever the tool: one list, and one reader.
-//!
-//! SPEC gives every tool call these beside the arguments its own row lists. They belong to
-//! the call layer, so a tool declares none of them and a new tool cannot forget one. See
-//! `docs/notes/server-tools-mod.md`.
+//! The arguments every call carries, whatever the tool: one list, one reader.
 
 use serde_json::{Value, json};
 
-/// Every name a call may carry besides the arguments its own row lists: the name, the kind
-/// a schema spells it as, and what it is for.
+/// Every name a call may carry besides the arguments its own row lists.
 ///
 /// # Invariant
 ///
-/// One list, and every door reads it: the schema a model is offered, the line an operator
-/// types, the check a call is held to, and the reader that takes them off before anything
-/// else sees the arguments. A sentence belongs here and not on each tool's row: the same
-/// four words copied into every schema is the same paragraph sent once per tool.
+/// One list, and every door reads it: the schema, the operator's line, the check, the
+/// reader. A sentence belongs here rather than on each tool's row.
 pub const ALL: &[(&str, &str, &str)] = &[
     (
         "description",
@@ -90,16 +83,12 @@ pub struct Given {
 }
 
 impl Given {
-    /// The one cap this answer is held to: the call's number, or the home's default.
+    /// The one cap: the call's number, or the home's default, in characters.
     ///
     /// # Invariant
     ///
-    /// One cap, read once, by the layer that takes the shared arguments. A tool that
-    /// capped as well would be a second answer to the same question, and the smaller of
-    /// the two would win -- so no tool caps, and `0` from either place means no cap.
-    ///
-    /// Characters, not bytes: a length is what the notice says and what the room left in
-    /// a request is measured in. See `docs/notes/server-tools-mod.md`.
+    /// Read once, by the layer that takes the shared arguments: a tool that capped too
+    /// would be a second answer, and the smaller would win. `0` from either is no cap.
     pub fn cap(&self, home_default: usize) -> usize {
         self.max_output.unwrap_or(home_default)
     }
