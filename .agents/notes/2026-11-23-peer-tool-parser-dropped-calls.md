@@ -96,5 +96,26 @@ Changed in `apply_server_patch.py` (the text it inserts) and re-applied from the
 
 The harness loses an entire usage record to one unparsable field, silently (`.ok()` in
 `llm.rs`, the `response.completed` arm). A provider that sends `null` for a list costs
-the session its whole context display instead of one field. Tolerating `null` there (or
-warning once) is a separate decision for the user.
+the session its whole context display instead of one field.
+
+# The harness side, fixed (`84bcbbeb`)
+
+2026-11-23, user approved tolerating `null` there and saying so in the log.
+
+- `Usage.gongga_memory_tokens` now reads through `null_as_empty`: a `null` list is an
+  empty one, and the counts beside it survive.
+- The `response.completed` arm no longer hides a parse failure in `.ok()`: a usage that is
+  present but unreadable logs `the provider's usage did not parse` once, and the stream
+  still completes (the counts are lost, not the answer). An absent (`null`) usage stays
+  silent, which is what a provider declining to report looks like.
+
+Verification (same day, one server in a home of its own and a fake provider, both gone
+afterwards): a fake that completes a response whose usage spells
+`gongga_memory_tokens: null` stored `context_tokens = 40, tape_tokens = 40`; the next
+turn's usage spelling `input_tokens: "forty"` logged exactly one warning, ended the turn
+anyway, and the session kept its last known count.
+
+One gotcha found on the way: `mbx build` rebuilt `gongga-server`'s library but did not
+relink `target/debug/gongga-server.exe` (it stayed an hour old, and the first run of the
+check above measured the stale binary and read zeros). `mbx build -p gongga-server` did
+relink it. Check the binary's timestamp before trusting a run.
