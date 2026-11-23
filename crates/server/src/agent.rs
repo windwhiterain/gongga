@@ -375,6 +375,7 @@ impl Agent {
                 let client = self.client_for(&choice.entry, choice.api_key)?;
                 let mode = tuning
                     .live_compact_mode
+                    .or(choice.entry.defaults.live_compact_mode)
                     .unwrap_or(self.config.now().agent.live_compact_mode);
                 let context = if mode == crate::live_compact::CompactMode::Mask {
                     choice.entry.unmasked_context.or(choice.entry.context)
@@ -656,14 +657,17 @@ impl Agent {
     fn maybe_request_live_compact(&self, session: &SessionHandle, id: i64, name: &str) {
         let tuning = session.tuning();
         let config = self.config.now();
+        let defaults = model_defaults(&self.providers, tuning.model.as_deref());
         if !tuning
             .live_compact_enabled
+            .or(defaults.live_compact_enabled)
             .unwrap_or(config.agent.live_compact_enabled)
         {
             return;
         }
         let base = tuning
             .live_compact_interval_tokens
+            .or(defaults.live_compact_interval_tokens)
             .unwrap_or(config.agent.live_compact_interval_tokens);
         let Ok(measurement) = self.store.live_compact_measurement(id) else {
             return;
@@ -677,6 +681,7 @@ impl Agent {
         }
         let mode = tuning
             .live_compact_mode
+            .or(defaults.live_compact_mode)
             .unwrap_or(config.agent.live_compact_mode);
         let next = interval.saturating_mul(2);
         let message = match mode {
@@ -766,9 +771,10 @@ impl Agent {
         // This row states no section: the tool row carries it, and a request sends it there.
         let parameters = None;
         // The references' plan, stamped once; an opted-out session gets no plan row.
-        let plan_on = session
-            .tuning()
+        let tuning = session.tuning();
+        let plan_on = tuning
             .prefix_cache_plan
+            .or(model_defaults(&self.providers, tuning.model.as_deref()).prefix_cache_plan)
             .unwrap_or(self.config.now().agent.prefix_cache_plan);
         let (plan, rooted, plan_explicit, plan_cached, agents_md) = if plan_on {
             match self
@@ -1141,6 +1147,7 @@ impl Agent {
         let current = self.config.now();
         let compact_mode = tuning
             .live_compact_mode
+            .or(model_defaults(&self.providers, tuning.model.as_deref()).live_compact_mode)
             .unwrap_or(current.agent.live_compact_mode);
         if compact_mode == crate::live_compact::CompactMode::Mask && !llm.supports_memory_mask() {
             anyhow::bail!(
@@ -2352,6 +2359,19 @@ fn live_compact_notice() -> String {
     crate::prompts::harness_wrap(
         crate::prompts::shared().render(crate::prompts::LIVE_COMPACT_NOTICE, &[]),
     )
+}
+
+/// The roster's defaults for the model a session runs on.
+///
+/// # Invariant
+///
+/// Read at every use, never cached into the session: a model change re-derives
+/// the default, and a session that states the value still wins over it.
+fn model_defaults(catalog: &crate::providers::Handle, model: Option<&str>) -> crate::providers::ModelDefaults {
+    model
+        .and_then(|name| catalog.place(name))
+        .map(|entry| entry.defaults)
+        .unwrap_or_default()
 }
 
 /// The mask-mode ask shares the interval but commits a view, never a transcript cut.

@@ -157,6 +157,42 @@ pub struct Model {
     /// re-derived it would disagree with the file it read.
     #[serde(default)]
     pub tier: Option<String>,
+    /// What a session on this model starts with when it states nothing.
+    ///
+    /// # Invariant
+    ///
+    /// An unstated field stays `None`, so the home's `[agent]` decides exactly as
+    /// a roster without this table did. A default is read where the value is
+    /// used, so a model change re-derives it and an explicit `set_session` wins.
+    #[serde(default)]
+    pub defaults: ModelDefaults,
+}
+
+/// What a model's roster row says a session on it starts with.
+///
+/// # Invariant
+///
+/// Every field is `None` unless the roster states it: nothing here invents a
+/// value. The names are SPEC's `SessionConfig` names, because a second spelling
+/// is a second thing to keep in agreement, and `live_compact_mode` deserializes
+/// through [`crate::live_compact::CompactMode`] so a misspelling fails this read
+/// rather than quietly meaning `cut`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct ModelDefaults {
+    #[serde(default)]
+    pub thinking: Option<String>,
+    #[serde(default)]
+    pub ctx_limit: Option<u8>,
+    #[serde(default)]
+    pub cache_tier: Option<String>,
+    #[serde(default)]
+    pub live_compact_enabled: Option<bool>,
+    #[serde(default)]
+    pub live_compact_interval_tokens: Option<u64>,
+    #[serde(default)]
+    pub live_compact_mode: Option<crate::live_compact::CompactMode>,
+    #[serde(default)]
+    pub prefix_cache_plan: Option<bool>,
 }
 
 impl Model {
@@ -319,6 +355,8 @@ pub struct Entry {
     pub max_output_tokens: Option<u32>,
     /// Header names that carry the per-conversation id; empty sends nothing.
     pub session_id_headers: Vec<String>,
+    /// What the roster says a session on this model starts with.
+    pub defaults: ModelDefaults,
 }
 
 impl Entry {
@@ -703,6 +741,7 @@ impl Catalog {
             api: endpoint.api.clone(),
             max_output_tokens: found.max_output_tokens,
             tier: found.tier.clone(),
+            defaults: found.defaults.clone(),
         })
     }
 }
@@ -893,6 +932,9 @@ struct FileModel {
     /// The roster's own rating of this model, `flash` / `pro` / `sota` / `test`.
     #[serde(default)]
     tier: Option<String>,
+    /// What a session on this model starts with when it states nothing.
+    #[serde(default)]
+    defaults: ModelDefaults,
 }
 
 /// The providers a merged roster describes, first claim on an id winning.
@@ -971,6 +1013,7 @@ fn model_from_file(m: FileModel) -> Model {
         builtin_tools: m.builtin_tools,
         price: m.price,
         tier: m.tier,
+        defaults: m.defaults,
     }
 }
 
