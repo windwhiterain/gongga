@@ -291,6 +291,38 @@ later under a different name. The fix is not to trust the old measurement but to
 check the tool name against the provider's current spelling, exactly as the
 verbatim-no-mapping-table rule above already implies.
 
+## A function tool in the same request loses the server tools
+
+Measured 2026-11-23 against `/v1/responses` (`deepseek-flash`, `store: false`,
+`max_output_tokens` 300-900), one question every time -- "必须先用 deepseek_web_search
+搜索 …，再据结果回答" -- and only `tools` changed:
+
+| tools | searches over three runs |
+|---|---|
+| `[read, deepseek_web_search, deepseek_read_url]` | 0, 1, 0 |
+| `[deepseek_web_search, deepseek_read_url]` | 3, 3, 1 |
+
+With a function tool alongside them the model does not merely decline to search:
+it says its tools are `del_channel, edit, exec, …` and never sees the server tools,
+no `web_search_call` item is produced, and nothing errors. The `tools` array is
+byte-identical between a session stamped on this model and one switched to it from
+another provider (measured through a recording proxy), so a model change is not the
+cause -- the mix is. The request is probabilistic, not constant: single runs with a
+function tool did search, which is why this reads as "it sometimes works".
+
+The Anthropic face does not have the problem: `web_search_20250305` beside two
+function tools on `/anthropic/v1/messages` answered with `web_search_tool_result` in
+2 of 2 runs, and that is the face Claude Code uses. Server-side search is also free
+since 2026-11-18 (token-billed only), while the standalone `/v1/tools/search` the
+`web-search` skill uses is billed per successful request -- so the face decides
+whether this capability costs anything.
+
+For this server, which always declares its own function tools, a `builtin_tools`
+entry on this provider is a capability the model mostly cannot use. The ways out are
+the face (Anthropic, where the mix is stable), the billed `web-search` skill, or the
+provider's own fix. Reported as a provider bug, not worked around: no code changed
+for it. Measurements: `.dev/verify/17999b54-deepseek-server-tools.json`.
+
 ## Entry::key
 
 The key as written in the file, when it was written there. `None` is normal: a
