@@ -42,9 +42,10 @@ pub fn head(
     effort: Option<&str>,
     temperature: Option<f32>,
     planning: (Framing, Option<&str>),
-    parameters: Option<&str>,
+    parameters: (Option<&str>, Option<&str>),
     card: Option<&str>,
 ) -> Vec<u8> {
+    let (parameters, parameters_before_card) = parameters;
     let (framing, plan) = planning;
     let mut body = json!({
         "model": model,
@@ -71,6 +72,13 @@ pub fn head(
     let mut head = body.to_string();
     head.pop();
     head.push_str(",\"messages\":[");
+    // The shared-argument section opens the messages: it follows the tool block.
+    if let Some(parameters) = parameters.filter(|text| !text.is_empty()) {
+        head.push_str(
+            &json!({"role": "user", "content": [{"type": "text", "text": parameters}]}).to_string(),
+        );
+        head.push(',');
+    }
     if !framing.opening.is_empty() {
         head.push_str(
             &json!({"role": "user", "content": [{"type": "text", "text": framing.opening}]})
@@ -91,8 +99,8 @@ pub fn head(
         );
         head.push(',');
     }
-    // Before the card: the same words for every session, the card being what differs.
-    if let Some(parameters) = parameters.filter(|parameters| !parameters.is_empty()) {
+    // Before the card: an older head keeps the words where it wrote them.
+    if let Some(parameters) = parameters_before_card.filter(|text| !text.is_empty()) {
         head.push_str(
             &json!({"role": "user", "content": [{"type": "text", "text": parameters}]}).to_string(),
         );

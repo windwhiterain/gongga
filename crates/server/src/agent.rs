@@ -672,10 +672,8 @@ impl Agent {
                 ("model", model),
             ],
         ));
-        // The four names a call may carry, where no schema says what they are for.
-        let parameters = prompts
-            .text(crate::prompts::PARAMETERS)
-            .filter(|text| !text.is_empty());
+        // This row states no section: the tool row carries it, and a request sends it there.
+        let parameters = None;
         // The references' plan, stamped once; an opted-out session gets no plan row.
         let plan_on = session
             .tuning()
@@ -743,8 +741,14 @@ impl Agent {
         if let Some(kept) = self.store.tool_set(id)? {
             return Ok(kept);
         }
+        // One section per head: a head whose info row has it keeps it there.
+        let older = self.store.prompt(id)?;
         let tool_set = crate::store::ToolSet {
             tools: llm.wire_tools(&self.tools().stamp()),
+            parameters: match older.and_then(|prompt| prompt.parameters) {
+                Some(_) => None,
+                None => self.shared_arguments(),
+            },
             model: Some(model.to_string()),
             remote: session.remote_name(),
             build: protocol::BUILD.to_string(),
@@ -752,6 +756,19 @@ impl Agent {
         };
         self.store.write_head_once(id, &tool_set)?;
         Ok(tool_set)
+    }
+
+    /// The section about the arguments every call shares, where it is sent.
+    ///
+    /// # Invariant
+    ///
+    /// One template, read once per head: it belongs to the tool row rather than to the
+    /// prompt, because its words are about a call's arguments. A home whose content has
+    /// none sends no section rather than refusing to start.
+    fn shared_arguments(&self) -> Option<String> {
+        crate::prompts::shared()
+            .text(crate::prompts::PARAMETERS)
+            .filter(|text| !text.is_empty())
     }
 
     /// How much a planned entry may change before it is re-sent, or nothing when
@@ -1098,10 +1115,16 @@ impl Agent {
         phases.llm_started = Some(requested);
         // One tier for the whole turn, settled before its first request.
         let tier = self.cache_tier(llm, tier);
+        // One placement per head: the tool row's, or the info row's on an older head.
+        let (section, before_card) = match prompt.parameters.as_deref() {
+            Some(text) => (None, Some(text)),
+            None => (tools.parameters.as_deref(), None),
+        };
         let mut rx = llm.stream(
             &prompt.instructions,
             prompt.plan.as_deref(),
-            prompt.parameters.as_deref(),
+            section,
+            before_card,
             prompt.tail.as_deref(),
             &source,
             &tools.tools,
@@ -2587,6 +2610,7 @@ mod tests {
                 id,
                 &crate::store::ToolSet {
                     tools: serde_json::json!([{"type":"function","name":"read_file"}]),
+                    parameters: None,
                     model: None,
                     remote: None,
                     build: String::new(),

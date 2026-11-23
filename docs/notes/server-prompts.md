@@ -124,17 +124,20 @@ It is not a sentence on each tool's schema: the two names are the call layer's, 
 paragraph copied into six tools is the same paragraph sent six times in every request.
 Where they are declared is `tools::laws` -- one list, which is also what keeps a new tool
 from silently dropping them. It is not the system instructions: those bytes are identity
-and open every request of every directory, while this is a fact about calls that belongs
-beside the card. And it is not in [`REQUIRED`]: like `reference_revision`, a home whose
-content predates the template runs without the section rather than refusing to start over
-prose it may never need.
+and open every request of every directory, while this is a fact about calls. And it
+is not in [`REQUIRED`]: like `reference_revision`, a home whose content predates the
+template runs without the section rather than refusing to start over prose it may
+never need.
 
-It goes before the card, because its words are the same for every session and the
-card is where a session stops sharing a prefix. It carries no value, so it is stamped
-with the card and replayed from the store: a session already under way keeps the row
-it was started with, which is what "context has two operations" means -- the section
-reaches a session that starts after it ships, or one whose prompt is re-stamped by a
-move.
+It belongs to the tool row: its words are about a call's arguments, so it is stamped
+with the schema and sent as the message right after the tool block -- the first message
+of a request. One text in one row rather than a row of its own, because a reader who
+opens the tool block is exactly the reader it is for.
+
+A head stamped before this move keeps the section in its info row, where it was written,
+and a request sends it there: that session is sent as it was. That is the price of
+"context has two operations" -- the section reaches a session that starts after it
+ships, or one whose prompt is re-stamped by a move -- and one head never states it twice.
 
 ## reference_index
 

@@ -16,21 +16,23 @@ if that stops being true the fix is `spawn_blocking`, not a redesign.
 
 The head of a request is stamped once and read from the store after that. Since version
 7 it is five rows, one per thing the reader wants to see: instructions at slot 1, the
-tool schema at 2, agents.md at 3, the plan at 4 and the rest (card, parameters, cwd,
-model, remote) at 5; ordinary messages start at slot 6. So there is one stored row per
-rendered line, and `prompt`/`tool_set` rebuild the exact same wire head from those same
-rows -- storage order is send order, and neither read nor send searches for a row. There
-is no comparison: a second rendering would be a second set of bytes for a prefix the
+tool schema at 2 -- with the section on the arguments every call shares -- agents.md at
+3, the plan at 4 and the rest (card, cwd, model, remote) at 5; ordinary messages start
+at slot 6. So there is one stored row per rendered line, and `prompt`/`tool_set`
+rebuild the exact same wire head from those same rows -- storage order is send order,
+and neither read nor send searches for a row. There is no comparison: a second rendering would be a second set of bytes for a prefix the
 provider has already cached. A version 5 session had the whole prompt in one row and its
 head behind the opening line; 5-to-6 moved it into fixed slots, and 6-to-7 split that row
 into the five, shifting ordinary messages and their stored seq references by three.
 
 `MessageRow::parse` renders each head row as its own line: `instructions:` (slot 1),
 `tools:` (2), `agents.md:` (3, the standing rules), `plan:` (4) and `info:` (5,
-cwd/model/remote/card/parameters folded onto one). The tool row states the count and the
-names on its first line and then the whole schema below them, as stored and pretty-
-printed: the names are what a folded block shows, and the schema is the body an opened
-one draws. The plan row states *which* references the head carries and nothing of what
+cwd/model/remote/card folded onto one, plus `parameters=` for a head stamped before
+that section moved to the tool row). The tool row states the count and the
+names on its first line, the whole schema below them as stored and pretty-printed, and
+the `parameters:` section after that when the row carries one: the names are what a
+folded block shows, and the schema and the section are the body an opened one draws.
+The plan row states *which* references the head carries and nothing of what
 they say: a count on its first line, then `required:` naming what the prompt needs
 outright (`plan_explicit`: a `@file`/`@skill` mention or the standing rules), then
 `cached:` for what rode in only as a cached chain's ancestor (`plan_cached`). A row
