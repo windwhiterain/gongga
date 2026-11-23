@@ -51,12 +51,8 @@ impl Outcome {
         })
     }
 
-    /// A call's answer, capped like every tool's output: the same one cap, in the same
-    /// unit, applied where the notice is built because the call has already ended.
-    ///
-    /// # Invariant
-    ///
-    /// One builder for the call and for the notice.
+    /// A call's answer, capped by the same one cap, in the same unit, where the notice is
+    /// built.
     pub fn result(&self, max_output_chars: usize, output_dir: &std::path::Path) -> Value {
         let mut answer = self.to_json();
         if let Some(window) = answer.get("output").and_then(Value::as_str) {
@@ -447,8 +443,8 @@ impl Channels {
         let log = dir.join("relay.log");
         let place = Where::Here(dir);
         match self.open_channel(&place, &log, words).await {
-            // The relay's own id, which is not the program's: a successor that only
-            // has the program's pid can see it is gone, and cannot find the relay.
+            // The relay's own id, not the program's: a successor with only the pid can see
+            // it is gone but cannot find the relay.
             Ok((pid, relay)) => Ok((place, pid, Some(relay))),
             Err(why) => {
                 if let Where::Here(dir) = &place {
@@ -588,9 +584,8 @@ impl Channels {
             .await_status(&place, &started.log, None)
             .await
             .map_err(|refused| refused.words)?;
-        // A peer started the relay, so this machine holds no handle for it and cannot
-        // adopt it: the flag on the row is still set for it, but adoption here is a
-        // no-op. Remote channels are their own problem -- see the note on the row.
+        // A peer started the relay, so this machine holds no handle: the flag stays set for
+        // it, but adoption here is a no-op.
         Ok((place, pid, None))
     }
 
@@ -937,16 +932,8 @@ impl Channels {
         };
         let upto = row.upto;
         loop {
-            // # Invariant
-            //
-            // The peer reads race the stop, the clock and a message: a peer that never
-            // answers must not hold the call past its wait, an interrupt, or a message.
-            //
-            // The clock is read here, not slept on. A `sleep` made in the select below
-            // is dropped whenever the read wins, and a timer dropped before its first
-            // tick never ends the wait -- so an `exec` with nothing to say outlived its
-            // own deadline by as long as its program kept quiet. A wedged read is still
-            // reached by the clock: the read's own timeout is the same deadline.
+            // The peer reads race the stop, the clock and a message, so none may hold the
+            // call. The clock is read, not slept on.
             let read = async {
                 let fresh = if wait.is_zero() {
                     place.read_from("out", upto).await?
@@ -995,14 +982,11 @@ impl Channels {
                     since,
                 );
             }
-            // What is left is the clock: the read found nothing and the program is
-            // running, so a wait that has run out answers now rather than reading again.
+            // What is left is the clock: the read found nothing, so a wait run out answers
+            // now.
             if Instant::now() >= deadline {
                 // SPEC: only a call that *ran out* leaves the flag, and a flag with no
-                // marker still counts as a wait -- so `wait: 0`, an interrupt and a call
-                // its own answer satisfied leave none, and an end that follows is queued
-                // for the next turn rather than waking a session that stopped listening
-                // (`docs/notes/server-channel.md`).
+                // marker is still a wait. Other ends are queued.
                 self.store
                     .set_channel_wait(session, id, marker.as_deref().unwrap_or(""))
                     .map_err(quiet)?;
@@ -1228,18 +1212,14 @@ impl Channels {
         }
     }
 
-    /// Ends every channel no `cancel` was asked to keep; one this server cannot reach
-    /// is left as the row it is.
+    /// Ends every channel no `cancel` was asked to keep; one this server cannot reach is
+    /// left as the row it is.
     ///
     /// # Invariant
     ///
-    /// `kill` in the command file and the row gone: the pair `stop_session` writes one
-    /// session at a time. A row left behind would be adopted by the next start as a
-    /// channel that answers nothing.
-    ///
-    /// A row carrying `detached` is spared: a `cancel(keep_alive)` asked for it, and
-    /// SPEC's "make every channel detached" is a state, not one stop's argument. So a
-    /// window leaving later does not end what an earlier handover kept.
+    /// `kill` in the command file and the row gone together: a row left behind would be
+    /// adopted by the next start as a channel that answers nothing. A row carrying
+    /// `detached` is spared, because a handover kept it.
     pub async fn stop_every(&self) -> usize {
         let rows = match self.store.every_channel() {
             Ok(rows) => rows,
@@ -1351,14 +1331,10 @@ impl Channels {
     ///
     /// # Invariant
     ///
-    /// The flag is what makes this possible: `cancel` marked the row, so a start knows
-    /// which channels were kept on purpose rather than left behind. The relay's own id
-    /// is on the row, because the program's pid cannot name it.
-    ///
-    /// A relay whose pid is gone, or whose process no longer matches `relay_started_at`,
-    /// ended while no server held it: the row goes and the channel is noticed, as
-    /// [`Self::reap`] does. A row with no relay id is left marked -- this machine never
-    /// held that handle, so adopting it is nothing this side can do.
+    /// The flag is what makes this possible, and the relay's own id is on the row because
+    /// the program's pid cannot name it. A relay whose pid is gone, or no longer matches
+    /// `relay_started_at`, ended while no server held it: the row goes and the channel is
+    /// noticed. A row with no relay id is left marked.
     pub async fn adopt_kept(&self) -> usize {
         let rows = match self.store.detached_channels() {
             Ok(rows) => rows,
@@ -1506,9 +1482,8 @@ impl Channels {
         // A notice is a read: it carries the window, so the cursor moves with it.
         let _ = self.store.set_channel_upto(row.id, read_to);
         if claimed {
-            // SPEC: only a call that ran out of waiting is owed the end as the rest of
-            // its answer; any other end is *queued* -- the next turn that runs reads it,
-            // and none is started for it (`docs/notes/server-channel.md`).
+            // SPEC: only a call that ran out of waiting is owed the end as the rest of its
+            // answer; any other end is queued.
             let output = if waited {
                 format!(
                     "{output}\n\n[a call's wait ran out before this arrived; this is the rest of that call's answer]"
@@ -1849,8 +1824,8 @@ async fn cancel_fired(cancel: Option<&CancellationToken>) {
     }
 }
 
-/// A message for the session, polled on the channel's own clock: the signal is a
-/// count, so arriving is one load, and the gap between loads is the channel's look.
+/// A message for the session, polled on the channel's own clock: the signal is a count,
+/// so arriving is one load.
 async fn inbox_arrived(inbox: Option<&crate::session::InboxSignal>) {
     match inbox {
         Some(signal) => loop {
