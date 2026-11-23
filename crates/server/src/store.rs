@@ -1984,6 +1984,48 @@ impl Store {
         Ok(count)
     }
 
+    /// Every column of one session's row, as JSON, by column name.
+    ///
+    /// # Invariant
+    ///
+    /// `stmt.column_names()` is the source, never a list written here: the table is
+    /// what says what a session holds, so a column a migration adds is published to
+    /// every client without another edit. A column this build does not know is data,
+    /// not an error.
+    pub fn session_state(
+        &self,
+        name: &str,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, serde_json::Value>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT * FROM sessions WHERE name = ?1")?;
+        let columns: Vec<String> = stmt
+            .column_names()
+            .iter()
+            .map(|column| (*column).to_string())
+            .collect();
+        let row = stmt.query_row(params![name], |row| {
+            let mut held = std::collections::BTreeMap::new();
+            for (at, column) in columns.iter().enumerate() {
+                let value = match row.get_ref(at)? {
+                    rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+                    rusqlite::types::ValueRef::Integer(n) => serde_json::json!(n),
+                    rusqlite::types::ValueRef::Real(f) => serde_json::json!(f),
+                    rusqlite::types::ValueRef::Text(t) => {
+                        serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+                    }
+                    rusqlite::types::ValueRef::Blob(b) => serde_json::json!(b.len()),
+                };
+                held.insert(column.clone(), value);
+            }
+            Ok(held)
+        });
+        match row {
+            Ok(held) => Ok(held),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Default::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Where the transcript now ends, `0` for an empty one.
     pub fn last_seq(&self, session_id: i64) -> anyhow::Result<i64> {
         let conn = self.lock();

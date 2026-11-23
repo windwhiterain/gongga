@@ -4782,6 +4782,7 @@ pub fn session_info(d: &Dispatch, row: &crate::store::SessionRow) -> protocol::S
             }),
             max_unmasked_blocks: row.memory_max_unmasked_blocks,
         }),
+        state: d.store.session_state(&row.name).unwrap_or_default(),
     }
 }
 

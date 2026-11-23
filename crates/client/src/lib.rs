@@ -2993,6 +2993,41 @@ impl Client {
 /// Each figure carries SPEC's unit, and one nobody measured is left out rather than
 /// shown as zero: `ctx 0` reads as an empty context, not a request that never
 /// happened. See `docs/notes/client-lib.md`.
+/// Whether a session's row column is already drawn by a field of `SessionInfo`.
+fn drawn_by_a_field(key: &str) -> bool {
+    matches!(
+        key,
+        "id" | "name"
+            | "status"
+            | "created_at"
+            | "updated_at"
+            | "ended_at"
+            | "messages"
+            | "cwd"
+            | "remote"
+            | "model"
+            | "model_name"
+            | "thinking_effort"
+            | "context_limit"
+            | "context_tokens"
+            | "cached_tokens"
+            | "tps"
+            | "ttft_ms"
+            | "context_generation"
+            | "monitor_seq"
+            | "target"
+            | "cache_keepalive"
+            | "cache_tier"
+            | "mode"
+            | "live_compact"
+            | "live_compact_enabled"
+            | "live_compact_interval_tokens"
+            | "live_compact_mode"
+            | "live_compact_interval_effective"
+            | "memory_max_unmasked_blocks"
+    )
+}
+
 fn title_note(session: &protocol::SessionInfo) -> String {
     let usage = &session.usage;
     // The order is the reading order, and a folded header shows only the head of
@@ -3082,6 +3117,20 @@ fn title_note(session: &protocol::SessionInfo) -> String {
         if !said.is_empty() {
             parts.push(format!("live_compact {}", said.join(" ")));
         }
+    }
+    // Whatever else the session's row holds is drawn here, by its column name: a
+    // column a migration adds reaches this line without another edit, which is what
+    // hand-copying a field list keeps failing to do. The columns a field of
+    // `SessionInfo` already draws, and the four spelled above, are left out.
+    for (key, value) in &session.state {
+        if drawn_by_a_field(key) || value.is_null() {
+            continue;
+        }
+        let said = match value {
+            serde_json::Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        parts.push(format!("{key} {said}"));
     }
     parts.push(format!("{} messages", session.messages));
     parts.push(format!("seq {}", session.transcript));

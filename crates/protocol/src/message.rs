@@ -1008,6 +1008,15 @@ pub struct SessionInfo {
     /// SPEC's `LiveCompact` as this session states it; every `None` follows `[agent]`.
     #[serde(default)]
     pub live_compact: Option<LiveCompactState>,
+    /// Every column of the session's own row, by its column name.
+    ///
+    /// # Invariant
+    ///
+    /// The table's own column list is the source, so a column a migration adds is
+    /// published without another edit here: a reader draws what it is given, and a
+    /// field nobody remembers to hand-copy is the one that goes missing.
+    #[serde(default)]
+    pub state: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// SPEC's `LiveCompact` as a session states it.
