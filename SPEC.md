@@ -181,11 +181,11 @@ live_compact(settled: str, next: str, continue: bool = true, session: Session = 
   # message answers `next`.
 memorize(summary: str, session: Session = caller()) -> MemoryCommit
   # mask-mode checkpoint: summarize the segment through the latest complete ordinary
-  # round, keep the summary call/result visible, and mask its original source span.
+  # round, keep the summary call/result visible, and register the span as an unmasked
+  # memory block. A memorize masks nothing: only the visible ceiling masks a block.
 recall(ids: list[str], session: Session = caller()) -> MemoryRecall
   # unmask original spans in argument order; the harness masks the earliest entries
-  # in the current unmasked set when the session's share of the provider's
-  # unmasked_context is exceeded.
+  # in the current unmasked set when the session's `unmasked_ctx_limit` is exceeded.
 ```
 ## Python Cmd
 provided by a shipped uv python package.
@@ -233,13 +233,13 @@ for the first user message to a empty session, find all meta references recursiv
 
 ## Memory Mask
 - `live_compact.mode = "mask"` selects memory checkpoints instead of transcript cuts. The opt-in, interval, backoff and complete-ordinary-round boundary are the same; `memorize` and `recall` are always offered.
-- the canonical transcript and the provider's KV tape are append-only. A mask never deletes rows, moves token positions or rewrites KV. The summary call and its id-bearing result stay visible; the original source span becomes masked.
+- the canonical transcript and the provider's KV tape are append-only. A mask never deletes rows, moves token positions or rewrites KV. The summary call and its id-bearing result stay visible, and a block's own source span stays visible until the visible ceiling masks it.
 - the harness is the only writer of visibility. Provider pressure and attention may change GPU/host residency, never the view. Masked KV may be offloaded and recalled KV must be restored at its original logical position before the forward that reads it.
 - `unmasked_ctx_limit` is a session's own visible ceiling. It starts at the provider's `unmasked_context` (the session's `ctx_limit` of it), lives in server state, and outlives a restart.
 - A capacity refusal — the provider explicitly refusing the request for capacity or device memory, and nothing else — halves `unmasked_ctx_limit`, and every refusal halves it. It never drops below the current ordinary tail, which masking cannot remove; a refusal with the view already at that tail ends the turn as a failure. A streak of successful requests raises it one step at a time, and it never passes the provider's `unmasked_context`. A timeout, a dropped connection or an unreadable answer is not a capacity refusal and moves nothing.
 - Every refusal that lowers the limit is an eviction: it commits cause `refusal` and advances `view_generation` before the next request, and the retry sends the smaller view rather than the same request again.
-, so a block just recalled outlives one recalled earlier; a duplicate id still moves it only once. Visibility has one limit: the session's share of the provider's `unmasked_context`, which is the session's `ctx_limit` of that ceiling (falling back to `context` when the roster states none). The harness masks the earliest entries in the current unmasked set while the projected visible tokens exceed it, and returns their ids as `auto_masked`; a provider that states no ceiling at all leaves nothing to evict against. The current ordinary tail is not evictable. Provider-tokenized block measurements drive the eviction; character estimates never substitute for them.
-- every `memorize`, `recall` and automatic displacement commits its cause and advances `view_generation` before the next request. A request pins `(upto_seq, view_generation)` and every retry sends the same pair and view.
+- `recall` unmasks original source spans in argument order. Every recalled block moves to the tail of the unmasked queue, so a block just recalled outlives one recalled earlier; a duplicate id still moves it only once. Visibility has one limit, `unmasked_ctx_limit`: the harness masks the earliest entries in the current unmasked set while the provider's measured visible count exceeds it, and returns their ids as `auto_masked`. The current ordinary tail is not evictable. A block the provider has not measured yet is masked by its queue position alone, and the next request's measured count decides whether another must follow; a character estimate never stands in for a measurement.
+- every `recall` and automatic displacement commits its cause and advances `view_generation` before the next request; a `memorize` changes no view and advances nothing. A request pins `(upto_seq, view_generation)` and every retry sends the same pair and view.
 - a mask-capable provider receives the full projected tape and declarative seq ranges; physical block ids and tokenization are the provider's. An endpoint that does not declare this capability uses cut mode; silently treating a mask view as an ordinary prompt is forbidden.
 - masking reduces attention work and offload reduces resident KV; neither makes the tape's last position smaller. The roster's `context` is the full-tape input+output ceiling and `unmasked_context` is the visible input+output ceiling, falling back to `context` when unstated. In mask mode `ctx_limit`, output-space calculation and live-compact growth use the visible ceiling. A mask-capable provider reports standard `input_tokens` as the full tape, plus `gongga_unmasked_input_tokens` and `gongga_memory_tokens`; context reporting states visible tokens and tape position separately, and cache ratios use the full tape.
 

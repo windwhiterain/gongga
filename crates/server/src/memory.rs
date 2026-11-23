@@ -13,7 +13,6 @@ mod tests;
 
 const MASK: &str = "mask";
 const UNMASK: &str = "unmask";
-const MEMORIZE_CAUSE: &str = "memorize";
 const RECALL_CAUSE: &str = "recall";
 /// The cause a capacity refusal writes: the provider's own refusal shrank the view.
 pub(crate) const REFUSAL_CAUSE: &str = "refusal";
@@ -372,6 +371,11 @@ fn advance_generation(conn: &Connection, session_id: i64) -> anyhow::Result<i64>
         "UPDATE memory_state SET view_generation = ?2 WHERE session_id = ?1",
         params![session_id, next],
     )?;
+    // A view change ends the old interval; the next request stamps the new baseline.
+    conn.execute(
+        "UPDATE sessions SET live_compact_baseline_tokens = NULL WHERE id = ?1",
+        params![session_id],
+    )?;
     Ok(next)
 }
 
@@ -470,21 +474,23 @@ fn enforce_limit_at_generation(
     generation: i64,
 ) -> anyhow::Result<Vec<String>> {
     let mut auto_masked = Vec::new();
-    loop {
-        let count = read_state(conn, session_id)?.unmasked_count;
-        let over_tokens = maximum_tokens
-            .is_some_and(|limit| unmasked_tokens.unwrap_or(0).saturating_sub(limit) > 0);
-        if !over_tokens || count == 0 {
+    while maximum_tokens.is_some_and(|limit| unmasked_tokens.unwrap_or(0) > limit) {
+        if read_state(conn, session_id)?.unmasked_count == 0 {
             break;
         }
         let head = mask_fifo_head(conn, session_id, cause, generation)?;
         let Some((id, tokens)) = head else {
             bail!("memory unmasked count has no corresponding FIFO head for session {session_id}");
         };
-        if let (Some(visible), Some(tokens)) = (unmasked_tokens.as_mut(), tokens) {
-            *visible = visible.saturating_sub(tokens).max(0);
-        }
         auto_masked.push(id);
+        match (unmasked_tokens.as_mut(), tokens) {
+            (Some(visible), Some(tokens)) => *visible = visible.saturating_sub(tokens).max(0),
+            // Unmeasured block: the next request's count is the only honest answer.
+            _ => {
+                unmasked_tokens = None;
+                break;
+            }
+        }
     }
     if maximum_tokens.is_some() {
         conn.execute(
@@ -492,22 +498,16 @@ fn enforce_limit_at_generation(
             params![session_id, unmasked_tokens],
         )?;
     }
-    let remaining = read_state(conn, session_id)?.unmasked_count;
-    let token_limit_unmet =
-        remaining > 0 && maximum_tokens.is_some_and(|limit| unmasked_tokens.unwrap_or(0) > limit);
-    if token_limit_unmet {
-        bail!("memory visible usage did not reach the configured limit");
-    }
     Ok(auto_masked)
 }
 
 impl crate::store::Store {
-    /// Commits a mask checkpoint, its visible summary artifact, and its initial masked view.
+    /// Commits a mask checkpoint, its visible summary artifact, and its memory block.
     ///
     /// # Invariant
     ///
-    /// The transcript is append-only: only the memory view advances, never
-    /// `context_generation`.
+    /// The transcript is append-only and the view does not change here: the block joins the
+    /// unmasked queue, and only the visible ceiling masks a block.
     pub fn memorize(
         &self,
         session_id: i64,
@@ -599,29 +599,31 @@ impl crate::store::Store {
             ],
         )?;
         let checkpoint_id = tx.last_insert_rowid();
+        let next_order = read_state(&tx, session_id)?.next_unmasked_order;
         tx.execute(
             "INSERT INTO memory_blocks
              (checkpoint_id, session_id, source_after_seq, cutoff_seq,
               summary, unmasked_order, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 checkpoint_id,
                 session_id,
                 segment_after_seq,
                 round.cutoff_seq,
                 summary,
+                next_order,
                 crate::store::now_millis()
             ],
         )?;
-        let generation = advance_generation(&tx, session_id)?;
-        let view_generation = nonnegative(generation, "memory view generation")?;
-        record_view_event(
-            &tx,
-            session_id,
-            checkpoint_id,
-            MASK,
-            MEMORIZE_CAUSE,
-            generation,
+        tx.execute(
+            "UPDATE memory_state SET next_unmasked_order = ?2,
+                    unmasked_count = unmasked_count + 1
+             WHERE session_id = ?1",
+            params![session_id, next_order.saturating_add(1)],
+        )?;
+        let view_generation = nonnegative(
+            read_state(&tx, session_id)?.view_generation,
+            "memory view generation",
         )?;
         let start_seq = segment_after_seq
             .checked_add(1)
@@ -741,7 +743,7 @@ impl crate::store::Store {
         let generation = advance_generation(&tx, session_id)?;
         let mut next_order = read_state(&tx, session_id)?.next_unmasked_order;
         let mut recalled = Vec::new();
-        let mut recalled_tokens = 0_i64;
+        let mut recalled_tokens: Option<i64> = Some(0);
         for block in requested {
             let following_order = next_order.checked_add(1).ok_or_else(|| {
                 anyhow!("memory unmasked order overflow for session {session_id}")
@@ -763,7 +765,11 @@ impl crate::store::Store {
                     RECALL_CAUSE,
                     generation,
                 )?;
-                recalled_tokens = recalled_tokens.saturating_add(block.tokens.unwrap_or(0));
+                match (recalled_tokens.as_mut(), block.tokens) {
+                    (Some(total), Some(tokens)) => *total = total.saturating_add(tokens),
+                    // Unmeasured: the next request's visible count is the only honest answer.
+                    _ => recalled_tokens = None,
+                }
                 recalled.push(block.id);
             }
             next_order = following_order;
@@ -773,8 +779,10 @@ impl crate::store::Store {
             params![session_id, next_order],
         )?;
         let unmasked_tokens = if maximum_tokens.is_some() {
-            projected_unmasked_tokens(&tx, session_id)?
-                .map(|tokens| tokens.saturating_add(recalled_tokens))
+            match (projected_unmasked_tokens(&tx, session_id)?, recalled_tokens) {
+                (Some(tokens), Some(extra)) => Some(tokens.saturating_add(extra)),
+                _ => None,
+            }
         } else {
             None
         };

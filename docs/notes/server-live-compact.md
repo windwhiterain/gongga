@@ -130,13 +130,14 @@ against the cut, not the other way round.
 ## Mask checkpoints change a view, not the transcript
 
 `live_compact.mode` chooses `cut` (the behavior above) or `mask`. Both modes share the
-origin, interval, backoff and complete-ordinary-round selection. Mask mode requires a
-positive `memory_max_unmasked_blocks` and an endpoint whose `api` is exactly
+origin, interval, backoff and complete-ordinary-round selection. Mask mode requires an
+endpoint whose `api` is exactly
 `openai-responses-memory-mask`; an ordinary provider never receives a full tape with the
 mask fields simply omitted.
 
-A `memorize` call inserts a checkpoint whose `kind` is `mask`, its summary artifacts, a
-`memory_blocks` row and the initial masked event in one transaction. The checkpoint row
+A `memorize` call inserts a checkpoint whose `kind` is `mask`, its summary artifacts and a
+`memory_blocks` row in one transaction. The block joins the tail of the unmasked queue: a
+memorize masks nothing, and nothing about the view moves. The checkpoint row
 temporarily has `result_seq = 0` inside that transaction: its stable public id contains
 the checkpoint id, and the id-bearing tool result cannot be written before that id
 exists. The result seq is filled before commit, so no reader can observe the
@@ -148,10 +149,12 @@ and the trigger-maintained unmasked count. `memory_state.unmasked_tokens` is the
 view's projected visible size, calibrated by provider usage rather than inferred from
 characters. Each `memory_blocks.token_count` is likewise provider-tokenized; a model
 change invalidates these measurements. `recall` validates and de-duplicates ids, assigns
-orders in argument order, adds newly visible blocks to the projection, and masks the
-FIFO head until both the configured count and the session's share of the provider's
-`unmasked_context` hold. A newly memorized block has no measurement yet, so its view's
-token projection is unknown until the next response rather than guessed. Every recalled
+orders in argument order, and adds newly visible blocks to the projection. Eviction runs
+at every request boundary: the FIFO head is masked while the provider's measured visible
+count exceeds `unmasked_ctx_limit`, and a block the provider has not measured yet ends
+that pass, so the next response's count decides whether another must follow. No
+character estimate stands in for a measurement. A view change — recall or eviction —
+clears the interval baseline the way a cut does, so the next request stamps it. Every recalled
 block moves to the tail of the unmasked queue, so re-reading an old memory postpones its
 eviction instead of leaving it next in line; a re-recalled block is not added to the
 token projection twice. A later cut retires older memory ids
