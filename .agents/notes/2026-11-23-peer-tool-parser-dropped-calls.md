@@ -49,3 +49,52 @@ message the probe got, twice.
 
 The model's tool craft is poor (it reached for `cmd`, then `gongga_cli` with an unknown
 command `ls`), but every call it made arrived.
+
+# Second bug in the same turn: no context was ever reported
+
+2026-11-23, user report: "推理服务怎么没报 ctx".
+
+## Symptom
+
+Session `probe` kept `context_tokens = 0` and `tape_tokens = NULL` although every request
+returned usage, and its transcript had no `usage` event at all. The runtime log line
+`provider usage session=probe input=... output=...` was never printed for those turns.
+
+## Cause
+
+The endpoint answered with
+
+```json
+"gongga_unmasked_input_tokens": null, "gongga_memory_tokens": null
+```
+
+because both come from `getattr(request, "_gongga_view", {}).get(...)`, and a request
+carrying no mask view has no such attribute. The harness deserializes `usage` into
+`Usage { gongga_memory_tokens: Vec<MemoryTokenUsage> }`; `#[serde(default)]` covers an
+*absent* field, not a `null` one, so the whole object failed to deserialize and
+`serde_json::from_value(..).ok()` turned the entire measurement into `None` — no usage
+event, no `context_tokens`, no cached/tps/ttft from the provider's counts.
+
+## Fix
+
+The server patch now reports the visible count and an empty list rather than nulls:
+when no mask view is present, every input token is visible, so
+`gongga_unmasked_input_tokens = num_prompt_tokens` and `gongga_memory_tokens = []`.
+Changed in `apply_server_patch.py` (the text it inserts) and re-applied from the
+`.kvmask-orig` backups, so a reinstall gets the same code.
+
+## Verification (2026-11-23)
+
+- Raw endpoint usage now: `input_tokens=12, gongga_unmasked_input_tokens=12,
+  gongga_memory_tokens=[]`.
+- A session of this build's own (`mask-offload/ctx`, deleted afterwards) sent one short
+  message: `context_tokens = 24560`, `tape_tokens = 24560`, `cached_tokens = 0`,
+  `tps = 25.16`, `ttft_ms = 9288`, and a `usage` event reading
+  `input=24560, unmasked_input=24560, cache_write=24512`.
+
+## Still open
+
+The harness loses an entire usage record to one unparsable field, silently (`.ok()` in
+`llm.rs`, the `response.completed` arm). A provider that sends `null` for a list costs
+the session its whole context display instead of one field. Tolerating `null` there (or
+warning once) is a separate decision for the user.
