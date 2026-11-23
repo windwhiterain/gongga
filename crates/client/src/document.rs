@@ -2,13 +2,10 @@
 //!
 //! # Invariant
 //!
-//! What a front-end draws is finished: a row already fits the width it was asked for
-//! and each run already says how it looks, so no front-end parses markdown, counts
-//! columns or decides what is strong. Two front-ends drawing one answer draw the same
-//! rows. See `docs/notes/client-document.md`.
-//!
-//! Nothing here drops text: a marker the document does not close is printed as it
-//! came, and a code row that is longer than the width is broken rather than cut.
+//! What a front-end draws is finished: a row already fits its width and each run says how
+//! it looks, so no front-end parses markdown. Two front-ends drawing one answer draw the
+//! same rows, and nothing here drops text -- a code row too long for the width is broken,
+//! never cut.
 
 use unicode_width::UnicodeWidthChar;
 
@@ -30,17 +27,16 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
         let depth = (line.len() - line.trim_start().len()) / STEP;
         let head = line.trim_start();
         at += 1;
-        // The fence is part of what was written, language included: a code block
-        // whose boundary is not drawn is a paragraph that happens to be blue.
+        // The fence is part of what was written: a block whose boundary is not drawn is a
+        // blue paragraph.
         if head.starts_with("```") {
             code = !code;
             out.push(vec![DocumentSpan::of(head.to_string(), SpanClass::Marker)]);
             continue;
         }
         if code {
-            // Code keeps its own rows: a leading rule on every one of them, so the
-            // block has an edge whatever the pane, and a break that never looks for a
-            // space -- a line of code has no words to break between.
+            // Code keeps its own rows, a rule leading each: an edge whatever the pane, and
+            // no words to break between.
             for piece in hard_wrap(line, width) {
                 let mut row: Vec<DocumentSpan> = Vec::new();
                 if !piece.is_empty() {
@@ -60,9 +56,8 @@ pub fn rows(text: &str, width: usize) -> Vec<Vec<DocumentSpan>> {
             out.push(Vec::new());
             continue;
         }
-        // A pipe row with an alignment row under it is a table, and a table is laid
-        // out here: columns are as wide as their widest cell, narrowed to the pane by
-        // taking a column at a time from the widest one.
+        // A pipe row over an alignment row is a table: columns as wide as the widest cell,
+        // narrowed on that one at a time.
         if head.starts_with('|') {
             let aligns = lines.get(at).and_then(|next| alignment_row(next.trim()));
             if let Some(aligns) = aligns {
@@ -176,8 +171,7 @@ fn table(
     out.extend(compose(header, &widths, aligns, SpanClass::Heading));
     for (at, row) in body.iter().enumerate() {
         out.extend(compose(row, &widths, aligns, SpanClass::Text));
-        // A rule between the rows, so a cell that now takes two lines is still read
-        // as one row: without it two wrapped cells look like four rows.
+        // A rule between the rows: without it two wrapped cells read as four rows.
         if at + 1 != body.len() {
             out.push(vec![DocumentSpan::of(rule(&widths), SpanClass::Marker)]);
         }
@@ -269,8 +263,7 @@ fn is_rule(line: &str) -> bool {
     count >= 3 && marks.all(|c| c == first || c == ' ')
 }
 
-/// What every row of a code block opens with: the rule that makes it one block.
-/// `text` cut into pieces of at most `width` columns, breaking where it must.
+/// What every row of a code block opens with: the rule that makes one block.
 fn hard_wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut pieces = vec![String::new()];
@@ -291,8 +284,8 @@ fn hard_wrap(text: &str, width: usize) -> Vec<String> {
 
 /// One row of prose: its block structure as a marker run, then its words.
 fn block(head: &str, depth: usize) -> Vec<DocumentSpan> {
-    // A no-break space, because the wrapper collapses runs of spaces and an
-    // indent that collapses is a list that lost its shape.
+    // A no-break space: the wrapper collapses runs of spaces, and a collapsed indent
+    // is a list that lost its shape.
     let step = " ".repeat(STEP * depth);
     let mut spans: Vec<DocumentSpan> = Vec::new();
     let mut text = head;
@@ -313,9 +306,8 @@ fn block(head: &str, depth: usize) -> Vec<DocumentSpan> {
         return spans;
     }
     if let Some(rest) = text.strip_prefix("> ") {
-        // A light vertical rule, not a left-eighth block: the block is missing from
-        // the faces a body is drawn in, and a fallback glyph is an advance wider than
-        // the column it claims -- one column of prose lost per quoted row.
+        // A light vertical rule: the left-eighth block is missing from some faces, and a
+        // fallback glyph eats a column per row.
         spans.push(DocumentSpan::of(format!("{}│ ", step), SpanClass::Marker));
         spans.extend(inline(rest));
         return spans;
@@ -444,8 +436,8 @@ fn wrap(spans: &[DocumentSpan], width: usize) -> Vec<Vec<DocumentSpan>> {
             if used != 0 && used + space + wide > width {
                 flush_row(&mut row, &mut rows);
                 used = 0;
-            // A leading space on a block's first row is its indent, and an indent
-            // is structure: dropped, a nested list is a flat one.
+            // A leading space on a block's first row is its indent, and that is structure:
+            // a nested list flattens without it.
             } else if pending_space && (used != 0 || rows.is_empty()) {
                 push(&mut row, " ", span.class);
                 used += 1;
