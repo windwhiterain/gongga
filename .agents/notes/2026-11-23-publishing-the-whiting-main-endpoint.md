@@ -173,6 +173,45 @@ Evidence from outside the house, against the public address:
 Operational details, the friend's key and how to rotate it live outside the repository in
 `~/.agents/inference-gateway.txt`; the note keeps the shape, not the secret.
 
-Not done, and each is a decision rather than an oversight: no TLS (the key travels in clear until
-a domain is bought), no token metering (the cap is concurrency and key, not spend), no per-key
-quota (one friend, one key).
+Not done, and each is a decision rather than an oversight: no TLS (nothing secret travels once
+the endpoint stopped asking for a key), no token metering (the cap is concurrency, not spend),
+no per-key quota (there is no key).
+
+## Opened to the community (2026-11-23, later the same evening)
+
+The endpoint became a free public one, the roster gained it, and the harness made it the default
+session model. Three parts, in the order they had to land:
+
+1. **The harness learned keyless routes.** `key_env = ""` on a `[[route]]` is now a claim that
+the endpoint needs no credential: `credential` answers it with an empty key and an empty variable
+name instead of reporting a miss, `LlmClient::new` accepts that pairing, and `with_bearer` sends
+no `Authorization` header at all. A route that still names a variable must still have a value —
+an unauthenticated request there fails as a provider error nobody can read.
+2. **`DEFAULT_SESSION_MODEL`** became `gongga-official/minicmp4.7-35b-a3b`, so a fresh machine
+starts a session with no account, key or price list.
+3. **The gateway dropped its key check**, keeping the caps: 2 concurrent per IP, 4 per server,
+`503` beyond that. `Authorization` is still rewritten to vLLM's own `sk-fake` on the way through.
+
+The model had to be served under the published name, because the roster's `wire_id` *overwrites*
+the row id — a provider's model id **is** the name sent on the wire (`providers/layers.rs`). So
+vLLM was restarted with two names, `minicpm47-35b-a3b` and `minicmp4.7-35b-a3b`; the first keeps
+the LAN route working, the second is the public one. Cold load was 105 s.
+
+Evidence, from a throwaway home with `GONGGA_PROVIDERS_CATALOG` pointed at the new roster, no key
+anywhere in the environment:
+
+| Probe | Result |
+| --- | --- |
+| `new_session` with no `--model` | `model: gongga-official/minicmp4.7-35b-a3b` |
+| that session's turn | `POST http://162.14.81.104:4000/v1/responses` → `200 OK`, 68 KB, 414 ms |
+| session row after the turn | state `idle`, 17785 prompt / 8 completion tokens, 15 tps |
+| `GET /v1/models` with no key, from outside | both names listed |
+| completion with no key, `model: minicmp4.7-35b-a3b` | `free endpoint ok` |
+
+Publication: `gongga-agents` commit `8ee4feb` on `main` (`cf8d30a..8ee4feb`, pushed), then the
+machine's `local` replayed onto it as `1df6f9c` after one conflict at the end of `providers.toml`.
+The harness commit is `05bf2ba9`.
+
+The cost of being open: anyone with the address can hold the single request slot. The caps bound
+it to four queues and `503` the rest, `/var/log/nginx/access.log` records who came, and
+`~/.agents/inference-gateway.txt` says how to put the key check back.
