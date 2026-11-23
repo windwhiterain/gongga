@@ -1609,8 +1609,9 @@ pub struct Usage {
     pub input_tokens: Option<u64>,
     /// Visible positions after the provider applies the pinned memory view.
     pub gongga_unmasked_input_tokens: Option<u64>,
-    /// Provider-tokenized sizes of the masked blocks in this request.
-    #[serde(default)]
+    /// Provider-tokenized sizes of the masked blocks; a provider with none may
+    /// spell it `null`.
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub gongga_memory_tokens: Vec<MemoryTokenUsage>,
     pub output_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
@@ -1622,6 +1623,20 @@ pub struct Usage {
 pub struct MemoryTokenUsage {
     pub memory_id: String,
     pub tokens: u64,
+}
+
+/// Reads a list a provider spells as `null` when it has nothing to report.
+///
+/// # Invariant
+///
+/// One field that cannot be read costs that field, never the whole measurement: a
+/// `null` list is an empty one, and the input counts beside it still reach the
+/// session. See `docs/notes/server-llm.md`.
+fn null_as_empty<'de, D>(deserializer: D) -> Result<Vec<MemoryTokenUsage>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<MemoryTokenUsage>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// The nested half of `usage`, spelled the way the Responses API spells it.
@@ -2439,7 +2454,19 @@ async fn handle(
             }
         }
         "response.completed" => {
-            let usage = serde_json::from_value(d["response"]["usage"].clone()).ok();
+            // An unreadable usage costs the counts, never the answer.
+            let raw = d["response"]["usage"].clone();
+            let usage = if raw.is_null() {
+                None
+            } else {
+                match serde_json::from_value::<Usage>(raw) {
+                    Ok(usage) => Some(usage),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "the provider's usage did not parse");
+                        None
+                    }
+                }
+            };
             out.complete(usage).await?;
         }
         "response.failed" | "error" => {
