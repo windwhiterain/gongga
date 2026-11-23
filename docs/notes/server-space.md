@@ -113,6 +113,16 @@ through the runner's own base64 file I/O, binary-safe; the shell only renames.
 
 The transport wheels (`Peer`, `run`, `hello`, ...) are one copy in that module, which
 the `remote` skill imports too, so a shell, a file read and an install reach a peer
-the same way. The `file` skill's `read`/`write`/`edit` take `remote`/`cwd` and default
-to the session's machine; the matching, BOM and all-or-nothing logic stays local and
-is one implementation on either machine.
+the same way.
+
+`space_for` is the Python half of `machine_of`/`stated`, and it reads the same statements
+in the same order: the `path` when it carries `remote://`, else the `cwd` when it carries
+one, else the session's own row (a session placed on a peer stores
+`remote://<name>/<whole>` there), else `GONGGA_REMOTE`. `cwd` used to be read as a
+directory only, so a `cwd` on a peer left a relative path on *this* machine --
+`remote://peer//home/x` joined onto the session's directory and handed to Windows as
+`C:\…\remote:\peer\home\x`, a refusal for a relative path and a silent write to
+`C:\home\x` for an absolute one. A `remote://` spelling is a machine and a whole path
+everywhere, so `remote://<name>/` and a relative tail are refused, and so is a `path` and
+`cwd` naming two different machines. The matching, BOM and all-or-nothing logic stays
+local and is one implementation on either machine.
