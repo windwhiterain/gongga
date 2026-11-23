@@ -79,8 +79,25 @@ pub async fn bind_address(addr: SocketAddr, force: bool) -> anyhow::Result<UdpSo
             "{taken}; --force could not find which process holds {addr}"
         ));
     };
+    // A pid from the system's table says nothing about what the process is: the number
+    // may already name another program, and a tree kill would take that program's whole
+    // tree with it. `--force` is permission to take the address from this program, never
+    // from whatever happens to hold the number now.
+    let aim = match crate::tools::detached::aimed_own_program(pid) {
+        Ok(Some(aim)) => aim,
+        Ok(None) => {
+            return Err(anyhow::anyhow!(
+                "{addr} is held by pid {pid}, which is not this program; nothing was stopped"
+            ));
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "{addr} is held by pid {pid}, and what that process is could not be read: {e}"
+            ));
+        }
+    };
     tracing::warn!(pid, %addr, "stopping what holds the address, as --force asks");
-    if !crate::tools::detached::kill_tree(pid).await {
+    if !crate::tools::detached::kill_tree(aim).await {
         return Err(anyhow::anyhow!(
             "{addr} is held by pid {pid}, and it did not stop"
         ));

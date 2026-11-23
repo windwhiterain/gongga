@@ -224,14 +224,29 @@ impl DetachedJob {
     }
 
     /// Stops it, taking the whole tree with it; true only once absence is confirmed.
+    ///
+    /// # Invariant
+    ///
+    /// Every kill is aimed: `Aimed` carries the creation time that says which process
+    /// held the pid, and `kill_tree` refuses once that no longer holds. A job whose
+    /// leader ended before this run could aim at it therefore leaves its orphans behind --
+    /// a leftover child is a smaller harm than ending somebody else's process.
     pub async fn stop(&mut self) -> bool {
         // The job object is the tree: it ends every member, which the walk approximates.
         disarm_detached(self.pid);
         if let Some(child) = &mut self.child {
-            // An id is ours only while its handle lives: see
-            // `docs/notes/server-tools-detached.md`.
+            // An id is ours only while its handle lives: Windows cannot give the number
+            // to another process until the last handle closes, so this aim cannot name
+            // one: see `docs/notes/server-tools-detached.md`.
             return match child.try_wait() {
-                Ok(None) => kill_tree(self.pid).await && reap_child(child).await,
+                Ok(None) => match Aimed::now(self.pid) {
+                    Ok(Some(aim)) => kill_tree(aim).await && reap_child(child).await,
+                    Ok(None) => reap_child(child).await,
+                    Err(e) => {
+                        tracing::warn!(pid = self.pid, "could not aim at a detached bash: {e}");
+                        false
+                    }
+                },
                 Ok(Some(_)) => true,
                 Err(e) => {
                     tracing::warn!(
@@ -250,22 +265,19 @@ impl DetachedJob {
             );
             return false;
         }
-        match process_started_at(self.pid) {
+        match Aimed::recorded(self.pid, self.started_at) {
+            Ok(Some(aim)) => {
+                kill_tree(aim).await && matches!(process_started_at(self.pid), Ok(None))
+            }
             Ok(None) => {
-                // The saved leader is gone, but its group can still hold children.
-                kill_tree(self.pid).await && matches!(process_started_at(self.pid), Ok(None))
-            }
-            Ok(Some(actual)) if same_process(self.started_at, actual) => {
-                kill_tree(self.pid).await && matches!(process_started_at(self.pid), Ok(None))
-            }
-            Ok(Some(actual)) => {
+                // Nothing holds the pid now, or something else does: no process this row
+                // names can be ended, so none is, and whatever the job left stays.
                 tracing::warn!(
                     pid = self.pid,
                     saved_started_at = self.started_at,
-                    actual_started_at = actual,
-                    "refusing to stop an adopted pid whose identity changed"
+                    "a detached job's leader is gone or its pid was reused: its orphans are left"
                 );
-                false
+                true
             }
             Err(e) => {
                 tracing::warn!(
@@ -899,41 +911,170 @@ async fn stop_and_forget(store: &Store, jobs: Vec<DetachedJob>) -> (Stopped, Vec
     (out, retry)
 }
 
-/// Kills a process tree: the pid and everything it started.
+/// A process this program is allowed to end: the pid, and the creation time that proves
+/// which process held it when the aim was taken.
+///
+/// # Invariant
+///
+/// A pid alone never authorizes a kill. Windows hands a number to a new process as soon
+/// as the last handle to the old one closes, so the pid that named our child a second ago
+/// can name the user's desktop shell now -- and a tree kill would then take every window
+/// that shell owns. Every verb below re-reads the creation time first and refuses on a
+/// mismatch, so a wrong aim costs a refusal that says so, never somebody else's process.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Aimed {
+    pid: u32,
+    started_at: i64,
+}
+
+impl Aimed {
+    /// Aims at `pid` only while it is still the process that started at `started_at`.
+    ///
+    /// `Ok(None)` is a pid that holds nothing of ours now: there is nothing to end, and
+    /// nothing that could be mistaken for it.
+    pub(crate) fn recorded(pid: u32, started_at: i64) -> anyhow::Result<Option<Self>> {
+        if pid == 0 {
+            return Ok(None);
+        }
+        match process_started_at(pid)? {
+            Some(actual) if same_process(started_at, actual) => Ok(Some(Self {
+                pid,
+                started_at: actual,
+            })),
+            Some(_) | None => Ok(None),
+        }
+    }
+
+    /// Aims at whatever holds `pid` now, recording the time that names it for later.
+    pub(crate) fn now(pid: u32) -> anyhow::Result<Option<Self>> {
+        if pid == 0 {
+            return Ok(None);
+        }
+        Ok(process_started_at(pid)?.map(|started_at| Self { pid, started_at }))
+    }
+
+    pub(crate) fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    pub(crate) fn started_at(&self) -> i64 {
+        self.started_at
+    }
+
+    /// Whether the process at this pid is still the one aimed at.
+    fn still_here(&self) -> anyhow::Result<bool> {
+        names_process(self.pid, self.started_at)
+    }
+}
+
+/// Aims at `pid` only when it is this program's own executable.
+///
+/// # Invariant
+///
+/// A pid read from the system's table says nothing about what the process is, and a
+/// `--force` that trusted one could end the user's browser or desktop shell and, with
+/// the tree, everything those started. The image name is what makes the answer this
+/// program; the creation time read here is what makes the kill later refuse a pid that
+/// has been handed to another process in between.
+pub(crate) fn aimed_own_program(pid: u32) -> anyhow::Result<Option<Aimed>> {
+    let Some(aim) = Aimed::now(pid)? else {
+        return Ok(None);
+    };
+    let mine = std::env::current_exe()?;
+    let mine = mine.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    match (mine, process_image_name(pid)?) {
+        (Some(mine), Some(theirs)) if theirs.to_lowercase() == mine => Ok(Some(aim)),
+        _ => Ok(None),
+    }
+}
+
+/// The image name `pid` runs, as the system's own process list has it.
+///
+/// # Invariant
+///
+/// `tasklist` rather than the API behind it, for the reason `netstat` is used for a
+/// port's owner: this runs once, in a refusal nobody is expected to reach.
+#[cfg(windows)]
+fn process_image_name(pid: u32) -> anyhow::Result<Option<String>> {
+    let out = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output()?;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        // A filter that matches nothing prints an information line instead of a row.
+        let Some(rest) = line.trim().strip_prefix('"') else {
+            continue;
+        };
+        return Ok(rest.split('"').next().map(|name| name.to_string()));
+    }
+    Ok(None)
+}
+
+#[cfg(not(windows))]
+fn process_image_name(_pid: u32) -> anyhow::Result<Option<String>> {
+    Ok(None)
+}
+
+/// Kills a process tree: the process aimed at, and the descendants it had while it lived.
+///
+/// # Invariant
+///
+/// Nothing is ended by a pid alone, and `taskkill /T` is never used. `/T` resolves
+/// descendants by parent id at the instant it runs, and a parent id outlives its process:
+/// the number that named one of our children a minute ago can name the user's desktop
+/// shell now, whose children are every window they have open. So the tree is read here,
+/// each member is aimed at by the creation time that names it, and every kill re-reads
+/// that time first. A leader that had already ended before the first read leaves
+/// descendants this call cannot prove were its own: they are left, and so is said.
 ///
 /// See `docs/notes/server-tools-detached.md`.
-pub(crate) async fn kill_tree(pid: u32) -> bool {
-    if pid == 0 {
+pub(crate) async fn kill_tree(aim: Aimed) -> bool {
+    let pid = aim.pid();
+    if is_self_or_ancestor(pid) {
+        tracing::warn!(pid, "refusing to kill a tree that holds this server");
         return false;
+    }
+    match aim.still_here() {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(pid, "refusing to kill: that pid names another process now");
+            return false;
+        }
+        Err(e) => {
+            tracing::warn!(pid, "could not read the process a kill aimed at: {e}");
+            return false;
+        }
     }
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output()
-            .await;
-        // MSYS descendants do not always die with `taskkill /T`: re-read the verified
-        // tree and force each member left.
-        let remaining = match windows_tree_pids(pid) {
-            Ok(remaining) => remaining,
-            Err(e) => {
-                tracing::warn!(pid, "could not inspect detached process tree: {e}");
+        let mut aimed: HashMap<u32, i64> = HashMap::from([(pid, aim.started_at)]);
+        let deadline = tokio::time::Instant::now() + KILL_CONFIRM;
+        loop {
+            aimed = match windows_aimed_tree(&aimed) {
+                Ok(alive) => alive,
+                Err(e) => {
+                    tracing::warn!(pid, "could not inspect detached process tree: {e}");
+                    return false;
+                }
+            };
+            if aimed.is_empty() {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(pid, left = aimed.len(), "a detached tree outlived the kill");
                 return false;
             }
-        };
-        for member in remaining {
-            let _ = Command::new("taskkill")
-                .args(["/PID", &member.to_string(), "/T", "/F"])
-                .output()
-                .await;
-        }
-        return match wait_windows_tree_gone(pid, KILL_CONFIRM).await {
-            Ok(gone) => gone,
-            Err(e) => {
-                tracing::warn!(pid, "could not confirm detached process tree exit: {e}");
-                false
+            for (member, started_at) in &aimed {
+                // Read again here, not only when the tree was listed: the gap between
+                // the two is exactly where a recycled pid would be somebody else's.
+                if matches!(names_process(*member, *started_at), Ok(true)) {
+                    let _ = Command::new("taskkill")
+                        .args(["/PID", &member.to_string(), "/F"])
+                        .output()
+                        .await;
+                }
             }
-        };
+            tokio::time::sleep(SIGNAL_POLL).await;
+        }
     }
     // Unix: TERM, grace, then KILL. Neither a delivered signal nor a dead leader
     // proves the group empty.
@@ -977,9 +1118,14 @@ pub(crate) async fn kill_tree(pid: u32) -> bool {
     }
 }
 
-/// Includes descendants whose leader has exited: ToolHelp retains their parent id.
+/// Every process the system lists right now, as `(pid, parent pid)`.
+///
+/// # Invariant
+///
+/// One snapshot for the whole answer: a tree assembled process by process is not one
+/// tree, and these parent ids are the only place an orphan's owner is still recorded.
 #[cfg(windows)]
-fn windows_tree_pids(pid: u32) -> anyhow::Result<Vec<u32>> {
+fn windows_process_pairs() -> anyhow::Result<Vec<(u32, u32)>> {
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
     };
@@ -1015,39 +1161,42 @@ fn windows_tree_pids(pid: u32) -> anyhow::Result<Vec<u32>> {
             }
         }
         CloseHandle(snapshot);
-
-        let mut tree = HashSet::from([pid]);
-        loop {
-            let before = tree.len();
-            for (child, parent) in &processes {
-                if *child != pid && tree.contains(parent) {
-                    tree.insert(*child);
-                }
-            }
-            if tree.len() == before {
-                break;
-            }
-        }
-        Ok(processes
-            .iter()
-            .filter(|(process, _)| tree.contains(process))
-            .map(|(process, _)| *process)
-            .collect())
+        Ok(processes)
     }
 }
 
+/// The members of `known` that are still the processes they were read as, plus every live
+/// descendant of one, each recorded with the creation time read now.
+///
+/// # Invariant
+///
+/// A descendant is collected only under a member this call still reads as the aimed
+/// process, and only with a creation time taken at that moment, so every name in the
+/// answer can be re-checked before it is killed. A leader that ended before the first
+/// read contributes nothing: its old children are not provably its own.
 #[cfg(windows)]
-async fn wait_windows_tree_gone(pid: u32, within: Duration) -> anyhow::Result<bool> {
-    let deadline = tokio::time::Instant::now() + within;
-    loop {
-        if windows_tree_pids(pid)?.is_empty() {
-            return Ok(true);
+fn windows_aimed_tree(known: &HashMap<u32, i64>) -> anyhow::Result<HashMap<u32, i64>> {
+    let pairs = windows_process_pairs()?;
+    let mut tree: HashMap<u32, i64> = HashMap::new();
+    for (pid, started_at) in known {
+        if matches!(names_process(*pid, *started_at), Ok(true)) {
+            tree.insert(*pid, *started_at);
         }
-        if tokio::time::Instant::now() >= deadline {
-            return Ok(false);
-        }
-        tokio::time::sleep(SIGNAL_POLL).await;
     }
+    let mut seen: HashSet<u32> = tree.keys().copied().collect();
+    let mut frontier: Vec<u32> = seen.iter().copied().collect();
+    while let Some(parent) = frontier.pop() {
+        for (pid, owner) in &pairs {
+            if *owner != parent || !seen.insert(*pid) {
+                continue;
+            }
+            if let Some(started_at) = process_started_at(*pid)? {
+                tree.insert(*pid, started_at);
+                frontier.push(*pid);
+            }
+        }
+    }
+    Ok(tree)
 }
 
 /// Reaps without an unbounded wait; a leader that escaped its group is killed by

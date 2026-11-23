@@ -233,14 +233,44 @@ there on purpose -- the next start adopts the process and says what it finds.
 
 ## kill_tree
 
-A detached command is almost always a shell running several processes, so
-killing the leader alone would leave the real work behind. On Windows that
-means `taskkill /T`, which only understands real Windows pids -- one more
-reason the job has to be our own child rather than a shell background job.
+A detached command is almost always a shell running several processes, so killing the
+leader alone would leave the real work behind.
 
-The same reasoning applies to a persistent shell being shut down: its children
-hold the write end of the pipe we read, so killing only the shell leaves a
-reader waiting for a close that never comes.
+The tree is *read*, never delegated: `taskkill /T` resolves descendants by parent id at
+the instant it runs, and a parent id outlives its process. The number that named one of
+our children a minute ago is handed to a new process the moment the last handle to the
+old one closes, so a `/T` sweep can walk into a tree that belongs to somebody else -- and
+when that number lands on the desktop shell, the sweep ends every window the user has
+open. 2026-11-23 was exactly that: the shell was killed and restarted four times in
+twelve minutes, each restart taking the user's terminals and browsers with it.
+
+So `kill_tree` takes an `Aimed` -- a pid together with the creation time that names it --
+and refuses unless the process at that pid still started then. It lists the tree itself,
+from one ToolHelp snapshot, aims at every member with the creation time read at that
+moment, and re-reads each member's time immediately before `taskkill /PID`, with no `/T`.
+Descendants that appear between two reads are caught by the next round inside
+`KILL_CONFIRM`, which is the case `/T` was standing in for.
+
+A leader that had already ended before the first read contributes nothing: what it left
+cannot be told apart from another process's children, so the orphans are left and the
+refusal is logged. An orphan is a smaller harm than somebody else's process.
+
+The same reasoning applies to a persistent shell being shut down: its children hold the
+write end of the pipe we read, so killing only the shell leaves a reader waiting for a
+close that never comes. On Windows that shell is ended through the job that holds it,
+which names no pid at all.
+
+## Aimed
+
+`Aimed` is the only thing a kill accepts, and each of the three ways to build one proves
+what it names:
+
+- `Aimed::now(pid)` for a process this server holds a handle to: Windows cannot reuse the
+  number while that handle lives.
+- `Aimed::recorded(pid, started_at)` for a row an earlier run wrote.
+- `aimed_own_program(pid)` for the pid `--force` read out of the system's port table: the
+  image name has to be this program's, or nothing is stopped. A port table says which
+  process holds an address, never what that process is.
 
 ## kill_tree (unix)
 

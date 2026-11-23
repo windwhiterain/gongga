@@ -447,7 +447,15 @@ impl Runner {
         }
         let entry = self.shell(shell).await?;
         entry.open_for_work()?;
+        // Windows has no signal: the job that holds the shell is the only verb there, and
+        // it ends the tree without naming a pid that may already have been handed on.
+        #[cfg(unix)]
         let delivered = send(entry.pid, signal).await;
+        #[cfg(not(unix))]
+        let delivered = {
+            let _ = signal;
+            end_group(&entry).await.confirmed
+        };
         Ok(json!({"delivered": delivered}))
     }
 
@@ -612,26 +620,18 @@ async fn wait_group_gone(pid: u32, within: Duration) -> anyhow::Result<bool> {
     }
 }
 
-/// One signal, to the whole group where the platform has one.
+/// One signal, to the whole group: the platform's own way to ask a shell to stop.
+///
+/// # Invariant
+///
+/// Unix only. Windows has no signal, and the verb it had instead -- a tree kill by pid --
+/// names nothing that proves which process is meant, so a shell there is ended through
+/// the job that holds it.
+#[cfg(unix)]
 async fn send(pid: u32, signal: &str) -> bool {
-    #[cfg(unix)]
-    {
-        crate::tools::detached::signal_group(pid, signal)
-            .await
-            .is_ok()
-    }
-    #[cfg(windows)]
-    {
-        // No signal numbers are reachable here: the verified tree kill is the
-        // only verb, and TERM and KILL both mean it.
-        let _ = signal;
-        crate::tools::detached::kill_tree(pid).await
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (pid, signal);
-        false
-    }
+    crate::tools::detached::signal_group(pid, signal)
+        .await
+        .is_ok()
 }
 
 /// Starts this payload's relay for one channel, detached, and answers where that

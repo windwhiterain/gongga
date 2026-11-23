@@ -58,7 +58,7 @@ pub struct Scripts {
     env: Vec<(String, String)>,
     state: Mutex<State>,
     /// Pids of running scripts, so `cancel` does not leave one behind.
-    running: Mutex<HashMap<u32, String>>,
+    running: Mutex<HashMap<u32, (i64, String)>>,
     /// Set when stopping, so a killed script's caller is told why.
     stopping: std::sync::atomic::AtomicBool,
 }
@@ -149,7 +149,17 @@ impl Scripts {
         };
         let pid = child.id();
         if let Some(pid) = pid {
-            self.running.lock().await.insert(pid, command.to_string());
+            match crate::tools::detached::Aimed::now(pid) {
+                Ok(Some(aim)) => {
+                    self.running
+                        .lock()
+                        .await
+                        .insert(pid, (aim.started_at(), command.to_string()));
+                }
+                // Nothing to aim at is nothing this server may end later.
+                Ok(None) => tracing::warn!(pid, "a script ended before it could be aimed at"),
+                Err(e) => tracing::warn!(pid, "could not aim at a script: {e}"),
+            }
             // A script is a job of this server: a server that dies takes it along.
             arm(pid);
         }
@@ -181,18 +191,22 @@ impl Scripts {
     pub async fn stop_all(&self) -> usize {
         self.stopping
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let running: Vec<(u32, String)> = self
+        let running: Vec<(u32, i64, String)> = self
             .running
             .lock()
             .await
             .iter()
-            .map(|(pid, name)| (*pid, name.clone()))
+            .map(|(pid, (started_at, name))| (*pid, *started_at, name.clone()))
             .collect();
-        for (pid, name) in &running {
+        for (pid, started_at, name) in &running {
             tracing::warn!(pid, command = %name, "stopping a script left running by the stop");
             // The job object is the tree when this server holds one.
             crate::tools::detached::disarm_detached(*pid);
-            crate::tools::detached::kill_tree(*pid).await;
+            // Aimed: a pid handed to another process since the script started is
+            // refused, so a stop cannot end a stranger.
+            if let Ok(Some(aim)) = crate::tools::detached::Aimed::recorded(*pid, *started_at) {
+                crate::tools::detached::kill_tree(aim).await;
+            }
         }
         running.len()
     }

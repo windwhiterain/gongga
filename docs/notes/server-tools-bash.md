@@ -197,8 +197,9 @@ grandchild means a reader blocked on a close that never comes.
 
 ## BashShell::kill (the fallback)
 
-Fallback for the case the job could not be created: the leader still has to go,
-and `taskkill /T` may catch some of its children.
+Fallback for the case the job could not be created: the leader still has to go, and
+`kill_tree` ends the tree it can prove is ours -- aimed by creation time, never by a
+bare pid, and never with `taskkill /T`. See `server-tools-detached.md`.
 
 ## BashShell::cd
 
