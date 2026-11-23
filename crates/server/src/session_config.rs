@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 /// SPEC `Model := {provider, model}`.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRef {
     #[serde(default)]
     pub provider: Option<String>,
@@ -20,15 +21,33 @@ pub struct ModelRef {
 /// SPEC's `Model := {provider, model}` and the flat `provider/model` name a
 /// session's row and a sticky entry already hold are the same value; both are read
 /// here so a client can hand over whichever it keeps. See `docs/notes/server-session-config.md`.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
+///
+/// Read by hand, not as an untagged enum: that shape answers "data did not match any
+/// variant", hiding which key is wrong.
+#[derive(Debug)]
 pub enum ModelValue {
     Spelled(String),
     Ref(ModelRef),
 }
 
+impl<'de> Deserialize<'de> for ModelValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match &value {
+            serde_json::Value::String(text) => Ok(ModelValue::Spelled(text.clone())),
+            serde_json::Value::Object(_) => serde_json::from_value(value.clone())
+                .map(ModelValue::Ref)
+                .map_err(serde::de::Error::custom),
+            other => Err(serde::de::Error::custom(format!(
+                "model takes a `provider/model` name or {{provider, model}}, got {other}"
+            ))),
+        }
+    }
+}
+
 /// SPEC `LiveCompact := {enabled, interval_tokens, mode}`.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveCompact {
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -40,6 +59,7 @@ pub struct LiveCompact {
 
 /// SPEC `ModelConfig`. Fields are optional: a delta keeps what it omits.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelConfig {
     #[serde(default)]
     pub model: Option<ModelValue>,
@@ -63,6 +83,7 @@ pub struct ModelConfig {
 /// `remote://<name>/<path>` `cwd` is that peer, a bare one is the machine it already
 /// records. There is no second field to disagree with the first.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Workspace {
     #[serde(default)]
     pub cwd: Option<String>,
@@ -71,7 +92,14 @@ pub struct Workspace {
 }
 
 /// SPEC `SessionConfig := {model_config, workspace, keep_alive}`.
+///
+/// # Invariant
+///
+/// Every object in this document refuses a key it does not have, at every level: it is
+/// typed by hand, and a key that landed one level too deep would otherwise change
+/// nothing and say nothing. See `docs/notes/server-session-config.md`.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionConfig {
     #[serde(default)]
     pub model_config: Option<ModelConfig>,

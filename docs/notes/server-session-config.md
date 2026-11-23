@@ -13,6 +13,13 @@ names `workspace.cwd` and nothing else changes the directory and nothing else.
 A stated `null` is a value, not an absence, for the two fields that take it: `remote`
 and `cache_tier` are cleared by saying `none` (the one string spelling) or `null`.
 
+Every object in the document refuses a key it does not have. This is typed by hand, and
+the shapes have moved before (`live_compact` and `prefix_cache_plan` sat beside
+`model_config` until they moved inside it): an ignored key is a delta that answers
+`ok` and changes nothing, and the operator reads that answer as done. The refusal names
+the key and the ones that would have been taken. `model` is read by hand for the same
+reason -- as an untagged enum it could only say the value matched no variant.
+
 `workspace.worktree` is the one setting here that is not a preference of the session but
 a thing made for it: it is read when the session is created and refused afterwards, and
 `none` -- its default, so a delta that says nothing says none -- makes nothing. What the
