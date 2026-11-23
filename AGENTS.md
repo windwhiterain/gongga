@@ -191,6 +191,37 @@ Remove-Item -LiteralPath $empty -Force -Recurse -ErrorAction SilentlyContinue
 - **`rm` 掉不掉 `.db` 是信号**：`Device or resource busy` 说明还有进程握着那个 home。
   这时去杀进程，不要去 `rm -f`。
 
+### 2026-11-23：一个「全选」的过滤条件，把整台机器杀了五遍
+
+`mask-offload` 在 `.dev/verify/field-move.sh` 的收尾里写了一个 killer，本意是「杀掉命令行里
+出现这个测试 home 的进程」，实际每次运行都杀掉**除 bash.exe 与 powershell.exe 以外的所有进程**
+——explorer、sihost、SearchHost、svchost。用户看到的是桌面和任务栏反复消失重建，像被注销；
+机器根本没重启（`LastBootUpTime` 一直是 11-06），Winlogon 1002「外壳程序意外停止」一次接一次。
+
+三件事叠在一起，每一件单独看都无害：
+
+| 环节 | 事实 |
+| --- | --- |
+| `powershell -File x.ps1 -Homes a b c` | 只把**第一个**值绑到 `[string[]]`，`$Homes[1]`、`$Homes[2]` 是 `$null` |
+| `'abc'.Contains($null)` | PowerShell 把 `$null` 转成空串，而 `Contains('')` 是 **True** |
+| 排除名单 | 只有 bash / powershell，其余全部 `Stop-Process -Force` |
+
+**判据（三条，都是硬约束）：**
+
+1. **判「是不是我的」只能用 pid**，来源只能是该 home 自己的 `server.lock`（必要时加它的
+   `ParentProcessId`）。按镜像名、按命令行子串、按「其余全部」，是同一个错误的三种写法。
+2. **空模式匹配一切。** 任何 `Contains($x)` / `-like "*$x*"` / 正则 / `grep -v` 反选，只要
+   `$x` 可能是 `$null` 或 `''`，它就是「全选」。先断言非空，再匹配。
+3. **杀进程的脚本先「只打印不杀」跑一遍**，看清它到底匹配了哪些 pid 再决定。`-File` 的数组
+   参数只绑第一个值这种事，也靠这种跑法验，不要凭印象。
+
+写出过 killer 的脚本不留在树里：`field-move.sh` 已删除，它验的那组拒绝目前没有 L3 覆盖，重做时
+按上面第 1 条写收尾。
+
+同一天补了服务端那侧的同类隐患：`kill_tree` 只接受「pid + 创建时间」的 `Aimed`，不再用
+`taskkill /T`（`/T` 按父 pid 现场展开，而父 pid 活得比进程久）。见
+`docs/notes/server-tools-detached.md`。
+
 ### 别让程序替你杀
 
 上面那一节讲的是**你**动手。真正难防的是另一种：你按下的键让别的进程去杀——

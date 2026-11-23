@@ -21,7 +21,7 @@ Get-CimInstance Win32_Process | Where-Object {
 - 调用方写 `-Homes a b c`，但 `powershell -File` 只把**第一个**值绑到 `[string[]]` 参数上：
   实测 `count=1`，`$Homes[1]` 与 `$Homes[2]` 是 `$null`。
 - PowerShell 把 `$null` 传给 `String.Contains([string])` 时转换成**空串**，而
-  `'abc'.Contains('')` 是 `True`。于��第二个分支对**每个有命令行的进程**都成立。
+  `'abc'.Contains('')` 是 `True`。于是第二个分支对**每个有命令行的进程**都成立。
 - 排除名单只有 bash/powershell，所以其余全部被杀。
 
 读一遍即可复现（只数、不杀）：
@@ -50,7 +50,8 @@ processes the filter matches: 49
 
 ## 收尾
 
-- `field-move.sh` 的收尾改成：只杀 `server.lock` 里的那一个 pid；`rm` 不掉就打印
-  「left for a human」，不再追。
+- `field-move.sh` 本身已删除（用户 2026-11-23 的决定）：写出过 killer 的脚本不留在树里。
+  它验的那组拒绝（session config 里 `live_compact` / `prefix_cache_plan` 的位置）目前没有 L3
+  覆盖；重做时收尾只杀 `server.lock` 里的那一个 pid，`rm` 不掉就打印「left for a human」。
 - 早先两份 verify 记录里「杀掉命令行里出现该 home 的所有进程，只留 bash/powershell」的
   建议已改成上面这条。
