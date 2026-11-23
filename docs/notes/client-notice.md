@@ -1,21 +1,32 @@
-# tui/notice.rs
+# client/notice.rs
 
 ## What it is for
 
-A session that stops is a fact the window can miss: the operator is reading
-another session, or the window is behind something else. The toast says it on the
-desktop, where the operator is looking when they are not reading the window. The
-same need the DSH plugin `dsh-turn-notify` answers on the machine it runs on --
-the mechanism is borrowed from it, the wording is this harness's.
+A session that stops is a fact the operator can miss: they are reading another
+session, or the window is behind something else. The toast says it on the desktop,
+where the operator is looking when they are not reading the window. The same need
+the DSH plugin `dsh-turn-notify` answers on the machine it runs on -- the mechanism
+is borrowed from it, the wording is this harness's.
+
+## The notice is the client's, not a front-end's
+
+The client raises it itself, at the one gate where `Event::Status` is handled. No
+front-end is asked to: a terminal, a browser, or no UI at all attached to this
+client process hear the same sound, because the sound is not theirs to raise. A
+front-end that cannot draw a toast -- the browser -- is not a session that stops in
+silence.
+
+`Sink::stopped` stays, and is only the view's fact: the terminal marks a session
+that stopped while it was not drawn (`docs/notes/tui-lib.md`). A front-end that
+ignores the hook changes no sound, and one that honours it adds no second toast.
 
 ## Whose turn end it is
 
-A toast is a client's, so only a session that belongs to this client raises one.
+A notice is a client's, so only a session that belongs to this client raises one.
 A subagent, a dream or any other session the window only heard about from the
 server has no business interrupting the operator; its caller learns of the turn
-end through its own subscription. The client decides this once, where the
-`Event::Status` is handled: a session not in the window's client set never
-reaches a front-end's `stopped`, so no front-end can raise a toast for it.
+end through its own subscription. The gate is one comparison: a session not in the
+client set raises nothing and reaches no front-end's `stopped`.
 
 The client set is the window's state (`client.toml`), pushed into the client on
 every sync, and it holds only stated marks: SPEC's default is true for a session
@@ -24,6 +35,9 @@ a session the server did not already hold -- and false for every other. Drawing 
 session, typing to it or hiding it again says nothing about whose it is;
 `set_client_session` is the only other way in or out. See
 `docs/notes/tui-state.md`.
+
+A headless one-shot command reaches the same gate with an empty client set -- it
+reads no window state -- so a command line never raises a notice.
 
 ## The file that predates the rule
 
@@ -61,18 +75,17 @@ doing, not ours, and it is the same key the DSH plugin's `dsh` has.
 
 ## Nothing is waited for
 
-The toast is a child process, and the window does not wait for it: the shell
-takes a second to start, and the window has a frame to draw in the meantime. A
-toast that cannot be raised is reported on the status line and otherwise
-forgotten -- it is a courtesy, and a courtesy that blocks the window is worse
-than no courtesy at all.
+The toast is a child process, and the client does not wait for it: the shell
+takes a second to start, and the client has events to handle in the meantime. A
+toast that cannot be raised is reported as a note and otherwise forgotten -- it
+is a courtesy, and a courtesy that blocks the client is worse than no courtesy
+at all.
 
-The child's output goes to null. A window is a terminal of its own, and a toast
-that printed its PowerShell progress into the operator's screen would be worse
-than no toast.
+The child's output goes to null. A toast that printed its PowerShell progress
+into the operator's screen would be worse than no toast.
 
 ## A machine with no toast
 
 The module is one function on Windows and a no-op elsewhere, so the crate builds
 and runs the same everywhere. A machine that is not Windows has no notification
-centre to answer, and a window that says nothing is the honest answer there.
+centre to answer, and a client that says nothing is the honest answer there.

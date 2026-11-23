@@ -11,6 +11,7 @@ pub mod json_command;
 pub mod json_place;
 pub mod json_text;
 pub mod leaf;
+pub mod notice;
 pub mod render_wire;
 pub mod runtime;
 pub mod server;
@@ -651,9 +652,10 @@ pub trait Sink {
     /// # Invariant
     ///
     /// Told once per turn that ended in this client's own session, never for a
-    /// turn still running and never for one in a session another client owns: a
-    /// front-end that shows it and one that ignores it hear the same fact. See
-    /// `docs/notes/client-lib.md` and `docs/notes/tui-notice.md`.
+    /// turn still running and never for one in a session another client owns.
+    /// The notice itself is the client's own act at this same gate; this hook is
+    /// the view's fact, so a front-end that ignores it changes no sound. See
+    /// `docs/notes/client-lib.md` and `docs/notes/client-notice.md`.
     fn stopped(&mut self, _session: &str, _failed: bool) {}
 }
 
@@ -862,8 +864,8 @@ pub struct Client {
     /// # Invariant
     ///
     /// The window's answer, pushed on every sync: this layer never decides whose
-    /// turn end is news. A session nobody marked is not in here, and its stop is
-    /// kept from the front-ends so it raises no toast. See `docs/notes/tui-notice.md`.
+    /// turn end is news. A session nobody marked is not in here, and its stop
+    /// raises no notice. See `docs/notes/client-notice.md`.
     client_sessions: Vec<String>,
     /// Calls that streamed their arguments, by id: their structure fills that block.
     calls: HashSet<String>,
@@ -1285,7 +1287,8 @@ impl Client {
     /// # Invariant
     ///
     /// A view the front-end dictates, as [`Self::set_shown`] is: only these
-    /// sessions' turn ends reach a front-end as a toast. See `docs/notes/tui-notice.md`.
+    /// sessions' turn ends are announced, and the client raises the notice itself.
+    /// See `docs/notes/client-notice.md`.
     pub fn set_client_sessions(&mut self, names: Vec<String>) {
         self.client_sessions = names;
     }
@@ -1841,13 +1844,25 @@ impl Client {
                     LineKind::System,
                     &format!("{prefix}{label}{suffix}"),
                 );
-                // Not a stop to announce: TurnOutcome, or another client's session.
-                // See `docs/notes/tui-notice.md`.
+                // Not a stop to announce: TurnOutcome, or another client's session;
+                // the notice itself is the client's act at this gate.
                 if status != SessionStatus::Running
                     && outcome != Some(TurnOutcome::Cancelled)
                     && self.client_sessions.contains(&session)
                 {
-                    sink.stopped(&session, status == SessionStatus::Error);
+                    let failed = status == SessionStatus::Error;
+                    let body = if failed {
+                        "the turn failed"
+                    } else {
+                        "the turn ended"
+                    };
+                    if let Err(e) = crate::notice::toast(&session, body) {
+                        sink.note(
+                            LineKind::Error,
+                            &format!("the toast could not be shown: {e}"),
+                        );
+                    }
+                    sink.stopped(&session, failed);
                 }
                 self.refresh(sink);
             }

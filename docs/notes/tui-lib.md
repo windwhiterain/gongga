@@ -304,10 +304,10 @@ neither is touched here -- a sticky session naming a deleted session scrolls not
 
 ## Tui::stopped
 
-A session's turn ended, and the window says so twice: once outside the window, as a
-toast on the desktop (`docs/notes/tui-notice.md`), and once inside it, as the mark of a
-session that stopped while it was not drawn (`docs/notes/tui-panes.md`,
-`docs/notes/tui-tree.md`).
+A session's turn ended, and the window marks it: the mark of a session that stopped
+while it was not drawn (`docs/notes/tui-panes.md`, `docs/notes/tui-tree.md`). The
+toast on the desktop is not this hook's -- the client raises it at its own gate,
+whether or not a terminal is attached (`docs/notes/client-notice.md`).
 
 A turn somebody stopped is not this: `cli::Client` hears `TurnOutcome::Cancelled` on
 the status and says nothing, so `Tui::stopped` is the end of a turn the agent reached

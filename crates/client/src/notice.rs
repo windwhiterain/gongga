@@ -1,10 +1,11 @@
-//! A toast on the desktop, so a session that stops says so outside the window.
+//! A toast on the desktop, so a session that stops says so outside any window.
 //!
 //! # Invariant
 //!
-//! The toast is a courtesy, never a duty: a window that cannot show one still
-//! works, and a toast that fails says so instead of holding the window up.
-//! See `docs/notes/tui-notice.md`.
+//! The notice is the client's own act, raised where the one gate is: it belongs
+//! to no front-end, so a window that draws nothing still hears its session stop.
+//! It is a courtesy, never a duty -- a toast that fails says so instead of
+//! holding the client up. See `docs/notes/client-notice.md`.
 
 /// The toast as the notification centre shows it: the name and the sentence.
 pub fn toast(title: &str, body: &str) -> anyhow::Result<()> {
@@ -15,8 +16,8 @@ pub fn toast(title: &str, body: &str) -> anyhow::Result<()> {
 ///
 /// # Invariant
 ///
-/// Nothing is waited for: the window draws its next frame while the toast is on
-/// its way, so a slow shell cannot hold the window up.
+/// Nothing is waited for: the client handles its next event while the toast is
+/// on its way, so a slow shell cannot hold it up.
 #[cfg(windows)]
 fn show(title: &str, body: &str) -> anyhow::Result<()> {
     use anyhow::Context;
@@ -36,7 +37,7 @@ fn show(title: &str, body: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A machine with no toast to show: the window says nothing and carries on.
+/// A machine with no toast to show: the client says nothing and carries on.
 #[cfg(not(windows))]
 fn show(_title: &str, _body: &str) -> anyhow::Result<()> {
     Ok(())

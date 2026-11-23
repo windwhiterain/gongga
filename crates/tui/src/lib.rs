@@ -11,7 +11,6 @@ mod closing;
 mod cover;
 mod input;
 mod log;
-mod notice;
 mod panes;
 pub mod pipe;
 pub mod program;
@@ -955,28 +954,18 @@ impl Tui {
         self.dirty = true;
     }
 
-    /// A session stopped: its turn ended, and the window says so.
+    /// A session stopped: its turn ended, and the window marks it unseen.
     ///
     /// # Invariant
     ///
-    /// The toast is outside the window, and the mark is inside it: a session that
-    /// stops while it is not drawn is the one the operator would not notice. A turn
-    /// somebody cancelled never reaches here -- the command layer does not announce
-    /// a stop that was asked for. See `docs/notes/tui-lib.md`.
-    pub fn stopped(&mut self, session: &str, failed: bool) {
+    /// The notice is the client's, raised at its own gate; the mark is the
+    /// window's: a session that stops while it is not drawn is the one the
+    /// operator would not notice. A turn somebody cancelled never reaches here --
+    /// the command layer does not announce a stop that was asked for. See
+    /// `docs/notes/tui-lib.md`.
+    pub fn stopped(&mut self, session: &str, _failed: bool) {
         if !self.screen.panes.is_shown(session) {
             self.screen.panes.mark_unseen(session);
-        }
-        let body = if failed {
-            "the turn failed"
-        } else {
-            "the turn ended"
-        };
-        if let Err(e) = crate::notice::toast(session, body) {
-            self.say(
-                LineKind::Error,
-                format!("the toast could not be shown: {e}"),
-            );
         }
         self.dirty = true;
     }

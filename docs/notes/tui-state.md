@@ -147,7 +147,7 @@ server did not already hold. Drawing a session, typing to it or hiding it again
 writes no mark, so a subagent or a dream the operator looked at ends its turn
 without interrupting them. A file with no `client_session` section at all predates
 this rule and is seeded once from the sessions it draws. See
-`docs/notes/tui-notice.md`.
+`docs/notes/client-notice.md`.
 
 ## BlockSize and BoxEdge
 

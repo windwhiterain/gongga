@@ -184,6 +184,7 @@ library holds the loop it runs.
 | note | source |
 | --- | --- |
 | [`client-lib.md`](client-lib.md) | `crates/client/src/lib.rs` |
+| [`client-notice.md`](client-notice.md) | `crates/client/src/notice.rs` (the turn-end toast, raised by the client) |
 | [`client-server.md`](client-server.md) | `crates/client/src/server.rs` |
 | [`client-child.md`](client-child.md) | `crates/client/src/child.rs` |
 | [`client-catalog.md`](client-catalog.md) | `crates/client/src/catalog.rs` |
@@ -229,7 +230,6 @@ argv to `client::main` when invoked under that name or given a command.
 | [`tui-input.md`](tui-input.md) | `crates/tui/src/input.rs` |
 | [`tui-log.md`](tui-log.md) | `crates/tui/src/log.rs` |
 | [`tui-markdown.md`](tui-markdown.md) | `crates/tui/src/markdown.rs` |
-| [`tui-notice.md`](tui-notice.md) | `crates/tui/src/notice.rs` |
 | [`tui-panes.md`](tui-panes.md) | `crates/tui/src/panes.rs` |
 | [`tui-pipe.md`](tui-pipe.md) | `crates/tui/src/pipe.rs` (the window as a pipe host) |
 | [`tui-render.md`](tui-render.md) | `crates/tui/src/render.rs` |

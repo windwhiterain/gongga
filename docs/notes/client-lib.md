@@ -130,7 +130,11 @@ that this decision is not a parse of `detail`, which is a sentence for a person.
 Nor for a session that is not this client's own. The window's client set gates the
 hook, so a subagent's, a mentor's or a monitor's turn end never reaches a front-end;
 only a session created in this client, or one it explicitly marked, is announced.
-See `docs/notes/tui-notice.md`.
+
+The notice itself -- the desktop toast -- is the client's own act at this same gate,
+not a front-end's: it is raised whether the UI attached is a terminal, a browser, or
+none. `stopped` is only the view's fact, so a front-end that ignores it changes no
+sound. See `docs/notes/client-notice.md`.
 
 ## Client::handle_response
 

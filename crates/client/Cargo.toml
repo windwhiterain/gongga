@@ -32,6 +32,8 @@ shell-words = "1"
 # front-end draws, so the same answer wraps the same way in every one of them.
 unicode-width = "0.2"
 jsonc-parser = "0.34"
+# The toast's script travels as `-EncodedCommand` wants it: UTF-16LE, base64.
+base64 = "0.23"
 
 [dev-dependencies]
 # The tests dial a server in-process, as `crates/server`'s own do.

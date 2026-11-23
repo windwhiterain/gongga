@@ -283,7 +283,7 @@ impl Shown {
 /// default is true for a session *created* in this client and false for every
 /// other. A subagent, a mentor or a monitor the operator once looked at is not
 /// one of its own, however long its pane stayed open. See
-/// `docs/notes/tui-notice.md`.
+/// `docs/notes/client-notice.md`.
 pub struct ClientMark {
     path: PathBuf,
     client: BTreeMap<String, bool>,
@@ -774,7 +774,7 @@ impl State {
     /// named, so such a file carries no answer at all. The sessions it draws are
     /// the operator's own; the rest -- every subagent, mentor and monitor it once
     /// looked at -- fall to false. Only while nothing was ever stated, so a mark
-    /// the operator wrote is never overwritten. See `docs/notes/tui-notice.md`.
+    /// the operator wrote is never overwritten. See `docs/notes/client-notice.md`.
     fn seed_membership(&mut self) {
         if self.client.stated() {
             return;

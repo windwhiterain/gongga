@@ -98,7 +98,8 @@ value = "fake/flash-fake"
 TOML
 before=$(md5sum "$home/client.toml" | cut -d' ' -f1)
 
-cli=("$cli_bin" --home "$home" --server "127.0.0.1:$port")
+# A bare one-shot: no caller session from the environment, and no window state.
+cli=(env -u GONGGA_SESSION "$cli_bin" --home "$home" --server "127.0.0.1:$port")
 "${cli[@]}" '{"name":"set_session","args":{"id":"s1","model":"fake/flash-fake"}}' >/dev/null 2>&1
 after_create=$(md5sum "$home/client.toml" | cut -d' ' -f1)
 
@@ -111,10 +112,11 @@ read_back=$("${cli[@]}" '{"name":"get_messages","args":{"session":"s1"}}' 2>&1)
 [[ "$read_back" != *"should not land"* ]]
 ok "the refused message never reached s1" $?
 
-# 2. The same for a read: no sticky range, no sticky session.
+# 2. The same for a read: `session` is optional in the catalog (the caller's own
+#    session fills it), so a one-shot with no caller is refused by the handler.
 got=$("${cli[@]}" '{"name":"get_messages","args":{}}' 2>&1); code=$?
-[[ $code -ne 0 && "$got" == *"missing required argument"* ]]
-ok "get_messages with no --session is refused" $?
+[[ $code -ne 0 && "$got" == *"acts on a session"* ]]
+ok "get_messages with no --session and no caller is refused" $?
 
 # 3. A command the server accepts writes nothing back: the file a window keeps is
 #    the window's, and this process has no window.
