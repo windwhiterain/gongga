@@ -19,6 +19,16 @@ wire_tools` renders it for the client's face and `Tools::stamp` renders the
 definitions -- these two functions are the only renderers, and both are called only
 from a stored change.
 
+The block holds the harness's own tools, which every provider takes. A provider's
+own tool types (`builtin_tools`, e.g. `deepseek_web_search`) are not in it: they are
+a fact about the model serving the request, appended by `LlmClient::offered` when
+the request is built, and a stored entry with no `name` -- a type an older build
+stamped -- is dropped there. Without that, a session whose head was stamped under a
+model with `builtin_tools` carried them to whatever model it moved to: `2026-11-23`
+session `35ba3b`, moved from `deepseek-flash` to `kimi-coding/k3.1-pro-highspeed`,
+was refused with `400 Invalid request Error` for declaring `deepseek_web_search`.
+Measurements: `.dev/verify/3a63d5101e94-kimi-builtin-tools.json`.
+
 ## Written once
 
 The head is written once, when the session first asks for it, and only read

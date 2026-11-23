@@ -593,8 +593,9 @@ impl LlmClient {
     ///
     /// Called only from a stored change event, never while a request is built: the
     /// tool list is part of the context, so it is a row and not a rendering a
-    /// request redoes. What it returns is exactly what `build_head` splices, which
-    /// is why the two cannot disagree about a schema. See `docs/notes/server-tools.md`.
+    /// request redoes. What it holds is the harness's own tools, which every provider
+    /// takes; a provider's own tool types belong to the model serving the request and
+    /// are appended by `offered`. See `docs/notes/server-tools.md`.
     pub fn wire_tools(&self, definitions: &[ToolDefinition]) -> Value {
         if self.face == Face::Anthropic {
             return Value::Array(
@@ -604,24 +605,51 @@ impl LlmClient {
                     .collect(),
             );
         }
-        let mut offered: Vec<Value> = definitions
-            .iter()
-            .map(|t| {
-                json!({
-                    "type": "function",
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                })
-            })
-            .collect();
-        // Verbatim: the roster knows each provider's spelling, not this server.
-        offered.extend(
-            self.builtin_tools
+        Value::Array(
+            definitions
                 .iter()
-                .map(|name| json!({ "type": name })),
-        );
-        Value::Array(offered)
+                .map(|t| {
+                    json!({
+                        "type": "function",
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// The tools this request declares: the stored block's own entries, then the
+    /// current model's tool types.
+    ///
+    /// # Invariant
+    ///
+    /// An entry with no `name` is a provider's tool type, and the model that declared
+    /// it may not be the one serving this request: `builtin_tools` is the serving
+    /// model's, so it is appended here and dropped from the stored block. See
+    /// `docs/notes/server-tools.md`.
+    fn offered(&self, stored: &Value) -> Vec<Value> {
+        let mut offered: Vec<Value> = stored
+            .as_array()
+            .map(|array| {
+                array
+                    .iter()
+                    .filter(|entry| entry.get("name").is_some())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Verbatim: the roster knows each provider's spelling, not this server. The
+        // Messages face has no such spelling.
+        if self.face != Face::Anthropic {
+            offered.extend(
+                self.builtin_tools
+                    .iter()
+                    .map(|name| json!({ "type": name })),
+            );
+        }
+        offered
     }
 
     /// One request's opening bytes, joined to the transcript by the body.
@@ -648,13 +676,14 @@ impl LlmClient {
         // See `docs/reference/prefix-cache.md`.
         let plan = plan.filter(|plan| !plan.is_empty());
         if self.face == Face::Anthropic {
-            // The stored row's bytes; a request assembles no part of its head.
-            let offered: &[Value] = tools.as_array().map(Vec::as_slice).unwrap_or(&[]);
+            // The stored row's bytes, plus this model's tool types; a request
+            // assembles no other part of its head.
+            let offered = self.offered(tools);
             return crate::anthropic::head(
                 &self.model_name,
                 self.max_output_tokens,
                 instructions,
-                offered,
+                &offered,
                 effort,
                 self.temperature,
                 (plan_framing(), plan),
@@ -682,9 +711,11 @@ impl LlmClient {
         if !instructions.is_empty() {
             body["instructions"] = json!(instructions);
         }
-        // The stored block, verbatim; empty sends no key at all.
-        if tools.as_array().is_some_and(|offered| !offered.is_empty()) {
-            body["tools"] = tools.clone();
+        // The stored block, then the serving model's own tool types; empty sends no
+        // key at all.
+        let offered = self.offered(tools);
+        if !offered.is_empty() {
+            body["tools"] = Value::Array(offered);
         }
         if let Some(t) = self.temperature {
             body["temperature"] = json!(t);
