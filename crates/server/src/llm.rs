@@ -804,11 +804,11 @@ impl LlmClient {
 
 /// Largest plan turn, in characters, on the wire.
 ///
- /// # Invariant
- ///
- /// Chunks stay far below the endpoint's ceiling and the bytes keep their order: only
- /// message boundaries move. The cut follows the plan bytes alone, so every model,
- /// provider and tool set is cut alike.
+/// # Invariant
+///
+/// Chunks stay far below the endpoint's ceiling and the bytes keep their order: only
+/// message boundaries move. The cut follows the plan bytes alone, so every model,
+/// provider and tool set is cut alike.
 const PLAN_CHUNK_CHARS: usize = 12_000;
 
 /// One turn of a split plan, written into the request body verbatim.

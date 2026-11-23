@@ -1375,8 +1375,8 @@ impl Agent {
                             self.store.last_usage_at(id).ok().flatten().map(|at| {
                                 crate::store::now_millis().saturating_sub(at).max(0) as u64
                             });
-        // The share the title draws: what of *this* request was served from cache.
-        // `expected` is the prefix it could have hit.
+                        // The share the title draws: what of *this* request was served
+                        // from cache. `expected` is the prefix it could have hit.
                         let hit_ratio = match (cached, u.input_tokens) {
                             (Some(hit), Some(size)) if size > 0 => Some(hit as f64 / size as f64),
                             _ => None,
