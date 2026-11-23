@@ -49,7 +49,6 @@ pub fn cap_output(
     };
     format!("{}{}{}", &text[..head], notice, &text[tail..])
 }
-/// The byte index of the `chars`-th character, so a slice never splits one.
 /// The byte index of the `chars`-th character, clamping to the end.
 fn byte_of_char(s: &str, chars: usize) -> usize {
     s.char_indices()

@@ -206,8 +206,7 @@ fn wait_of(args: &Value, default: Duration) -> Duration {
     }
 }
 
-/// What a call answers: the window as JSON. The call layer caps it, not this tool:
-/// one cap, so `max_output` can raise what the home's default would have cut.
+/// What a call answers, as JSON; the call layer caps it, not this tool.
 fn answer(outcome: Result<crate::tools::channel::Outcome, String>) -> ToolOutcome {
     match outcome {
         Ok(outcome) => ToolOutcome::ok(outcome.to_json().to_string()),

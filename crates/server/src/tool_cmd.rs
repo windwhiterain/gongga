@@ -136,9 +136,8 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                     update: false,
                 });
             }
-            // The shared arguments, from the one list: a person types them in a window
-            // exactly as a model spells them in a call, so an operator's line and the
-            // model's schema cannot disagree about what a tool takes.
+            // The shared arguments, from the one list: an operator's line and the model's
+            // schema cannot disagree.
             for (name, kind, sentence) in crate::tools::laws::ALL {
                 args.push(protocol::ArgSpec {
                     type_of: (*kind).into(),

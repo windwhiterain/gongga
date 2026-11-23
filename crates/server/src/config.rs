@@ -1099,16 +1099,12 @@ fn env_path(key: &str) -> Option<PathBuf> {
     env_or(key).map(PathBuf::from)
 }
 
-/// Expands a leading `~` and normalises separators.
 /// What the operator typed, as a directory this process and the ones it starts agree on.
 ///
 /// # Invariant
 ///
-/// Absolute. A relative path is meant against the directory the operator typed it in --
-/// this process's -- and this process hands the home to children that resolve their own
-/// names in their own directories: a relay, a peer's runner and a skill each read
-/// `GONGGA_HOME`, and `.gongga` in *their* directory is somebody else's home
-/// (`docs/notes/server-home.md`).
+/// Absolute: a relative path is meant against the directory it was typed in, and a
+/// child -- relay, runner or skill -- reads `GONGGA_HOME` in its own.
 pub(crate) fn expand(path: PathBuf) -> PathBuf {
     let s = path.to_string_lossy().to_string();
     let expanded = match s.strip_prefix("~/") {
