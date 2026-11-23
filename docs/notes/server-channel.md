@@ -112,6 +112,29 @@ marker matched, the program ended or the wait ran out. A poll of an hour-old cha
 states both, and only one of them is about the poll: a `wait: 1000` that found nothing
 answers `time: 3600.000s` beside `waited: 1.000s`.
 
+## A call streams what it waits on
+
+SPEC's UI draws a `tool_result` as the channel's output streaming, so a waiting `exec`
+publishes the window's growth while it waits, not only the answer at the end. `talk`
+takes an optional `Tail` -- the call's `tool_answer` sink and its `call_id` -- and `exec`
+builds it from `ToolContext::events`; the `input_channel` server cmd has no call to
+stream into and passes none.
+
+The stream is a **view, never a read**: publishing a chunk moves no cursor, so the
+window the call answers with is the one it would have answered without a watcher. Each
+poll shows the newly-arrived whole lines (`sayable`), holding back a partial line and a
+line break that ends the window -- a split marker is never drawn, and the cut at the
+marker cannot retract what was already shown. When the call answers, the remainder (its
+last, partial line) goes out before the verdict, so the streamed body and the answer are
+the same bytes. A call that ran out of waiting answers empty and leaves the window
+unread; the watcher still saw it grow.
+
+The agent's forwarder counts what it published, and a count above zero is why the
+verdict chunk carries no body ("a result's body arrives once" in
+`docs/notes/server-agent.md`). The client draws the chunks into the one `t:<call_id>`
+block and the verdict relabels and seals it -- the same path an assistant answer streams
+by.
+
 ## `[channel.<name>]`: what a name is
 
 One section per program `exec` knows, keyed by the program's name (a path is read by its

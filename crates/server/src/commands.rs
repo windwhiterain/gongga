@@ -2964,7 +2964,7 @@ async fn input_channel(d: &Dispatch, args: &Args, caller: Option<&str>) -> Outco
     match d
         .agent
         .channels
-        .talk(&session, &id, Some(&input), wait, until, None, None)
+        .talk(&session, &id, Some(&input), wait, until, None, None, None)
         .await
     {
         // One `Result`, built by the one builder: `time`, `waited` and the rest.

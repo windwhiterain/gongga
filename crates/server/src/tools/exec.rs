@@ -172,6 +172,10 @@ impl Cmd for ExecTool {
                     return ToolOutcome::err(why);
                 }
             }
+            let tail = ctx.events.as_ref().map(|sink| crate::tools::channel::Tail {
+                sink,
+                call_id: &ctx.call_id,
+            });
             let outcome = ctx
                 .channels
                 .talk(
@@ -182,6 +186,7 @@ impl Cmd for ExecTool {
                     args.get("until").and_then(Value::as_str),
                     Some(&ctx.cancel),
                     Some(&ctx.inbox),
+                    tail.as_ref(),
                 )
                 .await;
             answer(outcome)
