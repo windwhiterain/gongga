@@ -150,7 +150,7 @@ for a small-context model whose window the planned head would fill: the plan is
 stamped once and no `memorize` can mask it, so a session that cannot afford it must
 never be given it.
 
-A session's own `prefix_cache_plan` (SPEC's `SessionConfig`) overrides this default;
+A model's own `prefix_cache_plan` (SPEC's `ModelConfig`) overrides this default;
 `None` follows the file. Like every head fact it is read when the head is stamped and
 never re-rendered: changing it moves only sessions that have no head yet.
 

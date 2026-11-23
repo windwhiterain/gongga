@@ -1202,7 +1202,7 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
 fn config_arg(remotes: &[String], update: bool) -> protocol::ArgSpec {
     let mut spec = arg(
         "config",
-        "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier), workspace (cwd, worktree), keep_alive, live_compact and prefix_cache_plan. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. cache_tier takes none to clear. `workspace.cwd` says both where the session works and which machine: `remote://<name>/<absolute path>` moves it to that peer. worktree is read when the session is created and never after: it makes a branch and a worktree of that name in the repository the cwd sits in, and the session works in it.",
+        "The session's settings as SPEC's SessionConfig, one JSON object: model_config (model as {provider, model}, thinking, ctx_limit like 70%, cache_tier, and the live_compact and prefix_cache_plan that belong to a model), workspace (cwd, worktree), keep_alive. Every field is optional: a set_session delta keeps what it does not name, and a new session takes the configured defaults. cache_tier takes none to clear. `workspace.cwd` says both where the session works and which machine: `remote://<name>/<absolute path>` moves it to that peer. worktree is read when the session is created and never after: it makes a branch and a worktree of that name in the repository the cwd sits in, and the session works in it.",
         false,
         Some("json"),
         CompletionSource::None,

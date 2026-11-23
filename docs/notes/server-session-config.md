@@ -18,10 +18,14 @@ a thing made for it: it is read when the session is created and refused afterwar
 `none` -- its default, so a delta that says nothing says none -- makes nothing. What the
 name becomes is `server-worktree.md`.
 
-`prefix_cache_plan` is a plain `bool` leaf, default `true`: whether the head carries
-the one-shot meta plan. `false` keeps a small-context session's head minimal. It is
-read when the head is stamped, so a delta changes only sessions that have no head
+`model_config.prefix_cache_plan` is a plain `bool` leaf, default `true`: whether the head
+carries the one-shot meta plan. `false` keeps a small-context session's head minimal. It
+is read when the head is stamped, so a delta changes only sessions that have no head
 yet; `None` follows the home's `[agent] prefix_cache_plan`.
+
+`live_compact` and `prefix_cache_plan` sit under `model_config`, not beside it, because
+they describe how one model is asked rather than what the session is for: a checkpoint's
+projection and a head's shape both belong to the model that carries them.
 
 ## A model is spelled two ways
 
@@ -47,9 +51,9 @@ so a leaf added here states its type.
 
 `schema` also names the sticky types in it: the argument's own `kind` is `config`
 (`SessionConfig`), the `model_config` field carries `model_config` (`ModelConfig`) and
-its `model` leaf carries `model` (`Model`). `workspace` and `keep_alive` carry none:
-`Workspace` is not marked `# sticky`, and `keep_alive` has a default of its own, so
-neither is a type a client fills.
+its `model` leaf carries `model` (`Model`). `workspace`, `keep_alive` and the two
+`model_config` switches carry none: `Workspace` is not marked `# sticky`, and the
+others have defaults of their own, so none is a type a client fills.
 
 `ArgSpec::update` separates `new_session` as a value and for `set_session` as a
 struct update: a value may be filled from a sticky entry, an update may only write

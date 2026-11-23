@@ -27,8 +27,18 @@ pub enum ModelValue {
     Ref(ModelRef),
 }
 
-/// SPEC `ModelConfig := {model, thinking, ctx_limit, cache_tier}`. Fields are optional:
-/// a delta keeps what it omits.
+/// SPEC `LiveCompact := {enabled, interval_tokens, mode}`.
+#[derive(Debug, Default, Deserialize)]
+pub struct LiveCompact {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub interval_tokens: Option<u64>,
+    #[serde(default)]
+    pub mode: Option<crate::live_compact::CompactMode>,
+}
+
+/// SPEC `ModelConfig`. Fields are optional: a delta keeps what it omits.
 #[derive(Debug, Default, Deserialize)]
 pub struct ModelConfig {
     #[serde(default)]
@@ -39,6 +49,10 @@ pub struct ModelConfig {
     pub ctx_limit: Option<serde_json::Value>,
     #[serde(default)]
     pub cache_tier: Option<String>,
+    #[serde(default)]
+    pub live_compact: Option<LiveCompact>,
+    #[serde(default)]
+    pub prefix_cache_plan: Option<bool>,
 }
 
 /// SPEC `Workspace := {cwd, worktree}`.
@@ -56,18 +70,7 @@ pub struct Workspace {
     pub worktree: Option<String>,
 }
 
-/// SPEC `LiveCompact := {enabled, interval_tokens, mode}`.
-#[derive(Debug, Default, Deserialize)]
-pub struct LiveCompact {
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub interval_tokens: Option<u64>,
-    #[serde(default)]
-    pub mode: Option<crate::live_compact::CompactMode>,
-}
-
-/// SPEC `SessionConfig := {model_config, workspace, keep_alive, live_compact, prefix_cache_plan}`.
+/// SPEC `SessionConfig := {model_config, workspace, keep_alive}`.
 #[derive(Debug, Default, Deserialize)]
 pub struct SessionConfig {
     #[serde(default)]
@@ -76,10 +79,6 @@ pub struct SessionConfig {
     pub workspace: Option<Workspace>,
     #[serde(default)]
     pub keep_alive: Option<bool>,
-    #[serde(default)]
-    pub live_compact: Option<LiveCompact>,
-    #[serde(default)]
-    pub prefix_cache_plan: Option<bool>,
 }
 
 /// Flatten a nested `SessionConfig` into the flat settings the handler reads.
@@ -130,6 +129,29 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
         if let Some(cache_tier) = model_config.cache_tier {
             args.insert("cache_tier".to_string(), cache_tier);
         }
+        if let Some(plan) = model_config.prefix_cache_plan {
+            args.insert(
+                "prefix_cache_plan".to_string(),
+                if plan { "true" } else { "false" }.to_string(),
+            );
+        }
+        if let Some(live_compact) = model_config.live_compact {
+            if let Some(enabled) = live_compact.enabled {
+                args.insert(
+                    "live_compact_enabled".to_string(),
+                    if enabled { "true" } else { "false" }.to_string(),
+                );
+            }
+            if let Some(tokens) = live_compact.interval_tokens {
+                args.insert(
+                    "live_compact_interval_tokens".to_string(),
+                    tokens.to_string(),
+                );
+            }
+            if let Some(mode) = live_compact.mode {
+                args.insert("live_compact_mode".to_string(), mode.as_str().to_string());
+            }
+        }
     }
     if let Some(workspace) = config.workspace {
         if let Some(cwd) = workspace.cwd {
@@ -144,29 +166,6 @@ pub fn flatten(raw: &serde_json::Value, args: &mut Args) -> Result<(), String> {
             "keep_alive".to_string(),
             if keep_alive { "true" } else { "false" }.to_string(),
         );
-    }
-    if let Some(plan) = config.prefix_cache_plan {
-        args.insert(
-            "prefix_cache_plan".to_string(),
-            if plan { "true" } else { "false" }.to_string(),
-        );
-    }
-    if let Some(live_compact) = config.live_compact {
-        if let Some(enabled) = live_compact.enabled {
-            args.insert(
-                "live_compact_enabled".to_string(),
-                if enabled { "true" } else { "false" }.to_string(),
-            );
-        }
-        if let Some(tokens) = live_compact.interval_tokens {
-            args.insert(
-                "live_compact_interval_tokens".to_string(),
-                tokens.to_string(),
-            );
-        }
-        if let Some(mode) = live_compact.mode {
-            args.insert("live_compact_mode".to_string(), mode.as_str().to_string());
-        }
     }
     Ok(())
 }
@@ -359,11 +358,11 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
         ..Default::default()
     };
     let mut fields: Vec<(&str, Value)> = Vec::new();
-    // SPEC: `ModelConfig := {model, thinking, ctx_limit, cache_tier} # sticky`.
+    // SPEC: `ModelConfig := {model, thinking, ctx_limit, cache_tier, live_compact, prefix_cache_plan} # sticky`.
     fields.push((
         "model_config",
         object(
-            "The model and how it is asked.",
+            "The model, how it is asked, and what its checkpoints do.",
             "ModelConfig",
             Some("model_config"),
             vec![
@@ -371,6 +370,20 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
                 ("thinking", thinking.build()),
                 ("ctx_limit", ctx_limit.build()),
                 ("cache_tier", cache_tier.build()),
+                (
+                    "live_compact",
+                    object(
+                        "Whether the server asks this session for checkpoint summaries.",
+                        "LiveCompact",
+                        None,
+                        vec![
+                            ("enabled", live_compact_enabled.build()),
+                            ("interval_tokens", live_compact_interval.build()),
+                            ("mode", live_compact_mode.build()),
+                        ],
+                    ),
+                ),
+                ("prefix_cache_plan", prefix_cache_plan.build()),
             ],
         ),
     ));
@@ -384,20 +397,6 @@ pub fn schema(remotes: &[String]) -> serde_json::Value {
         ),
     ));
     fields.push(("keep_alive", keep_alive.build()));
-    fields.push(("prefix_cache_plan", prefix_cache_plan.build()));
-    fields.push((
-        "live_compact",
-        object(
-            "Whether the server asks this session for checkpoint summaries.",
-            "LiveCompact",
-            None,
-            vec![
-                ("enabled", live_compact_enabled.build()),
-                ("interval_tokens", live_compact_interval.build()),
-                ("mode", live_compact_mode.build()),
-            ],
-        ),
-    ));
     object(
         "The session's settings as SPEC spells them.",
         "SessionConfig",
