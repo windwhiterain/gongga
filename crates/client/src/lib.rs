@@ -3050,21 +3050,10 @@ fn drawn_by_a_field(key: &str) -> bool {
 
 fn title_note(session: &protocol::SessionInfo) -> String {
     let usage = &session.usage;
-    // The reading order: what the session is doing, then what it spends, then what it is.
-    let mut parts: Vec<String> = vec![
-        match session.status {
-            protocol::SessionStatus::Idle => "idle",
-            protocol::SessionStatus::Running => "running",
-            protocol::SessionStatus::Error => "error",
-        }
-        .to_string(),
-    ];
-    if let Some(model) = &session.model {
-        parts.push(model.clone());
-    }
-    if let Some(level) = &session.thinking_effort {
-        parts.push(level.clone());
-    }
+    // The reading order, and a folded header shows only its head: what the session is
+    // spending right now first, because those are the figures a step changes, then
+    // what it is doing, then what it is.
+    let mut parts: Vec<String> = Vec::new();
     if usage.context_tokens > 0 {
         parts.push(format!("ctx {}", usage.context_tokens));
         // SPEC says the share, so the client does the division, not the reader.
@@ -3083,6 +3072,20 @@ fn title_note(session: &protocol::SessionInfo) -> String {
             0..1000 => format!("ttft {ms}ms"),
             _ => format!("ttft {:.1}s", ms as f64 / 1000.0),
         });
+    }
+    parts.push(
+        match session.status {
+            protocol::SessionStatus::Idle => "idle",
+            protocol::SessionStatus::Running => "running",
+            protocol::SessionStatus::Error => "error",
+        }
+        .to_string(),
+    );
+    if let Some(model) = &session.model {
+        parts.push(model.clone());
+    }
+    if let Some(level) = &session.thinking_effort {
+        parts.push(level.clone());
     }
     if let Some(percent) = session.context_limit {
         // `off` is the one share a number cannot say: SPEC's `0` is the notice
