@@ -740,6 +740,16 @@ impl crate::store::Store {
             )
             .optional()?
             .unwrap_or(0);
+        // Never the last row stored: that one may have no wire form. See `store::SENDABLE_ROW`.
+        let tape_end = connection.query_row(
+            &format!(
+                "SELECT COALESCE(MAX(seq), 0) FROM messages
+                  WHERE session_id = ?1 AND seq <= ?2 AND {}",
+                crate::store::SENDABLE_ROW
+            ),
+            params![session_id, upto_seq],
+            |row| row.get::<_, i64>(0),
+        )?;
         let mut statement = connection.prepare(
             "SELECT m.checkpoint_id, m.source_after_seq, m.cutoff_seq
              FROM memory_blocks m
@@ -772,7 +782,7 @@ impl crate::store::Store {
             });
         }
         Ok(crate::llm::MemoryView {
-            upto_seq,
+            upto_seq: tape_end,
             view_generation: nonnegative(generation, "memory view generation")?,
             masked,
         })

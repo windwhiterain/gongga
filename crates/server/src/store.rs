@@ -4736,6 +4736,17 @@ fn user_row(expanded: &crate::meta::Expanded) -> serde_json::Value {
     row
 }
 
+/// A stored row a request can carry: `wire_item` gave it a wire form.
+///
+/// # Invariant
+///
+/// `seq` counts published events, and the harness's own bookkeeping is one of them
+/// (`notice`, `live_compact_request`, a builtin call it cannot replay): `wire_item`
+/// answers `None` for those, so their `content` is `NULL` and no request carries them.
+/// The walk and a mask request's tape end must agree on this set, so both read it here.
+/// See `docs/notes/server-llm.md`.
+pub(crate) const SENDABLE_ROW: &str = "content IS NOT NULL";
+
 fn wire_item(kind: Kind, value: &serde_json::Value) -> Option<serde_json::Value> {
     let text_of = |key: &str| {
         value

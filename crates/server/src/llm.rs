@@ -133,6 +133,7 @@ pub struct MemoryMaskSpan {
 /// The complete memory view a request and every retry must send.
 #[derive(Clone, Debug)]
 pub struct MemoryView {
+    /// Where the tape ends: the last row this request carries, never the last stored.
     pub upto_seq: i64,
     pub view_generation: u64,
     pub masked: Vec<MemoryMaskSpan>,

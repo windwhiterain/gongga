@@ -436,7 +436,15 @@ delta or a key that means “query the current view again”:
 Every stored input item also has `"gongga_seq": <seq>`; seq endpoints are inclusive,
 unlisted items are visible, and the masked list is sorted by source span and memory id.
 Head-generated cards and plan rows have no database seq and stay unannotated. Wire
-order is not seq order because one step's calls precede its outputs. The adapter must
+order is not seq order because one step's calls precede its outputs. `upto_seq` is the
+tape's end, so it is the last item the request **carries**, never the last row the
+session stored: the harness's own bookkeeping (`notice`, `live_compact_request`, a
+builtin call it cannot replay) advances the event counter but has no wire form, and
+naming one of those would be a position no item holds. `store::SENDABLE_ROW` is the one
+predicate the walk and the tape's end both read. A request whose end names such a row is
+refused -- `2026-11-23`, two mask sessions: `gongga_memory requires every seq through
+upto_seq to be annotated`, because `upto_seq` was `last_seq` and the marker row sat at
+the tail. The adapter must
 map by the annotation, consume the fields out of band, and never render them as model
 text. Both fields are absent in cut mode and on ordinary Responses endpoints.
 

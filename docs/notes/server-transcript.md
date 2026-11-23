@@ -17,7 +17,9 @@ before the request began. That is what lets a retry replay one window: the
 window is the same set of rows, not a fresh reading of a transcript that moved
 underneath it. Each yielded row also carries its database `seq`; the memory-mask
 Responses body uses it for `gongga_seq`, without asking the adapter to infer seq
-from wire order (outputs of one step can follow later calls).
+from wire order (outputs of one step can follow later calls). The walk yields only
+rows that have a wire form, and a mask request's tape end is measured by the same
+predicate (`store::SENDABLE_ROW`).
 
 Only checkpoints whose `kind` is `cut` create the live-compact projection. A
 `mask` checkpoint leaves every sendable row in the walk; its visibility lives in

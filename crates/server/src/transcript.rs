@@ -182,14 +182,20 @@ impl Transcript {
     /// The next row this walk may send, exactly as it was stored.
     fn read_one(&mut self) -> anyhow::Result<Option<Row>> {
         // Indexed artifacts, prefix, and latest round plus later rows; raw rows stay unchanged.
-        let found = self.conn.query_row(
-            "SELECT seq, content, kind, display, turn, step FROM messages
-              WHERE session_id = ?1 AND seq > ?2 AND seq <= ?3 AND content IS NOT NULL
+        static SQL: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+            format!(
+                "SELECT seq, content, kind, display, turn, step FROM messages
+              WHERE session_id = ?1 AND seq > ?2 AND seq <= ?3 AND {}
                 AND (?4 = 0 OR seq <= ?5 OR seq >= ?6
                      OR EXISTS (SELECT 1 FROM live_compact_artifacts a
                                 WHERE a.session_id = messages.session_id
                                   AND a.message_seq = messages.seq))
               ORDER BY seq LIMIT 1",
+                crate::store::SENDABLE_ROW
+            )
+        });
+        let found = self.conn.query_row(
+            SQL.as_str(),
             params![
                 self.session_id,
                 self.after_seq,
