@@ -56,8 +56,7 @@ struct Entry {
     call: Option<client::protocol::Head>,
     /// The expanded sections, cached at their measured width.
     sections: String,
-    /// Whether this block's rows came from the client: already parsed, already
-    /// fitted to the pane's width. Nothing here lays them out again.
+    /// Whether this block's rows came from the client, already parsed and fitted.
     document: bool,
     /// The markdown document this block was written as, when it is one.
     ///
@@ -775,15 +774,12 @@ impl Log {
         Self::default()
     }
 
-    /// Caps how tall a block may get: `0` caps nothing, and a block past its cap
-    /// keeps its newest rows.
     /// How many rows of history a window keeps as blocks, above what a pane draws.
     ///
     /// # Invariant
     ///
-    /// A window is a view of the transcript, not a copy of it: this is the budget
-    /// `client.toml` states, and `trim` keeps a window inside it. See
-    /// `docs/notes/tui-log.md`.
+    /// A window is a view of the transcript, not a copy of it: `trim` keeps it inside
+    /// this budget. See `docs/notes/tui-log.md`.
     pub fn set_keep_rows(&mut self, rows: usize) {
         if self.keep_rows == rows {
             return;
@@ -2017,12 +2013,8 @@ fn document_span(span: &client::render_wire::DocumentSpan) -> Span<'static> {
     use ratatui::style::{Color, Modifier};
     // SPEC draws an answer in the brightest ink it has.
     let base = Style::default().fg(Color::White);
-    // # Invariant
-    //
-    // A body is drawn in the brightest ink there is, and the only other ink is the
-    // grey a mark is quiet in. No dark hue: a dark blue on a dark background is a
-    // document whose shape has to be guessed, and weight, slant and rule already
-    // say what a run is.
+    // The brightest ink there is, or the quiet grey of a mark: no hue, because weight
+    // and rule already say what a run is.
     let style = match span.class {
         SpanClass::Text => base,
         // Yellow for a heading: the brightest slot a heading can take that is still
@@ -2033,14 +2025,11 @@ fn document_span(span: &client::render_wire::DocumentSpan) -> Span<'static> {
         SpanClass::Strong => base.add_modifier(Modifier::BOLD),
         SpanClass::Emphasis => base.add_modifier(Modifier::ITALIC),
         SpanClass::Strike => base.add_modifier(Modifier::CROSSED_OUT),
-        // Brown for a word of code inside a sentence: one hue, so a name like
-        // `let_me()` is visible without a background behind it.
+        // Brown for code inside a sentence: one hue, so a name like `let_me()` shows.
         SpanClass::Code => Style::default().fg(Color::Indexed(180)),
         SpanClass::CodeBlock => base,
         SpanClass::Marker => Style::default().fg(Color::DarkGray),
-        // Named, not `LightBlue`: the bright-blue *slot* is #3B78FF in the default
-        // Windows palette, which reads as a dark blue on a dark background. Index 117
-        // is #87D7FF and is the same light blue on every 256-colour terminal.
+        // Index 117, not `LightBlue`: that slot is #3B78FF, dark on a dark background.
         SpanClass::Link => Style::default()
             .fg(Color::Indexed(117))
             .add_modifier(Modifier::UNDERLINED),

@@ -34,8 +34,7 @@ pub struct Words {
     pub cwd: PathBuf,
     #[serde(default)]
     pub env: Vec<(String, String)>,
-    /// The build that wrote this file, so a relay started by another build can say so
-    /// instead of reading the words with a shape it does not know.
+    /// The build that wrote this file, so a relay started by another build can say so.
     #[serde(default)]
     pub build: String,
 }
@@ -78,9 +77,8 @@ fn program_of(name: &str) -> std::path::PathBuf {
 /// Runs one channel until its program ends.
 pub fn run(dir: &Path) -> anyhow::Result<()> {
     let words: Words = serde_json::from_slice(&std::fs::read(dir.join("cmd"))?)?;
-    // SPEC's "validate" is the *protocol*: a shape two builds share is a pair, and the
-    // build rides along for the words alone. A peer's relay is whatever that machine has
-    // installed, so a build it cannot match would refuse every channel started there.
+    // SPEC's "validate" is the protocol and not the build: a peer's relay is whatever
+    // that machine installed.
     if !words.build.is_empty() && words.build != protocol::version_line() {
         eprintln!(
             "gongga-relay: this relay is build {} and the file was written by {}: one shape,              two builds, which is what the protocol check above is for",

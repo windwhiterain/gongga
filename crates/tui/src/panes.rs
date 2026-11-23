@@ -277,8 +277,7 @@ impl Panes {
         }
     }
 
-    /// The layout's own answer: a session nobody set is shown, and a session that
-    /// was hidden has no window. See `docs/notes/tui-panes.md`.
+    /// The layout's own answer: a session nobody set shows, a hidden one has no window.
     pub fn is_shown(&self, name: &str) -> bool {
         self.panes
             .iter()
@@ -520,13 +519,13 @@ impl Panes {
         self.log.set_block_size(lines);
     }
 
-    /// Columns a box leaves to its pane on each side: the wheel there is the pane's.
-    /// Keeps a window inside its budget: what its pane draws, plus `keep_rows`.
+    /// The margin a box leaves its pane on each side, plus `keep_rows`, is a window's
+    /// budget.
     ///
     /// # Invariant
     ///
-    /// Only the frame knows how tall the pane is and how far it is scrolled, so the
-    /// trim happens here rather than in the log. See `docs/notes/tui-panes.md`.
+    /// Only the frame knows the pane's height and scroll, so the trim is here.
+    /// See `docs/notes/tui-panes.md`.
     pub fn trim(&mut self, window: &str, height: usize) {
         let keep = self.log.keep_rows();
         if keep == 0 {

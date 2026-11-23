@@ -1312,9 +1312,8 @@ impl Tui {
                     self.rooms = rooms.clone();
                     return Some(UiEvent::Intent(UiIntent::Room { windows: rooms }));
                 }
-                // The width those panes draw a body at: the client wraps once, so a
-                // pane that never reports one is wrapped at the client's default and
-                // its drawing wraps the row again, a character at a time.
+                // A pane that reports no width is wrapped at the client's default and
+                // wraps the row again.
                 let columns = self.screen.panes.columns();
                 if columns != self.columns {
                     self.columns = columns.clone();

@@ -364,8 +364,8 @@ pub fn pane_header_rows(name: &str, note: Option<&str>, width: u16, expanded: bo
         .collect()
 }
 
-/// The one row a folded header is drawn on: its marker, then as much of the line as
-/// fits, then an ellipsis when the rest was cut away.
+/// The one row a folded header draws: its marker, then the line as it fits, then an
+/// ellipsis.
 fn folded_row(row: &str, width: u16) -> String {
     let keep = (width as usize).saturating_sub(3);
     let mut kept = row.to_string();
@@ -1041,8 +1041,7 @@ fn draw_rows(f: &mut Frame, s: &mut Screen, name: &str, area: Rect) {
     }
     // One column short: a full-width row would otherwise be wrapped again.
     let width = area.width.saturating_sub(1).max(1) as usize;
-    // The budget is what this pane draws plus the margin the settings state; it is
-    // applied before the rows are counted, because dropping history changes them.
+    // This pane's draws plus the stated margin, applied before rows are counted.
     s.panes.trim(name, area.height as usize);
     // The pane's row count: an offset cannot say a line arrived under it.
     let rows = s.panes.rows(name, width);
