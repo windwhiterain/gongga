@@ -20,19 +20,7 @@
 - 每个 session 在自己的 worktree 里干活，默认 `./.worktrees`；一件 feature 一个分支，parent 可以把 feature 派给子 session，也可以让子 session 用它的 worktree。
 - 每个检查点把 feature 分支合回 main，让并行的工作能跟上；最终合并后删掉 feature 分支，子 session 的 worktree 由 parent 删。
 
-## Disk low：立刻跑脚本，一刻都不耽搁
-
-**收到磁盘告警（free < threshold）时，第一动作就是跑 @skill(clean-disk) 的脚本，
-不要先做任何调查、扫描、归因、计划。** 先释放，再解释。
-
-- **第一动作**：`powershell -NoProfile -ExecutionPolicy Bypass -File "<clean-disk 的
-  SKILL.md 同目录>/clean-disk.ps1"`（不弹 UAC 的用户级路径：见下）。
-  **不许**在跑脚本之前先做 `Get-ChildItem -Recurse` 之类的体积扫描——磁盘已满时这些
-  扫描会把机器拖到卡死，2026-11-06 就因此把一整轮拖成「脚本半天没跑」。
-- **不许**因为「想先弄清楚是谁占的」而推迟清理。归因可以放在清理**之后**。
-- 磁盘低于阈值时机器已经在卡：先腾出空间，让它能喘气，再谈分析。
-- **一次告警只回一次**：低空间期间持续告警是同一件事，不要每条都重跑一遍。
-- **报告用退出码和数字**（脚本汇总里的「实际释放」是权威值），不要用叙述顶替测量。
+## Disk low：立刻 Wait, 等待 Monitor 清理空间
 
 ### 跑法：不弹 UAC 的用户级路径
 
