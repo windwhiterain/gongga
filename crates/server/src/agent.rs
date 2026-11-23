@@ -1164,8 +1164,6 @@ impl Agent {
             }
         }
         let generation = self.store.context_generation(id)?;
-        // A mask moves the view, not the transcript: guard on both numbers.
-        let memory_generation = self.store.memory_view_generation(id).ok().flatten();
         let phase_started = std::time::Instant::now();
         // Read beside the stored prompt; a request assembles no part of its head.
         let tools = self.tool_set_in_force(session, id, llm.model(), llm)?;
@@ -1556,19 +1554,11 @@ impl Agent {
                     let _ = self
                         .store
                         .set_usage_for_generation(id, generation, measured);
-                    if let Some(input_tokens) = usage.as_ref().and_then(|u| {
-                        if compact_mode == crate::live_compact::CompactMode::Mask {
-                            u.gongga_unmasked_input_tokens
-                        } else {
-                            u.input_tokens
-                        }
-                    }) {
-                        if let Err(e) = self.store.set_live_compact_baseline(
-                            id,
-                            generation,
-                            memory_generation,
-                            input_tokens,
-                        ) {
+                    if let Some(input_tokens) = usage.as_ref().and_then(|u| u.input_tokens) {
+                        if let Err(e) =
+                            self.store
+                                .set_live_compact_baseline(id, generation, input_tokens)
+                        {
                             tracing::warn!(session = %name, error = %e, "could not set live compact baseline");
                         }
                     }

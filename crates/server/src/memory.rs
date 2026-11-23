@@ -371,11 +371,6 @@ fn advance_generation(conn: &Connection, session_id: i64) -> anyhow::Result<i64>
         "UPDATE memory_state SET view_generation = ?2 WHERE session_id = ?1",
         params![session_id, next],
     )?;
-    // A view change ends the old interval; the next request stamps the new baseline.
-    conn.execute(
-        "UPDATE sessions SET live_compact_baseline_tokens = NULL WHERE id = ?1",
-        params![session_id],
-    )?;
     Ok(next)
 }
 

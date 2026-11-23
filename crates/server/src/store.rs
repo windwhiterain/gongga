@@ -2682,13 +2682,18 @@ impl Store {
     }
 
     /// The provider measurement and durable request state used at a step boundary.
+    ///
+    /// # Invariant
+    ///
+    /// Growth is counted on the tape, not on the visible set: a mask changes the view and
+    /// never the tape, so a mask cannot put the tape behind the checkpoint it follows.
     pub fn live_compact_measurement(
         &self,
         session_id: i64,
     ) -> anyhow::Result<crate::live_compact::Measurement> {
         let conn = self.lock();
         let row = conn.query_row(
-            "SELECT context_tokens, live_compact_baseline_tokens,
+            "SELECT COALESCE(tape_tokens, context_tokens), live_compact_baseline_tokens,
                     live_compact_interval_effective, context_generation
              FROM sessions WHERE id = ?1",
             params![session_id],
@@ -2709,48 +2714,21 @@ impl Store {
         })
     }
 
-    /// Records the first provider measurement for the current visible checkpoint.
-    ///
-    /// # Invariant
-    ///
-    /// A cut advances `context_generation` and a mask advances `view_generation`; both must
-    /// still be the ones the request was built with, so a measurement taken before a view
-    /// change can never become the baseline of the view that replaced it.
+    /// Records the first provider measurement for the current checkpoint.
     pub fn set_live_compact_baseline(
         &self,
         session_id: i64,
         generation: u64,
-        view_generation: Option<u64>,
         input_tokens: u64,
     ) -> anyhow::Result<()> {
         self.lock().execute(
             "UPDATE sessions SET live_compact_baseline_tokens = ?1
              WHERE id = ?2 AND context_generation = ?3
-               AND COALESCE((SELECT view_generation FROM memory_state WHERE session_id = ?2), 0)
-                   = COALESCE(?4, 0)
                AND live_compact_origin_seq IS NOT NULL
                AND live_compact_baseline_tokens IS NULL",
-            params![
-                input_tokens as i64,
-                session_id,
-                generation as i64,
-                view_generation.map(|value| value as i64)
-            ],
+            params![input_tokens as i64, session_id, generation as i64],
         )?;
         Ok(())
-    }
-
-    /// The session's memory view generation, when it has one.
-    pub fn memory_view_generation(&self, session_id: i64) -> anyhow::Result<Option<u64>> {
-        let conn = self.lock();
-        let stored: Option<i64> = conn
-            .query_row(
-                "SELECT view_generation FROM memory_state WHERE session_id = ?1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(stored.map(|value| value.max(0) as u64))
     }
 
     /// Queues one ask, unless one is already waiting to be delivered.

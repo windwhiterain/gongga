@@ -36,10 +36,13 @@ the post-mask 3449+4000.
   tail is not evictable, and a failure per step is not an answer.
 - `recall` treats an unmeasured recalled block as an unknown projection rather than adding
   zero.
-- `advance_generation` clears `live_compact_baseline_tokens`; `set_live_compact_baseline`
-  now takes the request's `view_generation` and requires it to still be current, so the
-  measurement taken before a view change cannot become the new view's baseline. This is the
-  isomorphism with a cut: a cut moves `context_generation`, a mask moves `view_generation`.
+- `advance_generation` no longer touches the interval baseline, and `set_live_compact_baseline` keeps its one guard (`context_generation`) — the baseline belongs to the checkpoint, and a mask is not a checkpoint.
+- Growth is counted on **the tape**, not on the visible set: `live_compact_measurement` reads
+  `COALESCE(tape_tokens, context_tokens)` and the baseline is stamped from `input_tokens` in
+  both modes. The older code stamped the visible count, so an eviction that hid 7596 tokens
+  put the visible set 7596 behind the baseline it had just set, and the next ask waited for
+  all of it to grow back. A mask changes the view and never the tape, so tape growth needs
+  no reset, no guard and no special case.
 - `SPEC.md` "Memory Mask" and the `memorize`/`recall` signatures; `docs/notes/server-live-compact.md`.
 
 ## L3 evidence (test home, this build)
