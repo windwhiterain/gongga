@@ -16,6 +16,7 @@ fn bare(id: &str) -> Model {
         builtin_tools: Vec::new(),
         price: None,
         tier: None,
+        defaults: Default::default(),
     }
 }
 
