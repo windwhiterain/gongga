@@ -104,6 +104,14 @@ holds a secret: `key_env` names the variable, and the value lives in the
 environment. A machine that keeps one on disk keeps it on its own branch, off the
 remote.
 
+An **empty** `key_env` is the one stated exception, and it is a claim about the
+route rather than a missing name: `key_env = ""` says the endpoint needs no
+credential. Resolution answers it with an empty key and an empty variable name
+(`credential`), `LlmClient::new` accepts that pairing instead of refusing the
+start, and every request goes out with no `Authorization` header at all
+(`with_bearer`). A route that names a variable still must have a value: sending
+the request unauthenticated would come back as a provider error nobody can read.
+
 ## Catalog::load_file
 
 One file, read once. A missing roster is the normal case for a fresh machine and

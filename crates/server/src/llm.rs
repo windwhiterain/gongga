@@ -209,7 +209,8 @@ impl LlmClient {
 
 impl LlmClient {
     pub fn new(cfg: &crate::config::ModelConfig) -> anyhow::Result<Self> {
-        if cfg.api_key.is_empty() {
+        // `key_env = ""` states a keyless route; any other name must have a value.
+        if cfg.api_key.is_empty() && !cfg.api_key_env.is_empty() {
             anyhow::bail!(
                 "no API key: set {} (or GONGGA_API_KEY) before starting the server",
                 cfg.api_key_env
@@ -891,10 +892,7 @@ impl Uploader {
             )
             .part("file", part);
         let url = format!("{}/files", self.base_url);
-        let response = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
+        let response = with_bearer(self.http.post(&url), &self.api_key)
             .multipart(form)
             .send()
             .await?;
@@ -927,10 +925,7 @@ impl Uploader {
     /// counting against the account.
     pub async fn delete(&self, file_id: &str) -> anyhow::Result<()> {
         let url = format!("{}/files/{file_id}", self.base_url);
-        let response = self
-            .http
-            .delete(&url)
-            .bearer_auth(&self.api_key)
+        let response = with_bearer(self.http.delete(&url), &self.api_key)
             .send()
             .await?;
         if !response.status().is_success() {
@@ -1447,6 +1442,21 @@ async fn read_stream(
     }
 }
 
+/// Adds the bearer header unless this route is keyless.
+///
+/// # Invariant
+///
+/// An empty key means the route published itself as keyless (`key_env = ""`), so no
+/// `Authorization` is sent at all. `Bearer ` with nothing behind it is not the same
+/// request: every gateway that checks the header reads it as a wrong key.
+fn with_bearer(request: reqwest::RequestBuilder, api_key: &str) -> reqwest::RequestBuilder {
+    if api_key.is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
+}
+
 /// Reads the response while the outer attempt owns its final measurement event.
 async fn read_stream_inner(
     face: Face,
@@ -1466,11 +1476,12 @@ async fn read_stream_inner(
     tracing::info!(%url, "model request: sending");
     // The count is known only afterwards. The type must be stated: a provider
     // answers 415 for a streamed body without it.
-    let mut request = http
-        .post(url)
-        .header("Accept", "text/event-stream")
-        .header("Content-Type", "application/json")
-        .bearer_auth(api_key);
+    let mut request = with_bearer(
+        http.post(url)
+            .header("Accept", "text/event-stream")
+            .header("Content-Type", "application/json"),
+        api_key,
+    );
     // Every vendor extension the roster names, each carrying the same session id.
     for (name, value) in session_headers {
         request = request.header(name, value);

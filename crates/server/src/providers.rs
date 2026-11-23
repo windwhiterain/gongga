@@ -771,6 +771,10 @@ fn credential(
     if let Some(value) = kept.filter(|v| !v.is_empty()) {
         return Some((value.clone(), provider.key_env.clone()));
     }
+    // `key_env = ""` says the route needs no key: an empty key is its answer, not a miss.
+    if provider.key_env.as_deref() == Some("") {
+        return Some((String::new(), Some(String::new())));
+    }
     if let Some(name) = &provider.key_env {
         if let Some(value) = lookup(name).filter(|v| !v.is_empty()) {
             return Some((value, Some(name.clone())));
