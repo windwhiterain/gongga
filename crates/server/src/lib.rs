@@ -236,14 +236,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     // must not travel into what it starts.
     supervise::remember();
     let mut clock = Clock::new();
-    // The content comes first: this home's config is one of its files.
-    //
-    // # Invariant
-    //
-    // The home is expanded before the content is looked for, so `--home .dev/x`
-    // names the same checkout as an absolute spelling of it: the ship content is
-    // read through `owned()`, which canonicalizes, and a relative path there
-    // resolves against whatever directory this process happens to be in.
+    // The content comes first, and the home is expanded before it is read.
     let home = args.home.clone().unwrap_or_else(crate::config::home_dir);
     let home = crate::config::expand(home);
     let content = if args.check_config {
@@ -543,7 +536,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 );
             }
             // And the relays it left running: `cancel(keep_alive)` marked them, so this
-            // start takes them over instead of ending what a handover kept.
+            // start takes them over.
             let kept = channels.adopt_kept().await;
             if kept > 0 {
                 tracing::info!(kept, "channels the last run kept were taken over");
@@ -556,11 +549,9 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
     if resumed > 0 {
         tracing::info!(resumed, "resuming turns left pending by the last run");
     }
-    // A heartbeat is armed only at a turn's end: that is when the cache was
-    // last warmed. A start is no turn, so no idle session is armed here -- an
-    // arm at boot would fire every session in one burst and pretend a restart
-    // warmed caches it never touched. See `docs/notes/server-dream.md`.
-    // Failures the last run left behind, before a client can ask about them.
+    // No heartbeat is armed at boot: a turn's end arms one.
+
+    // Failures the last run left behind, before a client can ask.
     monitor::sweep(&dispatch, &cfg.home).await;
     clock.step("sweep");
     // Whatever the last run detached is still out there; adopt its pids now.

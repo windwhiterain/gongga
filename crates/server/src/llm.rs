@@ -197,8 +197,8 @@ impl LlmClient {
         let Some(window) = window else {
             return stated;
         };
-        // A roster that states no ceiling leaves the number to the provider: capping by
-        // what is left would ask for more than the model can answer.
+        // No roster ceiling leaves the number to the provider: capping by what is left
+        // would ask for more than it can answer.
         if stated == 0 || spent == 0 || window <= spent {
             return stated;
         }
@@ -749,12 +749,8 @@ impl LlmClient {
             head.push(',');
         }
         if let Some(plan) = plan {
-            // This endpoint measures one long `user` turn against a ceiling far below
-            // the model's window. Bridging the plan with assistant turns keeps every
-            // turn short while sending the same bytes in the same order, and the API
-            // requires the last turn to be a user. Splitting is unconditional: it
-            // depends only on the plan bytes, never on the model, tools or provider,
-            // so swapping any of those cannot change this part of the wire prefix.
+            // A long `user` turn against a ceiling far below the window: assistant turns
+            // bridge the plan, bytes in order.
             let bridge: &str = if framing.separator.is_empty() {
                 "."
             } else {
@@ -808,13 +804,11 @@ impl LlmClient {
 
 /// Largest plan turn, in characters, on the wire.
 ///
-/// # Invariant
-///
-/// The endpoint mis-reads one long `user` turn against a small ceiling. Chunks stay
-/// far below that ceiling even for dense CJK text (~2 tokens/char), and the bytes stay
-/// in order: only message boundaries change, never the transcript's content. The cut
-/// depends only on the plan bytes, so it is the same for every model, provider and
-/// tool set. See the split experiment in `docs/notes/server-llm.md`.
+ /// # Invariant
+ ///
+ /// Chunks stay far below the endpoint's ceiling and the bytes keep their order: only
+ /// message boundaries move. The cut follows the plan bytes alone, so every model,
+ /// provider and tool set is cut alike.
 const PLAN_CHUNK_CHARS: usize = 12_000;
 
 /// One turn of a split plan, written into the request body verbatim.
@@ -971,8 +965,8 @@ pub struct ToolDefinition {
 /// is the rate SPEC's title would then show. See `docs/notes/server-agent.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamWindow {
-    /// The first delta of any kind, in milliseconds from the attempt's request.
-    /// `None` is an attempt that streamed no content at all.
+    /// The first delta of any kind, in milliseconds from the attempt's request; `None` is
+    /// no content at all.
     pub first_delta_ms: Option<u64>,
     /// The provider's last event, in milliseconds from the same start.
     pub end_ms: u64,

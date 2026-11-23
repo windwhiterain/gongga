@@ -129,15 +129,14 @@ pub(crate) fn relay_for_channel(home: &Path) -> PathBuf {
     RESOLVED.get_or_init(|| resolve_relay(home)).clone()
 }
 
-/// This process's relay: this build's bytes, under a name no older build asks for when a
-/// running copy holds the plain one.
+/// This process's relay: this build's bytes, under a name no older build asks for while
+/// the plain one is held.
 ///
 /// # Invariant
 ///
-/// A copy that is not this build is never run. SPEC's "validate" is what makes a pair a
-/// pair: a stale relay reads this server's `cmd` with last week's shape and fails in a way
-/// nobody can diagnose. Resolved once, so a rebuild under a running server cannot change
-/// the program that holds its channels. See `docs/notes/bindir.md`.
+/// A copy that is not this build is never run: a stale relay reads `cmd` in last week's
+/// shape and fails undiagnosably. Resolved once, so a rebuild cannot change the program
+/// that holds a running server's channels.
 fn resolve_relay(home: &Path) -> PathBuf {
     if let Some(named) = std::env::var_os("GONGGA_RELAY_BIN") {
         let named = PathBuf::from(named);
@@ -150,8 +149,8 @@ fn resolve_relay(home: &Path) -> PathBuf {
         return bin.join(file_name(RELAY));
     };
     match bindir::install(&bin, RELAY, bindir::Source::File(&source)) {
-        // A running copy holds the name: this build's bytes go beside it, so the pair
-        // stays a pair and the copy an older server started is left to finish.
+        // A running copy holds the name, so this build's bytes go beside it and the older
+        // copy is left to finish.
         Ok(bindir::Outcome::Pinned { installed, why }) => {
             tracing::warn!(
                 installed = %installed.display(),
@@ -186,8 +185,8 @@ pub(crate) fn refresh_relay(home: &Path) -> Option<PathBuf> {
     }
     std::fs::create_dir_all(&bin).ok()?;
     match bindir::install(&bin, RELAY, bindir::Source::File(&source)) {
-        // A running copy holds the plain name: this build's goes beside it, and the ask
-        // that follows a refusal starts that one, so the pair is one build again.
+        // The plain name is held: this build's goes beside it, and the ask that follows
+        // starts that one.
         Ok(bindir::Outcome::Pinned { why, .. }) => {
             tracing::warn!(
                 why,

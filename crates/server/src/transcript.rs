@@ -123,8 +123,8 @@ impl Iterator for Transcript {
                 },
             };
             let Some(step) = self.held_step else {
-                // No step is being collected: an output waits for the call its step
-                // still has to make, so the step's calls can go out together.
+                // No step is being collected: outputs wait for the calls their step has
+                // yet to make, so they can go out together.
                 if matches!(row.kind, Some(Kind::ToolResult))
                     && let Some(step) = row.step
                 {
@@ -140,8 +140,8 @@ impl Iterator for Transcript {
                 }
                 return Some(Ok(row.stored));
             };
-            // A step is being collected: its calls go out as they arrive, and its
-            // outputs wait until the step has no call left to make.
+            // A step is being collected: its calls go as they arrive, its outputs wait
+            // until no call is left.
             if matches!(row.kind, Some(Kind::ToolCall)) && row.step == Some(step) {
                 return Some(Ok(row.stored));
             }
