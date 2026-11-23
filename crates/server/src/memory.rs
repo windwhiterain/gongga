@@ -561,8 +561,9 @@ impl crate::store::Store {
     ///
     /// # Invariant
     ///
-    /// Every id is validated before the view changes. Re-recalling a visible block does not
-    /// move its FIFO position; duplicate ids therefore have no additional effect.
+    /// Every id is validated before the view changes. Each recalled block moves to the tail
+    /// of the unmasked queue, so a block read again is not the next one evicted; duplicate
+    /// ids still have no additional effect beyond that one move.
     pub fn recall(
         &self,
         session_id: i64,
@@ -636,30 +637,29 @@ impl crate::store::Store {
         let mut recalled = Vec::new();
         let mut recalled_tokens = 0_i64;
         for block in requested {
-            if block.unmasked {
-                continue;
-            }
             let following_order = next_order.checked_add(1).ok_or_else(|| {
                 anyhow!("memory unmasked order overflow for session {session_id}")
             })?;
             let changed = tx.execute(
                 "UPDATE memory_blocks SET unmasked_order = ?3
-                 WHERE session_id = ?1 AND checkpoint_id = ?2 AND unmasked_order IS NULL",
+                 WHERE session_id = ?1 AND checkpoint_id = ?2",
                 params![session_id, block.checkpoint_id, next_order],
             )?;
             if changed != 1 {
                 bail!("memory block {} changed while being recalled", block.id);
             }
-            record_view_event(
-                &tx,
-                session_id,
-                block.checkpoint_id,
-                UNMASK,
-                RECALL_CAUSE,
-                generation,
-            )?;
-            recalled_tokens = recalled_tokens.saturating_add(block.tokens.unwrap_or(0));
-            recalled.push(block.id);
+            if !block.unmasked {
+                record_view_event(
+                    &tx,
+                    session_id,
+                    block.checkpoint_id,
+                    UNMASK,
+                    RECALL_CAUSE,
+                    generation,
+                )?;
+                recalled_tokens = recalled_tokens.saturating_add(block.tokens.unwrap_or(0));
+                recalled.push(block.id);
+            }
             next_order = following_order;
         }
         tx.execute(

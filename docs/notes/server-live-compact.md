@@ -151,8 +151,10 @@ change invalidates these measurements. `recall` validates and de-duplicates ids,
 orders in argument order, adds newly visible blocks to the projection, and masks the
 FIFO head until both the configured count and the session's share of the provider's
 `unmasked_context` hold. A newly memorized block has no measurement yet, so its view's
-token projection is unknown until the next response rather than guessed. Recalling a
-visible block does not refresh its position. A later cut retires older memory ids
+token projection is unknown until the next response rather than guessed. Every recalled
+block moves to the tail of the unmasked queue, so re-reading an old memory postpones its
+eviction instead of leaving it next in line; a re-recalled block is not added to the
+token projection twice. A later cut retires older memory ids
 explicitly; recalling one is an error rather than an unmask that the cut projection
 would silently ignore. Configuration changes and every request boundary run both
 checks. Eviction stops when no historical raw block remains: the always-visible summary

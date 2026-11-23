@@ -20,7 +20,7 @@ The numeric limit is live-tracked configuration, not a hard-coded agent choice.
 
 “Earliest” means earliest **entry into the current unmasked set** (FIFO), not earliest block
 creation. Ordering by creation would make an old block mask itself immediately on every recall.
-Recalling an already unmasked block is idempotent and does not change its queue position.
+Recalling a block moves it to the tail of the unmasked queue, so a recently recalled block is not the next one evicted; a duplicate id moves it once.
 
 The count covers historical blocks whose original spans are visible. Always-visible summary
 artifacts and the current ordinary tail are not recalled raw blocks and are not in this count.
