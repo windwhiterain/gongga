@@ -224,7 +224,7 @@ worth doing when something else needs the distinction.
 The skill listing was once planned the same way and no longer is. `plan` answers a
 different question: *what content goes into the first turn's meta plan, in what order*.
 That injection is paid once and reused by every later step of the conversation, which is
-why its order is worth a cost model. A `run_skill` call is a command result the agent may ask for
+why its order is worth a cost model. A skill call is a command result the agent may ask for
 at any time, or never; a listing a person reads has no cache to hit at all. Sorting the
 rows by a plan bought nothing the walk's own order does not, so the rows are the walk.
 

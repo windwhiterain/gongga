@@ -3,10 +3,10 @@
 ## module doc
 
 One skill, run: the function the Python package it is publishes, or the one refusal
-naming what the directory would have to become. There is no `skill` tool and no `skill` command -- SPEC's `## Python Cmd`
-gives the namespace two commands, `ls_skill` and `run_skill`, and this module is what
-`run_skill` calls. The table `ls_skill` prints is the same walk, for the reason that
-matters to a reader: a row's `name` is what `run_skill` takes, so a skill one lists is
+naming what the directory would have to become. There is no `skill` tool and no `skill` command -- SPEC's `## Tool`
+gives every call a `skill` field and `## Python Cmd` gives the namespace `ls_skill`; this module is what
+a skill call runs. The table `ls_skill` prints is the same walk, for the reason that
+matters to a reader: a row's `name` is what a call's `skill` takes, so a skill one lists is
 a skill the other runs.
 
 ## Two shapes, one door
@@ -14,25 +14,25 @@ a skill the other runs.
 A skill is a directory holding a `SKILL.md`, and what else is in it decides whether the
 model can call it. `Skills::run` is the one place that decides:
 
-| shape | what makes one | what `run_skill` does |
+| shape | what makes one | what a skill call does |
 | --- | --- | --- |
 | **body** | only a `SKILL.md` | refuses: a body is prose, and prose is read |
 | **package** | an `__init__.py` in that directory | runs it: the home's `gongga_skill.py` imports it and calls the function the call names, with its keyword arguments |
 
 The refusal is one sentence for both, and it is not about a file being missing: a skill runs
 only as a Python call, so it says what makes one -- a directory holding `__init__.py`, whose
-public functions are the names `run_skill` takes -- and where an implementation that is not
+public functions are the names a skill call takes -- and where an implementation that is not
 Python goes (inside one of those functions). That is the change a model can make; a sentence
 that offered a shell door would name a command this harness no longer has.
 
 There is no third shape and no second door. `metadata.entry` is not read on any path, here or
 in `crates/skill`: the command line stopped running entries too, because `gongga-cli` passes
-server commands and a skill is reached by `run_skill` alone.
+server commands and a skill is reached by a call that states `skill` alone.
 
 ## The call
 
-`run_skill`'s `cmd` is SPEC's `Cmd := {name, args}`: `name` is the function the package
-publishes, and `args` is that function's keyword arguments, an object. What the skill
+A skill call is SPEC's `Cmd := {name, args, skill}`: `name` is the function the package
+publishes, `skill` names the package, and `args` is that function's keyword arguments, an object. What the skill
 receives is one JSON line on stdin, `{"skill": ..., "function": ..., "args": ...}` --
 nothing a caller wrote is on a command line at all.
 
@@ -81,7 +81,7 @@ skill is a program of the caller's choosing.
 ## The three roots
 
 `installed_in` walks three layers, nearest first, and `@skill(...)` expansion, `ls_skill`
-and `run_skill` all read that one walk:
+and a skill call all read that one walk:
 
 | bucket | whose | where |
 | --- | --- | --- |
@@ -100,7 +100,7 @@ is what spells it (`Space::name`). No caller passes a machine into the walk: the
 read is the evidence, and a path handed to a reader carries the machine that must read it
 back.
 
-A name in two roots is two rows with one name, and `run_skill` runs the nearer one --
+A name in two roots is two rows with one name, and a skill call runs the nearer one --
 the row `@skill(...)` already read. There is no second spelling for "the other one":
 where a row came from is its `bucket`, and a call never says it.
 

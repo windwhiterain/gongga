@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use protocol::{
-    self, Args, ChannelError, ClientInfo, ClientMessage, Event, ServerInfo, ServerMessage,
-    decode_client, encode_server,
+    self, ChannelError, ClientInfo, ClientMessage, Event, ServerInfo, ServerMessage, decode_client,
+    encode_server,
     frame::{Flags, Frame},
 };
 use tokio::net::UdpSocket;
@@ -40,8 +40,7 @@ struct Peer {
 /// One command of one connection, either running or waiting its turn.
 struct Queued {
     id: u64,
-    name: String,
-    args: Args,
+    cmd: protocol::Cmd,
     /// Who asked, kept for the queue: a recorded act has to name the asker.
     origin: Origin,
     /// When the datagram was read: the wait a slow answer is told apart by.
@@ -356,12 +355,14 @@ async fn handle_connection(
                     Ok(ClientMessage::Hello { .. }) => {
                         tracing::info!(%peer, conn_id, label = %client.label, "client ready");
                     }
-                    Ok(ClientMessage::Command { id, name, args }) => {
+                    Ok(ClientMessage::Command { id, name, args, skill }) => {
+                        let cmd = protocol::Cmd { name, args, skill };
                         // Cmd is this request's local echo, not a global event.
                         let echo = Event::Cmd {
                             id,
-                            name: name.clone(),
-                            args: args.clone(),
+                            name: cmd.name.clone(),
+                            args: cmd.args.clone(),
+                            skill: cmd.skill.clone(),
                         };
                         if send_event(&sink, None, echo).await.is_err() {
                             break;
@@ -369,8 +370,7 @@ async fn handle_connection(
                         if commands
                             .send(Queued {
                                 id,
-                                name,
-                                args,
+                                cmd,
                                 origin: origin_of(&client, peer),
                                 arrived: std::time::Instant::now(),
                             })
@@ -397,10 +397,16 @@ async fn handle_connection(
                             }
                             continue;
                         };
+                        let cmd = protocol::Cmd {
+                            name: name.to_string(),
+                            args,
+                            skill: None,
+                        };
                         let echo = Event::Cmd {
                             id,
-                            name: name.to_string(),
-                            args: args.clone(),
+                            name: cmd.name.clone(),
+                            args: cmd.args.clone(),
+                            skill: None,
                         };
                         if send_event(&sink, None, echo).await.is_err() {
                             break;
@@ -408,8 +414,7 @@ async fn handle_connection(
                         if commands
                             .send(Queued {
                                 id,
-                                name: name.to_string(),
-                                args,
+                                cmd,
                                 origin: origin_of(&client, peer),
                                 arrived: std::time::Instant::now(),
                             })
@@ -471,10 +476,10 @@ async fn run_commands(
     while let Some(command) = queued.recv().await {
         // Two numbers: wait behind earlier commands on this connection, then the run.
         let ran_at = std::time::Instant::now();
-        let outcome = dispatch(&d, &command.name, &command.args, &command.origin).await;
+        let outcome = dispatch(&d, &command.cmd, &command.origin).await;
         tracing::info!(
-            command = %command.name,
-            session = command.args.word("session").unwrap_or("-"),
+            command = %command.cmd.name,
+            session = command.cmd.args.word("session").unwrap_or("-"),
             waited = ?ran_at.duration_since(command.arrived),
             took = ?ran_at.elapsed(),
             "command ran"

@@ -379,8 +379,8 @@ skill 都要改一次这个文件，而读的人手上已经有那张表。
 `path` 列都给得出它），再 `"$SKILL_DIR/<file>" …`：home 会搬、桶会变，而别的 harness 不认
 `<home>/skills/...` 也不认 clone 路径——它读到的是一个不存在的命令。
 
-**skill 只有一种形态：Python package。** 目录里有 `__init__.py`，公开函数就是 `run_skill`
-取的名字（`cmd.name`，参数是关键字参数对象）；正文只是描述它。gongga 没有第二个门：
+**skill 只有一种形态：Python package。** 目录里有 `__init__.py`，公开函数就是 skill 调用
+取的名字（`Cmd.name`，`Cmd.skill` 指名是哪个包，参数是关键字参数对象）；正文只是描述它。gongga 没有第二个门：
 `gongga-cli` 只调 server cmd，所以 skill 不经 shell 运行，非 Python 的实现要么被某个函数调用，
 要么写成函数本身。frontmatter 的 `metadata.entry` 已经不再被任何代码读取。
 `scripts/skill_contract.sh` 拦两种走样：正文出现桶路径、`entry` 指不到文件。

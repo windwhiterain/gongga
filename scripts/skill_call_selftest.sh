@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `run_skill` on real processes: a package's call arrives as one JSON line on stdin, a
+# A skill call (`Cmd.skill`) on real processes: a package's call arrives as one JSON line on stdin, a
 # directory that is not a package is refused with the sentence that says what to make,
 # and the package's own `import gongga` resolves against this home's `lib/`.
 #
@@ -11,6 +11,11 @@ native() { cygpath -m "$1" 2>/dev/null || printf '%s' "$1"; }
 compact() { python -c 'import sys; print(sys.argv[1].replace(chr(92), "").replace("/", "").lower())' "$1"; }
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# The content under test is this repo's own: a fresh home installs nothing without a
+# source, and the compiled default is a network URL whose newest commit may speak an
+# older protocol than this build reads. Exported so the server keeps the checkout's
+# origin here instead of pointing it at the network mid-run.
+export GONGGA_SHIP_URL="${GONGGA_SHIP_URL:-$root/ship}"
 bin="${SKILL_CALL_SELFTEST_BIN:-$root/target/debug}"
 work="$root/.dev/selftest"
 home="$work/skill-call-home"
@@ -112,8 +117,9 @@ printf '#!/usr/bin/env bash\necho entry-ran\n' > "$checkout/.agents/skills/entry
 
 # The content lands in this home's `lib/` at start: the package contract and the client
 # a skill imports. Cloned rather than copied from a live home, because the package
-# scenario's answer is this checkout's `python/` tree and not a neighbour's.
-if ! git clone -q https://github.com/windwhiterain/gongga-ship.git "$home/ship" >>"$log" 2>&1; then
+# scenario's answer is this checkout's `python/` tree and not a neighbour's. The content
+# under test is this repo's own unless a source is named, as `cmd_selftest.sh` reads it.
+if ! git clone -q "${GONGGA_SHIP_URL:-$root/ship}" "$home/ship" >>"$log" 2>&1; then
   echo "could not clone the content repository into $home/ship" >&2; exit 1
 fi
 
@@ -140,6 +146,9 @@ key_env = "FAKE_API_KEY"
 TOML
 export GONGGA_PROVIDERS_CATALOG="$work/skill-call-roster.toml"
 export FAKE_API_KEY=sk-fake
+# The CLI shim reads `GONGGA_HOME` to find its python: without this it inherits the
+# caller's own home and runs that home's content, not the one under test.
+export GONGGA_HOME="$home"
 
 port=$(free_port)
 env -u GONGGA_MODEL -u GONGGA_PROVIDER -u GONGGA_BASE_URL -u GONGGA_API_KEY -u GONGGA_API_KEY_ENV -u GONGGA_HOME -u GONGGA_SERVER -u GONGGA_BIND -u GONGGA_KEY -u GONGGA_SESSION -u GONGGA_CLI -u GONGGA_REMOTE -u GONGGA_REMOTE_CWD \
@@ -157,7 +166,7 @@ created=$("${cli[@]}" '{"name":"set_session","args":{"id":"reader","model":"fake
 ok "a session stands in the checkout that holds the three skills" $?
 
 # (a) the package runs, and what it answers is what it printed
-out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"pkg","session":"reader","cmd":{"name":"probe","args":{"text":"hello"}}}}' 2>&1)
+out=$(GONGGA_SESSION=reader "${cli[@]}" '{"name":"probe","skill":"pkg","args":{"text":"hello"}}' 2>&1)
 say "$out"
 [[ "$out" == *"pkg:hello|"* && "$out" == *"[exit status 0]"* ]]
 ok "a package's function is called with keyword arguments and its output returned" $?
@@ -173,14 +182,14 @@ imported=1
 ok "the package imports gongga from this home's lib/" $imported
 
 # (b) a body is refused: one sentence naming the package to make, and the SKILL.md it read
-out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"body","session":"reader","cmd":{"name":"anything","args":{}}}}' 2>&1)
+out=$(GONGGA_SESSION=reader "${cli[@]}" '{"name":"anything","skill":"body","args":{}}' 2>&1)
 say "$out"
 [[ "$out" == *"only as a Python call"* && "$out" == *"__init__.py"* && "$out" == *"SKILL.md"* && "$out" != *"pkg:"* ]]
 ok "a body is refused, naming the package to make and the SKILL.md it read" $?
 
 # (c) a declared entry is refused the same way: no code of this build reads the declaration,
 # so the file it names is not run either.
-out=$("${cli[@]}" '{"name":"run_skill","args":{"id":"entryonly","session":"reader","cmd":{"name":"anything","args":{}}}}' 2>&1)
+out=$(GONGGA_SESSION=reader "${cli[@]}" '{"name":"anything","skill":"entryonly","args":{}}' 2>&1)
 say "$out"
 [[ "$out" == *"only as a Python call"* && "$out" == *"__init__.py"* && "$out" == *"SPEC"* && "$out" != *"entry-ran"* ]]
 ok "a declared entry is refused, naming the package that would run instead" $?

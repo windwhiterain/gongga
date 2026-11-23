@@ -465,6 +465,7 @@ impl Bridge {
             id,
             name: name.to_string(),
             args,
+            skill: None,
         };
         sink.send(encode_client(&message)?)
             .await

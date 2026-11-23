@@ -34,12 +34,12 @@ pub use channel::{
     accept, connect,
 };
 pub use message::{
-    Accepts, ArgSpec, Args, BLOCK_SIZES, BOX_EDGES, ClientInfo, ClientMessage, CmdArg, CommandSpec,
-    CommandTarget, CompletionSource, DEFAULT_BOX_EDGE, Delta, Event, Field, Given, Head, HeadKind,
-    LiveCompactState, LogLevel, ModelInfo, NONE_VALUE, Operation, PROTOCOL_VERSION, Quota,
-    REPLAY_TURN, ResponseEvent, ResponsePart, SERVER_STOP, SHOW_VALUES, SelectGesture, ServerInfo,
-    ServerMessage, SessionInfo, SessionStatus, THINKING_DEFAULT, ToolAnswerEvent, ToolCallEvent,
-    ToolStream, TurnOutcome, Usage, UsageEvent, Worktree, client_commands, decode_client,
-    decode_server, encode_client, encode_server, spent,
+    Accepts, ArgSpec, Args, BLOCK_SIZES, BOX_EDGES, ClientInfo, ClientMessage, Cmd, CmdArg,
+    CommandSpec, CommandTarget, CompletionSource, DEFAULT_BOX_EDGE, Delta, Event, Field, Given,
+    Head, HeadKind, LiveCompactState, LogLevel, ModelInfo, NONE_VALUE, Operation, PROTOCOL_VERSION,
+    Quota, REPLAY_TURN, ResponseEvent, ResponsePart, SERVER_STOP, SHOW_VALUES, SelectGesture,
+    ServerInfo, ServerMessage, SessionInfo, SessionStatus, THINKING_DEFAULT, ToolAnswerEvent,
+    ToolCallEvent, ToolStream, TurnOutcome, Usage, UsageEvent, Worktree, client_commands,
+    decode_client, decode_server, encode_client, encode_server, spent,
 };
 pub use reference::{Reference, local_machine, meta_prefix};

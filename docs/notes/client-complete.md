@@ -141,7 +141,7 @@ same table, so a type is read once.
 
 **A schema chosen by a sibling.** `x-completion.schema_of` names another property
 and `x-completion.schemas` holds the document each of its values chooses, so
-`run_skill{"id":"alpha","cmd":{` completes alpha's own arguments. The sibling is
+`set_session{"config":{"model_config":{` completes the model's own fields. The sibling is
 read from the level the property lives in (`Place::levels`), and a line that has
 not stated it yet completes nothing rather than guessing. It is what `oneOf`
 cannot say without spelling every choice twice.
@@ -154,10 +154,9 @@ same way by both.
 
 **The skill producer.** Each package's publisher generates `schema.json` beside
 `__init__.py` — the functions the package publishes, each with the schema its arguments
-are — and the catalog reads that file (`content_commands::package_schema`) and hangs it
-on `run_skill`'s `cmd`, keyed by skill id. So `cmd.name` enumerates that skill's
-functions and `cmd.args` states the parameters of the chosen one, and no second list of
-arguments can drift: nothing here reads a signature.
+are — and the catalog reads that file (`skill_commands::rows`) to publish one row per
+function, carrying its `skill`. So a row's arguments are the function's own parameters,
+and no second list of arguments can drift: nothing here reads a signature.
 
 **Open**: `CommandSpec` carries no schema on the wire — the client builds it from
 the published arguments with this one builder.

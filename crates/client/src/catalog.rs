@@ -390,7 +390,7 @@ impl Catalog {
     /// # Invariant
     ///
     /// One walk for the whole harness: the server resolves these with the same
-    /// `installed_for` that `run_skill` and `@skill(...)` read, and this layer only
+    /// `installed_for` that a skill call and `@skill(...)` read, and this layer only
     /// remembers an answer and asks for a new one -- it never walks a directory of
     /// its own, because the content's tree is a path the client does not own. See
     /// `docs/notes/client-commands.md`.

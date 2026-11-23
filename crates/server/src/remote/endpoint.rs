@@ -144,7 +144,7 @@ impl Endpoint {
     ///
     /// Only an endpoint reached over ssh has a peer to reinstall, and the answer is the
     /// skill that does it rather than a command line: a skill runs only as a Python call,
-    /// so this names the `remote` skill's `install` (SPEC's `run_skill`) and the peer it
+    /// so this names the `remote` skill's `install` (SPEC's `Cmd.skill`) and the peer it
     /// describes, and leaves the call's own shape to that skill's body.
     fn remedy(&self) -> Option<String> {
         let Endpoint::Remote {
@@ -171,7 +171,7 @@ impl Endpoint {
         }
         Some(format!(
             "reinstall the distribution on the peer with the `remote` skill's `install` call \
-             (`run_skill` with `id: remote`; peer {peer}), point this machine's remote \
+             (`skill: remote`; peer {peer}), point this machine's remote \
              at the runner it prints, and restart the server"
         ))
     }

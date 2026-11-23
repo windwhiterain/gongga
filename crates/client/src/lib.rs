@@ -1723,7 +1723,7 @@ impl Client {
     /// See `docs/notes/client-lib.md`.
     pub(crate) fn handle_event(&mut self, event: Event, sink: &mut dyn Sink) {
         match event {
-            Event::Cmd { id, name, args } => {
+            Event::Cmd { id, name, args, .. } => {
                 // Neither the completion's questions nor a refill is the operator's
                 // line: the window does not print what healed it.
                 if self.quiet.contains_key(&id) || self.is_fill(id) {
@@ -2402,7 +2402,7 @@ impl Client {
     ///
     /// The server's walk, never this process's: the content is a checkout the
     /// server owns, and a client that walked its own directories offered skills
-    /// that `run_skill` resolves nowhere. Never echoes the command, for the reason
+    /// that a skill call resolves nowhere. Never echoes the command, for the reason
     /// [`Client::ask_paths`] states.
     pub fn ask_skills(&mut self, session: &str) -> Option<ClientMessage> {
         if !self.connected || self.catalog.command("list_skills").is_none() {
@@ -2420,6 +2420,7 @@ impl Client {
             id,
             name: "list_skills".to_string(),
             args,
+            skill: None,
         })
     }
 
@@ -2443,6 +2444,7 @@ impl Client {
             id,
             name: "list_paths".to_string(),
             args,
+            skill: None,
         })
     }
 
@@ -2729,6 +2731,7 @@ impl Client {
             id,
             name: "get_messages".to_string(),
             args,
+            skill: None,
         })
     }
 
@@ -2883,12 +2886,19 @@ impl Client {
             );
             return Submission::Rejected;
         }
+        // SPEC's `Cmd.skill`: what the call stated wins; the row's skill is the default.
+        let mut args = args;
+        let skill = args
+            .remove("skill")
+            .and_then(|value| value.as_str().map(str::to_string))
+            .or_else(|| spec.skill.clone());
         let id = self.next_id();
         self.unconfirmed.push((id, typed));
         Submission::Send(ClientMessage::Command {
             id,
             name: head,
             args,
+            skill,
         })
     }
 
@@ -3292,6 +3302,7 @@ impl Link {
                 id: CANCEL_ID,
                 name: "cancel".to_string(),
                 args: Default::default(),
+                skill: None,
             })
             .await;
         if asked.is_err() {

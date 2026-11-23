@@ -302,43 +302,6 @@ async fn ask(
     }
     reply_of(&outcome.stdout)
 }
-
-/// What one package publishes, as one schema document.
-///
-/// # Invariant
-///
-/// Read off the file the publisher generated, and trusted as written: every reader of
-/// one skill reads that document, so asking the package again here would be a second
-/// opinion about the same API, disagreeing with the model's copy the moment a
-/// signature moved. See `skill::schema_of`.
-pub(crate) fn package_schema(directory: &Path) -> Result<Value, String> {
-    let document = ::skill::schema_of(directory)?;
-    let functions = document
-        .get("functions")
-        .and_then(Value::as_object)
-        .ok_or("the generated schema has no `functions` object")?;
-    let mut names: Vec<Value> = Vec::new();
-    let mut arguments = serde_json::Map::new();
-    for (function, arguments_of) in functions {
-        names.push(Value::String(function.clone()));
-        arguments.insert(function.clone(), arguments_of.clone());
-    }
-    // SPEC's `Cmd := {name, args}`: the names this skill answers to, and the
-    // arguments the chosen one takes.
-    let mut properties = serde_json::Map::new();
-    properties.insert(
-        "name".into(),
-        serde_json::json!({ "type": "string", "enum": names }),
-    );
-    let mut chosen = serde_json::Map::new();
-    chosen.insert("schema_of".into(), Value::String("name".into()));
-    chosen.insert("schemas".into(), Value::Object(arguments));
-    let mut args = serde_json::Map::new();
-    args.insert(protocol::argschema::EXTENSION.into(), Value::Object(chosen));
-    properties.insert("args".into(), Value::Object(args));
-    Ok(protocol::argschema::object(properties))
-}
-
 /// What one declared function takes, as a row a tool row may derive from.
 ///
 /// # Invariant
@@ -452,6 +415,7 @@ fn spec_of(manifest: &Manifest, row: Option<&ToolSpec>) -> CommandSpec {
         .collect();
     CommandSpec {
         target: CommandTarget::Server,
+        skill: Some(manifest.skill.clone()),
         name: manifest.name.clone(),
         description,
         args,

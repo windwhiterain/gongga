@@ -78,7 +78,7 @@ behind the cursor.
 ## skills
 
 The server's answer, not a walk of ours: `list_skills` names the session, the server
-resolves it with the one `installed_for` that `run_skill` and `@skill(...)` read, and
+resolves it with the one `installed_for` that a skill call and `@skill(...)` read, and
 this catalog keeps the rows under that session's name until `REVALIDATE` calls the
 answer old. A missing answer is asked for; while it is in flight the popup offers
 nothing, the way a remote's directory does.

@@ -30,14 +30,16 @@ impl Skills {
     /// stdin. A directory without `__init__.py` is refused before a process starts, because
     /// SPEC makes every skill the model calls a Python call: there is no second form for a
     /// script to be, and no shell door that would run one.
-    pub async fn run(&self, skill: &Skill, cmd: Option<&Value>, ctx: &ToolContext) -> ToolOutcome {
+    pub async fn run(
+        &self,
+        skill: &Skill,
+        function: &str,
+        args: &Value,
+        ctx: &ToolContext,
+    ) -> ToolOutcome {
         if !::skill::is_package(skill.dir()) {
             return ToolOutcome::err(refusal(skill));
         }
-        let call = match call_of(cmd) {
-            Ok(call) => call,
-            Err(why) => return ToolOutcome::err(why),
-        };
         let package = match ::skill::package_of(self.python.as_deref(), self.lib.as_deref()) {
             Ok(package) => package,
             Err(why) => return ToolOutcome::err(why),
@@ -54,7 +56,7 @@ impl Skills {
             ));
         }
         // A function's arguments are keyword arguments: a call has a shape, not position.
-        let arguments = match &call.args {
+        let arguments = match args {
             Value::Object(table) => Value::Object(table.clone()),
             Value::Null => Value::Object(serde_json::Map::new()),
             other => {
@@ -65,7 +67,7 @@ impl Skills {
                 ));
             }
         };
-        let request = ::skill::request(skill.dir(), &call.function, &arguments);
+        let request = ::skill::request(skill.dir(), function, &arguments);
         // The contract is the interpreter's one word: the call itself arrives on stdin.
         let leading = [package.contract.display().to_string()];
         let outcome = match words::run(
@@ -115,85 +117,17 @@ impl Skills {
 ///
 /// One shape, one answer, and it is not about a file being missing: the sentence names the
 /// change that makes the skill callable -- a package, whose public functions are the names
-/// `run_skill` takes -- which is what a model can act on. An implementation that is not
+/// a skill call takes -- which is what a model can act on. An implementation that is not
 /// Python goes inside one of those functions, because a skill has no other door.
 fn refusal(skill: &Skill) -> String {
     format!(
         "{} runs only as a Python call: make it a package -- a directory holding \
-         `__init__.py`, whose public functions are the names `run_skill` takes (SPEC's \
+         `__init__.py`, whose public functions are the names a skill call takes (SPEC's \
          `## Skill`) -- and put an implementation that is not Python inside one of those \
          functions. {} is the prose that describes it.",
         skill.name,
         skill.path.display()
     )
-}
-
-/// One `run_skill` call, as SPEC's `Cmd := {name, args}` names it.
-struct Call {
-    /// The function a package publishes; empty asks it to name its own.
-    function: String,
-    /// The function's keyword arguments, an object; `Null` is a call naming none.
-    args: Value,
-}
-
-/// The one sentence a call gets when it names no call at all.
-fn needs_a_call() -> String {
-    format!(
-        "run_skill needs a `cmd`: the function to run and its arguments, `{}`, or one bare word",
-        "{\"name\": \"<function>\", \"args\": {}}"
-    )
-}
-
-/// The call one `run_skill` gives its skill, read off SPEC's `Cmd`.
-///
-/// # Invariant
-///
-/// `cmd` is `{name, args}`, and `args` stays what it was written as: nothing here
-/// flattens it into a command line, because the call is a JSON line and not an argv. A
-/// bare word is the whole call, and a string starting with `{` is an object, because a
-/// line spells it.
-fn call_of(cmd: Option<&Value>) -> Result<Call, String> {
-    let Some(value) = cmd.filter(|value| !value.is_null()) else {
-        return Err(needs_a_call());
-    };
-    let value = match value {
-        Value::String(text) if !text.trim().starts_with('{') => {
-            let word = text.trim();
-            return match word.is_empty() {
-                true => Err(needs_a_call()),
-                false => Ok(Call {
-                    function: word.to_string(),
-                    args: Value::Null,
-                }),
-            };
-        }
-        Value::String(text) => match serde_json::from_str::<Value>(text) {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                return Err(format!(
-                    "`cmd` starts with `{{`, so it is the call as an object of `name` \
-                     and `args`, and it does not parse: {e}"
-                ));
-            }
-        },
-        other => other.clone(),
-    };
-    let Value::Object(table) = value else {
-        return Err(format!(
-            "`cmd` is a call -- an object of `name` and `args` -- and this is {}",
-            crate::tools::json_type(&value)
-        ));
-    };
-    let function = table
-        .get("name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .unwrap_or_default()
-        .to_string();
-    Ok(Call {
-        function,
-        args: table.get("args").cloned().unwrap_or(Value::Null),
-    })
 }
 
 /// A skill this build found, and the directory it lives in.
@@ -227,7 +161,7 @@ pub struct Found {
 /// # Invariant
 ///
 /// One walk, shared with the command layer and with `@skill(...)`: a name this lists is
-/// a name `run_skill` takes. The project layer is the checkout the session stands in,
+/// a name a skill call takes. The project layer is the checkout the session stands in,
 /// so on a peer it is the peer's own `.agents/skills` read through that peer's space;
 /// the home's and the machine's layers are this server's, wherever the session works.
 /// See `docs/notes/server-tools-skill.md`.
@@ -313,7 +247,7 @@ pub fn roots(project: Option<&Path>) -> skill::Roots {
 /// # Invariant
 ///
 /// `name` is the whole address and the only thing a call spells: `ls_skill` filters a
-/// `path` against it and `run_skill` hands it back unchanged, so the row a reader copies
+/// `path` against it and a skill call hands it back unchanged, so the row a reader copies
 /// is the word the call takes. `bucket` stands beside it, so a row says where a skill
 /// came from without the call having to spell it.
 pub(crate) fn found_row(skill: &Found) -> Value {

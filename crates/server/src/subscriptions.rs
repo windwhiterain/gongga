@@ -31,15 +31,9 @@ pub struct Action {
     pub cmds: Vec<Command>,
 }
 
-/// One command of an action: what it is called, and what it is told.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Command {
-    /// The command's name, as the catalog spells it.
-    pub name: String,
-    /// Its named arguments, before the matched event is put into them.
-    #[serde(default)]
-    pub args: protocol::Args,
-}
+/// One command of an action: SPEC's `Cmd`, so a match may run a skill's function
+/// exactly as a session's own call does.
+pub type Command = protocol::Cmd;
 
 /// The armed subscriptions, and the one task that matches events against them.
 pub struct Subscriptions {
@@ -222,7 +216,17 @@ impl Subscriptions {
                 Ok(args) => args,
                 Err(why) => return (false, why, ran),
             };
-            match self.run_cmd(session, &cmd.name, args).await {
+            match self
+                .run_cmd(
+                    session,
+                    protocol::Cmd {
+                        name: cmd.name.clone(),
+                        args,
+                        skill: cmd.skill.clone(),
+                    },
+                )
+                .await
+            {
                 Ok(outcome) if outcome.ok => said = outcome.message,
                 Ok(outcome) => return (false, outcome.message, ran),
                 Err(why) => return (false, why, ran),
@@ -240,12 +244,11 @@ impl Subscriptions {
     async fn run_cmd(
         &self,
         session: &str,
-        name: &str,
-        args: protocol::Args,
+        cmd: protocol::Cmd,
     ) -> Result<crate::commands::Outcome, String> {
         let layer = crate::commands::layer()
             .ok_or_else(|| "this process has no command layer to run a match in".to_string())?;
-        Ok(layer.run(session, name, args, None).await)
+        Ok(layer.run(session, cmd, None).await)
     }
 
     /// Writes one outcome row and announces it, in that order.

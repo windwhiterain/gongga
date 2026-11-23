@@ -76,7 +76,7 @@ twice.
 
 `cwd` is the live one when the session has a shell, and the row only when it has
 none. The row is where the session was *placed*; the shell's own directory is where
-every tool reads -- `run_skill`, `@skill(...)`, `@file(...)` all resolve against it -- so a
+every tool reads -- a skill call, `@skill(...)`, `@file(...)` all resolve against it -- so a
 row that said the placement while the shell had `cd`-ed elsewhere would let a
 front-end complete a name from one directory and send it to another. That is exactly
 the bug the client was fixed for: its skills came from the window's launch directory,
@@ -751,9 +751,9 @@ empty name. A command whose session SPEC does *not* default -- `send_message`,
 
 SPEC names three roles and gives each one word, so the catalog does too: `session`
 is the session a command acts *within* (`send_message`, `get_messages`,
-`ls_channel`, `ls_skill`, `run_skill`), `id` is the one entity being addressed
+`ls_channel`, `ls_skill`), `id` is the one entity being addressed
 (`set_session`, `interrupt_session`, `clone_session`, `del_channel`,
-`rename_channel`, `new_channel`, `input_channel`, `run_skill`), and `path` is a place
+`rename_channel`, `new_channel`, `input_channel`), and `path` is a place
 in a namespace, which is a subtree rather than a name (`ls_session`, `del_session`,
 `ls_channel`, `ls_subscription`, `del_subscription`, `ls_skill`). `subscribe`'s
 optional name is `id`: SPEC writes `id: option[Subscription] = none`, and it stays
@@ -785,11 +785,11 @@ check is `scripts/path_selftest.sh`, which asks a live server both spellings.
 SPEC's `## Python Cmd` gives skills a namespace, so a skill has a path -- and the path is
 the skill's **name**: `evolve` for the checkout's own, `handoff` for the home's,
 `polity` for the machine's. `Skill::name` is that name and nothing above it, which
-is what lets a row this lists be pasted into `run_skill` unchanged. Which root a row came
+is what lets a row this lists be pasted into a call's `skill` unchanged. Which root a row came
 from is a field of its own (`bucket`), not part of the name: a caller who holds a name
 should not have to know which of three directories answers to it.
 
-The walk is the one `run_skill` and `@skill(...)` already make (`tools::skill::installed_for`):
+The walk is the one a skill call and `@skill(...)` already make (`tools::skill::installed_for`):
 the project layer needs the session *on this machine*, so a session whose directory is
 on a peer is handed the home's and the machine's rows instead. `path` is filtered with
 `commands::under` against a name **or** a bucket's word, so `harness` is every skill the
@@ -798,30 +798,38 @@ prefix. A row is `tools::skill::row`, so the listing and the call never disagree
 name.
 
 A name two roots both hold is two rows with one name. `ls_skill` lists both, each with its
-`bucket`; `run_skill` runs the most specific one, the row `@skill(...)` already read. There
+`bucket`; a skill call runs the most specific one, the row `@skill(...)` already read. There
 is no second spelling for "the other one", because the point of dropping the prefix is that
 the name is the name.
 
-## run_skill
+## A skill call (`Cmd.skill`)
 
-`run_skill(id, cmd, session)` is SPEC's call and the only way to run a skill: `cmd` is
-`{name, args}`, and `args` is the function's keyword arguments -- an object, sent as one
-JSON line on the process's stdin, never flattened into flags and never spelled as words.
-The skill has to be a Python package for that; a directory without `__init__.py` is
-refused before a process starts, and the refusal names what to do about it -- make it a
-package (see `server-tools-skill.md`).
+A call with `skill` set is the only way to run a skill: `name` is the function the package
+publishes and `args` is its keyword arguments -- an object, sent as one JSON line on the
+process's stdin, never flattened into flags and never spelled as words. `skill` omitted is
+a command this server answers itself. The skill has to be a Python package; a directory
+without `__init__.py` is refused before a process starts, and the refusal names what to do
+about it -- make it a package (see `server-tools-skill.md`).
 
-The id resolves against the same walk and picks one root by name, which is the reason
-the id exists: a name two roots spell is two rows, and a path names one.
+The name resolves against the same walk and picks one root, which is the reason the name
+exists: a name two roots spell is two rows, and the nearer one answers. The session is the
+caller's; the shared arguments (`description`, `max_output`) are taken off before the
+function binds its parameters.
 
-It then runs the skill itself, through `tools::skill::Skills::run` -- the same door
-the command layer and the config's tool rows meet at, reached directly rather than
-through a registered tool: `run_skill` is SPEC's, so it does not depend on a row
-naming a `skill` tool. What a skill *is* decides what happens, in one place: a package
-is imported from its own directory and the call binds to a published function; anything else
-is refused, because a skill the model calls runs only as a Python call and the refusal says
-what makes one. A function the package does not publish is refused by `gongga_skill` with the
-signature and the list of what it does publish.
+`skill_command` runs the skill through `tools::skill::Skills::run` -- the same door the
+config's tool rows meet at, reached directly rather than through a registered tool, so it
+does not depend on a row naming a `skill` tool. A declared command (`content_commands`) is
+this same call under a shorter name. What a skill *is* decides what happens, in one place:
+a package is imported from its own directory and the call binds to a published function;
+anything else is refused, because a skill the model calls runs only as a Python call. A
+function the package does not publish is refused by `gongga_skill` with the signature and
+the list of what it does publish.
+
+The catalog publishes one row per function a package skill publishes
+(`skill_commands::rows`), each carrying its `skill`, so an operator's line completes from
+the function's own arguments and the client fills `Cmd.skill` from the row. The arguments
+are the generated `schema.json`'s own; a name this build already answers is not a skill's
+to take.
 
 The skill's own exit code is the call's, and its output is the answer: `[exit status
 N]`, capped like any other result. Neither is re-encoded, because a skill's answer is

@@ -191,7 +191,7 @@ probe=$(python "$root/scripts/operation_probe.py" --port "$port" --key "$(cat "$
 ok "the delete_session operation is answered" $?
 say "$probe"
 
-# 15. `run_skill` is a server command (SPEC's `## Python Cmd`): a skill is a package and
+# 15. A skill call (`Cmd.skill`, SPEC's `## Tool`): a skill is a package and
 #     runs; anything else is refused with the sentence that says what to make. No tool
 #     row is involved.
 # The home reads its content from the checkout in the home: make it before the
@@ -236,7 +236,7 @@ def echo(first="", second=""):
 def code(fail: bool = False):
     return 2 if fail else None
 PY
-packed=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"echo-pkg","cmd":{"name":"echo","args":{"first":"a b","second":"c"}}}}' 2>&1)
+packed=$(GONGGA_SESSION=main "${cli[@]}" '{"name":"echo","skill":"echo-pkg","args":{"first":"a b","second":"c"}}' 2>&1)
 [[ "$packed" == *"argv: a b | c"* ]]
 ok "a package skill runs the function its API publishes" $?
 say "$packed"
@@ -285,17 +285,17 @@ say "$verbs"
 
 # A directory that declares an entry is not run: nothing reads the declaration, and the
 # file it names is never handed anything.
-probed=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"entry-only","cmd":{"name":"probe","args":{"word":"a b"}}}}' 2>&1)
+probed=$(GONGGA_SESSION=main "${cli[@]}" '{"name":"probe","skill":"entry-only","args":{"word":"a b"}}' 2>&1)
 { [[ "$probed" == *'only as a Python call'* ]] && [[ "$probed" == *'__init__.py'* ]] && \
   [[ "$probed" != *'[a b]'* ]] && [[ "$probed" == *'"ok":false'* ]]; } && rc=0 || rc=1
 ok "a declared entry is refused, and the file it names is not run" $rc
 say "$probed"
 
-body=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"body-only","cmd":"no_such_function"}}' 2>&1)
+body=$(GONGGA_SESSION=main "${cli[@]}" '{"name":"no_such_function","skill":"body-only","args":{}}' 2>&1)
 [[ "$body" == *"only as a Python call"* && "$body" == *"SKILL.md"* ]]
 ok "a body is refused, naming the package to make and the SKILL.md it read" $?
 
-absent=$("${cli[@]}" '{"name":"run_skill","args":{"session":"main","id":"no-such-skill","cmd":"no_such_function"}}' 2>&1)
+absent=$(GONGGA_SESSION=main "${cli[@]}" '{"name":"no_such_function","skill":"no-such-skill","args":{}}' 2>&1)
 say "unknown skill answered: $(printf '%s' "$absent" | tail -1 | head -c 300)"
 [[ "$absent" == *"no skill is"* && "$absent" == *ls_skill* ]]
 ok "an unknown skill id is refused with where to look" $?

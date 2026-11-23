@@ -415,6 +415,7 @@ fn parse_manifest(reply: &Value, script: &Path) -> Result<Vec<CommandSpec>, Stri
             .map(|args| args.iter().filter_map(parse_arg).collect())
             .unwrap_or_default();
         out.push(CommandSpec {
+            skill: None,
             name: name.to_string(),
             description,
             args,

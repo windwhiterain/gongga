@@ -105,7 +105,8 @@ sytax:
 ```python
 Cmd := {
   name: str, #summary
-  args: dict[str, any]
+  args: dict[str, any],
+  skill: Skill = none # none: a native server cmd; some: that skill's function `name`, `args` its keyword arguments
 }
 Session := path # sticky
 fn new_channel(id: optional[Channel] = none, name: str, cwd: optional[path] = none, session: Session = caller()):
@@ -193,11 +194,13 @@ provided by a shipped uv python package.
 ```python
 Skill := path # abstract naming space
 fn ls_skill(path: path, session: Sesssion = caller())
-fn run_skill(id: Skill, cmd: Cmd, sesssion: Session = caller())
 fn get_trajectory(sesssion: Sesssion, range: Range)
 fn clone_session(source: path, dest: path, dream_of: bool = false)
   # dream_of=true marks a disposable dreamer: its true turn end discards it.
 ```
+
+A skill's function is reached by `Cmd.skill`, not by a command of its own: the call runs
+as the caller's session, and `args` are the function's own parameters.
 
 ## Server State
 everything in database (sqlite) under a home directory, structured for agentic retrieval/mutation.

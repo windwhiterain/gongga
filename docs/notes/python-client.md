@@ -85,14 +85,16 @@ word `null`; leaving an argument out is what takes its default.
 ## The four names SPEC's `## Python Cmd` gives
 
 They are commands, so `__getattr__` puts them on the connection with no code of their own:
-`ls_skill(path, session)`, `run_skill(id, cmd, session)`, `get_messages(session, range)`
-and `clone_session(id, new_id)`. A skill's Python reaches them the way any other caller
-does, which is the whole point of the section being "provided by a shipped uv python
+`ls_skill(path, session)`, `get_messages(session, range)`
+and `clone_session(id, new_id)`. A skill's function is a call with `skill` set, and a name
+the greeting published as a skill's function carries its skill already. A skill's Python
+reaches them the way any other caller does, which is the whole point of the section being
+"provided by a shipped uv python
 package": one API, two readers, and no third spelling of it.
 
     server.ls_skill(path="harness", session="main")
-    server.run_skill(id="harness/prefix-cache",
-                     cmd={"name": "look", "args": {"path": "/tmp"}}, session="main")
+    server.call("look", skill="prefix-cache", path="/tmp")
+    server.read(path="SPEC.md")   # the row carries its skill
 
 ## pump
 

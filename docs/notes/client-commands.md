@@ -66,7 +66,7 @@ then fails on whatever follows it -- `send_message --message --session hi` reads
 `CompletionSource::Skills` is a live source the front-end fills in, and the walk is the
 server's: `Client::ask_skills` sends `list_skills` for the session the line names
 (nothing named is the server's own directory), `fill_skills` keeps the rows under that
-session, and both the `@skill(...)` reference and `run_skill{"id":` read them -- with
+session, and both the `@skill(...)` reference and a call's `skill` field read them -- with
 the `SKILL.md` path as the popup's right-hand column.
 
 The client used to walk the three roots itself, with `<home>/skills` in the middle.

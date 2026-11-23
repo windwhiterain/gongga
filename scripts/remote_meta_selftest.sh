@@ -217,7 +217,7 @@ verdict=$?
 ok "an explicit remote:// reference is read there ($(cat "$work/c.txt"))" "$verdict"
 
 # 4: the image skill prints a peer reference.
-img=$("${cli[@]}" '{"name":"run_skill","args":{"session":"p","id":"image","cmd":{"name":"show","args":{"paths":["shot.png"]}}}}' 2>&1)
+img=$(GONGGA_SESSION=p "${cli[@]}" '{"name":"show","skill":"image","args":{"paths":["shot.png"]}}' 2>&1)
 printf '%s\n' "$img" > "$work/img.json"
 [[ "$img" == *"@image(remote://$peer_name/"* ]]; ok "the image skill prints a remote reference" $?
 
@@ -226,12 +226,11 @@ printf '%s\n' "$img" > "$work/img.json"
 printf %s "$png" | base64 -d > "$work/skill-local.png"
 localmsg=$(python - "$work/skill-local.png" <<'INNER'
 import json, os, sys
-print(json.dumps({"name": "run_skill", "args": {
-    "session": "p", "id": "image",
-    "cmd": {"name": "show", "args": {"paths": [os.path.abspath(sys.argv[1])]}}}}))
+print(json.dumps({"name": "show", "skill": "image",
+    "args": {"paths": [os.path.abspath(sys.argv[1])]}}))
 INNER
 )
-localref=$("${cli[@]}" "$localmsg" 2>&1)
+localref=$(GONGGA_SESSION=p "${cli[@]}" "$localmsg" 2>&1)
 printf '%s\n' "$localref" > "$work/skill-local.json"
 [[ "$localref" == *"@image(remote://local/"* ]]; ok "the image skill names this machine for the path it holds" $?
 

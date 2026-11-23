@@ -262,7 +262,7 @@ pub fn follow(
     line: &str,
     pending: &mut Vec<(u64, Follow)>,
 ) {
-    let crate::protocol::ClientMessage::Command { id, name, args } = msg else {
+    let crate::protocol::ClientMessage::Command { id, name, args, .. } = msg else {
         return;
     };
     let named = client.session_named(name, args).map(str::to_string);

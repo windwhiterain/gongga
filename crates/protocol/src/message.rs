@@ -180,6 +180,22 @@ fn json_kind(value: &Value) -> &'static str {
     }
 }
 
+/// SPEC's `Cmd`: one call, its arguments, and the skill it is addressed to.
+///
+/// # Invariant
+///
+/// `skill` is the whole routing decision: `None` is a command this server answers
+/// itself, `Some(name)` is that skill's function `name`, with `args` as the function's
+/// keyword arguments. No command wraps another call -- see `docs/notes/server-commands.md`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cmd {
+    pub name: String,
+    #[serde(default)]
+    pub args: Args,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill: Option<String>,
+}
+
 // Client -> server
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,7 +205,13 @@ pub enum ClientMessage {
     /// See `docs/notes/protocol-message.md`.
     Hello { client: ClientInfo, key: String },
     /// A command, already parsed and with sticky arguments applied.
-    Command { id: u64, name: String, args: Args },
+    Command {
+        id: u64,
+        name: String,
+        args: Args,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skill: Option<String>,
+    },
     /// An operation, beside the commands: what a window's gestures ask for.
     Operation { id: u64, operation: Operation },
     /// Polite disconnect.
@@ -363,7 +385,13 @@ pub struct Delta {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Event {
     /// Echo of a command the server accepted for execution.
-    Cmd { id: u64, name: String, args: Args },
+    Cmd {
+        id: u64,
+        name: String,
+        args: Args,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        skill: Option<String>,
+    },
     /// Terminal outcome of a command.
     CmdResult {
         id: u64,
@@ -1179,6 +1207,9 @@ pub struct CommandSpec {
     /// Who runs it. Published by the server, so no front-end keeps a list.
     #[serde(default)]
     pub target: CommandTarget,
+    /// The skill whose function this row is: a front-end fills `Cmd.skill` from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill: Option<String>,
 }
 
 /// The lines `set_render --block_size` offers, in the order it lists them.
@@ -1431,6 +1462,7 @@ pub fn client_commands() -> Vec<CommandSpec> {
     ]
     .into_iter()
     .map(|(name, description, args)| CommandSpec {
+        skill: None,
         name: name.into(),
         description: description.into(),
         args,

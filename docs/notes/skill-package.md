@@ -4,9 +4,9 @@
 
 A skill runs as one thing: a Python package, and this home's contract. A skill has no second
 form -- there is no declared entry, no extension table, no `#!` line to read -- because SPEC
-gives the model one door, `run_skill`, and a Python call is what that door runs. The command
+gives the model one door, a call's `skill` field, and a Python call is what that door runs. The command
 layer has no door either: `gongga-cli` passes server commands, and a skill is reached by
-`run_skill` and by nothing else.
+a call that states `skill` and by nothing else.
 
 Four functions and a struct, and the split is the caller's: `is_package` answers whether this
 directory is one (the server refuses before it builds anything else), `package_of` answers what
@@ -21,7 +21,7 @@ The directory holds `__init__.py`, and what to run is *discovered* rather than d
 public API is its **functions**: whatever global scope holds under a name that does not start
 with `_`. `__all__` is not a second spelling of that -- `SKILL.md` is where the functions are
 described, and a file that hid one would be answering the same question twice. A call names
-one: `cmd.name` in `run_skill`'s object. `cmd.args` is that function's **keyword arguments**,
+one: `name` in a call that states `skill`. `args` is that function's **keyword arguments**,
 an object -- not positional words, and not flags, because the request already has a shape. What
 the function answers is the answer: `None`, a string, an exit code, or a structure printed as
 JSON.
@@ -69,8 +69,8 @@ its `$GONGGA_SESSION` would be the launcher's, not the caller's.
 The package's directory holds one more file, and a reader never derives it again: what the
 functions take, as JSON Schema, generated from the signatures by the *publisher* -- the
 content repository's `python/schemas.py`, which `scripts/ship.sh` runs before it commits and
-checks with `--check` before it publishes. Every reader trusts the file: the catalog hangs it on
-`run_skill`'s `cmd` for a client to complete from, and the prompt plan appends its bytes to the
+checks with `--check` before it publishes. Every reader trusts the file: the catalog reads it
+(`skill_commands::rows`) for a client to complete from, and the prompt plan appends its bytes to the
 skill's own prose. So one API has one document, and a signature that moved without the file
 regenerated is caught by `--check`, not by a disagreement between two readings.
 

@@ -8,8 +8,8 @@ The commands the *content* declares, published by this server like its own.
 command of that name: `write` is `file`'s `write`, reachable exactly as
 `send_message` is -- `gongga-cli '{"name": "write", "args": {...}}'`, a tool row with
 `cmd = "write"`, a client's completion. Before this, a skill's functions were only
-reachable through `run_skill` and its generic `cmd` schema, which is a schema that says
-nothing: a client cannot complete `path`, and nothing refuses a call that forgot it.
+reachable only by a call that named the skill and the function, with no schema to complete
+from: a client cannot complete `path`, and nothing refuses a call that forgot it.
 
 The declaration carries three words and no arguments. What a call carries is the
 function's signature, asked of the package at start
@@ -67,7 +67,7 @@ a client holds and the routing a call takes cannot disagree about which names ex
 
 ## What it runs
 
-`declared_command` builds `run_skill`'s own call (`id` is the skill, `cmd` is the
-function and the arguments) and hands it to `run_skill`: one implementation of "run a
-package skill", the session's shells and directory, the same output cap. A declared
-command that needed its own runner would be a second door into the same package.
+`declared_command` names the skill and the function and hands them to `skill_command`: one
+implementation of "run a package skill", the session's shells and directory, the same
+output cap. A declared command that needed its own runner would be a second door into the
+same package.

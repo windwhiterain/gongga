@@ -212,7 +212,7 @@ source_columns=$(columns_of source)
 # A server command is not a skill function: the twenty-three a session drives itself
 # with are the command layer's (`self-control`'s own SKILL.md documents them), and this
 # package adds the one convenience SPEC gives it.
-"${cli[@]}" '{"name":"run_skill","args":{"session":"source","id":"self-control","cmd":"no_such_function"}}' >"$work/e.out" 2>"$work/e.err"
+GONGGA_SESSION=source "${cli[@]}" '{"name":"no_such_function","skill":"self-control","args":{}}' >"$work/e.out" 2>"$work/e.err"
 e=$?
 said=$(cat "$work/e.out" "$work/e.err")
 e_label="the package publishes ask: exit $e, $(first_line "$work/e.out" "$work/e.err")"
@@ -223,7 +223,7 @@ ok "$e_label" $?
 "${cli[@]}" '{"name":"set_session","args":{"id":"mentor","model":"fake/flash-fake","cwd":"'"$project_native"'"}}' >"$work/mentor.out" 2>&1
 # SPEC's `Cmd.args` is a dict end to end, and a function's arguments are its keyword
 # arguments: the call names `ask`'s own parameters, never a word list.
-answer=$(timeout -k 5 120 "${cli[@]}" '{"name":"run_skill","args":{"session":"source","id":"self-control","cmd":{"name":"ask","args":{"session":"mentor","question":"What did I ask?"}}}}' 2>"$work/ask-f.err")
+answer=$(GONGGA_SESSION=source timeout -k 5 120 "${cli[@]}" '{"name":"ask","skill":"self-control","args":{"session":"mentor","question":"What did I ask?"}}' 2>"$work/ask-f.err")
 f=$?
 printf '%s' "$answer" > "$work/ask-f.out"
 f_label="ask asks, waits and prints the answer: exit $f, '$answer' $(first_line "$work/ask-f.out" "$work/ask-f.err")"

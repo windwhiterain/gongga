@@ -44,6 +44,7 @@ mod session_config;
 mod shell_command;
 mod ship;
 mod signal;
+mod skill_commands;
 mod space;
 mod store;
 mod subscriptions;
@@ -572,8 +573,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
         fn run<'a>(
             &'a self,
             session: &'a str,
-            name: &'a str,
-            args: protocol::Args,
+            cmd: protocol::Cmd,
             call_id: Option<&'a str>,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = crate::commands::Outcome> + Send + 'a>,
@@ -587,7 +587,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                     session: session.to_string(),
                     call_id: call_id.map(str::to_string),
                 };
-                crate::commands::dispatch(&dispatch, name, &args, &origin).await
+                crate::commands::dispatch(&dispatch, &cmd, &origin).await
             })
         }
     }

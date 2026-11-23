@@ -270,7 +270,7 @@ the bytes, then claim the end with the DELETE, which is the only speaker.
 
 ## Still owed: the eighteen go
 
-SPEC's tool surface is `exec` and `wait`; a skill is run by the `run_skill` command and
+SPEC's tool surface is `exec` and `wait`; a skill is run by a call that states `skill` and
 never by a tool, which is why nothing here carries a skill index. Everything the
 channel replaced is still here as a row marked `offered = false` **and** as a helper the
 command layer or a subscription still reaches: about 5200 lines across

@@ -40,7 +40,7 @@ pub async fn run(
 ///
 /// # Invariant
 ///
-/// One construction, shared with a command that runs a skill itself (`run_skill`): a
+/// One construction, shared with the command that runs a skill (`skill_command`): a
 /// tool's call and the command layer's reach the same session state, keyed the same way.
 pub fn context(
     agent: &crate::agent::Agent,
@@ -155,6 +155,7 @@ pub fn catalog(tools: &crate::tools::ToolRegistry) -> Vec<protocol::CommandSpec>
                 });
             }
             protocol::CommandSpec {
+                skill: None,
                 name: tool.name().to_string(),
                 description: format!("Run the `{}` tool for one session.", tool.name()),
                 args,

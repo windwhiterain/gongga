@@ -6,7 +6,7 @@ One reading of a skill directory, shared by the two places that need it: the ser
 `ls_skill` table and `@skill(...)` expansion, and the command layer's completion. It exists because the reading had grown two
 implementations -- one in `server/src/tools/skill.rs`, one in `cli/src/commands.rs`
 -- each documented as "the same roots in the same order as the other one". That comment
-is the bug: a third caller appeared (`run_skill`), and a third copy would have been the
+is the bug: a third caller appeared (the skill call), and a third copy would have been the
 point where the three orders stopped agreeing.
 
 ## Bucket
@@ -41,7 +41,7 @@ specific layer wins and asks the implementation to say when it did -- but it is 
 something to hide from the reader who typed the name.
 
 `find` is the one resolver, and a name is the whole address. The layer a skill came from is
-a field of the row (`bucket`), never a word in front of the name: `run_skill file` is the
+a field of the row (`bucket`), never a word in front of the name: `skill: file` is the
 spelling, and `harness/file` names nobody -- it is refused with the list of names, the
 same way a typo is. `Bucket::ALL` is the precedence `find` reads in, which is what makes a
 home skill answer before a machine one of the same name. Nothing here resolves a path: a

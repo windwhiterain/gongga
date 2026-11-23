@@ -348,7 +348,16 @@ impl Cmd for Forward {
                 Some(table) => named_words(table),
                 None => protocol::Args::new(),
             };
-            run_command(&ctx.session, &self.name, words, &ctx.call_id).await
+            run_command(
+                &ctx.session,
+                protocol::Cmd {
+                    name: self.name.clone(),
+                    args: words,
+                    skill: None,
+                },
+                &ctx.call_id,
+            )
+            .await
         })
     }
 }
@@ -359,9 +368,9 @@ impl Cmd for Forward {
 ///
 /// The same door as [`Forward`], named by the call instead of by the row: one command
 /// layer, the caller's session riding along, and a name nobody answers refused there in
-/// the command's own words. `cmd` is SPEC's `{name, args}` -- the object, or the words
-/// of one, and anything else is refused rather than guessed at. A worker has no command
-/// layer, so this never leaves as one.
+/// the command's own words. `cmd` is SPEC's `{name, args, skill}` -- the object, or the
+/// words of one, and anything else is refused rather than guessed at. A worker has no
+/// command layer, so this never leaves as one.
 pub struct GonggaCli;
 
 impl Cmd for GonggaCli {
@@ -371,11 +380,11 @@ impl Cmd for GonggaCli {
         ctx: &'a ToolContext,
     ) -> Pin<Box<dyn Future<Output = ToolOutcome> + Send + 'a>> {
         Box::pin(async move {
-            let (name, words) = match route(&args) {
+            let cmd = match route(&args) {
                 Ok(route) => route,
                 Err(refusal) => return ToolOutcome::err(refusal),
             };
-            run_command(&ctx.session, &name, words, &ctx.call_id).await
+            run_command(&ctx.session, cmd, &ctx.call_id).await
         })
     }
 }
@@ -387,9 +396,10 @@ impl Cmd for GonggaCli {
 /// The command's own arguments are read by the rule every command's are ([`words_of`]),
 /// and `args` is optional because a command need take none. See
 /// `docs/notes/server-tools-mod.md`.
-fn route(args: &Value) -> Result<(String, protocol::Args), String> {
+fn route(args: &Value) -> Result<protocol::Cmd, String> {
     // Said once: the two refusals below are the same sentence about the same shape.
-    let shape = "`cmd` is SPEC's `Cmd`: `cmd.name`, the command, and `cmd.args`, its arguments";
+    let shape = "`cmd` is SPEC's `Cmd`: `cmd.name`, the command, `cmd.args`, its arguments, \
+                 and `cmd.skill`, the skill whose function it is";
     let given = args.get("cmd");
     let Some(table) = given.and_then(object_of) else {
         return Err(format!(
@@ -417,7 +427,21 @@ fn route(args: &Value) -> Result<(String, protocol::Args), String> {
             }
         },
     };
-    Ok((name, words))
+    let skill = match table.get("skill") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(skill)) if !skill.trim().is_empty() => Some(skill.trim().to_string()),
+        Some(other) => {
+            return Err(format!(
+                "`gongga_cli` did not run: `cmd.skill` is a skill's name, and this was {}.",
+                json_type(other)
+            ));
+        }
+    };
+    Ok(protocol::Cmd {
+        name,
+        args: words,
+        skill,
+    })
 }
 
 /// A value as the object it stands for: the object itself, or the words of one.
@@ -446,19 +470,15 @@ fn object_of(value: &Value) -> Option<serde_json::Map<String, Value>> {
 /// rides along. Nothing races the command against the turn's token: only a wait may
 /// be ended, so the command answers and the turn ends at the next step boundary. See
 /// `docs/notes/server-tools-mod.md`.
-pub(crate) async fn run_command(
-    session: &str,
-    name: &str,
-    words: protocol::Args,
-    call_id: &str,
-) -> ToolOutcome {
+pub(crate) async fn run_command(session: &str, cmd: protocol::Cmd, call_id: &str) -> ToolOutcome {
     let Some(layer) = crate::commands::layer() else {
         return ToolOutcome::err(format!(
-            "{name} is a command, and this process has no command layer: it runs one call and answers with a file"
+            "{} is a command, and this process has no command layer: it runs one call and answers with a file",
+            cmd.name
         ));
     };
     let began = std::time::Instant::now();
-    let done = layer.run(session, name, words, Some(call_id)).await;
+    let done = layer.run(session, cmd, Some(call_id)).await;
     let rows = answer_rows(&done.events);
     let mut answer = json!({
         "id": Value::Null,
@@ -680,7 +700,7 @@ impl ToolRegistry {
     ///
     /// # Invariant
     ///
-    /// The setting and not a row: `run_skill` runs a skill whether or not any tool is
+    /// The setting and not a row: a skill call runs a skill whether or not any tool is
     /// registered for it, so what a skill is started with must outlive the table.
     pub fn skills(&self) -> Option<&skill::Skills> {
         self.settings.skills.as_ref()
@@ -823,7 +843,16 @@ impl ToolRegistry {
                 Some(table) => named_words(table),
                 None => protocol::Args::new(),
             };
-            let outcome = run_command(&ctx.session, name, words, &ctx.call_id).await;
+            let outcome = run_command(
+                &ctx.session,
+                protocol::Cmd {
+                    name: name.to_string(),
+                    args: words,
+                    skill: None,
+                },
+                &ctx.call_id,
+            )
+            .await;
             return capped(ctx, name, &shared, cap, outcome);
         };
         // Before the check and before the tool: a typed line and a `hint = "json"` are text.
