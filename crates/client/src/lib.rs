@@ -1264,9 +1264,8 @@ impl Client {
     /// A view the front-end owns: this layer keeps the names so the layout can
     /// answer with them, and never decides one itself.
     pub fn set_shown(&mut self, names: Vec<String>) {
-        // A front-end draws the windows a frame draws and nothing else: the set that
-        // changes loses and gains trees, so both sides of the change are declared
-        // empty and the next frame re-sends them whole. See docs/notes/client-lib.md.
+        // Only what the frame draws: a change declares both sides empty, so the next
+        // frame re-sends them whole.
         let before = std::mem::take(&mut self.shown);
         for name in &before {
             if !names.contains(name) {
@@ -1912,12 +1911,10 @@ impl Client {
     ///
     /// # Invariant
     ///
-    /// A block's name is the client's, never the meaning that carried it: a
-    /// transcript repeats its turns and steps -- every read hands its rows over
-    /// under `REPLAY_TURN` -- so a name built from `(turn, step, part)` names
-    /// several rows, and a window drawing one of them draws the others over it.
-    /// The number is monotonic per window and never handed out twice, so a closed
-    /// block's name is retired with it. See `docs/notes/client-lib.md`.
+    /// A block's name is the client's, never the meaning that carried it: a transcript
+    /// repeats its turns and steps under `REPLAY_TURN`, so a name built from
+    /// `(turn, step, part)` names several rows at once. The number is monotonic per
+    /// window, so a retired name is not handed out again.
     fn block_of(&mut self, window: &str, part: String, done: bool) -> String {
         let slot = (window.to_string(), part);
         if let Some(name) = self.nodes.get(&slot) {
@@ -1948,9 +1945,8 @@ impl Client {
             sink.line(&window, kind, &e.text);
             return;
         }
-        // A block is the item's, named when the item was created: the labels repeat
-        // across a restart, and a reused slot is how a killed item's block took the
-        // next item's text and kept the plain ink it was born with.
+        // A block belongs to the item: labels repeat across a restart, so a reused
+        // slot gave a killed block the next one text.
         let key = match (&e.call_id, e.part) {
             (Some(call_id), ResponsePart::ToolCall) => format!("c:{call_id}"),
             _ if !e.item_id.is_empty() => self.block_of(&e.session, e.item_id.clone(), e.done),
@@ -3030,8 +3026,7 @@ fn drawn_by_a_field(key: &str) -> bool {
 
 fn title_note(session: &protocol::SessionInfo) -> String {
     let usage = &session.usage;
-    // The order is the reading order, and a folded header shows only the head of
-    // this line: what the session is doing, then what it spends, then what it is.
+    // The reading order: what the session is doing, then what it spends, then what it is.
     let mut parts: Vec<String> = vec![
         match session.status {
             protocol::SessionStatus::Idle => "idle",
@@ -3118,10 +3113,8 @@ fn title_note(session: &protocol::SessionInfo) -> String {
             parts.push(format!("live_compact {}", said.join(" ")));
         }
     }
-    // Whatever else the session's row holds is drawn here, by its column name: a
-    // column a migration adds reaches this line without another edit, which is what
-    // hand-copying a field list keeps failing to do. The columns a field of
-    // `SessionInfo` already draws, and the four spelled above, are left out.
+    // Whatever else the row holds is drawn by column name, so a migration needs no
+    // second edit; the four above are left out.
     for (key, value) in &session.state {
         if drawn_by_a_field(key) || value.is_null() {
             continue;

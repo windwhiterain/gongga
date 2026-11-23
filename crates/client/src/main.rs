@@ -66,17 +66,15 @@ struct PipeFrontend {
     roster: Roster,
     server: Option<Server>,
     sticky: Option<String>,
-    /// The windows the last layout drew: a change on either side is a tree that
-    /// has to be asked for again. See `docs/notes/client-pipe.md`.
+    /// The windows the last layout drew: a change on either side has to be asked for again.
     shown: Vec<String>,
     /// The cap and margin last put on the wire, so a repeat costs no frame.
     render: Option<(usize, usize, usize)>,
     draft: bool,
     layout: Option<Layout>,
     status: Option<String>,
-    /// Every answer on screen, by window and key: the source a document is derived
-    /// from. A body is rows, and rows are made from the whole text, so the text has to
-    /// live here rather than in a front-end that may be replaced.
+    /// Every answer on screen, by window and key: rows need the whole text, so it
+    /// lives here, not in a replaceable front-end.
     answers: HashMap<String, HashMap<String, Answer>>,
     /// The columns each window's body is fitted to, as the pane last said.
     widths: HashMap<String, usize>,
@@ -270,9 +268,8 @@ impl PipeFrontend {
                 return;
             }
             self.layout = Some(layout.clone());
-            // A window that leaves the frame holds nothing afterwards, and one
-            // that joins it has no tree yet: both are declared empty, so the next
-            // frame asks for the page instead of appending to a tree that is gone.
+            // A window leaving the frame keeps nothing, one joining has no tree: both are
+            // empty, so the next frame asks for a page.
             for name in &self.shown {
                 if !layout.shown.contains(name) {
                     self.journal.forget_held(name);
@@ -501,9 +498,8 @@ impl Sink for PipeSink<'_> {
         done: bool,
     ) {
         self.wire.stream(window, key, kind, prefix, text, done);
-        // The same words twice: the text every front-end drew before, and the rows the
-        // one that reads them draws now. Queued after the stream, so a `Clear` this
-        // row was preceded by still comes first. See `docs/notes/client-document.md`.
+        // The same words twice: text drawn before, rows drawn now, queued after the
+        // stream so a `Clear` still comes first.
         if let Some(message) = self.front.answer(window, key, kind, prefix, text, done) {
             self.wire.push(message);
         }
