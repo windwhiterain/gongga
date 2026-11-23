@@ -9,6 +9,7 @@ pub(crate) use ::relay::base64;
 mod blobs;
 mod body;
 mod bus;
+mod checkpoint_cmd;
 mod clock;
 mod commands;
 mod config;
@@ -573,6 +574,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
             session: &'a str,
             name: &'a str,
             args: protocol::Args,
+            call_id: Option<&'a str>,
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = crate::commands::Outcome> + Send + 'a>,
         > {
@@ -583,6 +585,7 @@ pub async fn run(args: Args) -> anyhow::Result<()> {
                 // The caller rides in the origin, never in the arguments.
                 let origin = crate::commands::Origin::Tool {
                     session: session.to_string(),
+                    call_id: call_id.map(str::to_string),
                 };
                 crate::commands::dispatch(&dispatch, name, &args, &origin).await
             })

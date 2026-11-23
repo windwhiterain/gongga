@@ -116,7 +116,12 @@ pub enum Origin {
     /// # Invariant
     ///
     /// What a person may do, a tool may: the `self-control` skill is that promise.
-    Tool { session: String },
+    /// `call_id` is the model call that invoked the command, when a model call did:
+    /// a command that anchors on its calling row (a checkpoint) reads it here.
+    Tool {
+        session: String,
+        call_id: Option<String>,
+    },
 }
 
 impl Origin {
@@ -124,8 +129,16 @@ impl Origin {
     pub fn session(&self) -> Option<&str> {
         match self {
             Origin::Client { session, .. } => session.as_deref(),
-            Origin::Tool { session } => Some(session.as_str()),
+            Origin::Tool { session, .. } => Some(session.as_str()),
             Origin::Signal { .. } => None,
+        }
+    }
+
+    /// The model call that invoked this command, when a tool ran it.
+    pub fn call_id(&self) -> Option<&str> {
+        match self {
+            Origin::Tool { call_id, .. } => call_id.as_deref(),
+            _ => None,
         }
     }
 
@@ -151,7 +164,7 @@ impl Origin {
                 }
             }
             Origin::Signal { reason } => reason.clone(),
-            Origin::Tool { session } => format!("a tool in session {session}"),
+            Origin::Tool { session, .. } => format!("a tool in session {session}"),
         }
     }
 }
@@ -1188,6 +1201,97 @@ pub fn server_catalog(remotes: &[String]) -> Vec<CommandSpec> {
                 ),
             ],
         },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "live_compact".into(),
+            description: "Fold the transcript at this call in cut mode: `settled` accumulates, \
+                          `next` is the open work cut at the next checkpoint. A tool call is one \
+                          invocation surface; the model reaches it through gongga_cli."
+                .into(),
+            args: vec![
+                arg(
+                    "settled",
+                    "The closed record of what a later turn cannot recover: decisions, paths, \
+                     identifiers, facts. Accumulates across checkpoints; keep it short.",
+                    true,
+                    Some("text"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "next",
+                    "The tasks still to do, stored as a user turn after the checkpoint and cut \
+                     at the next one. Omit when nothing is open.",
+                    false,
+                    Some("text"),
+                    CompletionSource::None,
+                ),
+                arg(
+                    "continue",
+                    "False writes the checkpoint without starting another request; omitted is true.",
+                    false,
+                    Some("true|false"),
+                    CompletionSource::Static(vec!["true".into(), "false".into()]),
+                ),
+                kind_arg(
+                    "session",
+                    "The session it runs as; omitted is the caller's own.",
+                    false,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "memorize".into(),
+            description: "Commit a mask checkpoint: summarize the segment since the previous \
+                          checkpoint without cutting the canonical tape. Reached through gongga_cli."
+                .into(),
+            args: vec![
+                arg(
+                    "summary",
+                    "A short summary of the segment: decisions, paths, identifiers, facts. The \
+                     original span stays on the tape but becomes masked after the commit.",
+                    true,
+                    Some("text"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "The session it runs as; omitted is the caller's own.",
+                    false,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
+        CommandSpec {
+            target: CommandTarget::Server,
+            name: "recall".into(),
+            description: "Unmask the original spans of memory blocks in mask mode, by id. The \
+                          harness bounds the unmasked set and reports automatic displacement. \
+                          Reached through gongga_cli."
+                .into(),
+            args: vec![
+                arg(
+                    "ids",
+                    "Memory ids returned by memorize, in the order they take effect.",
+                    true,
+                    Some("id"),
+                    CompletionSource::None,
+                ),
+                kind_arg(
+                    "session",
+                    "The session it runs as; omitted is the caller's own.",
+                    false,
+                    "session",
+                    Some("name"),
+                    CompletionSource::Sessions,
+                ),
+            ],
+        },
     ]
 }
 
@@ -1324,6 +1428,7 @@ fn type_of(name: &str) -> &'static str {
         | "must_create"
         | "persistant"
         | "live_compact_enabled"
+        | "continue"
         | "replay"
         | "prefix_cache_plan" => "bool",
         "since"
@@ -1334,6 +1439,7 @@ fn type_of(name: &str) -> &'static str {
         | "time"
         | "live_compact_interval_tokens" => "int",
         "cmd" => "Cmd",
+        "ids" => "list[str]",
         "config" => "SessionConfig",
         "event" => "Event",
         "range" | "trajectory" => "Range",
@@ -1433,6 +1539,7 @@ pub trait CmdLayer: Send + Sync {
         session: &'a str,
         name: &'a str,
         args: Args,
+        call_id: Option<&'a str>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Outcome> + Send + 'a>>;
 }
 
@@ -1530,6 +1637,10 @@ async fn run_now(d: &Dispatch, name: &str, args: &Args, origin: &Origin) -> Outc
         "del_subscription" => del_subscription(d, args, origin.session()).await,
         "ls_subscription" => ls_subscription(d, args, origin.session()).await,
         "trigger_event" => trigger_event(d, args).await,
+        // Checkpoints are server cmds; the command commits and stores its own row.
+        "live_compact" => crate::checkpoint_cmd::live_compact(d, args, origin).await,
+        "memorize" => crate::checkpoint_cmd::memorize(d, args, origin).await,
+        "recall" => crate::checkpoint_cmd::recall(d, args, origin).await,
         // Every tool is a command: the registry decides what exists.
         name if d.agent.tools().get(name).is_some() => {
             crate::tool_cmd::dispatch_tool(d, name, args, origin.session()).await

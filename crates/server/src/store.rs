@@ -2841,11 +2841,11 @@ impl Store {
             },
         )?;
         let call: serde_json::Value = serde_json::from_str(&call_display)?;
-        if call.get("name").and_then(serde_json::Value::as_str)
-            != Some(crate::tools::live_compact::LIVE_COMPACT_TOOL)
-        {
-            anyhow::bail!("call {call_id} is not a live_compact call");
-        }
+        let call = crate::memory::unwrap_call(
+            call,
+            call_id,
+            crate::tools::live_compact::LIVE_COMPACT_TOOL,
+        )?;
         let bounds = crate::live_compact::bounds(&tx, session_id)?;
         let Some(segment_after_seq) = bounds.segment_after else {
             return Ok(crate::live_compact::Commit::Nothing(
@@ -2930,20 +2930,14 @@ impl Store {
 
         // `next` is cut at the next round; only `settled` accumulates.
         // See `docs/notes/server-live-compact.md`.
-        let arguments = call
-            .get("arguments")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|arguments| serde_json::from_str::<serde_json::Value>(arguments).ok());
-        let next = arguments
-            .as_ref()
-            .and_then(|arguments| arguments.get("next"))
+        let next = call
+            .get("next")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default()
             .trim()
             .to_string();
-        let continue_turn = arguments
-            .as_ref()
-            .and_then(|arguments| arguments.get("continue"))
+        let continue_turn = call
+            .get("continue")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
         // `next` is a user turn: in the model's voice it would be a half step.
@@ -3074,6 +3068,27 @@ impl Store {
             params![output, status, now_millis(), session_id, call_id],
         )?;
         Ok(())
+    }
+
+    /// The output and status of a result row a command stored itself, by seq.
+    pub fn stored_tool_result(&self, session_id: i64, seq: i64) -> anyhow::Result<(String, bool)> {
+        let display: String = self.lock().query_row(
+            "SELECT display FROM messages
+             WHERE session_id = ?1 AND seq = ?2 AND kind = 'tool_result'",
+            params![session_id, seq],
+            |row| row.get(0),
+        )?;
+        let value: serde_json::Value = serde_json::from_str(&display)?;
+        let output = value
+            .get("output")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let ok = value
+            .get("ok")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Ok((output, ok))
     }
 
     // -- event log ---------------------------------------------------------

@@ -103,6 +103,8 @@ impl Skills {
         ToolOutcome {
             output: report,
             ok: code == 0,
+            end_turn: false,
+            result_seq: None,
         }
     }
 }

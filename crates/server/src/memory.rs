@@ -164,11 +164,11 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 #[derive(Debug)]
-struct StoredCall {
-    seq: i64,
-    turn: Option<i64>,
-    step: Option<i64>,
-    arguments: Value,
+pub(crate) struct StoredCall {
+    pub(crate) seq: i64,
+    pub(crate) turn: Option<i64>,
+    pub(crate) step: Option<i64>,
+    pub(crate) arguments: Value,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -186,7 +186,7 @@ struct RequestedBlock {
     tokens: Option<i64>,
 }
 
-fn stored_call(
+pub(crate) fn stored_call(
     conn: &Connection,
     session_id: i64,
     call_id: &str,
@@ -208,21 +208,53 @@ fn stored_call(
     )?;
     let display: Value = serde_json::from_str(&display)
         .with_context(|| format!("could not read tool call {call_id}"))?;
-    if display.get("name").and_then(Value::as_str) != Some(expected_tool) {
-        bail!("call {call_id} is not a {expected_tool} call");
-    }
-    let arguments = display
-        .get("arguments")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("call {call_id} has no encoded arguments"))?;
-    let arguments = serde_json::from_str(arguments)
-        .with_context(|| format!("could not read arguments of call {call_id}"))?;
+    let arguments = unwrap_call(display, call_id, expected_tool)?;
     Ok(StoredCall {
         seq,
         turn,
         step,
         arguments,
     })
+}
+
+/// The effective arguments of a stored call, read through the `gongga_cli` envelope.
+///
+/// # Invariant
+///
+/// SPEC: `<tool>(**args) == gongga_cli(Cmd{name: <tool>})`. A call naming
+/// `expected` in `cmd` is `expected`'s call, its arguments `cmd.args`. The loop
+/// stores the call as the model spelled it; the command reads the envelope here.
+pub(crate) fn unwrap_call(display: Value, call_id: &str, expected: &str) -> anyhow::Result<Value> {
+    let name = display
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let arguments = display
+        .get("arguments")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("call {call_id} has no encoded arguments"))?;
+    let arguments: Value = serde_json::from_str(arguments)
+        .with_context(|| format!("could not read arguments of call {call_id}"))?;
+    let (name, arguments) = if name == "gongga_cli" {
+        let cmd = arguments.get("cmd").cloned().unwrap_or(Value::Null);
+        let inner = cmd
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let args = cmd
+            .get("args")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        (inner, args)
+    } else {
+        (name, arguments)
+    };
+    if name != expected {
+        bail!("call {call_id} is not a {expected} call");
+    }
+    Ok(arguments)
 }
 
 fn checkpoint_from_public_id(session_id: i64, id: &str) -> anyhow::Result<i64> {

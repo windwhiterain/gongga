@@ -245,7 +245,7 @@ impl Subscriptions {
     ) -> Result<crate::commands::Outcome, String> {
         let layer = crate::commands::layer()
             .ok_or_else(|| "this process has no command layer to run a match in".to_string())?;
-        Ok(layer.run(session, name, args).await)
+        Ok(layer.run(session, name, args, None).await)
     }
 
     /// Writes one outcome row and announces it, in that order.

@@ -194,11 +194,18 @@ pub(crate) fn standing_dir(cwd: &std::path::Path) -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
+/// A call's answer, plus two facts the loop honors without naming the tool.
+/// See `docs/notes/server-tool-cmd.md`.
 #[derive(Debug, Clone)]
 pub struct ToolOutcome {
     /// Text handed back to the model as the function call output.
     pub output: String,
     pub ok: bool,
+    /// Whether this call ends the turn: no further request follows it.
+    pub end_turn: bool,
+    /// The result row the command stored itself; `Some` means the loop reads it,
+    /// not appends a second.
+    pub result_seq: Option<i64>,
 }
 
 impl ToolOutcome {
@@ -206,6 +213,8 @@ impl ToolOutcome {
         Self {
             output: output.into(),
             ok: true,
+            end_turn: false,
+            result_seq: None,
         }
     }
 
@@ -213,6 +222,8 @@ impl ToolOutcome {
         Self {
             output: output.into(),
             ok: false,
+            end_turn: false,
+            result_seq: None,
         }
     }
 }
@@ -337,7 +348,7 @@ impl Cmd for Forward {
                 Some(table) => named_words(table),
                 None => protocol::Args::new(),
             };
-            run_command(&ctx.session, &self.name, words).await
+            run_command(&ctx.session, &self.name, words, &ctx.call_id).await
         })
     }
 }
@@ -364,7 +375,7 @@ impl Cmd for GonggaCli {
                 Ok(route) => route,
                 Err(refusal) => return ToolOutcome::err(refusal),
             };
-            run_command(&ctx.session, &name, words).await
+            run_command(&ctx.session, &name, words, &ctx.call_id).await
         })
     }
 }
@@ -435,14 +446,19 @@ fn object_of(value: &Value) -> Option<serde_json::Map<String, Value>> {
 /// rides along. Nothing races the command against the turn's token: only a wait may
 /// be ended, so the command answers and the turn ends at the next step boundary. See
 /// `docs/notes/server-tools-mod.md`.
-pub(crate) async fn run_command(session: &str, name: &str, words: protocol::Args) -> ToolOutcome {
+pub(crate) async fn run_command(
+    session: &str,
+    name: &str,
+    words: protocol::Args,
+    call_id: &str,
+) -> ToolOutcome {
     let Some(layer) = crate::commands::layer() else {
         return ToolOutcome::err(format!(
             "{name} is a command, and this process has no command layer: it runs one call and answers with a file"
         ));
     };
     let began = std::time::Instant::now();
-    let done = layer.run(session, name, words).await;
+    let done = layer.run(session, name, words, Some(call_id)).await;
     let rows = answer_rows(&done.events);
     let mut answer = json!({
         "id": Value::Null,
@@ -455,11 +471,21 @@ pub(crate) async fn run_command(session: &str, name: &str, words: protocol::Args
     if !rows.is_empty() {
         answer["events"] = Value::Array(rows);
     }
-    if done.ok {
+    let mut outcome = if done.ok {
         ToolOutcome::ok(answer.to_string())
     } else {
         ToolOutcome::err(answer.to_string())
+    };
+    // A command may state it ended the turn or stored its result row; the loop
+    // honors both, naming no command.
+    if let Some(data) = &done.data {
+        outcome.end_turn = data
+            .get("end_turn")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        outcome.result_seq = data.get("result_seq").and_then(Value::as_i64);
     }
+    outcome
 }
 
 /// The rows an answer carries, in the spelling its connection would have sent them.
@@ -715,9 +741,6 @@ impl ToolRegistry {
                     },
                 })
             }
-            "live_compact" => Box::new(live_compact::LiveCompactTool),
-            "memorize" => Box::new(memory::MemorizeTool),
-            "recall" => Box::new(memory::RecallTool),
             // SPEC's `fn gongga_cli(cmd: Cmd)`: a call that names its own command.
             "gongga_cli" => Box::new(GonggaCli),
             // SPEC's `fn <tool>(**args)`: a row with no type here runs through the
@@ -749,9 +772,10 @@ impl ToolRegistry {
     ///
     /// # Invariant
     ///
-    /// The only renderer of a schema, called only from a stored change -- never
-    /// while a request is built. Checkpoint and memory tools are in every head,
-    /// whatever the switch says. See `docs/notes/server-tools.md`.
+    /// The only renderer of a schema, called only from a stored change, never
+    /// while a request is built. The checkpoint commands are not in the head:
+    /// they are server cmds reached through `gongga_cli`.
+    /// See `docs/notes/server-tools.md`.
     ///
     /// Every session is offered the same set, `remote` included: a call may name
     /// any machine, and one the server does not know is refused when it runs.
@@ -799,7 +823,7 @@ impl ToolRegistry {
                 Some(table) => named_words(table),
                 None => protocol::Args::new(),
             };
-            let outcome = run_command(&ctx.session, name, words).await;
+            let outcome = run_command(&ctx.session, name, words, &ctx.call_id).await;
             return capped(ctx, name, &shared, cap, outcome);
         };
         // Before the check and before the tool: a typed line and a `hint = "json"` are text.
@@ -1218,6 +1242,8 @@ pub(crate) fn capped(
             &label,
         ),
         ok: outcome.ok,
+        end_turn: outcome.end_turn,
+        result_seq: outcome.result_seq,
     }
 }
 

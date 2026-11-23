@@ -20,7 +20,7 @@ use crate::llm::{LlmClient, LlmEvent};
 use crate::providers::{self};
 use crate::session::SessionHandle;
 use crate::store::{Kind, Store};
-use crate::tools::{ToolContext, ToolOutcome, ToolRegistry};
+use crate::tools::{ToolContext, ToolRegistry};
 
 /// A turn that failed because the provider refused the request or stopped answering.
 ///
@@ -378,7 +378,11 @@ impl Agent {
     }
 
     /// The visible-token ceiling used for automatic memory displacement.
-    fn memory_token_limit(&self, llm: &LlmClient, tuning: &crate::session::Tuning) -> Option<u64> {
+    pub(crate) fn memory_token_limit(
+        &self,
+        llm: &LlmClient,
+        tuning: &crate::session::Tuning,
+    ) -> Option<u64> {
         let context = llm.unmasked_context()?;
         let percent = tuning
             .context_limit
@@ -1705,31 +1709,7 @@ impl Agent {
         let printed_on = self.tools().machine_of(&tool, &arguments, &ctx);
         // Held for the whole run: the table a call started in is the one it finishes in.
         let table = self.tools();
-        let tuning = session.tuning();
-        let compact_mode = tuning
-            .live_compact_mode
-            .unwrap_or(self.config.now().agent.live_compact_mode);
-        let memory_token_limit = self.memory_token_limit(llm, &tuning);
-        let memory_tool = tool == crate::tools::memory::MEMORIZE_TOOL
-            || tool == crate::tools::memory::RECALL_TOOL;
-        let mode_error = if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL
-            && compact_mode != crate::live_compact::CompactMode::Cut
-        {
-            Some("this session uses mask checkpoints; call memorize instead".to_string())
-        } else if memory_tool && compact_mode != crate::live_compact::CompactMode::Mask {
-            Some(format!("{tool} requires live_compact.mode = mask"))
-        } else if memory_tool && !llm.supports_memory_mask() {
-            Some(format!(
-                "{tool} requires endpoint api {:?}",
-                crate::llm::MEMORY_MASK_API
-            ))
-        } else {
-            None
-        };
-        let outcome = match mode_error {
-            Some(reason) => ToolOutcome::err(reason),
-            None => table.run(&tool, arguments, &ctx).await,
-        };
+        let outcome = table.run(&tool, arguments, &ctx).await;
         let run_ms = run_started.elapsed().as_millis() as u64;
         let attach_started = std::time::Instant::now();
         let scanned = self
@@ -1740,9 +1720,7 @@ impl Agent {
         // cap is a second answer.
         let capped = outcome.output.clone();
         // A tool that streamed nothing owes its output to the final chunk.
-        let special_tool = tool == crate::tools::live_compact::LIVE_COMPACT_TOOL || memory_tool;
         let mut tail = match sent.load(Ordering::Relaxed) {
-            0 if special_tool => outcome.output.clone(),
             0 => capped.clone(),
             _ => String::new(),
         };
@@ -1759,121 +1737,28 @@ impl Agent {
             .iter()
             .map(crate::image::ImageRef::to_json)
             .collect();
-        let mut content = json!({"call_id": call_id, "output": output, "images": images,
+        let content = json!({"call_id": call_id, "output": output, "images": images,
                     "turn": turn, "step": step, "ok": outcome.ok, "elapsed_ms": run_ms});
-        let mut special_committed = false;
-        let mut commit_error = None;
-        // Set only once the call's own rows are written.
-        let mut ends_turn = false;
-        // Nothing to fold: an answer, not an error (an error invites a retry loop).
-        let mut nothing = None;
-        if tool == crate::tools::live_compact::LIVE_COMPACT_TOOL && outcome.ok {
-            match self
-                .store
-                .append_live_compact_result(id, &call_id, &content)
-            {
-                Ok(crate::live_compact::Commit::Checkpointed(committed)) => {
-                    special_committed = true;
-                    ends_turn = !committed.continue_turn;
-                    self.announce_row(name, Ok(committed.result_seq));
-                    self.log_event(
-                        Some(id),
-                        "live_compact",
-                        &json!({
-                            "checkpoint": committed.checkpoint_id,
-                            "result_seq": committed.result_seq,
-                            "generation": committed.generation,
-                            "continue": committed.continue_turn,
-                        }),
-                    );
-                }
-                Ok(crate::live_compact::Commit::Nothing(reason)) => nothing = Some(reason),
-                Err(e) => {
-                    tracing::warn!(session = %name, error = %e, "could not commit live compact checkpoint");
-                    commit_error = Some(format!("{e:#}"));
-                }
-            }
-        }
-        if tool == crate::tools::memory::MEMORIZE_TOOL && outcome.ok {
-            match self.store.memorize(id, &call_id, &content) {
-                Ok(crate::memory::MemorizeCommit::Checkpointed(committed)) => {
-                    special_committed = true;
-                    output = committed.output.clone();
-                    content["output"] = json!(output.clone());
+        // A command may end the turn or store its own result row; a stored row is
+        // read back, never appended twice.
+        let ends_turn = outcome.end_turn;
+        match outcome.result_seq {
+            Some(seq) => match self.store.stored_tool_result(id, seq) {
+                Ok((stored, stored_ok)) => {
+                    output = stored;
+                    status = if stored_ok { "ok" } else { "error" };
                     tail = output.clone();
-                    self.announce_row(name, Ok(committed.result_seq));
-                    self.log_event(
-                        Some(id),
-                        "memorize",
-                        &json!({
-                            "memory": committed.id,
-                            "checkpoint": committed.checkpoint_id,
-                            "result_seq": committed.result_seq,
-                            "source_after_seq": committed.source_after_seq,
-                            "cutoff_seq": committed.cutoff_seq,
-                            "view_generation": committed.view_generation,
-                        }),
-                    );
-                }
-                Ok(crate::memory::MemorizeCommit::Nothing(reason)) => nothing = Some(reason),
-                Err(e) => {
-                    tracing::warn!(session = %name, error = %e, "could not commit memory checkpoint");
-                    commit_error = Some(format!("{e:#}"));
-                }
-            }
-        }
-        if tool == crate::tools::memory::RECALL_TOOL && outcome.ok {
-            match self
-                .store
-                .recall(id, &call_id, &content, memory_token_limit)
-            {
-                Ok(committed) => {
-                    special_committed = true;
-                    output = committed.output.clone();
-                    content["output"] = json!(output.clone());
-                    tail = output.clone();
-                    self.announce_row(name, Ok(committed.result_seq));
-                    self.log_event(
-                        Some(id),
-                        "recall",
-                        &json!({
-                            "result_seq": committed.result_seq,
-                            "recalled": committed.recalled,
-                            "auto_masked": committed.auto_masked,
-                            "view_generation": committed.view_generation,
-                        }),
-                    );
                 }
                 Err(e) => {
-                    tracing::warn!(session = %name, error = %e, "could not commit memory recall");
-                    commit_error = Some(format!("{e:#}"));
+                    tracing::warn!(session = %name, seq, error = %e, "a command's stored result row could not be read");
                 }
+            },
+            None => {
+                self.announce_row(
+                    name,
+                    self.store.append_message(id, Kind::ToolResult, &content),
+                );
             }
-        }
-        if let Some(reason) = nothing {
-            output = reason;
-            content["output"] = json!(output.clone());
-            self.announce_row(
-                name,
-                self.store.append_message(id, Kind::ToolResult, &content),
-            );
-            tail = output.clone();
-        } else if special_tool && !special_committed {
-            status = "error";
-            let reason = commit_error.unwrap_or_else(|| output.clone());
-            output = format!("ERROR: {tool} was not committed: {reason}");
-            content["output"] = json!(output.clone());
-            content["ok"] = json!(false);
-            self.announce_row(
-                name,
-                self.store.append_message(id, Kind::ToolResult, &content),
-            );
-            tail = output.clone();
-        } else if !special_committed {
-            self.announce_row(
-                name,
-                self.store.append_message(id, Kind::ToolResult, &content),
-            );
         }
         let tool_ok = status == "ok";
         tracing::info!(
