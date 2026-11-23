@@ -13,7 +13,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use protocol::{ToolAnswerEvent, ToolStream};
 use serde_json::{Value, json};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::remote::transport::Runner;
@@ -69,6 +71,41 @@ impl Outcome {
             answer["output"] = json!(capped);
         }
         answer
+    }
+}
+
+/// Where a waiting call's output goes while it waits: the window's growth, as
+/// `tool_answer` chunks.
+///
+/// # Invariant
+///
+/// A view, never a read: publishing a chunk moves no cursor, so the window the call
+/// answers with is the one it would have answered without a watcher. See
+/// `docs/notes/server-channel.md`.
+pub struct Tail<'a> {
+    pub sink: &'a mpsc::Sender<ToolAnswerEvent>,
+    pub call_id: &'a str,
+}
+
+impl Tail<'_> {
+    /// One chunk of what arrived. An empty piece is not sent; a receiver that is gone
+    /// stops the stream.
+    async fn say(&self, session: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let _ = self
+            .sink
+            .send(ToolAnswerEvent {
+                session: session.to_string(),
+                call_id: self.call_id.to_string(),
+                tool: String::new(),
+                stream: ToolStream::Stdout,
+                text: text.to_string(),
+                done: false,
+                head: None,
+            })
+            .await;
     }
 }
 
@@ -835,6 +872,7 @@ impl Channels {
     ///
     /// Waiting is the call's, never the grammar's: `wait` absent is this server's
     /// ceiling and `wait: 0` is no wait at all. See [`SPEC`](SPEC.md), "Tool".
+    #[allow(clippy::too_many_arguments)]
     pub async fn talk(
         &self,
         session: &str,
@@ -844,6 +882,7 @@ impl Channels {
         until: Option<&str>,
         cancel: Option<&CancellationToken>,
         inbox: Option<&crate::session::InboxSignal>,
+        tail: Option<&Tail<'_>>,
     ) -> Result<Outcome, String> {
         // SPEC's `waited`: what this call itself spends, from the moment it speaks.
         let began = Instant::now();
@@ -937,6 +976,8 @@ impl Channels {
             },
         };
         let upto = row.upto;
+        // How much of the unread window the watcher has already been shown.
+        let mut shown = 0usize;
         loop {
             // The peer reads race the stop, the clock and a message, so none may hold the
             // call. The clock is read, not slept on.
@@ -976,7 +1017,22 @@ impl Channels {
                     }
                 }
             };
+            // Show whole lines only: a partial line may be the marker's, and the cut
+            // must not retract what was drawn.
+            if let Some(tail) = tail {
+                let end = sayable(&looked.window);
+                if end > shown {
+                    tail.say(session, looked.window.get(shown..end).unwrap_or(""))
+                        .await;
+                    shown = end;
+                }
+            }
             if looked.matched || ended.is_some() || wait.is_zero() {
+                // The rest of the window -- its last, partial line -- before the verdict.
+                if let Some(tail) = tail {
+                    tail.say(session, looked.window.get(shown..).unwrap_or(""))
+                        .await;
+                }
                 // Two statuses, not one fact: the command's, and the program's ending.
                 return self.answer(
                     row,
@@ -1872,6 +1928,20 @@ fn marker_prefix_tail(fresh: &str, marker: &str) -> usize {
         .rev()
         .find(|&k| f[f.len() - k..] == m[..k])
         .unwrap_or(0)
+}
+
+/// How much of a growing window may be shown: through its last line break.
+///
+/// # Invariant
+///
+/// A break that ends the window is held back (the marker cut trims it), and so is any
+/// partial line, so a marker still being written is never drawn.
+fn sayable(window: &str) -> usize {
+    match window.rfind('\n') {
+        Some(at) if at + 1 < window.len() => at + 1,
+        Some(at) => at,
+        None => 0,
+    }
 }
 
 fn look(fresh: &[u8], upto: u64, marker: Option<&str>, grammar: &spec::ChannelSpec) -> Looked {
